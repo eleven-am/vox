@@ -40,7 +40,7 @@ def _check_response(resp: httpx.Response) -> None:
 @click.option("--host", default=DEFAULT_HOST, envvar="VOX_HOST", help="Vox server URL")
 @click.pass_context
 def cli(ctx, host: str):
-    """Vox — Ollama for Speech."""
+    """Vox — Universal local runtime for STT and TTS models."""
     ctx.ensure_object(dict)
     ctx.obj["host"] = host.rstrip("/")
 
@@ -215,6 +215,30 @@ def voices(ctx, model: str):
             click.echo(f"{v['id']:<20} {v['name']:<30} {v.get('language') or '':<10}")
     except (httpx.HTTPError, json.JSONDecodeError, KeyError) as e:
         _handle_request_error(e, host)
+
+
+@cli.command()
+@click.option("--type", "model_type", default=None, help="Filter by type: stt or tts")
+def search(model_type: str | None):
+    """Search available models from the registry."""
+    from vox.core.registry import fetch_registry_index
+
+    index = fetch_registry_index()
+    if not index:
+        click.echo("Error: could not reach the model registry", err=True)
+        sys.exit(1)
+
+    if model_type:
+        index = [m for m in index if m.get("type") == model_type]
+
+    if not index:
+        click.echo("No models found")
+        return
+
+    click.echo(f"{'NAME':<30} {'TYPE':<6} DESCRIPTION")
+    for m in index:
+        name = f"{m['name']}:{m['tag']}"
+        click.echo(f"{name:<30} {m.get('type', ''):<6} {m.get('description', '')[:50]}")
 
 
 def _format_size(size_bytes: int) -> str:

@@ -1,4 +1,4 @@
-"""Parser for the Speechfile format — a declarative model spec akin to Ollama's Modelfile.
+"""Parser for the Speechfile format — a declarative model spec for Vox.
 
 Example Speechfile::
 

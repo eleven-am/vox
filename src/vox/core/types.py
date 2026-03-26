@@ -141,7 +141,7 @@ class ModelInfo:
 
 @dataclass(frozen=True)
 class Speechfile:
-    """Parsed Speechfile — declarative model spec (like Ollama's Modelfile)."""
+    """Parsed Speechfile — declarative model specification."""
     source: str                          # FROM line (HF repo, URL, or local path)
     architecture: str                    # whisper, parakeet, kokoro, piper, etc.
     type: ModelType

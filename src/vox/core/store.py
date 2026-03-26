@@ -1,6 +1,6 @@
 """Content-addressable blob store for Vox model files.
 
-Storage layout mirrors Ollama:
+Storage layout:
 
     ~/.vox/
       models/

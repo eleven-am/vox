@@ -48,7 +48,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
     },
     "kokoro": {
         "v1.0": {
-            "source": "hexgrad/Kokoro-82M-v1.0-ONNX",
+            "source": "onnx-community/Kokoro-82M-v1.0-ONNX",
             "architecture": "kokoro",
             "type": "tts",
             "adapter": "kokoro",
@@ -73,7 +73,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-whisper",
         },
         "large-v3-turbo": {
-            "source": "Systran/faster-whisper-large-v3-turbo",
+            "source": "deepdml/faster-whisper-large-v3-turbo-ct2",
             "architecture": "whisper",
             "type": "stt",
             "adapter": "whisper",
@@ -116,7 +116,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter": "fish-speech",
             "format": "pytorch",
             "description": "Fish Speech 1.4 — high quality multilingual TTS with voice cloning",
-            "license": "Apache-2.0",
+            "license": "CC-BY-NC-SA-4.0",
             "parameters": {"sample_rate": 44100},
             "adapter_package": "vox-fish-speech",
         },
@@ -128,10 +128,36 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "type": "tts",
             "adapter": "orpheus",
             "format": "pytorch",
-            "description": "Orpheus 3B — LLM-based emotional TTS",
+            "description": "Orpheus 3B — LLM-based emotional TTS with inline emotion tags",
             "license": "Apache-2.0",
             "parameters": {"sample_rate": 24000},
             "adapter_package": "vox-orpheus",
+        },
+    },
+    "dia": {
+        "1.6b": {
+            "source": "nari-labs/Dia-1.6B",
+            "architecture": "dia",
+            "type": "tts",
+            "adapter": "dia",
+            "format": "pytorch",
+            "description": "Dia 1.6B — multi-speaker dialogue TTS with non-verbal sounds",
+            "license": "Apache-2.0",
+            "parameters": {"sample_rate": 44000},
+            "adapter_package": "vox-dia",
+        },
+    },
+    "sesame": {
+        "csm-1b": {
+            "source": "sesame/csm-1b",
+            "architecture": "sesame",
+            "type": "tts",
+            "adapter": "sesame",
+            "format": "pytorch",
+            "description": "Sesame CSM 1B — context-aware conversational speech model",
+            "license": "Apache-2.0",
+            "parameters": {"sample_rate": 24000},
+            "adapter_package": "vox-sesame",
         },
     },
 }
@@ -142,6 +168,36 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
 # ---------------------------------------------------------------------------
 
 ADAPTERS_DIR = "adapters"  # relative to vox home
+REGISTRY_BASE_URL = "https://raw.githubusercontent.com/eleven-am/vox-registry/main"
+
+
+def fetch_from_registry(name: str, tag: str) -> dict[str, Any] | None:
+    """Fetch model metadata from the remote GitHub registry."""
+    import httpx
+
+    url = f"{REGISTRY_BASE_URL}/library/{name}/{tag}.json"
+    try:
+        resp = httpx.get(url, timeout=10, follow_redirects=True)
+        if resp.status_code == 200:
+            return resp.json()
+        return None
+    except (httpx.HTTPError, ValueError) as e:
+        logger.warning(f"Failed to fetch from registry: {url}: {e}")
+        return None
+
+
+def fetch_registry_index() -> list[dict[str, Any]] | None:
+    """Fetch the full model index from the remote registry."""
+    import httpx
+
+    url = f"{REGISTRY_BASE_URL}/index.json"
+    try:
+        resp = httpx.get(url, timeout=10, follow_redirects=True)
+        if resp.status_code == 200:
+            return resp.json()
+        return None
+    except (httpx.HTTPError, ValueError):
+        return None
 
 
 def install_adapter_package(package_name: str, vox_home: Path) -> bool:
@@ -206,17 +262,35 @@ class ModelRegistry:
     # -- catalog helpers -----------------------------------------------------
 
     def lookup(self, name: str, tag: str = "latest") -> dict | None:
-        """Look up a model in the built-in catalog.
-
-        Returns the catalog entry dict, or ``None`` if not found.
-        """
+        """Look up a model — local catalog first, then remote registry."""
         tags = CATALOG.get(name)
-        if tags is None:
-            return None
-        return tags.get(tag)
+        if tags is not None:
+            entry = tags.get(tag)
+            if entry is not None:
+                return entry
+
+        # Try remote registry
+        entry = fetch_from_registry(name, tag)
+        if entry is not None:
+            # Cache locally for this session
+            if name not in CATALOG:
+                CATALOG[name] = {}
+            CATALOG[name][tag] = entry
+            logger.info(f"Fetched {name}:{tag} from remote registry")
+            return entry
+
+        return None
 
     def available_models(self) -> dict[str, dict[str, dict[str, Any]]]:
-        """Return the full built-in catalog for browsing."""
+        """Return local catalog merged with remote index if available."""
+        remote = fetch_registry_index()
+        if remote:
+            for entry in remote:
+                name, tag = entry["name"], entry["tag"]
+                if name not in CATALOG:
+                    CATALOG[name] = {}
+                if tag not in CATALOG[name]:
+                    CATALOG[name][tag] = entry
         return CATALOG
 
     # -- adapter helpers -----------------------------------------------------

@@ -1,7 +1,7 @@
 [project]
 name = "vox"
 version = "0.1.0"
-description = "Ollama for Speech — universal local runtime for STT and TTS models"
+description = "Universal local runtime for STT and TTS models"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 dependencies = [
