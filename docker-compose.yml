@@ -2,22 +2,17 @@ services:
   vox:
     build:
       context: .
-      target: cpu
+      args:
+        BASE_IMAGE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
     ports:
       - "11435:11435"
     volumes:
-      - vox-data:/root/.vox
+      - vox-data:/home/vox/.vox
     environment:
-      - VOX_DEVICE=cpu
-
-  vox-gpu:
-    build:
-      context: .
-      target: gpu-base
-    ports:
-      - "11435:11435"
-    volumes:
-      - vox-data:/root/.vox
+      - VOX_DEVICE=auto
+      - HF_HUB_ENABLE_HF_TRANSFER=0
+      - DO_NOT_TRACK=1
+      - HF_HUB_DISABLE_TELEMETRY=1
     deploy:
       resources:
         reservations:
@@ -25,8 +20,20 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
+  vox-cpu:
+    build:
+      context: .
+      args:
+        BASE_IMAGE: python:3.12-slim
+    ports:
+      - "11435:11435"
+    volumes:
+      - vox-data:/home/vox/.vox
+    environment:
+      - VOX_DEVICE=cpu
     profiles:
-      - gpu
+      - cpu
 
 volumes:
   vox-data:

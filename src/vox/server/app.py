@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -32,6 +33,10 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="Vox", version="0.1.0", lifespan=lifespan)
 
+    if vox_home is None:
+        env_home = os.environ.get("VOX_HOME")
+        if env_home:
+            vox_home = Path(env_home)
     store = BlobStore(root=vox_home)
     registry = ModelRegistry(store)
     scheduler = Scheduler(registry, default_device=default_device, max_loaded=max_loaded, ttl_seconds=ttl_seconds)
