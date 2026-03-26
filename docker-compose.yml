@@ -1,0 +1,32 @@
+services:
+  vox:
+    build:
+      context: .
+      target: cpu
+    ports:
+      - "11435:11435"
+    volumes:
+      - vox-data:/root/.vox
+    environment:
+      - VOX_DEVICE=cpu
+
+  vox-gpu:
+    build:
+      context: .
+      target: gpu-base
+    ports:
+      - "11435:11435"
+    volumes:
+      - vox-data:/root/.vox
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    profiles:
+      - gpu
+
+volumes:
+  vox-data:

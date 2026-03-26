@@ -42,6 +42,19 @@ async def pull_model(req: PullRequest, request: Request):
     async def stream_progress():
         yield json.dumps({"status": f"pulling {req.name}"}) + "\n"
 
+        # Auto-install adapter if needed
+        adapter_name = catalog_entry.get("adapter", "")
+        adapter_package = catalog_entry.get("adapter_package", "")
+        if adapter_package:
+            yield json.dumps({"status": f"checking adapter {adapter_name}"}) + "\n"
+            if not registry.ensure_adapter(adapter_name, adapter_package):
+                yield json.dumps({
+                    "status": "error",
+                    "error": f"Failed to install adapter package: {adapter_package}"
+                }) + "\n"
+                return
+            yield json.dumps({"status": f"adapter {adapter_name} ready"}) + "\n"
+
         source = catalog_entry["source"]
         specific_files = catalog_entry.get("files")
 
@@ -104,6 +117,7 @@ async def pull_model(req: PullRequest, request: Request):
                     "parameters": catalog_entry.get("parameters", {}),
                     "description": catalog_entry.get("description", ""),
                     "license": catalog_entry.get("license", ""),
+                    "adapter_package": catalog_entry.get("adapter_package", ""),
                 },
             )
             store.save_manifest(name, tag, manifest)

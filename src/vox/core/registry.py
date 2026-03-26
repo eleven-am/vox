@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from dataclasses import replace
 from importlib.metadata import entry_points
 from pathlib import Path
@@ -30,6 +32,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "description": "NVIDIA Parakeet TDT 0.6B — top Open ASR Leaderboard model",
             "license": "CC-BY-4.0",
             "parameters": {"sample_rate": 16000},
+            "adapter_package": "vox-parakeet",
         },
         "tdt-0.6b-v3": {
             "source": "nvidia/parakeet-tdt-0.6b-v3",
@@ -40,6 +43,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "description": "NVIDIA Parakeet TDT 0.6B v3 — 25 languages, streaming support",
             "license": "CC-BY-4.0",
             "parameters": {"sample_rate": 16000},
+            "adapter_package": "vox-parakeet",
         },
     },
     "kokoro": {
@@ -53,6 +57,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "license": "Apache-2.0",
             "parameters": {"sample_rate": 24000, "default_voice": "af_heart"},
             "files": ["model.onnx", "voices.bin"],
+            "adapter_package": "vox-kokoro",
         },
     },
     "whisper": {
@@ -65,6 +70,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "description": "OpenAI Whisper Large V3 via CTranslate2",
             "license": "MIT",
             "parameters": {"sample_rate": 16000, "beam_size": 5},
+            "adapter_package": "vox-whisper",
         },
         "large-v3-turbo": {
             "source": "Systran/faster-whisper-large-v3-turbo",
@@ -75,6 +81,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "description": "OpenAI Whisper Large V3 Turbo — faster with minor quality loss",
             "license": "MIT",
             "parameters": {"sample_rate": 16000, "beam_size": 5},
+            "adapter_package": "vox-whisper",
         },
         "base.en": {
             "source": "Systran/faster-whisper-base.en",
@@ -85,6 +92,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "description": "OpenAI Whisper Base English — small and fast",
             "license": "MIT",
             "parameters": {"sample_rate": 16000},
+            "adapter_package": "vox-whisper",
         },
     },
     "piper": {
@@ -97,6 +105,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "description": "Piper English US Lessac Medium voice",
             "license": "MIT",
             "parameters": {"sample_rate": 22050},
+            "adapter_package": "vox-piper",
         },
     },
     "fish-speech": {
@@ -109,6 +118,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "description": "Fish Speech 1.4 — high quality multilingual TTS with voice cloning",
             "license": "Apache-2.0",
             "parameters": {"sample_rate": 44100},
+            "adapter_package": "vox-fish-speech",
         },
     },
     "orpheus": {
@@ -121,6 +131,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "description": "Orpheus 3B — LLM-based emotional TTS",
             "license": "Apache-2.0",
             "parameters": {"sample_rate": 24000},
+            "adapter_package": "vox-orpheus",
         },
     },
 }
@@ -129,6 +140,45 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
 # ---------------------------------------------------------------------------
 # B. Adapter discovery via entry points
 # ---------------------------------------------------------------------------
+
+ADAPTERS_DIR = "adapters"  # relative to vox home
+
+
+def install_adapter_package(package_name: str, vox_home: Path) -> bool:
+    """Install an adapter package into the vox adapters directory.
+
+    Returns True if installation succeeded, False otherwise.
+    """
+    target_dir = vox_home / ADAPTERS_DIR
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    # Try uv first (faster), fall back to pip
+    for installer in ["uv pip install", "pip install"]:
+        try:
+            cmd = f"{installer} --target {target_dir} {package_name}"
+            result = subprocess.run(
+                cmd.split(),
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if result.returncode == 0:
+                logger.info(f"Installed adapter package: {package_name}")
+                return True
+            logger.warning(f"{installer} failed: {result.stderr}")
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            continue
+
+    logger.error(f"Failed to install adapter package: {package_name}")
+    return False
+
+
+def _ensure_adapters_on_path(vox_home: Path) -> None:
+    """Add the vox adapters directory to sys.path if not already present."""
+    adapters_dir = str(vox_home / ADAPTERS_DIR)
+    if adapters_dir not in sys.path:
+        sys.path.insert(0, adapters_dir)
+
 
 def discover_adapters() -> dict[str, type]:
     """Discover installed adapter classes via 'vox.adapters' entry point group."""
@@ -150,6 +200,7 @@ class ModelRegistry:
 
     def __init__(self, store: BlobStore) -> None:
         self._store = store
+        _ensure_adapters_on_path(self._store.root)
         self._adapters = discover_adapters()
 
     # -- catalog helpers -----------------------------------------------------
@@ -169,6 +220,19 @@ class ModelRegistry:
         return CATALOG
 
     # -- adapter helpers -----------------------------------------------------
+
+    def ensure_adapter(self, adapter_name: str, package_name: str) -> bool:
+        """Ensure an adapter is installed. Auto-installs if needed."""
+        if adapter_name in self._adapters:
+            return True
+
+        logger.info(f"Adapter '{adapter_name}' not found, installing {package_name}...")
+        if not install_adapter_package(package_name, self._store.root):
+            return False
+
+        # Re-discover after install
+        self._adapters = discover_adapters()
+        return adapter_name in self._adapters
 
     def get_adapter_class(self, adapter_name: str) -> type:
         """Return the adapter class for *adapter_name*.
