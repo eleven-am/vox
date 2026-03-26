@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import asyncio
 import logging
-import os
 import platform
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -125,12 +123,12 @@ class KokoroAdapter(TTSAdapter):
         return AdapterInfo(
             name="kokoro",
             type=ModelType.TTS,
-            architectures=["kokoro"],
+            architectures=("kokoro",),
             default_sample_rate=SAMPLE_RATE,
-            supported_formats=[ModelFormat.ONNX],
+            supported_formats=(ModelFormat.ONNX,),
             supports_streaming=True,
             supports_voice_cloning=False,
-            supported_languages=list(LANG_CODE_TO_LANGUAGE.values()),
+            supported_languages=tuple(LANG_CODE_TO_LANGUAGE.values()),
         )
 
     def load(self, model_path: str, device: str, **kwargs: Any) -> None:

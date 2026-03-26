@@ -11,7 +11,7 @@ from typing import Any, Protocol
 
 from vox.core.adapter import STTAdapter, TTSAdapter
 from vox.core.errors import AdapterNotFoundError, ModelLoadError, ModelNotFoundError, OOMError
-from vox.core.types import LoadedModelInfo, ModelInfo, ModelType
+from vox.core.types import LoadedModelInfo, ModelInfo, ModelType, parse_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -20,15 +20,19 @@ Adapter = STTAdapter | TTSAdapter
 
 def _detect_device() -> str:
     """Auto-detect best available device."""
+    device = "cpu"
     try:
         import torch
         if torch.cuda.is_available():
-            return "cuda"
-        if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            return "mps"
+            device = "cuda"
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            device = "mps"
     except ImportError:
         pass
-    return "cpu"
+    except RuntimeError as e:
+        logger.warning(f"Error during device detection, falling back to CPU: {e}")
+    logger.info(f"Auto-detected device: {device}")
+    return device
 
 
 def _clear_gpu_cache() -> None:
@@ -40,12 +44,14 @@ def _clear_gpu_cache() -> None:
             torch.cuda.synchronize()
     except ImportError:
         pass
+    except RuntimeError as e:
+        logger.warning(f"Failed to clear GPU cache: {e}")
     gc.collect()
 
 
 def _is_oom_error(error: Exception) -> bool:
     """Check if an exception is an out-of-memory error."""
-    oom_keywords = ["out of memory", "oom", "cuda out of memory", "alloc", "memory"]
+    oom_keywords = ["out of memory", "cuda oom", "onnxruntime oom", "failed to allocate"]
     msg = str(error).lower()
     return any(kw in msg for kw in oom_keywords)
 
@@ -103,20 +109,13 @@ class Scheduler:
             self._cleanup_task = None
         await self.unload_all()
 
-    def _parse_model_name(self, model_name: str) -> tuple[str, str]:
-        """Parse 'name:tag' into (name, tag). Default tag is 'latest'."""
-        if ":" in model_name:
-            name, tag = model_name.split(":", 1)
-            return name, tag
-        return model_name, "latest"
-
     def _select_device(self, adapter: Adapter) -> str:
         """Select device for a model, considering VRAM estimates."""
         return self._default_device
 
     async def _load_model(self, full_name: str) -> _LoadedModel:
         """Load a model by name. Handles eviction and OOM fallback."""
-        name, tag = self._parse_model_name(full_name)
+        name, tag = parse_model_name(full_name)
 
         # Resolve model info and path
         info, model_path = self._registry.resolve(name, tag)
@@ -129,6 +128,11 @@ class Scheduler:
         # Evict LRU if at capacity
         if len(self._models) >= self._max_loaded:
             self._evict_lru()
+            if len(self._models) >= self._max_loaded:
+                raise ModelLoadError(
+                    f"Cannot load {full_name}: all {self._max_loaded} model slots are in use. "
+                    "Wait for an active request to finish or increase --max-loaded."
+                )
 
         # Try loading on preferred device, fallback to CPU on OOM
         try:
@@ -171,14 +175,17 @@ class Scheduler:
         candidates.sort(key=lambda x: x[1].last_used)
         lru_name, lru_model = candidates[0]
         logger.info(f"Evicting {lru_name} (idle since {time.time() - lru_model.last_used:.0f}s ago)")
-        lru_model.adapter.unload()
+        try:
+            lru_model.adapter.unload()
+        except Exception as e:
+            logger.error(f"Error unloading {lru_name} during eviction: {e}")
         del self._models[lru_name]
         _clear_gpu_cache()
 
     @asynccontextmanager
     async def acquire(self, model_name: str):
         """Acquire a loaded model adapter. Loads on first use, ref-counted."""
-        name, tag = self._parse_model_name(model_name)
+        name, tag = parse_model_name(model_name)
         full_name = f"{name}:{tag}"
 
         async with self._lock:
@@ -197,31 +204,38 @@ class Scheduler:
 
     async def preload(self, model_name: str) -> None:
         """Pre-load a model into memory."""
-        name, tag = self._parse_model_name(model_name)
+        name, tag = parse_model_name(model_name)
         full_name = f"{name}:{tag}"
         async with self._lock:
             if full_name not in self._models:
                 await self._load_model(full_name)
 
-    async def unload(self, model_name: str) -> None:
-        """Unload a specific model."""
-        name, tag = self._parse_model_name(model_name)
+    async def unload(self, model_name: str) -> bool:
+        """Unload a specific model. Returns True if unloaded, False if skipped."""
+        name, tag = parse_model_name(model_name)
         full_name = f"{name}:{tag}"
         async with self._lock:
             if full_name in self._models:
                 loaded = self._models[full_name]
                 if loaded.ref_count > 0:
                     logger.warning(f"Cannot unload {full_name}: {loaded.ref_count} active references")
-                    return
-                loaded.adapter.unload()
+                    return False
+                try:
+                    loaded.adapter.unload()
+                except Exception as e:
+                    logger.error(f"Error unloading {full_name}: {e}")
                 del self._models[full_name]
                 _clear_gpu_cache()
+        return True
 
     async def unload_all(self) -> None:
         """Unload all models."""
         async with self._lock:
             for name, loaded in list(self._models.items()):
-                loaded.adapter.unload()
+                try:
+                    loaded.adapter.unload()
+                except Exception as e:
+                    logger.error(f"Error unloading {name}: {e}")
             self._models.clear()
             _clear_gpu_cache()
 
@@ -255,7 +269,10 @@ class Scheduler:
                 ]
                 for name in to_evict:
                     logger.info(f"TTL expired for {name}, unloading")
-                    self._models[name].adapter.unload()
+                    try:
+                        self._models[name].adapter.unload()
+                    except Exception as e:
+                        logger.error(f"Error unloading {name} during TTL cleanup: {e}")
                     del self._models[name]
                 if to_evict:
                     _clear_gpu_cache()

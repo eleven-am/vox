@@ -9,8 +9,8 @@ from numpy.typing import NDArray
 from vox.core.types import AdapterInfo, TranscribeResult, SynthesizeChunk, VoiceInfo
 
 
-class STTAdapter(ABC):
-    """Base class every STT model adapter must implement."""
+class BaseAdapter(ABC):
+    """Shared interface for all model adapters (STT and TTS)."""
 
     @abstractmethod
     def info(self) -> AdapterInfo: ...
@@ -28,6 +28,14 @@ class STTAdapter(ABC):
     @property
     @abstractmethod
     def is_loaded(self) -> bool: ...
+
+    def estimate_vram_bytes(self, **kwargs: Any) -> int:
+        """Return estimated VRAM/RAM usage in bytes. Used by the scheduler for device placement."""
+        return 0
+
+
+class STTAdapter(BaseAdapter):
+    """Base class every STT model adapter must implement."""
 
     @abstractmethod
     def transcribe(
@@ -55,30 +63,9 @@ class STTAdapter(ABC):
         """Optional: language identification from audio."""
         raise NotImplementedError(f"{self.info().name} does not support language detection")
 
-    def estimate_vram_bytes(self, **kwargs: Any) -> int:
-        """Return estimated VRAM/RAM usage in bytes. Used by the scheduler for device placement."""
-        return 0
 
-
-class TTSAdapter(ABC):
+class TTSAdapter(BaseAdapter):
     """Base class every TTS model adapter must implement."""
-
-    @abstractmethod
-    def info(self) -> AdapterInfo: ...
-
-    @abstractmethod
-    def load(self, model_path: str, device: str, **kwargs: Any) -> None:
-        """Load model weights from a local path onto the specified device."""
-        ...
-
-    @abstractmethod
-    def unload(self) -> None:
-        """Release all GPU/CPU memory held by the model."""
-        ...
-
-    @property
-    @abstractmethod
-    def is_loaded(self) -> bool: ...
 
     @abstractmethod
     async def synthesize(
@@ -97,7 +84,3 @@ class TTSAdapter(ABC):
     def list_voices(self) -> list[VoiceInfo]:
         """Return built-in voice options. Empty for voice-cloning-only models."""
         return []
-
-    def estimate_vram_bytes(self, **kwargs: Any) -> int:
-        """Return estimated VRAM/RAM usage in bytes."""
-        return 0

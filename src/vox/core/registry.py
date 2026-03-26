@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any
 
-from vox.core.errors import AdapterNotFoundError, ModelNotFoundError
+import logging
+
+from vox.core.errors import AdapterNotFoundError, ModelLoadError, ModelNotFoundError
 from vox.core.store import BlobStore
-from vox.core.types import ModelFormat, ModelInfo, ModelType
+from vox.core.types import ModelInfo
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # A. Built-in model catalog
@@ -129,7 +134,10 @@ def discover_adapters() -> dict[str, type]:
     """Discover installed adapter classes via 'vox.adapters' entry point group."""
     adapters: dict[str, type] = {}
     for ep in entry_points(group="vox.adapters"):
-        adapters[ep.name] = ep.load()
+        try:
+            adapters[ep.name] = ep.load()
+        except Exception as e:
+            logger.warning(f"Skipping broken adapter plugin '{ep.name}': {e}")
     return adapters
 
 
@@ -191,18 +199,14 @@ class ModelRegistry:
         cfg = manifest.config
         size = sum(layer.size for layer in manifest.layers)
 
-        info = ModelInfo(
-            name=name,
-            tag=tag,
-            type=ModelType(cfg.get("type", "stt")),
-            format=ModelFormat(cfg.get("format", "onnx")),
-            architecture=cfg.get("architecture", ""),
-            adapter=cfg.get("adapter", ""),
-            size_bytes=size,
-            description=cfg.get("description", ""),
-            license=cfg.get("license", ""),
-            parameters=cfg.get("parameters", {}),
-        )
+        info = ModelInfo.from_manifest_config(name, tag, cfg, size_bytes=size)
+
+        # Inject the catalog source (e.g. HuggingFace repo ID) so adapters
+        # that need a model ID rather than a local path can retrieve it.
+        source = cfg.get("source")
+        if source:
+            updated_params = {**info.parameters, "_source": source}
+            info = replace(info, parameters=updated_params)
 
         if not manifest.layers:
             raise ModelNotFoundError(f"{name}:{tag} (manifest has no layers)")
@@ -214,7 +218,15 @@ class ModelRegistry:
         for layer in manifest.layers:
             link_path = model_dir / layer.filename
             blob_path = self._store.get_blob_path(layer.digest)
+            # Remove stale/broken symlinks before recreating
+            if link_path.is_symlink() and not link_path.exists():
+                link_path.unlink()
             if not link_path.exists():
-                link_path.symlink_to(blob_path)
+                try:
+                    link_path.symlink_to(blob_path)
+                except OSError as e:
+                    raise ModelLoadError(
+                        f"Failed to create symlink {link_path} -> {blob_path}: {e}"
+                    ) from e
 
         return info, model_dir

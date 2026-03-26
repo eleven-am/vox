@@ -35,10 +35,17 @@ _VRAM_ESTIMATES: dict[str, int] = {
 
 
 def _normalize_model_id(model_id: str) -> str:
-    """Strip ``nvidia/`` HuggingFace prefix and convert to the ``nemo-`` form
-    that ``onnx-asr`` expects."""
-    if model_id.startswith("nvidia/"):
-        model_id = model_id.replace("nvidia/", "nemo-")
+    """Convert a HuggingFace repo ID (e.g. ``nvidia/parakeet-tdt-0.6b-v3``)
+    to the ``nemo-`` prefixed form that ``onnx-asr`` expects
+    (e.g. ``nemo-parakeet-tdt-0.6b-v3``).
+
+    If the string already starts with ``nemo-`` or has no known prefix it is
+    returned unchanged.
+    """
+    if "/" in model_id:
+        # Take the repo name after the slash and add the nemo- prefix.
+        _, repo_name = model_id.split("/", 1)
+        return f"nemo-{repo_name}"
     return model_id
 
 
@@ -54,8 +61,10 @@ def _get_providers(device: str) -> list[str]:
             logger.warning(
                 "CUDA requested but CUDAExecutionProvider not available, falling back to CPU"
             )
-        except Exception:
-            logger.warning("Failed to check ONNX providers, falling back to CPU")
+        except ImportError:
+            logger.warning("onnxruntime not installed, falling back to CPU")
+        except Exception as e:
+            logger.error(f"ONNX provider check failed: {e} — falling back to CPU")
     return ["CPUExecutionProvider"]
 
 
@@ -137,13 +146,13 @@ class ParakeetAdapter(STTAdapter):
         return AdapterInfo(
             name="parakeet",
             type=ModelType.STT,
-            architectures=["parakeet", "parakeet-tdt", "parakeet-ctc"],
+            architectures=("parakeet", "parakeet-tdt", "parakeet-ctc"),
             default_sample_rate=PARAKEET_SAMPLE_RATE,
-            supported_formats=[ModelFormat.ONNX],
+            supported_formats=(ModelFormat.ONNX,),
             supports_streaming=False,
             supports_word_timestamps=True,
             supports_language_detection=False,
-            supported_languages=["en"],
+            supported_languages=("en",),
         )
 
     def load(self, model_path: str, device: str, **kwargs: Any) -> None:
@@ -151,7 +160,10 @@ class ParakeetAdapter(STTAdapter):
             return
 
         self._device = device
-        self._model_id = _normalize_model_id(model_path)
+        # Prefer the catalog source (HuggingFace repo ID) passed via _source;
+        # fall back to model_path for backward compatibility.
+        source = kwargs.pop("_source", None)
+        self._model_id = _normalize_model_id(source if source else model_path)
 
         logger.info("Loading Parakeet ONNX model: %s", self._model_id)
         start = time.perf_counter()
@@ -205,40 +217,36 @@ class ParakeetAdapter(STTAdapter):
                 result = self._model_with_ts.recognize(str(temp_path))
                 text = result.text
                 words = _tokens_to_words(result.tokens, result.timestamps)
-                word_ts = [
+                word_ts = tuple(
                     WordTimestamp(
                         word=w.word,
                         start_ms=int(w.start * 1000),
                         end_ms=int(w.end * 1000),
                     )
                     for w in words
-                ]
+                )
                 segments = (
-                    [
-                        TranscriptSegment(
-                            text=text,
-                            start_ms=0,
-                            end_ms=audio_duration_ms,
-                            words=word_ts,
-                            language="en",
-                        )
-                    ]
+                    (TranscriptSegment(
+                        text=text,
+                        start_ms=0,
+                        end_ms=audio_duration_ms,
+                        words=word_ts,
+                        language="en",
+                    ),)
                     if text
-                    else []
+                    else ()
                 )
             else:
                 text = self._model.recognize(str(temp_path))
                 segments = (
-                    [
-                        TranscriptSegment(
-                            text=text,
-                            start_ms=0,
-                            end_ms=audio_duration_ms,
-                            language="en",
-                        )
-                    ]
+                    (TranscriptSegment(
+                        text=text,
+                        start_ms=0,
+                        end_ms=audio_duration_ms,
+                        language="en",
+                    ),)
                     if text
-                    else []
+                    else ()
                 )
         finally:
             temp_path.unlink(missing_ok=True)

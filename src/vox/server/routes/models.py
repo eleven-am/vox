@@ -10,9 +10,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from vox.core.errors import ModelNotFoundError
 from vox.core.store import Manifest, ManifestLayer
-from vox.core.types import ModelFormat, ModelType
+from vox.core.types import parse_model_name
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -30,19 +29,12 @@ class DeleteRequest(BaseModel):
     name: str
 
 
-def _parse_name(name: str) -> tuple[str, str]:
-    if ":" in name:
-        n, t = name.split(":", 1)
-        return n, t
-    return name, "latest"
-
-
 @router.post("/api/pull")
 async def pull_model(req: PullRequest, request: Request):
     store = request.app.state.store
     registry = request.app.state.registry
 
-    name, tag = _parse_name(req.name)
+    name, tag = parse_model_name(req.name)
     catalog_entry = registry.lookup(name, tag)
     if not catalog_entry:
         raise HTTPException(status_code=404, detail=f"Model '{req.name}' not found in catalog")
@@ -103,7 +95,7 @@ async def pull_model(req: PullRequest, request: Request):
 
             # Build and save manifest
             manifest = Manifest(
-                layers=[ManifestLayer(**l) for l in layers],
+                layers=[ManifestLayer(**layer_dict) for layer_dict in layers],
                 config={
                     "architecture": catalog_entry["architecture"],
                     "type": catalog_entry["type"],
@@ -147,7 +139,7 @@ async def list_models(request: Request):
 @router.post("/api/show")
 async def show_model(req: ShowRequest, request: Request):
     store = request.app.state.store
-    name, tag = _parse_name(req.name)
+    name, tag = parse_model_name(req.name)
     manifest = store.resolve_model(name, tag)
     if not manifest:
         raise HTTPException(status_code=404, detail=f"Model '{req.name}' not found")
@@ -155,8 +147,8 @@ async def show_model(req: ShowRequest, request: Request):
         "name": req.name,
         "config": manifest.config,
         "layers": [
-            {"media_type": l.media_type, "digest": l.digest, "size": l.size, "filename": l.filename}
-            for l in manifest.layers
+            {"media_type": layer_dict.media_type, "digest": layer_dict.digest, "size": layer_dict.size, "filename": layer_dict.filename}
+            for layer_dict in manifest.layers
         ],
     }
 
@@ -165,10 +157,12 @@ async def show_model(req: ShowRequest, request: Request):
 async def delete_model(req: DeleteRequest, request: Request):
     store = request.app.state.store
     scheduler = request.app.state.scheduler
-    name, tag = _parse_name(req.name)
+    name, tag = parse_model_name(req.name)
 
     # Unload if loaded
-    await scheduler.unload(req.name)
+    unloaded = await scheduler.unload(req.name)
+    if not unloaded:
+        raise HTTPException(status_code=409, detail=f"Model '{req.name}' is currently in use")
 
     manifest = store.resolve_model(name, tag)
     if not manifest:

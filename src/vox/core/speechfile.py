@@ -134,15 +134,25 @@ def parse_speechfile(content: str) -> Speechfile:
     if source is None:
         raise SpeechfileParseError("Speechfile is missing a required FROM directive")
 
+    try:
+        type_enum = ModelType(model_type) if model_type else ModelType.STT
+    except ValueError:
+        raise SpeechfileParseError(f"Invalid TYPE value: {model_type!r}. Must be one of: {', '.join(t.value for t in ModelType)}")
+
+    try:
+        format_enum = ModelFormat(fmt) if fmt else ModelFormat.ONNX
+    except ValueError:
+        raise SpeechfileParseError(f"Invalid FORMAT value: {fmt!r}. Must be one of: {', '.join(f.value for f in ModelFormat)}")
+
     return Speechfile(
         source=source,
         architecture=architecture,
-        type=ModelType(model_type) if model_type else ModelType.STT,
+        type=type_enum,
         adapter=adapter,
-        format=ModelFormat(fmt) if fmt else ModelFormat.ONNX,
+        format=format_enum,
         parameters=parameters,
-        voices=voices,
+        voices=tuple(voices),
         license=license_,
         description=description,
-        files=files,
+        files=tuple(files),
     )

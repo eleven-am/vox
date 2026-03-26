@@ -11,6 +11,31 @@ import httpx
 DEFAULT_HOST = "http://localhost:11435"
 
 
+def _handle_request_error(e: Exception, host: str) -> None:
+    """Print a user-friendly error for HTTP request failures."""
+    if isinstance(e, httpx.ConnectError):
+        click.echo(f"Error: cannot connect to Vox server at {host}", err=True)
+        click.echo("Start the server with: vox serve", err=True)
+    elif isinstance(e, httpx.TimeoutException):
+        click.echo(f"Error: request to Vox server timed out", err=True)
+    elif isinstance(e, httpx.HTTPStatusError):
+        click.echo(f"Error: server returned {e.response.status_code}", err=True)
+    else:
+        click.echo(f"Error: {e}", err=True)
+    sys.exit(1)
+
+
+def _check_response(resp: httpx.Response) -> None:
+    """Check HTTP status and raise on error."""
+    if resp.status_code >= 400:
+        try:
+            detail = resp.json().get("detail", resp.text)
+        except Exception:
+            detail = resp.text
+        click.echo(f"Error: {detail}", err=True)
+        sys.exit(1)
+
+
 @click.group()
 @click.option("--host", default=DEFAULT_HOST, envvar="VOX_HOST", help="Vox server URL")
 @click.pass_context
@@ -41,19 +66,24 @@ def serve(port: int, bind_host: str, device: str, max_loaded: int, ttl: int):
 def pull(ctx, model: str):
     """Download a model."""
     host = ctx.obj["host"]
+    had_error = False
     try:
         with httpx.stream("POST", f"{host}/api/pull", json={"name": model}, timeout=None) as resp:
             for line in resp.iter_lines():
                 if line:
                     data = json.loads(line)
                     status = data.get("status", "")
-                    if "completed" in data and "total" in data:
+                    if status == "error":
+                        click.echo(f"  Error: {data.get('error', 'unknown error')}", err=True)
+                        had_error = True
+                    elif "completed" in data and "total" in data:
                         click.echo(f"  {status} [{data['completed']}/{data['total']}]")
                     else:
                         click.echo(f"  {status}")
-    except httpx.ConnectError:
-        click.echo(f"Error: cannot connect to Vox server at {host}", err=True)
-        click.echo("Start the server with: vox serve", err=True)
+    except (httpx.HTTPError, json.JSONDecodeError) as e:
+        _handle_request_error(e, host)
+
+    if had_error:
         sys.exit(1)
 
 
@@ -64,6 +94,7 @@ def list_models(ctx):
     host = ctx.obj["host"]
     try:
         resp = httpx.get(f"{host}/api/list", timeout=10)
+        _check_response(resp)
         models = resp.json().get("models", [])
         if not models:
             click.echo("No models downloaded. Pull one with: vox pull <model>")
@@ -72,9 +103,8 @@ def list_models(ctx):
         for m in models:
             size = _format_size(m.get("size_bytes", 0))
             click.echo(f"{m['name']:<30} {m['type']:<6} {m.get('format', ''):<8} {size:<12} {m.get('description', '')[:50]}")
-    except httpx.ConnectError:
-        click.echo(f"Error: cannot connect to Vox server at {host}", err=True)
-        sys.exit(1)
+    except (httpx.HTTPError, json.JSONDecodeError, KeyError) as e:
+        _handle_request_error(e, host)
 
 
 @cli.command()
@@ -85,14 +115,10 @@ def show(ctx, model: str):
     host = ctx.obj["host"]
     try:
         resp = httpx.post(f"{host}/api/show", json={"name": model}, timeout=10)
-        if resp.status_code == 404:
-            click.echo(f"Model '{model}' not found", err=True)
-            sys.exit(1)
-        data = resp.json()
-        click.echo(json.dumps(data, indent=2))
-    except httpx.ConnectError:
-        click.echo(f"Error: cannot connect to Vox server at {host}", err=True)
-        sys.exit(1)
+        _check_response(resp)
+        click.echo(json.dumps(resp.json(), indent=2))
+    except (httpx.HTTPError, json.JSONDecodeError) as e:
+        _handle_request_error(e, host)
 
 
 @cli.command()
@@ -103,13 +129,10 @@ def rm(ctx, model: str):
     host = ctx.obj["host"]
     try:
         resp = httpx.request("DELETE", f"{host}/api/delete", json={"name": model}, timeout=10)
-        if resp.status_code == 404:
-            click.echo(f"Model '{model}' not found", err=True)
-            sys.exit(1)
+        _check_response(resp)
         click.echo(f"Deleted {model}")
-    except httpx.ConnectError:
-        click.echo(f"Error: cannot connect to Vox server at {host}", err=True)
-        sys.exit(1)
+    except (httpx.HTTPError, json.JSONDecodeError) as e:
+        _handle_request_error(e, host)
 
 
 @cli.command()
@@ -119,6 +142,7 @@ def ps(ctx):
     host = ctx.obj["host"]
     try:
         resp = httpx.get(f"{host}/api/ps", timeout=10)
+        _check_response(resp)
         models = resp.json().get("models", [])
         if not models:
             click.echo("No models currently loaded")
@@ -127,9 +151,8 @@ def ps(ctx):
         for m in models:
             name = f"{m['name']}:{m['tag']}"
             click.echo(f"{name:<30} {m['type']:<6} {m['device']:<8} {m['ref_count']:<6}")
-    except httpx.ConnectError:
-        click.echo(f"Error: cannot connect to Vox server at {host}", err=True)
-        sys.exit(1)
+    except (httpx.HTTPError, json.JSONDecodeError, KeyError) as e:
+        _handle_request_error(e, host)
 
 
 @cli.command()
@@ -150,7 +173,6 @@ def run(ctx, model: str, input_arg: str, output: str | None, language: str | Non
 
     try:
         if input_path.is_file():
-            # STT mode: input is an audio file
             with open(input_path, "rb") as f:
                 resp = httpx.post(
                     f"{host}/api/transcribe",
@@ -158,30 +180,21 @@ def run(ctx, model: str, input_arg: str, output: str | None, language: str | Non
                     data={"model": model, "language": language or ""},
                     timeout=None,
                 )
-            if resp.status_code != 200:
-                click.echo(f"Error: {resp.text}", err=True)
-                sys.exit(1)
-            result = resp.json()
-            click.echo(result.get("text", ""))
+            _check_response(resp)
+            click.echo(resp.json().get("text", ""))
         else:
-            # TTS mode: input is text
             resp = httpx.post(
                 f"{host}/api/synthesize",
                 json={"model": model, "input": input_arg, "voice": voice, "response_format": "wav"},
                 timeout=None,
             )
-            if resp.status_code != 200:
-                click.echo(f"Error: {resp.text}", err=True)
-                sys.exit(1)
+            _check_response(resp)
             out_path = output or "output.wav"
             with open(out_path, "wb") as f:
                 f.write(resp.content)
             click.echo(f"Audio saved to {out_path}")
-
-    except httpx.ConnectError:
-        click.echo(f"Error: cannot connect to Vox server at {host}", err=True)
-        click.echo("Start the server with: vox serve", err=True)
-        sys.exit(1)
+    except (httpx.HTTPError, json.JSONDecodeError) as e:
+        _handle_request_error(e, host)
 
 
 @cli.command()
@@ -192,6 +205,7 @@ def voices(ctx, model: str):
     host = ctx.obj["host"]
     try:
         resp = httpx.get(f"{host}/api/voices", params={"model": model}, timeout=10)
+        _check_response(resp)
         voices_list = resp.json().get("voices", [])
         if not voices_list:
             click.echo(f"No voices found for {model}")
@@ -199,9 +213,8 @@ def voices(ctx, model: str):
         click.echo(f"{'ID':<20} {'NAME':<30} {'LANGUAGE':<10}")
         for v in voices_list:
             click.echo(f"{v['id']:<20} {v['name']:<30} {v.get('language') or '':<10}")
-    except httpx.ConnectError:
-        click.echo(f"Error: cannot connect to Vox server at {host}", err=True)
-        sys.exit(1)
+    except (httpx.HTTPError, json.JSONDecodeError, KeyError) as e:
+        _handle_request_error(e, host)
 
 
 def _format_size(size_bytes: int) -> str:

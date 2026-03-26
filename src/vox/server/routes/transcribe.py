@@ -1,19 +1,29 @@
 from __future__ import annotations
 
-import json
 import logging
 import time
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from dataclasses import replace
 
-from vox.audio.pipeline import AudioPipeline
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import PlainTextResponse
+
+from vox.audio.pipeline import prepare_for_stt
 from vox.core.adapter import STTAdapter
 from vox.core.errors import ModelNotFoundError, VoxError
+from vox.server.routes import get_default_model
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-audio_pipeline = AudioPipeline()
+
+
+def _mime_to_format(content_type: str | None) -> str | None:
+    """Convert a MIME type like 'audio/wav' to a format hint like 'wav'."""
+    if not content_type:
+        return None
+    fmt = content_type.split("/")[-1].lower()
+    replacements = {"mpeg": "mp3", "x-wav": "wav", "x-flac": "flac", "ogg": "ogg", "webm": "webm"}
+    return replacements.get(fmt, fmt)
 
 
 @router.post("/api/transcribe")
@@ -30,12 +40,11 @@ async def transcribe(
     scheduler = request.app.state.scheduler
     registry = request.app.state.registry
 
-    # Use default STT model if none specified
     if not model:
-        model = _get_default_stt_model(registry)
+        model = get_default_model("stt", registry, request.app.state.store)
 
     data = await file.read()
-    audio = audio_pipeline.prepare_for_stt(data, format_hint=file.content_type)
+    audio = prepare_for_stt(data, format_hint=_mime_to_format(file.content_type))
 
     start_time = time.perf_counter()
 
@@ -49,13 +58,18 @@ async def transcribe(
                 word_timestamps=word_timestamps,
                 temperature=temperature,
             )
+    except HTTPException:
+        raise
     except ModelNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except VoxError as e:
         raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception(f"Transcription failed for model {model}")
+        raise HTTPException(status_code=500, detail="Internal transcription error")
 
     processing_ms = int((time.perf_counter() - start_time) * 1000)
-    result.model = model
+    result = replace(result, model=model)
 
     if response_format == "text":
         return PlainTextResponse(result.text)
@@ -100,31 +114,27 @@ async def openai_transcribe(
     registry = request.app.state.registry
 
     if not model:
-        model = _get_default_stt_model(registry)
+        model = get_default_model("stt", registry, request.app.state.store)
 
     data = await file.read()
-    audio = audio_pipeline.prepare_for_stt(data, format_hint=file.content_type)
+    audio = prepare_for_stt(data, format_hint=_mime_to_format(file.content_type))
 
     try:
         async with scheduler.acquire(model) as adapter:
             if not isinstance(adapter, STTAdapter):
                 raise HTTPException(status_code=400, detail=f"Model '{model}' is not an STT model")
             result = adapter.transcribe(audio, language=language, temperature=temperature)
+    except HTTPException:
+        raise
     except ModelNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except VoxError as e:
         raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception(f"Transcription failed for model {model}")
+        raise HTTPException(status_code=500, detail="Internal transcription error")
 
     if response_format == "text":
         return PlainTextResponse(result.text)
 
     return {"text": result.text}
-
-
-def _get_default_stt_model(registry) -> str:
-    """Get the first available STT model from catalog."""
-    for name, tags in registry.available_models().items():
-        for tag, entry in tags.items():
-            if entry.get("type") == "stt":
-                return f"{name}:{tag}"
-    raise HTTPException(status_code=400, detail="No model specified and no default STT model available")

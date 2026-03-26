@@ -29,20 +29,26 @@ def decode_audio(
         audio, sample_rate = sf.read(
             io.BytesIO(data),
             dtype="float32",
-            format=format_hint or None,
+            format=format_hint,
         )
         return audio.astype(np.float32), sample_rate
-    except Exception:
-        logger.debug("soundfile failed, falling back to pydub")
+    except (sf.SoundFileError, sf.SoundFileRuntimeError) as sf_err:
+        logger.warning("soundfile failed: %s — falling back to pydub", sf_err)
+        _sf_error = sf_err  # save before Python deletes sf_err at block exit
 
     # Fall back to pydub (uses ffmpeg under the hood)
     from pydub import AudioSegment
 
     buffer = io.BytesIO(data)
-    if format_hint:
-        segment = AudioSegment.from_file(buffer, format=format_hint)
-    else:
-        segment = AudioSegment.from_file(buffer)
+    try:
+        if format_hint:
+            segment = AudioSegment.from_file(buffer, format=format_hint)
+        else:
+            segment = AudioSegment.from_file(buffer)
+    except Exception as pydub_err:
+        raise RuntimeError(
+            f"Failed to decode audio: soundfile error: {_sf_error}; pydub error: {pydub_err}"
+        ) from pydub_err
 
     sample_rate = segment.frame_rate
     channels = segment.channels

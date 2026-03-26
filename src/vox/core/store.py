@@ -19,11 +19,16 @@ from __future__ import annotations
 import hashlib
 import json
 import tempfile
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from vox.core.types import ModelFormat, ModelInfo, ModelType
+import logging
+
+from vox.core.types import ModelInfo
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +41,12 @@ class ManifestLayer:
     digest: str           # e.g. "sha256-abc123"
     size: int
     filename: str         # original filename
+
+    def __post_init__(self):
+        if not self.digest.startswith("sha256-"):
+            raise ValueError(f"Invalid digest format: {self.digest!r}")
+        if self.size < 0:
+            raise ValueError(f"Invalid layer size: {self.size}")
 
 
 @dataclass
@@ -186,21 +197,10 @@ class BlobStore:
                     cfg = manifest.config
                     size = sum(layer.size for layer in manifest.layers)
                     models.append(
-                        ModelInfo(
-                            name=name,
-                            tag=tag,
-                            type=ModelType(cfg.get("type", "stt")),
-                            format=ModelFormat(cfg.get("format", "onnx")),
-                            architecture=cfg.get("architecture", ""),
-                            adapter=cfg.get("adapter", ""),
-                            size_bytes=size,
-                            description=cfg.get("description", ""),
-                            license=cfg.get("license", ""),
-                            parameters=cfg.get("parameters", {}),
-                        )
+                        ModelInfo.from_manifest_config(name, tag, cfg, size_bytes=size)
                     )
-                except (json.JSONDecodeError, KeyError, ValueError):
-                    # Skip malformed manifests.
+                except (json.JSONDecodeError, KeyError, ValueError) as e:
+                    logger.warning(f"Skipping corrupted manifest {tag_file}: {e}")
                     continue
 
         return models
@@ -230,8 +230,18 @@ class BlobStore:
                     referenced.add(layer.digest)
 
         removed = 0
+        now = time.time()
         for blob in self.blobs_dir.iterdir():
             if blob.name.startswith("sha256-") and blob.name not in referenced:
-                blob.unlink()
+                blob.unlink(missing_ok=True)
                 removed += 1
+            elif blob.suffix == ".tmp":
+                # Clean up orphaned temp files older than 1 hour
+                try:
+                    age = now - blob.stat().st_mtime
+                    if age > 3600:
+                        blob.unlink()
+                        removed += 1
+                except OSError:
+                    pass
         return removed
