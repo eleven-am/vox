@@ -1,0 +1,21 @@
+[project]
+name = "vox-parakeet"
+version = "0.1.0"
+description = "NVIDIA Parakeet STT adapter for Vox"
+requires-python = ">=3.11"
+dependencies = [
+    "vox>=0.1.0",
+    "onnx-asr[gpu,hub]>=0.10.0",
+    "numpy>=1.26.0,<2.4",
+    "soundfile>=0.13.1",
+]
+
+[project.entry-points."vox.adapters"]
+parakeet = "vox_parakeet.adapter:ParakeetAdapter"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vox_parakeet"]
