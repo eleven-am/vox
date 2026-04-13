@@ -31,6 +31,8 @@ WORKDIR $HOME/app
 
 COPY --from=ghcr.io/astral-sh/uv:0.7.20 /uv /bin/uv
 
+ENV UV_HTTP_TIMEOUT=300
+
 # Install dependencies first (cached layer)
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
