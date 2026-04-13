@@ -15,8 +15,7 @@ RUN apt-get update && \
     git \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN groupadd --gid 1000 vox 2>/dev/null; \
-    useradd --create-home --shell /bin/bash --uid 1000 vox
+RUN id -u vox &>/dev/null || useradd --create-home --shell /bin/bash vox
 
 ENV HOME=/home/vox \
     PATH=/home/vox/.local/bin:$PATH
