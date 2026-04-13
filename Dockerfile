@@ -15,7 +15,11 @@ RUN apt-get update && \
     git \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN id -u vox &>/dev/null || useradd --create-home --shell /bin/bash vox
+ARG VOX_UID=10000
+ARG VOX_GID=10000
+
+RUN groupadd --gid $VOX_GID vox && \
+    useradd --create-home --shell /bin/bash --uid $VOX_UID --gid $VOX_GID vox
 
 ENV HOME=/home/vox \
     PATH=/home/vox/.local/bin:$PATH
@@ -30,7 +34,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
     uv sync --frozen --compile-bytecode --no-install-project --python 3.12
 
-COPY --chown=vox . .
+COPY --chown=vox:vox . .
 
 # Install vox itself + ML runtimes
 RUN --mount=type=cache,target=/root/.cache/uv \
