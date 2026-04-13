@@ -1,0 +1,24 @@
+[project]
+name = "vox-voxtral"
+version = "0.1.0"
+description = "Mistral Voxtral STT/TTS adapter for Vox"
+requires-python = ">=3.11"
+dependencies = [
+    "vox>=0.1.0",
+    "transformers>=4.45.0",
+    "torch>=2.1.0",
+    "accelerate>=0.26.0",
+    "numpy>=1.26.0,<2.4",
+    "soundfile>=0.13.1",
+]
+
+[project.entry-points."vox.adapters"]
+voxtral-stt = "vox_voxtral.stt_adapter:VoxtralSTTAdapter"
+voxtral-tts = "vox_voxtral.tts_adapter:VoxtralTTSAdapter"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vox_voxtral"]
