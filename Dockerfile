@@ -13,6 +13,9 @@ RUN apt-get update && \
     libopus0 \
     libsoxr0 \
     git \
+    python3.12 \
+    python3.12-dev \
+    python3.12-venv \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ARG VOX_UID=10000
@@ -32,13 +35,13 @@ COPY --from=ghcr.io/astral-sh/uv:0.7.20 /uv /bin/uv
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --frozen --compile-bytecode --no-install-project --python 3.12
+    uv sync --frozen --compile-bytecode --no-install-project --python-preference only-system --python 3.12
 
 COPY --chown=vox:vox . .
 
 # Install vox itself + ML runtimes
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --compile-bytecode --python 3.12 && \
+    uv sync --frozen --compile-bytecode --python-preference only-system --python 3.12 && \
     mkdir -p $HOME/.vox/adapters && \
     mkdir -p $HOME/.cache/huggingface/hub && \
     mkdir -p $HOME/.cache/torch/hub && \
