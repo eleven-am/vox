@@ -44,17 +44,24 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     mkdir -p $HOME/.cache/torch/hub && \
     chown -R vox:vox $HOME
 
-# Install PyTorch with CUDA support
-RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --python .venv/bin/python --reinstall --pre torch torchaudio \
-    --index-url https://download.pytorch.org/whl/nightly/cu128
+ARG TARGETARCH
 
-# Install ONNX Runtime GPU
+# Install PyTorch — CUDA wheels on amd64, CPU on arm64
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install --python .venv/bin/python \
-    onnxruntime-gpu \
-    transformers \
-    huggingface-hub && \
+    if [ "$TARGETARCH" = "amd64" ]; then \
+        uv pip install --python .venv/bin/python --reinstall --pre torch torchaudio \
+            --index-url https://download.pytorch.org/whl/nightly/cu128; \
+    else \
+        uv pip install --python .venv/bin/python torch torchaudio; \
+    fi
+
+# Install ONNX Runtime (GPU on amd64, CPU on arm64) + transformers
+RUN --mount=type=cache,target=/root/.cache/uv \
+    if [ "$TARGETARCH" = "amd64" ]; then \
+        uv pip install --python .venv/bin/python onnxruntime-gpu transformers huggingface-hub; \
+    else \
+        uv pip install --python .venv/bin/python onnxruntime transformers huggingface-hub; \
+    fi && \
     chown -R vox:vox $HOME
 
 USER vox
