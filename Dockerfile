@@ -80,6 +80,7 @@ ENV PATH="$HOME/app/.venv/bin:$PATH" \
     TORCH_CPP_LOG_LEVEL=ERROR
 
 EXPOSE 11435
+EXPOSE 9090
 VOLUME $HOME/.vox
 
 CMD ["vox", "serve", "--host", "0.0.0.0"]

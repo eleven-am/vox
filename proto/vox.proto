@@ -1,0 +1,238 @@
+syntax = "proto3";
+package vox;
+
+service HealthService {
+  rpc Health(HealthRequest) returns (HealthResponse);
+  rpc ListLoaded(ListLoadedRequest) returns (ListLoadedResponse);
+}
+
+service ModelService {
+  rpc Pull(PullRequest) returns (stream PullProgress);
+  rpc List(ListModelsRequest) returns (ListModelsResponse);
+  rpc Show(ShowRequest) returns (ShowResponse);
+  rpc Delete(DeleteRequest) returns (DeleteResponse);
+}
+
+service TranscriptionService {
+  rpc Transcribe(TranscribeRequest) returns (TranscribeResponse);
+}
+
+service SynthesisService {
+  rpc Synthesize(SynthesizeRequest) returns (stream AudioChunk);
+  rpc ListVoices(ListVoicesRequest) returns (ListVoicesResponse);
+}
+
+message HealthRequest {}
+message HealthResponse {
+  string status = 1;
+}
+
+message ListLoadedRequest {}
+message ListLoadedResponse {
+  repeated LoadedModel models = 1;
+}
+
+message LoadedModel {
+  string name = 1;
+  string tag = 2;
+  string type = 3;
+  string device = 4;
+  int64 vram_bytes = 5;
+  double loaded_at = 6;
+  double last_used = 7;
+  int32 ref_count = 8;
+}
+
+message PullRequest {
+  string name = 1;
+}
+
+message PullProgress {
+  string status = 1;
+  string error = 2;
+  int32 completed = 3;
+  int32 total = 4;
+}
+
+message ListModelsRequest {}
+message ListModelsResponse {
+  repeated ModelInfo models = 1;
+}
+
+message ModelInfo {
+  string name = 1;
+  string type = 2;
+  string format = 3;
+  string architecture = 4;
+  int64 size_bytes = 5;
+  string description = 6;
+}
+
+message ShowRequest {
+  string name = 1;
+}
+
+message ShowResponse {
+  string name = 1;
+  map<string, string> config = 2;
+  repeated LayerInfo layers = 3;
+}
+
+message LayerInfo {
+  string media_type = 1;
+  string digest = 2;
+  int64 size = 3;
+  string filename = 4;
+}
+
+message DeleteRequest {
+  string name = 1;
+}
+
+message DeleteResponse {
+  string status = 1;
+}
+
+message TranscribeRequest {
+  bytes audio = 1;
+  string model = 2;
+  string language = 3;
+  bool word_timestamps = 4;
+  float temperature = 5;
+  string response_format = 6;
+  string format_hint = 7;
+}
+
+message TranscribeResponse {
+  string model = 1;
+  string text = 2;
+  string language = 3;
+  int32 duration_ms = 4;
+  int32 processing_ms = 5;
+  repeated TranscriptSegment segments = 6;
+}
+
+message TranscriptSegment {
+  string text = 1;
+  int32 start_ms = 2;
+  int32 end_ms = 3;
+  repeated WordTimestamp words = 4;
+}
+
+message WordTimestamp {
+  string word = 1;
+  int32 start_ms = 2;
+  int32 end_ms = 3;
+  optional float confidence = 4;
+}
+
+message SynthesizeRequest {
+  string model = 1;
+  string input = 2;
+  string voice = 3;
+  float speed = 4;
+  string language = 5;
+  string response_format = 6;
+}
+
+message AudioChunk {
+  bytes audio = 1;
+  int32 sample_rate = 2;
+  bool is_final = 3;
+}
+
+service StreamingService {
+  rpc StreamTranscribe(stream StreamInput) returns (stream StreamOutput);
+}
+
+message StreamInput {
+  oneof msg {
+    StreamConfig config = 1;
+    AudioFrame audio = 2;
+    OpusFrame opus_frame = 3;
+    EncodedAudioFrame encoded_audio = 4;
+    EndOfStream end_of_stream = 5;
+  }
+}
+
+message EndOfStream {}
+
+message StreamConfig {
+  string language = 1;
+  uint32 sample_rate = 2;
+  string model = 3;
+  bool partials = 4;
+  uint32 partial_window_ms = 5;
+  uint32 partial_stride_ms = 6;
+  bool include_word_timestamps = 7;
+  float temperature = 8;
+}
+
+message AudioFrame {
+  bytes pcm16 = 1;
+  uint32 sample_rate = 2;
+}
+
+message OpusFrame {
+  bytes data = 1;
+  uint32 sample_rate = 2;
+  uint32 channels = 3;
+}
+
+message EncodedAudioFrame {
+  bytes data = 1;
+  string format = 2;
+}
+
+message StreamOutput {
+  oneof msg {
+    StreamReady ready = 1;
+    StreamSpeechStarted speech_started = 2;
+    StreamSpeechStopped speech_stopped = 3;
+    StreamTranscriptResult transcript = 4;
+    StreamErrorMessage error = 5;
+  }
+}
+
+message StreamReady {}
+
+message StreamSpeechStarted {
+  uint32 timestamp_ms = 1;
+}
+
+message StreamSpeechStopped {
+  uint32 timestamp_ms = 1;
+}
+
+message StreamTranscriptResult {
+  string text = 1;
+  bool is_partial = 2;
+  uint32 start_ms = 3;
+  uint32 end_ms = 4;
+  uint32 audio_duration_ms = 5;
+  uint32 processing_duration_ms = 6;
+  string model = 7;
+  optional float eou_probability = 8;
+}
+
+message StreamErrorMessage {
+  string message = 1;
+}
+
+message ListVoicesRequest {
+  string model = 1;
+}
+
+message ListVoicesResponse {
+  repeated VoiceInfo voices = 1;
+}
+
+message VoiceInfo {
+  string id = 1;
+  string name = 2;
+  string language = 3;
+  string gender = 4;
+  string description = 5;
+  bool is_cloned = 6;
+  string model = 7;
+}
