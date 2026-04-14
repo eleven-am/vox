@@ -75,11 +75,18 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python .venv/bin/python \
-        ./adapters/vox-kokoro \
         ./adapters/vox-microsoft \
-        ./adapters/vox-parakeet \
         ./adapters/vox-qwen \
         ./adapters/vox-voxtral && \
+    uv pip install --python .venv/bin/python \
+        colorlog \
+        espeakng-loader \
+        phonemizer-fork && \
+    uv pip install --python .venv/bin/python --no-deps \
+        kokoro-onnx==0.4.9 \
+        onnx-asr[hub]==0.11.0 \
+        ./adapters/vox-kokoro \
+        ./adapters/vox-parakeet && \
     chown -R vox:vox $HOME
 
 USER vox
