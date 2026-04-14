@@ -53,7 +53,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     chown -R vox:vox $HOME
 
 ARG TARGETARCH
-ARG ORT_ARM64_PACKAGE=onnxruntime
 
 # Install PyTorch — CUDA wheels on amd64, CPU on arm64
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -163,55 +162,22 @@ VOLUME $HOME/.vox
 
 CMD ["vox", "serve", "--host", "0.0.0.0"]
 
-FROM vox-base AS vox
+FROM vox-runtime AS vox
 
 ARG TARGETARCH
 
+USER root
+
 COPY --from=vox-spark-onnx-builder /opt/ort-wheels /tmp/ort-wheels
 
-# Install ONNX Runtime — package GPU build on amd64, custom CUDA wheel on arm64.
+# Replace the arm64 package runtime with the custom CUDA wheel for the default GPU image.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    if [ "$TARGETARCH" = "amd64" ]; then \
-        uv pip install --python .venv/bin/python onnxruntime-gpu transformers huggingface-hub; \
-    else \
+    if [ "$TARGETARCH" = "arm64" ]; then \
         ort_wheel="$(find /tmp/ort-wheels -maxdepth 1 -name '*.whl' | head -n1)" && \
         test -n "$ort_wheel" && \
-        uv pip install --python .venv/bin/python "$ort_wheel" transformers huggingface-hub; \
-    fi && \
-    chown -R vox:vox $HOME
-
-# Install bundled adapters into the runtime environment so `vox pull` works out of the box.
-RUN --mount=type=cache,target=/root/.cache/uv \
-    if [ "$TARGETARCH" = "amd64" ]; then \
-        uv pip install --python .venv/bin/python \
-            ./adapters/vox-kokoro \
-            ./adapters/vox-microsoft \
-            ./adapters/vox-parakeet \
-            ./adapters/vox-qwen \
-            ./adapters/vox-voxtral; \
-    else \
-        uv pip install --python .venv/bin/python \
-            ./adapters/vox-kokoro \
-            ./adapters/vox-microsoft \
-            ./adapters/vox-qwen \
-            ./adapters/vox-voxtral && \
-        uv pip install --python .venv/bin/python ./adapters/vox-parakeet; \
+        uv pip uninstall --python .venv/bin/python -y onnxruntime && \
+        uv pip install --python .venv/bin/python "$ort_wheel"; \
     fi && \
     chown -R vox:vox $HOME
 
 USER vox
-
-ENV PATH="$HOME/app/.venv/bin:$PATH" \
-    VOX_HOME=$HOME/.vox \
-    VOX_BUNDLED_ADAPTERS=$HOME/app/adapters \
-    VOX_DEVICE=auto \
-    HF_HUB_ENABLE_HF_TRANSFER=0 \
-    DO_NOT_TRACK=1 \
-    HF_HUB_DISABLE_TELEMETRY=1 \
-    TORCH_CPP_LOG_LEVEL=ERROR
-
-EXPOSE 11435
-EXPOSE 9090
-VOLUME $HOME/.vox
-
-CMD ["vox", "serve", "--host", "0.0.0.0"]
