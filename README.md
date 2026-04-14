@@ -238,6 +238,27 @@ ORT_GIT_REF=v1.24.0 docker compose build vox
 
 This makes the normal arm64 GPU build significantly slower than the amd64 path because it compiles ONNX Runtime from source on `arm64`.
 
+### Spark image
+
+The default image stays generic. If you want a Spark-specific arm64 image with a NVIDIA-provided ONNX Runtime source, use the dedicated Spark build:
+
+```bash
+# Local Spark build
+make build-local-spark SPARK_ORT_WHEEL=/path/to/onnxruntime_gpu.whl
+
+# Published Spark build
+make build-spark \
+  SPARK_ORT_INDEX_URL=https://your-nvidia-wheel-index.example/simple \
+  SPARK_ORT_PACKAGE=onnxruntime-gpu
+```
+
+Notes:
+- `build-spark` is `linux/arm64` only.
+- `Dockerfile.spark` fails fast unless you provide either:
+  - `SPARK_ORT_WHEEL=/path/or/url/to/wheel`
+  - or `SPARK_ORT_INDEX_URL` / `SPARK_ORT_EXTRA_INDEX_URL`
+- The generic `make build` path is unchanged and still produces the normal multi-arch image.
+
 ## Available models
 
 | Model | Type | Description |

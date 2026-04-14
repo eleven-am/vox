@@ -1,13 +1,19 @@
 REGISTRY := docker.io
 IMAGE := $(REGISTRY)/elevenam/vox
 PLATFORMS := linux/amd64,linux/arm64
+SPARK_PLATFORM := linux/arm64
 VERSION = $(shell git tag --list 'v*' --sort=-version:refname | head -n1 || echo "v0.0.0")
 APP_VERSION = $(shell sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' pyproject.toml | head -n1)
 
 GPU_BASE := nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 CPU_BASE := python:3.12-slim
+SPARK_BASE := nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+SPARK_ORT_PACKAGE ?= onnxruntime-gpu
+SPARK_ORT_INDEX_URL ?=
+SPARK_ORT_EXTRA_INDEX_URL ?=
+SPARK_ORT_WHEEL ?=
 
-.PHONY: build build-cpu build-local build-local-cpu push tag clean setup-buildx current-version bump-patch bump-minor bump-major test
+.PHONY: build build-cpu build-spark build-local build-local-cpu build-local-spark push tag clean setup-buildx current-version bump-patch bump-minor bump-major test
 
 build:
 	@test "$(patsubst v%,%,$(VERSION))" = "$(APP_VERSION)" || \
@@ -31,11 +37,39 @@ build-cpu:
 		--push \
 		.
 
+build-spark:
+	@test "$(patsubst v%,%,$(VERSION))" = "$(APP_VERSION)" || \
+		(echo "pyproject.toml version $(APP_VERSION) does not match release tag $(VERSION)"; exit 1)
+	docker buildx build \
+		--platform $(SPARK_PLATFORM) \
+		-f Dockerfile.spark \
+		--build-arg BASE_IMAGE=$(SPARK_BASE) \
+		--build-arg SPARK_ORT_PACKAGE=$(SPARK_ORT_PACKAGE) \
+		--build-arg SPARK_ORT_INDEX_URL=$(SPARK_ORT_INDEX_URL) \
+		--build-arg SPARK_ORT_EXTRA_INDEX_URL=$(SPARK_ORT_EXTRA_INDEX_URL) \
+		--build-arg SPARK_ORT_WHEEL=$(SPARK_ORT_WHEEL) \
+		--tag $(IMAGE):$(VERSION)-spark \
+		--tag $(IMAGE):spark \
+		--push \
+		.
+
 build-local:
 	docker build --build-arg BASE_IMAGE=$(GPU_BASE) -t vox:local .
 
 build-local-cpu:
 	docker build --build-arg BASE_IMAGE=$(CPU_BASE) -t vox:local-cpu .
+
+build-local-spark:
+	docker build \
+		--platform $(SPARK_PLATFORM) \
+		-f Dockerfile.spark \
+		--build-arg BASE_IMAGE=$(SPARK_BASE) \
+		--build-arg SPARK_ORT_PACKAGE=$(SPARK_ORT_PACKAGE) \
+		--build-arg SPARK_ORT_INDEX_URL=$(SPARK_ORT_INDEX_URL) \
+		--build-arg SPARK_ORT_EXTRA_INDEX_URL=$(SPARK_ORT_EXTRA_INDEX_URL) \
+		--build-arg SPARK_ORT_WHEEL=$(SPARK_ORT_WHEEL) \
+		-t vox:spark-local \
+		.
 
 push:
 	docker push $(IMAGE):$(VERSION)
@@ -46,7 +80,16 @@ tag:
 	docker tag vox:local $(IMAGE):latest
 
 clean:
-	docker rmi -f $(IMAGE):latest $(IMAGE):$(VERSION) $(IMAGE):cpu $(IMAGE):$(VERSION)-cpu vox:local vox:local-cpu 2>/dev/null || true
+	docker rmi -f \
+		$(IMAGE):latest \
+		$(IMAGE):$(VERSION) \
+		$(IMAGE):cpu \
+		$(IMAGE):$(VERSION)-cpu \
+		$(IMAGE):spark \
+		$(IMAGE):$(VERSION)-spark \
+		vox:local \
+		vox:local-cpu \
+		vox:spark-local 2>/dev/null || true
 
 setup-buildx:
 	docker buildx create --name multiarch --driver docker-container --use || true
