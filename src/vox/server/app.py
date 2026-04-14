@@ -65,12 +65,13 @@ def create_app(
     app.state.scheduler = scheduler
     app.state.grpc_port = grpc_port
 
-    from vox.server.routes import health, models, synthesize, transcribe, voices, stream
+    from vox.server.routes import bidi, health, models, stream, synthesize, transcribe, voices
     app.include_router(health.router)
     app.include_router(models.router)
     app.include_router(transcribe.router)
     app.include_router(synthesize.router)
     app.include_router(voices.router)
     app.include_router(stream.router)
+    app.include_router(bidi.router)
 
     return app

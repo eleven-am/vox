@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-import sys
-from unittest.mock import MagicMock, Mock, patch, mock_open
+import wave
+from unittest.mock import MagicMock, Mock, patch
 
 import httpx
 import pytest
@@ -14,9 +14,9 @@ from vox.cli import (
     _check_response,
     _format_size,
     _handle_request_error,
+    _to_websocket_url,
     cli,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -146,7 +146,7 @@ class TestServe:
         # We need to patch the imports inside the serve function
         with patch.dict("sys.modules", {"uvicorn": mock_uvicorn}):
             mock_uvicorn.run = MagicMock()
-            result = runner.invoke(cli, ["serve", "--port", "9999", "--host", "127.0.0.1"])
+            runner.invoke(cli, ["serve", "--port", "9999", "--host", "127.0.0.1"])
 
         mock_create_app.assert_called_once()
         mock_uvicorn.run.assert_called_once()
@@ -516,7 +516,7 @@ class TestHostOption:
         resp.json.return_value = {"models": []}
         mock_get.return_value = resp
 
-        result = runner.invoke(cli, ["--host", "http://myserver:8080/", "list"])
+        runner.invoke(cli, ["--host", "http://myserver:8080/", "list"])
         url = mock_get.call_args[0][0]
         assert not url.startswith("http://myserver:8080//")
 
@@ -537,3 +537,121 @@ class TestTimeoutPath:
         mock_post.side_effect = httpx.TimeoutException("timed out")
         result = runner.invoke(cli, ["show", "model"])
         assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# WebSocket helpers
+# ---------------------------------------------------------------------------
+
+
+class FakeWebSocket:
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.sent = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def send(self, message, text=None):
+        self.sent.append((message, text))
+
+    def recv(self, timeout=None, decode=None):
+        if not self.responses:
+            raise TimeoutError()
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+class TestWebSocketUrl:
+    def test_to_websocket_url_http(self):
+        assert _to_websocket_url("http://localhost:11435", "/v1/audio/transcriptions/stream") == (
+            "ws://localhost:11435/v1/audio/transcriptions/stream"
+        )
+
+    def test_to_websocket_url_https_with_prefix(self):
+        assert _to_websocket_url("https://example.com/vox", "/v1/audio/speech/stream") == (
+            "wss://example.com/vox/v1/audio/speech/stream"
+        )
+
+
+class TestStreamTranscribe:
+    @patch("vox.cli._iter_pcm16_audio_chunks")
+    @patch("vox.cli.connect")
+    def test_stream_transcribe_prints_final_text(self, mock_connect, mock_chunks, runner, tmp_path):
+        audio_file = tmp_path / "meeting.wav"
+        audio_file.write_bytes(b"RIFF" + b"\x00" * 64)
+        mock_chunks.return_value = iter([b"chunk-one", b"chunk-two"])
+        ws = FakeWebSocket([
+            json.dumps({"type": "ready", "model": "parakeet:tdt-0.6b-v3"}),
+            json.dumps({"type": "progress", "uploaded_ms": 5000, "processed_ms": 0, "chunks_completed": 0}),
+            TimeoutError(),
+            TimeoutError(),
+            json.dumps({
+                "type": "done",
+                "text": "hello world",
+                "duration_ms": 10000,
+                "processing_ms": 2500,
+                "segments": [],
+            }),
+        ])
+        mock_connect.return_value = ws
+
+        result = runner.invoke(cli, ["stream-transcribe", "parakeet:tdt-0.6b-v3", str(audio_file)])
+
+        assert result.exit_code == 0
+        assert "hello world" in result.output
+        config = json.loads(ws.sent[0][0])
+        assert config["type"] == "config"
+        assert config["input_format"] == "pcm16"
+        assert ws.sent[1][0] == b"chunk-one"
+        assert ws.sent[2][0] == b"chunk-two"
+        assert json.loads(ws.sent[-1][0]) == {"type": "end"}
+
+
+class TestStreamSynthesize:
+    @patch("vox.cli.connect")
+    def test_stream_synthesize_writes_wav_output(self, mock_connect, runner, tmp_path):
+        out_file = tmp_path / "speech.wav"
+        ws = FakeWebSocket([
+            json.dumps({"type": "ready", "model": "kokoro:v1.0"}),
+            json.dumps({"type": "audio_start", "sample_rate": 24000, "response_format": "pcm16"}),
+            b"\x01\x02\x03\x04",
+            json.dumps({
+                "type": "progress",
+                "completed_chars": 11,
+                "total_chars": 11,
+                "chunks_completed": 1,
+                "chunks_total": 1,
+            }),
+            TimeoutError(),
+            json.dumps({
+                "type": "done",
+                "response_format": "pcm16",
+                "audio_duration_ms": 42,
+                "processing_ms": 12,
+            }),
+        ])
+        mock_connect.return_value = ws
+
+        result = runner.invoke(
+            cli,
+            ["stream-synthesize", "kokoro:v1.0", "Hello world", "-o", str(out_file)],
+        )
+
+        assert result.exit_code == 0
+        assert f"Audio saved to {out_file}" in result.output
+        assert out_file.exists()
+        with wave.open(str(out_file), "rb") as wav_file:
+            assert wav_file.getframerate() == 24000
+            assert wav_file.getnchannels() == 1
+            assert wav_file.readframes(2) == b"\x01\x02\x03\x04"
+        config = json.loads(ws.sent[0][0])
+        assert config["type"] == "config"
+        assert config["response_format"] == "pcm16"
+        assert json.loads(ws.sent[1][0]) == {"type": "text", "text": "Hello world"}
+        assert json.loads(ws.sent[-1][0]) == {"type": "end"}
