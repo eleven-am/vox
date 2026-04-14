@@ -99,6 +99,32 @@ docker compose --profile cpu up -d
 
 Models and adapters persist in a Docker volume across container restarts. No image rebuild needed to add new models.
 
+### Spark ONNX GPU build
+
+The default GPU multi-arch image now does the platform split directly:
+- `amd64` uses `onnxruntime-gpu`
+- `arm64` builds a custom CUDA-enabled ONNX Runtime wheel from source and installs that wheel
+
+```bash
+# Local image
+make build-local
+
+# Multi-arch publish build
+make build
+
+# Compose build
+docker compose build vox
+```
+
+Override the ONNX Runtime source ref if needed:
+
+```bash
+make build-local ORT_REF=v1.24.0
+ORT_GIT_REF=v1.24.0 docker compose build vox
+```
+
+This makes the normal arm64 GPU build significantly slower than the amd64 path because it compiles ONNX Runtime from source on `arm64`.
+
 ## Available models
 
 | Model | Type | Description |

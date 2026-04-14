@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import sys
+from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,12 +22,11 @@ def _make_app(*, grpc_port: int | None) -> FastAPI:
 @pytest.mark.asyncio
 async def test_lifespan_stops_scheduler_if_grpc_start_fails():
     app = _make_app(grpc_port=9090)
+    grpc_server_module = ModuleType("vox.grpc.server")
+    grpc_server_module.start_grpc_server = AsyncMock(side_effect=RuntimeError("grpc startup failed"))
 
     with (
-        patch(
-            "vox.grpc.server.start_grpc_server",
-            AsyncMock(side_effect=RuntimeError("grpc startup failed")),
-        ),
+        patch.dict(sys.modules, {"vox.grpc.server": grpc_server_module}),
         pytest.raises(RuntimeError, match="grpc startup failed"),
     ):
         async with lifespan(app):
@@ -39,11 +40,10 @@ async def test_lifespan_stops_scheduler_if_grpc_start_fails():
 async def test_lifespan_stops_grpc_server_and_scheduler_on_shutdown():
     app = _make_app(grpc_port=9090)
     grpc_server = MagicMock(stop=AsyncMock())
+    grpc_server_module = ModuleType("vox.grpc.server")
+    grpc_server_module.start_grpc_server = AsyncMock(return_value=grpc_server)
 
-    with patch(
-        "vox.grpc.server.start_grpc_server",
-        AsyncMock(return_value=grpc_server),
-    ):
+    with patch.dict(sys.modules, {"vox.grpc.server": grpc_server_module}):
         async with lifespan(app):
             pass
 

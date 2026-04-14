@@ -5,7 +5,8 @@ description = "NVIDIA Parakeet STT adapter for Vox"
 requires-python = ">=3.11"
 dependencies = [
     "vox>=0.1.0",
-    "onnx-asr[gpu,hub]>=0.10.0",
+    "onnx-asr[gpu,hub]>=0.10.0; platform_machine == 'x86_64'",
+    "onnx-asr[hub]>=0.10.0; platform_machine != 'x86_64'",
     "numpy>=1.26.0,<2.4",
     "soundfile>=0.13.1",
 ]

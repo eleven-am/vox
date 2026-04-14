@@ -26,7 +26,6 @@ from vox.core.types import (
     parse_model_name,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fake adapters
 # ---------------------------------------------------------------------------
@@ -293,12 +292,11 @@ async def test_evict_lru_skips_models_with_active_refs():
         pass
 
     # Hold m1 while requesting m3 -- m1 has a ref so m2 should be evicted
-    async with sched.acquire("m1:latest"):
-        async with sched.acquire("m3:latest"):
-            loaded_names = {f"{m.name}:{m.tag}" for m in sched.list_loaded()}
-            assert "m1:latest" in loaded_names
-            assert "m3:latest" in loaded_names
-            assert "m2:latest" not in loaded_names
+    async with sched.acquire("m1:latest"), sched.acquire("m3:latest"):
+        loaded_names = {f"{m.name}:{m.tag}" for m in sched.list_loaded()}
+        assert "m1:latest" in loaded_names
+        assert "m3:latest" in loaded_names
+        assert "m2:latest" not in loaded_names
 
 
 @pytest.mark.asyncio
@@ -311,11 +309,10 @@ async def test_max_loaded_raises_when_all_in_use():
 
     sched = Scheduler(registry, default_device="cpu", max_loaded=2)
 
-    async with sched.acquire("m1:latest"):
-        async with sched.acquire("m2:latest"):
-            with pytest.raises(ModelLoadError, match="all 2 model slots are in use"):
-                async with sched.acquire("m3:latest"):
-                    pass
+    async with sched.acquire("m1:latest"), sched.acquire("m2:latest"):
+        with pytest.raises(ModelLoadError, match="all 2 model slots are in use"):
+            async with sched.acquire("m3:latest"):
+                pass
 
 
 @pytest.mark.asyncio

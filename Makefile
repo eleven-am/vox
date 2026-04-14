@@ -6,6 +6,7 @@ APP_VERSION = $(shell sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' p
 
 GPU_BASE := nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 CPU_BASE := python:3.12-slim
+ORT_REF ?= v1.24.0
 
 .PHONY: build build-cpu build-local build-local-cpu push tag clean setup-buildx current-version bump-patch bump-minor bump-major test
 
@@ -14,7 +15,9 @@ build:
 		(echo "pyproject.toml version $(APP_VERSION) does not match release tag $(VERSION)"; exit 1)
 	docker buildx build \
 		--platform $(PLATFORMS) \
+		--target vox \
 		--build-arg BASE_IMAGE=$(GPU_BASE) \
+		--build-arg ORT_GIT_REF=$(ORT_REF) \
 		--tag $(IMAGE):$(VERSION) \
 		--tag $(IMAGE):latest \
 		--push \
@@ -25,6 +28,7 @@ build-cpu:
 		(echo "pyproject.toml version $(APP_VERSION) does not match release tag $(VERSION)"; exit 1)
 	docker buildx build \
 		--platform $(PLATFORMS) \
+		--target vox-runtime \
 		--build-arg BASE_IMAGE=$(CPU_BASE) \
 		--tag $(IMAGE):$(VERSION)-cpu \
 		--tag $(IMAGE):cpu \
@@ -32,10 +36,15 @@ build-cpu:
 		.
 
 build-local:
-	docker build --build-arg BASE_IMAGE=$(GPU_BASE) -t vox:local .
+	docker build \
+		--target vox \
+		--build-arg BASE_IMAGE=$(GPU_BASE) \
+		--build-arg ORT_GIT_REF=$(ORT_REF) \
+		-t vox:local \
+		.
 
 build-local-cpu:
-	docker build --build-arg BASE_IMAGE=$(CPU_BASE) -t vox:local-cpu .
+	docker build --target vox-runtime --build-arg BASE_IMAGE=$(CPU_BASE) -t vox:local-cpu .
 
 push:
 	docker push $(IMAGE):$(VERSION)

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import subprocess
 import sys
 from dataclasses import replace
 from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any
-
-import logging
 
 from vox.core.errors import AdapterNotFoundError, ModelLoadError, ModelNotFoundError
 from vox.core.store import BlobStore
@@ -311,6 +311,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
 
 ADAPTERS_DIR = "adapters"  # relative to vox home
 REGISTRY_BASE_URL = "https://raw.githubusercontent.com/eleven-am/vox-registry/main"
+BUNDLED_ADAPTERS_ENV = "VOX_BUNDLED_ADAPTERS"
 
 
 def fetch_from_registry(name: str, tag: str) -> dict[str, Any] | None:
@@ -342,6 +343,23 @@ def fetch_registry_index() -> list[dict[str, Any]] | None:
         return None
 
 
+def _find_bundled_adapter_source(package_name: str) -> Path | None:
+    """Return a local adapter source tree when one is bundled with the app."""
+    candidates: list[Path] = []
+
+    bundled_root = os.environ.get(BUNDLED_ADAPTERS_ENV)
+    if bundled_root:
+        candidates.append(Path(bundled_root))
+
+    candidates.append(Path(__file__).resolve().parents[3] / "adapters")
+
+    for base_dir in candidates:
+        candidate = base_dir / package_name
+        if (candidate / "pyproject.toml").is_file():
+            return candidate
+    return None
+
+
 def install_adapter_package(package_name: str, vox_home: Path) -> bool:
     """Install an adapter package into the vox adapters directory.
 
@@ -349,25 +367,34 @@ def install_adapter_package(package_name: str, vox_home: Path) -> bool:
     """
     target_dir = vox_home / ADAPTERS_DIR
     target_dir.mkdir(parents=True, exist_ok=True)
+    package_spec = package_name
 
-    # Try uv first (faster), fall back to pip
-    for installer in ["uv pip install", "pip install"]:
+    bundled_source = _find_bundled_adapter_source(package_name)
+    if bundled_source is not None:
+        package_spec = str(bundled_source)
+        logger.info("Installing bundled adapter package from %s", bundled_source)
+
+    installers = [
+        ["uv", "pip", "install", "--python", sys.executable],
+        [sys.executable, "-m", "pip", "install"],
+    ]
+    for installer in installers:
         try:
-            cmd = f"{installer} --target {target_dir} {package_name}"
+            cmd = [*installer, "--target", str(target_dir), package_spec]
             result = subprocess.run(
-                cmd.split(),
+                cmd,
                 capture_output=True,
                 text=True,
                 timeout=300,
             )
             if result.returncode == 0:
-                logger.info(f"Installed adapter package: {package_name}")
+                logger.info("Installed adapter package: %s", package_name)
                 return True
-            logger.warning(f"{installer} failed: {result.stderr}")
+            logger.warning("%s failed: %s", " ".join(installer), result.stderr)
         except (subprocess.TimeoutExpired, FileNotFoundError):
             continue
 
-    logger.error(f"Failed to install adapter package: {package_name}")
+    logger.error("Failed to install adapter package: %s", package_name)
     return False
 
 

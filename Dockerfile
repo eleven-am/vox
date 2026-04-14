@@ -1,5 +1,8 @@
 ARG BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
-FROM ${BASE_IMAGE}
+ARG ORT_BUILDER_IMAGE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu24.04
+ARG ORT_GIT_REF=v1.24.0
+
+FROM ${BASE_IMAGE} AS vox-base
 
 LABEL org.opencontainers.image.source="https://github.com/eleven-am/vox"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
@@ -13,9 +16,9 @@ RUN apt-get update && \
     libopus0 \
     libsoxr0 \
     git \
-    python3.12 \
-    python3.12-dev \
-    python3.12-venv \
+    python3 \
+    python3-dev \
+    python3-venv \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 ARG VOX_UID=10000
@@ -50,6 +53,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     chown -R vox:vox $HOME
 
 ARG TARGETARCH
+ARG ORT_ARM64_PACKAGE=onnxruntime
 
 # Install PyTorch — CUDA wheels on amd64, CPU on arm64
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -60,12 +64,85 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         uv pip install --python .venv/bin/python torch torchaudio; \
     fi
 
+FROM ${ORT_BUILDER_IMAGE} AS vox-spark-onnx-builder
+
+ARG TARGETARCH
+ARG ORT_GIT_REF
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN if [ "$TARGETARCH" != "arm64" ]; then \
+        mkdir -p /opt/ort-wheels; \
+        exit 0; \
+    fi && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        build-essential \
+        ca-certificates \
+        ccache \
+        cmake \
+        git \
+        ninja-build \
+        pkg-config \
+        python3 \
+        python3-dev \
+        python3-venv \
+        python3-pip && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/onnxruntime
+
+RUN if [ "$TARGETARCH" != "arm64" ]; then \
+        exit 0; \
+    fi && \
+    git clone --branch "$ORT_GIT_REF" --depth 1 https://github.com/microsoft/onnxruntime.git . && \
+    python3 -m venv /opt/ort-venv && \
+    /opt/ort-venv/bin/pip install --upgrade pip setuptools wheel packaging && \
+    ./build.sh \
+        --config Release \
+        --update \
+        --build \
+        --parallel \
+        --build_wheel \
+        --use_cuda \
+        --skip_tests \
+        --allow_running_as_root \
+        --cmake_generator Ninja \
+        --cuda_home /usr/local/cuda \
+        --cudnn_home /usr/lib/aarch64-linux-gnu && \
+    mkdir -p /opt/ort-wheels && \
+    cp build/Linux/Release/dist/*.whl /opt/ort-wheels/
+
+FROM vox-base AS vox-runtime
+
+ARG TARGETARCH
+ARG ORT_ARM64_PACKAGE=onnxruntime
+
 # Install ONNX Runtime (GPU on amd64, CPU on arm64) + transformers
 RUN --mount=type=cache,target=/root/.cache/uv \
     if [ "$TARGETARCH" = "amd64" ]; then \
         uv pip install --python .venv/bin/python onnxruntime-gpu transformers huggingface-hub; \
     else \
-        uv pip install --python .venv/bin/python onnxruntime transformers huggingface-hub; \
+        uv pip install --python .venv/bin/python "$ORT_ARM64_PACKAGE" transformers huggingface-hub; \
+    fi && \
+    chown -R vox:vox $HOME
+
+# Install bundled adapters into the runtime environment so `vox pull` works out of the box.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    if [ "$TARGETARCH" = "amd64" ]; then \
+        uv pip install --python .venv/bin/python \
+            ./adapters/vox-kokoro \
+            ./adapters/vox-microsoft \
+            ./adapters/vox-parakeet \
+            ./adapters/vox-qwen \
+            ./adapters/vox-voxtral; \
+    else \
+        uv pip install --python .venv/bin/python \
+            ./adapters/vox-kokoro \
+            ./adapters/vox-microsoft \
+            ./adapters/vox-qwen \
+            ./adapters/vox-voxtral && \
+        uv pip install --python .venv/bin/python ./adapters/vox-parakeet; \
     fi && \
     chown -R vox:vox $HOME
 
@@ -73,6 +150,60 @@ USER vox
 
 ENV PATH="$HOME/app/.venv/bin:$PATH" \
     VOX_HOME=$HOME/.vox \
+    VOX_BUNDLED_ADAPTERS=$HOME/app/adapters \
+    VOX_DEVICE=auto \
+    HF_HUB_ENABLE_HF_TRANSFER=0 \
+    DO_NOT_TRACK=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    TORCH_CPP_LOG_LEVEL=ERROR
+
+EXPOSE 11435
+EXPOSE 9090
+VOLUME $HOME/.vox
+
+CMD ["vox", "serve", "--host", "0.0.0.0"]
+
+FROM vox-base AS vox
+
+ARG TARGETARCH
+
+COPY --from=vox-spark-onnx-builder /opt/ort-wheels /tmp/ort-wheels
+
+# Install ONNX Runtime — package GPU build on amd64, custom CUDA wheel on arm64.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    if [ "$TARGETARCH" = "amd64" ]; then \
+        uv pip install --python .venv/bin/python onnxruntime-gpu transformers huggingface-hub; \
+    else \
+        ort_wheel="$(find /tmp/ort-wheels -maxdepth 1 -name '*.whl' | head -n1)" && \
+        test -n "$ort_wheel" && \
+        uv pip install --python .venv/bin/python "$ort_wheel" transformers huggingface-hub; \
+    fi && \
+    chown -R vox:vox $HOME
+
+# Install bundled adapters into the runtime environment so `vox pull` works out of the box.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    if [ "$TARGETARCH" = "amd64" ]; then \
+        uv pip install --python .venv/bin/python \
+            ./adapters/vox-kokoro \
+            ./adapters/vox-microsoft \
+            ./adapters/vox-parakeet \
+            ./adapters/vox-qwen \
+            ./adapters/vox-voxtral; \
+    else \
+        uv pip install --python .venv/bin/python \
+            ./adapters/vox-kokoro \
+            ./adapters/vox-microsoft \
+            ./adapters/vox-qwen \
+            ./adapters/vox-voxtral && \
+        uv pip install --python .venv/bin/python ./adapters/vox-parakeet; \
+    fi && \
+    chown -R vox:vox $HOME
+
+USER vox
+
+ENV PATH="$HOME/app/.venv/bin:$PATH" \
+    VOX_HOME=$HOME/.vox \
+    VOX_BUNDLED_ADAPTERS=$HOME/app/adapters \
     VOX_DEVICE=auto \
     HF_HUB_ENABLE_HF_TRANSFER=0 \
     DO_NOT_TRACK=1 \
