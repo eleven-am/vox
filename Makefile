@@ -6,7 +6,7 @@ APP_VERSION = $(shell sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' p
 
 GPU_BASE := nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 CPU_BASE := python:3.12-slim
-ORT_REF ?= v1.24.0
+ORT_REF ?= v1.24.4
 
 .PHONY: build build-cpu build-local build-local-cpu push tag clean setup-buildx current-version bump-patch bump-minor bump-major test
 
