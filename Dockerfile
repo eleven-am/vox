@@ -97,6 +97,7 @@ RUN if [ "$TARGETARCH" != "arm64" ]; then \
     git clone --branch "$ORT_GIT_REF" --depth 1 https://github.com/microsoft/onnxruntime.git . && \
     python3 -m venv /opt/ort-venv && \
     /opt/ort-venv/bin/pip install --upgrade pip setuptools wheel packaging numpy psutil && \
+    pip3 install --break-system-packages numpy && \
     ./build.sh \
         --config Release \
         --update \
