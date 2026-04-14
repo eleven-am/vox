@@ -52,7 +52,7 @@ ARG TARGETARCH
 ARG SPARK_ORT_PACKAGE=onnxruntime-gpu
 ARG SPARK_ORT_INDEX_URL=
 ARG SPARK_ORT_EXTRA_INDEX_URL=
-ARG SPARK_ORT_WHEEL=
+ARG SPARK_ORT_WHEEL=https://pypi.jetson-ai-lab.io/jp6/cu129/+f/2e3/a07114007df15/onnxruntime_gpu-1.23.0-cp312-cp312-linux_aarch64.whl
 
 RUN test "$TARGETARCH" = "arm64" || (echo "Dockerfile.spark only supports linux/arm64" >&2; exit 1)
 

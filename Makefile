@@ -11,7 +11,7 @@ SPARK_BASE := nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 SPARK_ORT_PACKAGE ?= onnxruntime-gpu
 SPARK_ORT_INDEX_URL ?=
 SPARK_ORT_EXTRA_INDEX_URL ?=
-SPARK_ORT_WHEEL ?=
+SPARK_ORT_WHEEL ?= https://pypi.jetson-ai-lab.io/jp6/cu129/+f/2e3/a07114007df15/onnxruntime_gpu-1.23.0-cp312-cp312-linux_aarch64.whl
 
 .PHONY: build build-cpu build-spark build-local build-local-cpu build-local-spark push tag clean setup-buildx current-version bump-patch bump-minor bump-major test
 
