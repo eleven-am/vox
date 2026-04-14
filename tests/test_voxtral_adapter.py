@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import importlib
+import sys
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -9,6 +12,17 @@ from vox.core.types import ModelFormat, ModelType
 
 
 class TestVoxtralSTTAdapterInfo:
+    def test_package_import_does_not_require_tts_support(self):
+        transformers = MagicMock()
+        transformers.AutoProcessor = MagicMock()
+        transformers.VoxtralForConditionalGeneration = MagicMock()
+        torch = MagicMock()
+
+        with patch.dict("sys.modules", {"transformers": transformers, "torch": torch}):
+            sys.modules.pop("vox_voxtral", None)
+            module = importlib.import_module("vox_voxtral")
+            assert module.__all__ == ["VoxtralSTTAdapter", "VoxtralTTSAdapter"]
+
     def test_info_returns_correct_metadata(self):
         with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
             from vox_voxtral.stt_adapter import VoxtralSTTAdapter
@@ -146,3 +160,15 @@ class TestVoxtralTTSAdapterInfo:
 
             adapter = VoxtralTTSAdapter()
             assert adapter.estimate_vram_bytes() == 16_000_000_000
+
+    def test_load_raises_clear_error_when_transformers_lacks_tts_model(self):
+        transformers = ModuleType("transformers")
+        transformers.AutoProcessor = MagicMock()
+        torch = MagicMock()
+
+        with patch.dict("sys.modules", {"transformers": transformers, "torch": torch}):
+            from vox_voxtral.tts_adapter import VoxtralTTSAdapter
+
+            adapter = VoxtralTTSAdapter()
+            with pytest.raises(RuntimeError, match="official vllm-omni path"):
+                adapter.load("mistralai/Voxtral-4B-TTS-2603", "auto")

@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import torch
 from numpy.typing import NDArray
-from transformers import AutoProcessor, VoxtralTTSModel
+from transformers import AutoProcessor
 
 from vox.core.adapter import TTSAdapter
 from vox.core.types import (
@@ -47,12 +47,10 @@ SUPPORTED_LANGUAGES = ("en", "fr", "es", "de", "it", "pt", "nl", "ar", "hi")
 def _select_device(device: str) -> str:
     if device == "cpu":
         return "cpu"
-    if device in ("cuda", "auto"):
-        if torch.cuda.is_available():
-            return "cuda"
-    if device in ("mps", "auto"):
-        if torch.backends.mps.is_available():
-            return "mps"
+    if device in ("cuda", "auto") and torch.cuda.is_available():
+        return "cuda"
+    if device in ("mps", "auto") and torch.backends.mps.is_available():
+        return "mps"
     return "cpu"
 
 
@@ -65,7 +63,7 @@ def _select_dtype(device: str) -> torch.dtype:
 class VoxtralTTSAdapter(TTSAdapter):
 
     def __init__(self) -> None:
-        self._model: VoxtralTTSModel | None = None
+        self._model: Any | None = None
         self._processor: AutoProcessor | None = None
         self._loaded = False
         self._model_id: str = ""
@@ -91,6 +89,15 @@ class VoxtralTTSAdapter(TTSAdapter):
         self._model_id = source if source else model_path
         self._device = _select_device(device)
         dtype = _select_dtype(self._device)
+
+        try:
+            from transformers import VoxtralTTSModel
+        except ImportError as exc:
+            raise RuntimeError(
+                "Voxtral TTS is not available in the installed Transformers build. "
+                "Use a Transformers release that exports VoxtralTTSModel or serve the model with "
+                "the official vllm-omni path."
+            ) from exc
 
         logger.info("Loading Voxtral TTS model: %s (device=%s, dtype=%s)", self._model_id, self._device, dtype)
         start = time.perf_counter()
