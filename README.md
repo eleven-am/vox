@@ -4,7 +4,9 @@ Local runtime for speech-to-text and text-to-speech models. Pull a model, start 
 
 ## What it does
 
-Vox manages STT and TTS models through a REST API. Models are downloaded from HuggingFace, and each model family (Whisper, Kokoro, Parakeet, etc.) is handled by a plugin adapter that's installed automatically on first pull.
+Vox manages STT and TTS models through a REST API. Models are downloaded from HuggingFace, and each model family (Whisper, Kokoro, Parakeet, etc.) is handled by a plugin adapter that is installed automatically on first pull.
+
+The Docker images intentionally start without any models or adapter packages installed. Pulling a model installs the matching adapter on demand.
 
 ```
 vox pull kokoro:v1.0       # downloads model + installs adapter
@@ -210,13 +212,13 @@ vox pull kokoro:v1.0  # auto-installs adapter inside container
 docker compose --profile cpu up -d
 ```
 
-Models and adapters persist in a Docker volume across container restarts. No image rebuild needed to add new models.
+Models and dynamically installed adapters persist in a Docker volume across container restarts. No image rebuild needed to add new models.
 
 ### Spark ONNX GPU build
 
-The default GPU multi-arch image now does the platform split directly:
+The default GPU multi-arch image is generic:
 - `amd64` uses `onnxruntime-gpu`
-- `arm64` builds a custom CUDA-enabled ONNX Runtime wheel from source and installs that wheel
+- `arm64` uses CPU `onnxruntime`
 
 ```bash
 # Local image
@@ -224,19 +226,7 @@ make build-local
 
 # Multi-arch publish build
 make build
-
-# Compose build
-docker compose build vox
 ```
-
-Override the ONNX Runtime source ref if needed:
-
-```bash
-make build-local ORT_REF=v1.24.0
-ORT_GIT_REF=v1.24.0 docker compose build vox
-```
-
-This makes the normal arm64 GPU build significantly slower than the amd64 path because it compiles ONNX Runtime from source on `arm64`.
 
 ### Spark image
 

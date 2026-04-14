@@ -68,11 +68,16 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python .venv/bin/python \
-        ./adapters/vox-kokoro \
-        ./adapters/vox-microsoft \
-        ./adapters/vox-parakeet \
-        ./adapters/vox-qwen \
-        ./adapters/vox-voxtral && \
+        accelerate \
+        datasets \
+        librosa \
+        sentencepiece \
+        colorlog \
+        espeakng-loader \
+        phonemizer-fork && \
+    uv pip install --python .venv/bin/python --no-deps \
+        kokoro-onnx==0.4.9 \
+        onnx-asr[hub]==0.11.0 && \
     chown -R vox:vox $HOME
 
 USER vox
@@ -80,6 +85,7 @@ USER vox
 ENV PATH="$HOME/app/.venv/bin:$PATH" \
     VOX_HOME=$HOME/.vox \
     VOX_BUNDLED_ADAPTERS=$HOME/app/adapters \
+    VOX_BUNDLED_ADAPTERS_NO_DEPS=1 \
     VOX_DEVICE=auto \
     HF_HUB_ENABLE_HF_TRANSFER=0 \
     DO_NOT_TRACK=1 \

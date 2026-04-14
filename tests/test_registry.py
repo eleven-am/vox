@@ -11,6 +11,7 @@ import pytest
 from vox.core.errors import AdapterNotFoundError, ModelNotFoundError
 from vox.core.registry import (
     BUNDLED_ADAPTERS_ENV,
+    BUNDLED_ADAPTERS_NO_DEPS_ENV,
     CATALOG,
     ModelRegistry,
     _find_bundled_adapter_source,
@@ -268,6 +269,41 @@ class TestBundledAdapters:
                 sys.executable,
                 "--target",
                 str(store.root / "adapters"),
+                str(bundled_adapter),
+            ]
+        ]
+
+    def test_install_adapter_package_can_skip_bundled_dependencies(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        store = _make_store(tmp_path)
+        bundled_adapter = tmp_path / "adapters" / "vox-kokoro"
+        bundled_adapter.mkdir(parents=True)
+        (bundled_adapter / "pyproject.toml").write_text("[project]\nname='vox-kokoro'\n", encoding="utf-8")
+        monkeypatch.setenv(BUNDLED_ADAPTERS_NO_DEPS_ENV, "1")
+
+        calls: list[list[str]] = []
+
+        def _fake_run(cmd: list[str], **kwargs):
+            calls.append(cmd)
+            return MagicMock(returncode=0, stderr="")
+
+        with (
+            patch("vox.core.registry._find_bundled_adapter_source", return_value=bundled_adapter),
+            patch("vox.core.registry.subprocess.run", side_effect=_fake_run),
+        ):
+            assert install_adapter_package("vox-kokoro", store.root) is True
+
+        assert calls == [
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                sys.executable,
+                "--target",
+                str(store.root / "adapters"),
+                "--no-deps",
                 str(bundled_adapter),
             ]
         ]

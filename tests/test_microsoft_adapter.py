@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import sys
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -9,6 +11,12 @@ from vox.core.types import ModelFormat, ModelType
 
 
 class TestSpeechT5STTAdapterInfo:
+    def test_package_import_does_not_require_all_microsoft_variants(self):
+        with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
+            sys.modules.pop("vox_microsoft", None)
+            module = importlib.import_module("vox_microsoft")
+            assert module.__all__ == ["SpeechT5STTAdapter", "SpeechT5TTSAdapter", "VibeVoiceTTSAdapter"]
+
     def test_info_returns_correct_metadata(self):
         with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
             from vox_microsoft.speecht5_stt_adapter import SpeechT5STTAdapter

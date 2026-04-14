@@ -312,6 +312,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
 ADAPTERS_DIR = "adapters"  # relative to vox home
 REGISTRY_BASE_URL = "https://raw.githubusercontent.com/eleven-am/vox-registry/main"
 BUNDLED_ADAPTERS_ENV = "VOX_BUNDLED_ADAPTERS"
+BUNDLED_ADAPTERS_NO_DEPS_ENV = "VOX_BUNDLED_ADAPTERS_NO_DEPS"
 
 
 def fetch_from_registry(name: str, tag: str) -> dict[str, Any] | None:
@@ -370,8 +371,10 @@ def install_adapter_package(package_name: str, vox_home: Path) -> bool:
     package_spec = package_name
 
     bundled_source = _find_bundled_adapter_source(package_name)
+    install_no_deps = False
     if bundled_source is not None:
         package_spec = str(bundled_source)
+        install_no_deps = os.environ.get(BUNDLED_ADAPTERS_NO_DEPS_ENV, "").lower() in {"1", "true", "yes", "on"}
         logger.info("Installing bundled adapter package from %s", bundled_source)
 
     installers = [
@@ -380,7 +383,10 @@ def install_adapter_package(package_name: str, vox_home: Path) -> bool:
     ]
     for installer in installers:
         try:
-            cmd = [*installer, "--target", str(target_dir), package_spec]
+            cmd = [*installer, "--target", str(target_dir)]
+            if install_no_deps:
+                cmd.append("--no-deps")
+            cmd.append(package_spec)
             result = subprocess.run(
                 cmd,
                 capture_output=True,

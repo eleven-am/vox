@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import importlib
+import sys
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -9,6 +11,12 @@ from vox.core.types import ModelFormat, ModelType
 
 
 class TestQwen3ASRAdapterInfo:
+    def test_package_import_does_not_require_all_qwen_variants(self):
+        with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
+            sys.modules.pop("vox_qwen", None)
+            module = importlib.import_module("vox_qwen")
+            assert module.__all__ == ["Qwen3ASRAdapter", "Qwen3TTSAdapter"]
+
     def test_info_returns_correct_metadata(self):
         with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
             from vox_qwen.asr_adapter import Qwen3ASRAdapter
