@@ -63,7 +63,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         uv pip install --python .venv/bin/python torch torchaudio; \
     fi
 
-FROM ${ORT_BUILDER_IMAGE} AS vox-spark-onnx-builder
+FROM ${ORT_BUILDER_IMAGE} AS vox-arm64-onnx-builder
 
 ARG TARGETARCH
 ARG ORT_GIT_REF
@@ -102,7 +102,7 @@ RUN if [ "$TARGETARCH" != "arm64" ]; then \
         --config Release \
         --update \
         --build \
-        --parallel \
+        --parallel 4 \
         --build_wheel \
         --use_cuda \
         --skip_tests \
@@ -169,7 +169,7 @@ ARG TARGETARCH
 
 USER root
 
-COPY --from=vox-spark-onnx-builder /opt/ort-wheels /tmp/ort-wheels
+COPY --from=vox-arm64-onnx-builder /opt/ort-wheels /tmp/ort-wheels
 
 # Replace the arm64 package runtime with the custom CUDA wheel for the default GPU image.
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -178,6 +178,45 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         test -n "$ort_wheel" && \
         uv pip uninstall --python .venv/bin/python -y onnxruntime && \
         uv pip install --python .venv/bin/python "$ort_wheel"; \
+    fi && \
+    chown -R vox:vox $HOME
+
+USER vox
+
+FROM vox-runtime AS vox-spark
+
+ARG TARGETARCH
+ARG SPARK_ORT_PACKAGE=onnxruntime-gpu
+ARG SPARK_ORT_INDEX_URL=
+ARG SPARK_ORT_EXTRA_INDEX_URL=
+ARG SPARK_ORT_WHEEL=
+
+USER root
+
+COPY --from=vox-arm64-onnx-builder /opt/ort-wheels /tmp/ort-wheels
+
+# Spark-targeted arm64 image: prefer a prebuilt ONNX Runtime source from a wheel
+# or custom package index when configured, and fall back to the locally built wheel.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+        uv pip uninstall --python .venv/bin/python -y onnxruntime || true; \
+        uv pip uninstall --python .venv/bin/python -y onnxruntime-gpu || true; \
+        if [ -n "$SPARK_ORT_WHEEL" ]; then \
+            uv pip install --python .venv/bin/python "$SPARK_ORT_WHEEL"; \
+        elif [ -n "$SPARK_ORT_INDEX_URL" ] || [ -n "$SPARK_ORT_EXTRA_INDEX_URL" ]; then \
+            index_args=""; \
+            if [ -n "$SPARK_ORT_INDEX_URL" ]; then \
+                index_args="$index_args --index-url $SPARK_ORT_INDEX_URL"; \
+            fi; \
+            if [ -n "$SPARK_ORT_EXTRA_INDEX_URL" ]; then \
+                index_args="$index_args --extra-index-url $SPARK_ORT_EXTRA_INDEX_URL"; \
+            fi; \
+            sh -c "uv pip install --python .venv/bin/python $index_args '$SPARK_ORT_PACKAGE'"; \
+        else \
+            ort_wheel="$(find /tmp/ort-wheels -maxdepth 1 -name '*.whl' | head -n1)" && \
+            test -n "$ort_wheel" && \
+            uv pip install --python .venv/bin/python "$ort_wheel"; \
+        fi; \
     fi && \
     chown -R vox:vox $HOME
 
