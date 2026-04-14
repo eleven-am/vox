@@ -16,28 +16,30 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await app.state.scheduler.start()
-
     grpc_server = None
-    grpc_port = getattr(app.state, "grpc_port", None)
-    if grpc_port:
-        from vox.grpc.server import start_grpc_server
-        grpc_server = await start_grpc_server(
-            app.state.store,
-            app.state.registry,
-            app.state.scheduler,
-            port=grpc_port,
-        )
+    await app.state.scheduler.start()
+    try:
+        grpc_port = getattr(app.state, "grpc_port", None)
+        if grpc_port:
+            from vox.grpc.server import start_grpc_server
 
-    logger.info("Vox server started")
-    yield
+            grpc_server = await start_grpc_server(
+                app.state.store,
+                app.state.registry,
+                app.state.scheduler,
+                port=grpc_port,
+            )
 
-    if grpc_server is not None:
-        await grpc_server.stop(grace=5)
-        logger.info("gRPC server stopped")
-
-    await app.state.scheduler.stop()
-    logger.info("Vox server stopped")
+        logger.info("Vox server started")
+        yield
+    finally:
+        try:
+            if grpc_server is not None:
+                await grpc_server.stop(grace=5)
+                logger.info("gRPC server stopped")
+        finally:
+            await app.state.scheduler.stop()
+            logger.info("Vox server stopped")
 
 
 def create_app(

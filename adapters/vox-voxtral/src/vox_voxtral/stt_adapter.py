@@ -37,12 +37,10 @@ _VRAM_ESTIMATES: dict[str, int] = {
 def _select_device(device: str) -> str:
     if device == "cpu":
         return "cpu"
-    if device in ("cuda", "auto"):
-        if torch.cuda.is_available():
-            return "cuda"
-    if device in ("mps", "auto"):
-        if torch.backends.mps.is_available():
-            return "mps"
+    if device in ("cuda", "auto") and torch.cuda.is_available():
+        return "cuda"
+    if device in ("mps", "auto") and torch.backends.mps.is_available():
+        return "mps"
     return "cpu"
 
 
@@ -199,7 +197,10 @@ class VoxtralSTTAdapter(STTAdapter):
                 "role": "user",
                 "content": [
                     {"type": "audio", "audio": (audio[:VOXTRAL_SAMPLE_RATE * 10].tolist(), VOXTRAL_SAMPLE_RATE)},
-                    {"type": "text", "text": "What language is being spoken? Reply with only the ISO 639-1 language code."},
+                    {
+                        "type": "text",
+                        "text": "What language is being spoken? Reply with only the ISO 639-1 language code.",
+                    },
                 ],
             }
         ]
@@ -220,4 +221,5 @@ class VoxtralSTTAdapter(STTAdapter):
         return lang
 
     def estimate_vram_bytes(self, **kwargs: Any) -> int:
-        return _estimate_vram(self._model_id)
+        model_id = kwargs.get("_source") or kwargs.get("model_id") or self._model_id
+        return _estimate_vram(str(model_id))

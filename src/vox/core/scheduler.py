@@ -4,18 +4,19 @@ import asyncio
 import gc
 import logging
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 
 from vox.core.adapter import STTAdapter, TTSAdapter
-from vox.core.errors import AdapterNotFoundError, ModelLoadError, ModelNotFoundError, OOMError
-from vox.core.types import LoadedModelInfo, ModelInfo, ModelType, parse_model_name
+from vox.core.errors import ModelLoadError
+from vox.core.types import LoadedModelInfo, ModelInfo, parse_model_name
 
 logger = logging.getLogger(__name__)
 
 Adapter = STTAdapter | TTSAdapter
+DEVICE_MEMORY_HEADROOM_BYTES = 512 * 1024 * 1024
 
 
 def _detect_device() -> str:
@@ -54,6 +55,25 @@ def _is_oom_error(error: Exception) -> bool:
     oom_keywords = ["out of memory", "cuda oom", "onnxruntime oom", "failed to allocate"]
     msg = str(error).lower()
     return any(kw in msg for kw in oom_keywords)
+
+
+def _available_device_memory_bytes(device: str) -> int | None:
+    """Return free accelerator memory for *device* when the backend exposes it."""
+    if device != "cuda":
+        return None
+
+    try:
+        import torch
+
+        if not torch.cuda.is_available() or not hasattr(torch.cuda, "mem_get_info"):
+            return None
+        free_bytes, _total_bytes = torch.cuda.mem_get_info()
+        return int(free_bytes)
+    except ImportError:
+        return None
+    except RuntimeError as error:
+        logger.warning("Failed to query free %s memory: %s", device, error)
+        return None
 
 
 class RegistryProtocol(Protocol):
@@ -102,16 +122,42 @@ class Scheduler:
         """Stop cleanup and unload all models."""
         if self._cleanup_task:
             self._cleanup_task.cancel()
-            try:
+            with suppress(asyncio.CancelledError):
                 await self._cleanup_task
-            except asyncio.CancelledError:
-                pass
             self._cleanup_task = None
         await self.unload_all()
 
-    def _select_device(self, adapter: Adapter) -> str:
-        """Select device for a model, considering VRAM estimates."""
-        return self._default_device
+    def _estimate_model_memory_bytes(self, adapter: Adapter, info: ModelInfo, model_path: Path) -> int:
+        """Estimate accelerator memory required for *info* before loading."""
+        estimate_kwargs = {**info.parameters, "model_path": str(model_path)}
+        try:
+            estimate = adapter.estimate_vram_bytes(**estimate_kwargs)
+        except TypeError:
+            estimate = adapter.estimate_vram_bytes()
+        return max(int(estimate or 0), 0)
+
+    def _select_device(self, adapter: Adapter, info: ModelInfo, estimated_vram_bytes: int) -> str:
+        """Select device for a model, considering free accelerator memory."""
+        device = self._default_device
+        if device == "cpu" or estimated_vram_bytes <= 0:
+            return device
+
+        free_bytes = _available_device_memory_bytes(device)
+        if free_bytes is None:
+            return device
+
+        required_bytes = estimated_vram_bytes + DEVICE_MEMORY_HEADROOM_BYTES
+        if required_bytes <= free_bytes:
+            return device
+
+        logger.info(
+            "Routing %s to CPU: estimated %d bytes plus headroom exceeds free %s memory (%d bytes)",
+            info.full_name,
+            estimated_vram_bytes,
+            device,
+            free_bytes,
+        )
+        return "cpu"
 
     async def _load_model(self, full_name: str) -> _LoadedModel:
         """Load a model by name. Handles eviction and OOM fallback."""
@@ -123,7 +169,8 @@ class Scheduler:
 
         # Instantiate adapter
         adapter = adapter_cls()
-        device = self._select_device(adapter)
+        estimated_vram_bytes = self._estimate_model_memory_bytes(adapter, info, model_path)
+        device = self._select_device(adapter, info, estimated_vram_bytes)
 
         # Evict LRU if at capacity
         if len(self._models) >= self._max_loaded:
@@ -158,7 +205,7 @@ class Scheduler:
             info=info,
             adapter=adapter,
             device=device,
-            vram_bytes=adapter.estimate_vram_bytes(),
+            vram_bytes=estimated_vram_bytes if device != "cpu" else 0,
         )
         self._models[full_name] = loaded
         return loaded

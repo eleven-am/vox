@@ -195,3 +195,10 @@ class TestVibeVoiceTTSAdapterInfo:
             adapter = VibeVoiceTTSAdapter()
             adapter._model_id = "microsoft/VibeVoice-1.5B"
             assert adapter.estimate_vram_bytes() == 6_000_000_000
+
+    def test_estimate_vram_uses_source_hint_before_load(self):
+        with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
+            from vox_microsoft.vibevoice_tts_adapter import VibeVoiceTTSAdapter
+
+            adapter = VibeVoiceTTSAdapter()
+            assert adapter.estimate_vram_bytes(_source="microsoft/VibeVoice-1.5B") == 6_000_000_000

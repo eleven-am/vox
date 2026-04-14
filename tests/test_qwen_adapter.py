@@ -87,6 +87,13 @@ class TestQwen3ASRAdapterInfo:
             adapter._model_id = "Qwen/Qwen3-ASR-1.7B"
             assert adapter.estimate_vram_bytes() == 4_000_000_000
 
+    def test_estimate_vram_uses_source_hint_before_load(self):
+        with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
+            from vox_qwen.asr_adapter import Qwen3ASRAdapter
+
+            adapter = Qwen3ASRAdapter()
+            assert adapter.estimate_vram_bytes(_source="Qwen/Qwen3-ASR-1.7B") == 4_000_000_000
+
     def test_parse_timestamps(self):
         with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
             from vox_qwen.asr_adapter import Qwen3ASRAdapter
@@ -166,3 +173,10 @@ class TestQwen3TTSAdapterInfo:
             adapter = Qwen3TTSAdapter()
             adapter._model_id = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
             assert adapter.estimate_vram_bytes() == 4_000_000_000
+
+    def test_estimate_vram_uses_source_hint_before_load(self):
+        with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            assert adapter.estimate_vram_bytes(_source="Qwen/Qwen3-TTS-12Hz-1.7B-Base") == 4_000_000_000

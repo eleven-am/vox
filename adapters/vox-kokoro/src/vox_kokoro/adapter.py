@@ -218,4 +218,4 @@ class KokoroAdapter(TTSAdapter):
 
     def estimate_vram_bytes(self, **kwargs: Any) -> int:
         # Kokoro-82M ONNX is ~330 MB in memory.
-        return 330 * 1024 * 1024 if self._kokoro is not None else 0
+        return 330 * 1024 * 1024

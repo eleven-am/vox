@@ -14,7 +14,7 @@ import pytest
 
 from vox.core.adapter import STTAdapter, TTSAdapter
 from vox.core.errors import ModelLoadError
-from vox.core.scheduler import Scheduler, _is_oom_error
+from vox.core.scheduler import Scheduler, _detect_device, _is_oom_error
 from vox.core.types import (
     AdapterInfo,
     LoadedModelInfo,
@@ -137,6 +137,7 @@ class FakeRegistry:
         adapter_name: str = "fake-stt",
         adapter_cls: type | None = None,
         model_type: ModelType = ModelType.STT,
+        parameters: dict[str, Any] | None = None,
     ) -> None:
         info = ModelInfo(
             name=name,
@@ -145,6 +146,7 @@ class FakeRegistry:
             format=ModelFormat.ONNX,
             architecture="fake",
             adapter=adapter_name,
+            parameters=parameters or {},
         )
         self._models[f"{name}:{tag}"] = (info, Path(f"/fake/models/{name}/{tag}"))
         if adapter_cls is not None:
@@ -170,10 +172,11 @@ def _make_registry_with_model(
     name: str = "whisper",
     tag: str = "large-v3",
     adapter_cls: type | None = None,
+    parameters: dict[str, Any] | None = None,
 ) -> FakeRegistry:
     """Create a FakeRegistry pre-populated with one model."""
     registry = FakeRegistry()
-    registry.add_model(name, tag, adapter_cls=adapter_cls or FakeSTTAdapter)
+    registry.add_model(name, tag, adapter_cls=adapter_cls or FakeSTTAdapter, parameters=parameters)
     return registry
 
 
@@ -336,6 +339,89 @@ async def test_load_falls_back_to_cpu_on_oom():
 
     loaded = sched.list_loaded()
     assert loaded[0].device == "cpu"
+    assert loaded[0].vram_bytes == 0
+
+
+def _make_mock_torch(*, free_bytes: int, total_bytes: int = 16_000_000_000):
+    class _MockCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+        @staticmethod
+        def mem_get_info() -> tuple[int, int]:
+            return free_bytes, total_bytes
+
+        @staticmethod
+        def empty_cache() -> None:
+            return None
+
+        @staticmethod
+        def synchronize() -> None:
+            return None
+
+    class _MockBackends:
+        pass
+
+    class _MockTorch:
+        cuda = _MockCuda()
+        backends = _MockBackends()
+
+    return _MockTorch()
+
+
+@pytest.mark.asyncio
+async def test_select_device_uses_estimate_and_routes_to_cpu_when_cuda_is_tight():
+    class EstimatedAdapter(FakeSTTAdapter):
+        estimate_kwargs: dict[str, Any] | None = None
+
+        def estimate_vram_bytes(self, **kwargs: Any) -> int:
+            type(self).estimate_kwargs = kwargs
+            return 4_000_000_000
+
+    registry = _make_registry_with_model(
+        adapter_cls=EstimatedAdapter,
+        parameters={"_source": "Qwen/Qwen3-ASR-1.7B"},
+    )
+    sched = Scheduler(registry, default_device="cuda", max_loaded=3)
+    mock_torch = _make_mock_torch(free_bytes=3_500_000_000)
+
+    with patch.dict("sys.modules", {"torch": mock_torch}):
+        async with sched.acquire("whisper:large-v3") as adapter:
+            assert isinstance(adapter, EstimatedAdapter)
+            assert adapter.load_calls == [
+                ("/fake/models/whisper/large-v3", "cpu"),
+            ]
+
+    loaded = sched.list_loaded()
+    assert loaded[0].device == "cpu"
+    assert loaded[0].vram_bytes == 0
+    assert EstimatedAdapter.estimate_kwargs == {
+        "_source": "Qwen/Qwen3-ASR-1.7B",
+        "model_path": "/fake/models/whisper/large-v3",
+    }
+
+
+@pytest.mark.asyncio
+async def test_select_device_keeps_cuda_when_estimate_fits():
+    class EstimatedAdapter(FakeSTTAdapter):
+        def estimate_vram_bytes(self, **kwargs: Any) -> int:
+            return 2_000_000_000
+
+    registry = _make_registry_with_model(adapter_cls=EstimatedAdapter)
+    sched = Scheduler(registry, default_device="cuda", max_loaded=3)
+    mock_torch = _make_mock_torch(free_bytes=4_500_000_000)
+
+    with patch.dict("sys.modules", {"torch": mock_torch}):
+        async with sched.acquire("whisper:large-v3") as adapter:
+            assert isinstance(adapter, EstimatedAdapter)
+            assert adapter.load_calls == [
+                ("/fake/models/whisper/large-v3", "cuda"),
+            ]
+
+    loaded = sched.list_loaded()
+    assert loaded[0].device == "cuda"
+    assert loaded[0].vram_bytes == 2_000_000_000
 
 
 @pytest.mark.asyncio
@@ -450,8 +536,6 @@ def test_parse_model_name_without_tag():
 # ---------------------------------------------------------------------------
 # _detect_device
 # ---------------------------------------------------------------------------
-
-from vox.core.scheduler import _detect_device, _is_oom_error
 
 
 def test_detect_device_returns_cpu_when_no_torch():

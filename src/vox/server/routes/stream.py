@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from contextlib import suppress
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -61,6 +62,14 @@ async def audio_stream(websocket: WebSocket):
                         continue
 
                     model = data.get("model", "") or _get_default_stt(registry, store)
+                    if not model:
+                        await websocket.send_json(
+                            {
+                                "type": "error",
+                                "message": "No STT model specified and no default STT model available",
+                            }
+                        )
+                        continue
 
                     session_config = StreamSessionConfig(
                         language=data.get("language", "en"),
@@ -119,10 +128,8 @@ async def audio_stream(websocket: WebSocket):
     except Exception as e:
         disconnected = True
         logger.exception("WS stream error")
-        try:
+        with suppress(Exception):
             await websocket.send_json({"type": "error", "message": str(e)})
-        except Exception:
-            pass
     finally:
         if pipeline is not None and partial_service is not None and not disconnected:
             remaining = partial_service.flush_remaining_audio(session)
@@ -138,10 +145,8 @@ async def audio_stream(websocket: WebSocket):
             pipeline.reset()
             pipeline.shutdown()
 
-        try:
+        with suppress(Exception):
             await websocket.close()
-        except Exception:
-            pass
 
 
 async def _send_event(websocket: WebSocket, event, session: SpeechSession) -> None:

@@ -94,7 +94,7 @@ def _tokens_to_words(tokens: list[str], timestamps: list[float]) -> list[_Word]:
     current_word = ""
     current_start: float | None = None
 
-    for token, ts in zip(tokens, timestamps):
+    for token, ts in zip(tokens, timestamps, strict=False):
         token_stripped = token.strip()
         if not token_stripped:
             continue
@@ -267,4 +267,5 @@ class ParakeetAdapter(STTAdapter):
         )
 
     def estimate_vram_bytes(self, **kwargs: Any) -> int:
-        return _estimate_vram(self._model_id)
+        model_id = kwargs.get("_source") or kwargs.get("model_id") or self._model_id or DEFAULT_MODEL_ID
+        return _estimate_vram(_normalize_model_id(str(model_id)))

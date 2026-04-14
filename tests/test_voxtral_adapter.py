@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -84,6 +84,13 @@ class TestVoxtralSTTAdapterInfo:
             adapter = VoxtralSTTAdapter()
             adapter._model_id = "mistralai/Voxtral-Small-24B-2507"
             assert adapter.estimate_vram_bytes() > 9_500_000_000
+
+    def test_estimate_vram_uses_source_hint_before_load(self):
+        with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
+            from vox_voxtral.stt_adapter import VoxtralSTTAdapter
+
+            adapter = VoxtralSTTAdapter()
+            assert adapter.estimate_vram_bytes(_source="mistralai/Voxtral-Small-24B-2507") > 9_500_000_000
 
 
 class TestVoxtralTTSAdapterInfo:

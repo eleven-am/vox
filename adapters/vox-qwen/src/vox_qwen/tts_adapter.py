@@ -36,12 +36,10 @@ _VRAM_ESTIMATES: dict[str, int] = {
 def _select_device(device: str) -> str:
     if device == "cpu":
         return "cpu"
-    if device in ("cuda", "auto"):
-        if torch.cuda.is_available():
-            return "cuda"
-    if device in ("mps", "auto"):
-        if torch.backends.mps.is_available():
-            return "mps"
+    if device in ("cuda", "auto") and torch.cuda.is_available():
+        return "cuda"
+    if device in ("mps", "auto") and torch.backends.mps.is_available():
+        return "mps"
     return "cpu"
 
 
@@ -180,4 +178,5 @@ class Qwen3TTSAdapter(TTSAdapter):
         return []
 
     def estimate_vram_bytes(self, **kwargs: Any) -> int:
-        return _estimate_vram(self._model_id)
+        model_id = kwargs.get("_source") or kwargs.get("model_id") or self._model_id
+        return _estimate_vram(str(model_id))
