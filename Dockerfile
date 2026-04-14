@@ -62,9 +62,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     if [ "$TARGETARCH" = "amd64" ]; then \
         uv pip install --python .venv/bin/python onnxruntime-gpu transformers huggingface-hub; \
     else \
-        uv pip install --python .venv/bin/python \
-            --extra-index-url https://developer.download.nvidia.com/compute/redist/ \
-            onnxruntime-gpu transformers huggingface-hub; \
+        uv pip install --python .venv/bin/python onnxruntime transformers huggingface-hub; \
     fi && \
     chown -R vox:vox $HOME
 
