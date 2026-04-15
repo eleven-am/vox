@@ -10,9 +10,11 @@ import pytest
 
 from vox.core.errors import AdapterNotFoundError, ModelNotFoundError
 from vox.core.registry import (
+    ADAPTERS_NO_DEPS_ENV,
     BUNDLED_ADAPTERS_ENV,
     BUNDLED_ADAPTERS_NO_DEPS_ENV,
     CATALOG,
+    DISABLE_BUNDLED_ADAPTERS_ENV,
     ModelRegistry,
     _find_bundled_adapter_source,
     discover_adapters,
@@ -408,6 +410,17 @@ class TestBundledAdapters:
 
         assert _find_bundled_adapter_source("vox-kokoro") == adapter_dir
 
+    def test_find_bundled_adapter_source_can_be_disabled(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        bundled_root = tmp_path / "bundled"
+        adapter_dir = bundled_root / "vox-kokoro"
+        adapter_dir.mkdir(parents=True)
+        (adapter_dir / "pyproject.toml").write_text("[project]\nname='vox-kokoro'\n", encoding="utf-8")
+
+        monkeypatch.setenv(BUNDLED_ADAPTERS_ENV, str(bundled_root))
+        monkeypatch.setenv(DISABLE_BUNDLED_ADAPTERS_ENV, "1")
+
+        assert _find_bundled_adapter_source("vox-kokoro") is None
+
     def test_install_adapter_package_prefers_bundled_source(self, tmp_path: Path):
         store = _make_store(tmp_path)
         bundled_adapter = tmp_path / "adapters" / "vox-kokoro"
@@ -434,7 +447,8 @@ class TestBundledAdapters:
                 "--python",
                 sys.executable,
                 "--target",
-                str(store.root / "adapters"),
+                str(store.root / "adapters" / "vox-kokoro"),
+                "--upgrade",
                 str(bundled_adapter),
             ]
         ]
@@ -468,8 +482,40 @@ class TestBundledAdapters:
                 "--python",
                 sys.executable,
                 "--target",
-                str(store.root / "adapters"),
+                str(store.root / "adapters" / "vox-kokoro"),
+                "--upgrade",
                 "--no-deps",
                 str(bundled_adapter),
+            ]
+        ]
+
+    def test_install_adapter_package_can_skip_dependencies_for_published_packages(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        store = _make_store(tmp_path)
+        monkeypatch.setenv(ADAPTERS_NO_DEPS_ENV, "1")
+        monkeypatch.setenv(DISABLE_BUNDLED_ADAPTERS_ENV, "1")
+
+        calls: list[list[str]] = []
+
+        def _fake_run(cmd: list[str], **kwargs):
+            calls.append(cmd)
+            return MagicMock(returncode=0, stderr="")
+
+        with patch("vox.core.registry.subprocess.run", side_effect=_fake_run):
+            assert install_adapter_package("vox-kokoro", store.root) is True
+
+        assert calls == [
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                sys.executable,
+                "--target",
+                str(store.root / "adapters" / "vox-kokoro"),
+                "--upgrade",
+                "--no-deps",
+                "vox-kokoro",
             ]
         ]

@@ -96,14 +96,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         espeakng-loader \
         phonemizer-fork && \
     uv pip install --python .venv/bin/python --no-deps \
-        "vibevoice[streamingtts] @ git+https://github.com/microsoft/VibeVoice.git@main" \
         kokoro-onnx==0.4.9 \
         onnx-asr[hub]==0.11.0
 
 ENV PATH="$HOME/app/.venv/bin:$PATH" \
     VOX_HOME=$HOME/.vox \
-    VOX_BUNDLED_ADAPTERS=$HOME/app/adapters \
-    VOX_BUNDLED_ADAPTERS_NO_DEPS=1 \
+    VOX_DISABLE_BUNDLED_ADAPTERS=1 \
+    VOX_ADAPTERS_NO_DEPS=1 \
     VOX_DEVICE=cuda \
     UV_CACHE_DIR=/tmp/uvcache \
     UV_LINK_MODE=copy \

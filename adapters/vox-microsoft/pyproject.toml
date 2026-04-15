@@ -1,6 +1,6 @@
 [project]
 name = "vox-microsoft"
-version = "0.2.1"
+version = "0.2.2"
 description = "Microsoft SpeechT5 and VibeVoice STT/TTS adapters for Vox"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"

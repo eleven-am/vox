@@ -85,7 +85,30 @@ def _version_tuple(version: str) -> tuple[int, ...]:
     return tuple(parts)
 
 
+def _runtime_root() -> Path:
+    vox_home = Path(os.environ.get("VOX_HOME", str(Path.home() / ".vox")))
+    return vox_home / "runtime" / "vibevoice"
+
+
+def _ensure_runtime_path() -> str:
+    runtime_path = str(_runtime_root())
+    _runtime_root().mkdir(parents=True, exist_ok=True)
+    if runtime_path not in sys.path:
+        sys.path.insert(0, runtime_path)
+    return runtime_path
+
+
+def _clear_runtime_modules() -> None:
+    for module_name in list(sys.modules):
+        if module_name == "vibevoice" or module_name.startswith(
+            ("vibevoice.", "diffusers.")
+        ) or module_name == "diffusers":
+            sys.modules.pop(module_name, None)
+    importlib.invalidate_caches()
+
+
 def _require_runtime() -> None:
+    _ensure_runtime_path()
     problems: list[str] = []
     for package_name, required_version in VIBEVOICE_MIN_VERSIONS.items():
         try:
@@ -109,6 +132,7 @@ def _require_runtime() -> None:
 
 
 def _bootstrap_runtime() -> None:
+    runtime_path = _ensure_runtime_path()
     package_specs = {
         "vibevoice": VIBEVOICE_RUNTIME_SPEC,
         "diffusers": "diffusers",
@@ -120,8 +144,25 @@ def _bootstrap_runtime() -> None:
         return
 
     installers = [
-        ["uv", "pip", "install", "--python", sys.executable, "--no-deps"],
-        [sys.executable, "-m", "pip", "install", "--no-deps"],
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
+            "--target",
+            runtime_path,
+            "--no-deps",
+        ],
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--target",
+            runtime_path,
+            "--no-deps",
+        ],
     ]
     for package_name in missing_packages:
         package_spec = package_specs[package_name]
@@ -137,7 +178,11 @@ def _bootstrap_runtime() -> None:
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 continue
             if result.returncode == 0:
-                logger.info("Bootstrapped VibeVoice runtime package: %s", package_spec)
+                logger.info(
+                    "Bootstrapped VibeVoice runtime package into %s: %s",
+                    runtime_path,
+                    package_spec,
+                )
                 break
             logger.warning("%s failed: %s", " ".join(installer), result.stderr)
         else:
@@ -145,6 +190,9 @@ def _bootstrap_runtime() -> None:
                 f"VibeVoice runtime package is missing and could not be bootstrapped: {package_name}. "
                 "Install the community VibeVoice codebase before pulling or serving this model."
             )
+
+    _clear_runtime_modules()
+    _ensure_runtime_path()
 
 
 def _prime_runtime(model_id: str) -> None:

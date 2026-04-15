@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import logging
 import os
 import platform
@@ -430,6 +431,8 @@ ADAPTERS_DIR = "adapters"  # relative to vox home
 REGISTRY_BASE_URL = "https://raw.githubusercontent.com/eleven-am/vox-registry/main"
 BUNDLED_ADAPTERS_ENV = "VOX_BUNDLED_ADAPTERS"
 BUNDLED_ADAPTERS_NO_DEPS_ENV = "VOX_BUNDLED_ADAPTERS_NO_DEPS"
+DISABLE_BUNDLED_ADAPTERS_ENV = "VOX_DISABLE_BUNDLED_ADAPTERS"
+ADAPTERS_NO_DEPS_ENV = "VOX_ADAPTERS_NO_DEPS"
 IMPLICIT_MODEL_ALIASES: dict[str, dict[str, tuple[str, str]]] = {
     "parakeet": {
         "spark": ("parakeet-stt-nemo", "tdt-0.6b-v3"),
@@ -541,6 +544,9 @@ def fetch_registry_index() -> list[dict[str, Any]] | None:
 
 def _find_bundled_adapter_source(package_name: str) -> Path | None:
     """Return a local adapter source tree when one is bundled with the app."""
+    if os.environ.get(DISABLE_BUNDLED_ADAPTERS_ENV, "").lower() in {"1", "true", "yes", "on"}:
+        return None
+
     candidates: list[Path] = []
 
     bundled_root = os.environ.get(BUNDLED_ADAPTERS_ENV)
@@ -556,20 +562,30 @@ def _find_bundled_adapter_source(package_name: str) -> Path | None:
     return None
 
 
+def _adapter_install_dir(vox_home: Path, package_name: str) -> Path:
+    """Return the isolated install directory for a single adapter package."""
+    return vox_home / ADAPTERS_DIR / package_name
+
+
 def install_adapter_package(package_name: str, vox_home: Path) -> bool:
     """Install an adapter package into the vox adapters directory.
 
     Returns True if installation succeeded, False otherwise.
     """
-    target_dir = vox_home / ADAPTERS_DIR
+    target_dir = _adapter_install_dir(vox_home, package_name)
     target_dir.mkdir(parents=True, exist_ok=True)
     package_spec = package_name
 
     bundled_source = _find_bundled_adapter_source(package_name)
-    install_no_deps = False
+    install_no_deps = os.environ.get(ADAPTERS_NO_DEPS_ENV, "").lower() in {"1", "true", "yes", "on"}
     if bundled_source is not None:
         package_spec = str(bundled_source)
-        install_no_deps = os.environ.get(BUNDLED_ADAPTERS_NO_DEPS_ENV, "").lower() in {"1", "true", "yes", "on"}
+        install_no_deps = install_no_deps or os.environ.get(BUNDLED_ADAPTERS_NO_DEPS_ENV, "").lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         logger.info("Installing bundled adapter package from %s", bundled_source)
 
     installers = [
@@ -578,7 +594,7 @@ def install_adapter_package(package_name: str, vox_home: Path) -> bool:
     ]
     for installer in installers:
         try:
-            cmd = [*installer, "--target", str(target_dir)]
+            cmd = [*installer, "--target", str(target_dir), "--upgrade"]
             if install_no_deps:
                 cmd.append("--no-deps")
             cmd.append(package_spec)
@@ -601,9 +617,20 @@ def install_adapter_package(package_name: str, vox_home: Path) -> bool:
 
 def _ensure_adapters_on_path(vox_home: Path) -> None:
     """Add the vox adapters directory to sys.path if not already present."""
-    adapters_dir = str(vox_home / ADAPTERS_DIR)
-    if adapters_dir not in sys.path:
-        sys.path.insert(0, adapters_dir)
+    adapters_root = vox_home / ADAPTERS_DIR
+    adapters_root.mkdir(parents=True, exist_ok=True)
+
+    candidate_paths = [adapters_root]
+    candidate_paths.extend(
+        sorted(path for path in adapters_root.iterdir() if path.is_dir())
+    )
+
+    for path in candidate_paths:
+        path_str = str(path)
+        if path_str not in sys.path:
+            sys.path.insert(0, path_str)
+
+    importlib.invalidate_caches()
 
 
 def discover_adapters() -> dict[str, type]:
@@ -680,6 +707,7 @@ class ModelRegistry:
             return False
 
         # Re-discover after install
+        _ensure_adapters_on_path(self._store.root)
         self._adapters = discover_adapters()
         return adapter_name in self._adapters
 

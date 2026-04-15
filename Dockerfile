@@ -86,8 +86,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 ENV PATH="$HOME/app/.venv/bin:$PATH" \
     VOX_HOME=$HOME/.vox \
-    VOX_BUNDLED_ADAPTERS=$HOME/app/adapters \
-    VOX_BUNDLED_ADAPTERS_NO_DEPS=1 \
+    VOX_DISABLE_BUNDLED_ADAPTERS=1 \
     VOX_DEVICE=auto \
     UV_CACHE_DIR=/tmp/uvcache \
     UV_LINK_MODE=copy \

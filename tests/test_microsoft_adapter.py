@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -381,6 +382,9 @@ class TestVibeVoiceTTSAdapterInfo:
                 "vox_microsoft.vibevoice_tts_adapter.find_spec",
                 return_value=None,
             ), patch(
+                "vox_microsoft.vibevoice_tts_adapter.Path.home",
+                return_value=Path("/tmp/home"),
+            ), patch(
                 "vox_microsoft.vibevoice_tts_adapter.subprocess.run",
                 return_value=completed,
             ) as run, patch(
@@ -398,11 +402,35 @@ class TestVibeVoiceTTSAdapterInfo:
 
                 assert run.call_count == 2
                 assert any(
-                    "vibevoice[streamingtts] @ git+https://github.com/microsoft/VibeVoice.git@main"
-                    in " ".join(call.args[0])
+                    call.args[0]
+                    == [
+                        "uv",
+                        "pip",
+                        "install",
+                        "--python",
+                        sys.executable,
+                        "--target",
+                        "/tmp/home/.vox/runtime/vibevoice",
+                        "--no-deps",
+                        "vibevoice[streamingtts] @ git+https://github.com/microsoft/VibeVoice.git@main",
+                    ]
                     for call in run.call_args_list
                 )
-                assert any("diffusers" in " ".join(call.args[0]) for call in run.call_args_list)
+                assert any(
+                    call.args[0]
+                    == [
+                        "uv",
+                        "pip",
+                        "install",
+                        "--python",
+                        sys.executable,
+                        "--target",
+                        "/tmp/home/.vox/runtime/vibevoice",
+                        "--no-deps",
+                        "diffusers",
+                    ]
+                    for call in run.call_args_list
+                )
 
     def test_list_voices_returns_empty(self):
         with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
