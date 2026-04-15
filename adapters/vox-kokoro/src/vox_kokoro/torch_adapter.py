@@ -115,9 +115,9 @@ class KokoroTorchAdapter(TTSAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="kokoro-torch",
+            name="kokoro-tts-torch",
             type=ModelType.TTS,
-            architectures=("kokoro-torch",),
+            architectures=("kokoro-tts-torch", "kokoro-torch"),
             default_sample_rate=SAMPLE_RATE,
             supported_formats=(ModelFormat.PYTORCH,),
             supports_streaming=True,

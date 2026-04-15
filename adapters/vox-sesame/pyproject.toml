@@ -1,16 +1,18 @@
 [project]
 name = "vox-sesame"
-version = "0.1.0"
+version = "0.2.1"
 description = "Sesame CSM 1B TTS adapter for Vox"
+readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
 dependencies = [
-    "vox>=0.1.0",
+    "vox-runtime>=0.2.2",
     "transformers>=4.52.1",
     "torch>=2.1.0",
     "numpy>=1.26.0,<2.4",
 ]
 
 [project.entry-points."vox.adapters"]
+sesame-tts-torch = "vox_sesame.adapter:SesameTTSAdapter"
 sesame = "vox_sesame.adapter:SesameTTSAdapter"
 
 [build-system]

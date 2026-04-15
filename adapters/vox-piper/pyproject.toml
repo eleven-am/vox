@@ -1,15 +1,17 @@
 [project]
 name = "vox-piper"
-version = "0.1.0"
+version = "0.2.1"
 description = "Piper TTS adapter for Vox"
+readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
 dependencies = [
-    "vox>=0.1.0",
+    "vox-runtime>=0.2.2",
     "piper-tts>=1.2.0,<2.0.0",
     "numpy>=1.26.0,<2.4",
 ]
 
 [project.entry-points."vox.adapters"]
+piper-tts-onnx = "vox_piper.adapter:PiperAdapter"
 piper = "vox_piper.adapter:PiperAdapter"
 
 [build-system]

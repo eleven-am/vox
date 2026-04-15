@@ -44,9 +44,9 @@ class SpeechT5STTAdapter(STTAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="speecht5-stt",
+            name="speecht5-stt-torch",
             type=ModelType.STT,
-            architectures=("speecht5", "speecht5-asr"),
+            architectures=("speecht5-stt-torch", "speecht5", "speecht5-asr"),
             default_sample_rate=SPEECHT5_SAMPLE_RATE,
             supported_formats=(ModelFormat.PYTORCH,),
             supports_streaming=False,

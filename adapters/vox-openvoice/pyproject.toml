@@ -1,10 +1,11 @@
 [project]
 name = "vox-openvoice"
-version = "0.1.0"
+version = "0.2.1"
 description = "OpenVoice TTS adapter for Vox"
+readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
 dependencies = [
-    "vox>=0.1.0",
+    "vox-runtime>=0.2.2",
     "numpy>=1.26.0,<2.4",
     "torch>=2.1.0",
     "librosa>=0.10.0",
@@ -12,6 +13,7 @@ dependencies = [
 ]
 
 [project.entry-points."vox.adapters"]
+openvoice-tts-torch = "vox_openvoice.adapter:OpenVoiceTTSAdapter"
 openvoice = "vox_openvoice.adapter:OpenVoiceTTSAdapter"
 
 [build-system]

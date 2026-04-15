@@ -23,8 +23,10 @@ class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
         self._scheduler = scheduler
 
     async def Pull(self, request, context):
+        explicit_tag = ":" in request.name
         name, tag = parse_model_name(request.name)
-        catalog_entry = self._registry.lookup(name, tag)
+        resolved_name, resolved_tag = self._registry.resolve_model_ref(name, tag, explicit_tag=explicit_tag)
+        catalog_entry = self._registry.lookup(name, tag, explicit_tag=explicit_tag)
         if not catalog_entry:
             yield vox_pb2.PullProgress(status="error", error=f"Model '{request.name}' not found in catalog")
             return
@@ -36,7 +38,10 @@ class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
         if adapter_package:
             yield vox_pb2.PullProgress(status=f"checking adapter {adapter_name}")
             if not self._registry.ensure_adapter(adapter_name, adapter_package):
-                yield vox_pb2.PullProgress(status="error", error=f"Failed to install adapter package: {adapter_package}")
+                yield vox_pb2.PullProgress(
+                    status="error",
+                    error=f"Failed to install adapter package: {adapter_package}",
+                )
                 return
             yield vox_pb2.PullProgress(status=f"adapter {adapter_name} ready")
 
@@ -100,7 +105,7 @@ class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
                     "adapter_package": catalog_entry.get("adapter_package", ""),
                 },
             )
-            self._store.save_manifest(name, tag, manifest)
+            self._store.save_manifest(resolved_name, resolved_tag, manifest)
 
             yield vox_pb2.PullProgress(status="success")
 
@@ -125,8 +130,10 @@ class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
         )
 
     async def Show(self, request, context):
+        explicit_tag = ":" in request.name
         name, tag = parse_model_name(request.name)
-        manifest = self._store.resolve_model(name, tag)
+        resolved_name, resolved_tag = self._registry.resolve_model_ref(name, tag, explicit_tag=explicit_tag)
+        manifest = self._store.resolve_model(resolved_name, resolved_tag)
         if not manifest:
             await context.abort(grpc.StatusCode.NOT_FOUND, f"Model '{request.name}' not found")
 
@@ -149,16 +156,18 @@ class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
         )
 
     async def Delete(self, request, context):
+        explicit_tag = ":" in request.name
         name, tag = parse_model_name(request.name)
+        resolved_name, resolved_tag = self._registry.resolve_model_ref(name, tag, explicit_tag=explicit_tag)
 
-        unloaded = await self._scheduler.unload(request.name)
+        unloaded = await self._scheduler.unload(f"{resolved_name}:{resolved_tag}")
         if not unloaded:
             await context.abort(grpc.StatusCode.FAILED_PRECONDITION, f"Model '{request.name}' is currently in use")
 
-        manifest = self._store.resolve_model(name, tag)
+        manifest = self._store.resolve_model(resolved_name, resolved_tag)
         if not manifest:
             await context.abort(grpc.StatusCode.NOT_FOUND, f"Model '{request.name}' not found")
 
-        self._store.delete_model(name, tag)
+        self._store.delete_model(resolved_name, resolved_tag)
         self._store.gc_blobs()
         return vox_pb2.DeleteResponse(status="success")

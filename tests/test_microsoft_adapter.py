@@ -24,7 +24,7 @@ class TestSpeechT5STTAdapterInfo:
             adapter = SpeechT5STTAdapter()
             info = adapter.info()
 
-            assert info.name == "speecht5-stt"
+            assert info.name == "speecht5-stt-torch"
             assert info.type == ModelType.STT
             assert "speecht5" in info.architectures
             assert info.default_sample_rate == 16000
@@ -111,7 +111,7 @@ class TestSpeechT5TTSAdapterInfo:
             adapter = SpeechT5TTSAdapter()
             info = adapter.info()
 
-            assert info.name == "speecht5-tts"
+            assert info.name == "speecht5-tts-torch"
             assert info.type == ModelType.TTS
             assert "speecht5" in info.architectures
             assert info.default_sample_rate == 16000
@@ -195,7 +195,7 @@ class TestVibeVoiceTTSAdapterInfo:
             adapter = VibeVoiceTTSAdapter()
             info = adapter.info()
 
-            assert info.name == "vibevoice-tts"
+            assert info.name == "vibevoice-tts-torch"
             assert info.type == ModelType.TTS
             assert "vibevoice" in info.architectures
             assert info.default_sample_rate == 24000

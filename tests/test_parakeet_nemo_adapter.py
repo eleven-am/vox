@@ -88,7 +88,7 @@ def test_info_exposes_pytorch_and_nemo_adapter_name():
     from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
 
     info = ParakeetNemoAdapter().info()
-    assert info.name == "parakeet-nemo"
+    assert info.name == "parakeet-stt-nemo"
     assert info.type.value == "stt"
     assert info.supported_formats[0].value == "pytorch"
     assert info.supports_word_timestamps is True

@@ -150,9 +150,9 @@ class ParakeetNemoAdapter(STTAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="parakeet-nemo",
+            name="parakeet-stt-nemo",
             type=ModelType.STT,
-            architectures=("parakeet", "parakeet-nemo", "parakeet-tdt"),
+            architectures=("parakeet-stt-nemo", "parakeet", "parakeet-nemo", "parakeet-tdt"),
             default_sample_rate=PARAKEET_SAMPLE_RATE,
             supported_formats=(ModelFormat.PYTORCH,),
             supports_streaming=False,

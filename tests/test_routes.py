@@ -30,7 +30,6 @@ from vox.core.types import (
 from vox.server.routes import get_default_model
 from vox.server.routes.transcribe import _mime_to_format
 
-
 # ---------------------------------------------------------------------------
 # Fake adapters
 # ---------------------------------------------------------------------------
@@ -164,6 +163,14 @@ def _build_app(
     app.state.scheduler = scheduler or MockScheduler()
     app.state.registry = registry or MagicMock()
     app.state.store = store or MagicMock(list_models=MagicMock(return_value=[]))
+
+    resolver = getattr(app.state.registry, "resolve_model_ref", None)
+    if (
+        isinstance(resolver, MagicMock)
+        and resolver.side_effect is None
+        and not isinstance(resolver.return_value, tuple)
+    ):
+        resolver.side_effect = lambda name, tag, explicit_tag=False: (name, tag)
 
     from vox.server.routes import health, models, synthesize, transcribe, voices
 
@@ -448,7 +455,7 @@ def _make_store_mock(**overrides):
     """Build a store MagicMock with sensible defaults."""
     store = MagicMock()
     store.list_models.return_value = overrides.get("list_models", [])
-    store.resolve_model.return_value = overrides.get("resolve_model", None)
+    store.resolve_model.return_value = overrides.get("resolve_model")
     store.delete_model.return_value = None
     store.gc_blobs.return_value = None
     return store

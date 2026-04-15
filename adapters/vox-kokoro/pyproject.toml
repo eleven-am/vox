@@ -1,10 +1,11 @@
 [project]
 name = "vox-kokoro"
-version = "0.1.0"
+version = "0.2.1"
 description = "Kokoro TTS adapter for Vox"
+readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
 dependencies = [
-    "vox>=0.1.0",
+    "vox-runtime>=0.2.2",
     "kokoro-onnx>=0.4.5,<0.5.0",
     "kokoro>=0.9.4,<1.0.0",
     "numpy>=1.26.0,<2.4",
@@ -12,6 +13,8 @@ dependencies = [
 ]
 
 [project.entry-points."vox.adapters"]
+kokoro-tts-onnx = "vox_kokoro.adapter:KokoroAdapter"
+kokoro-tts-torch = "vox_kokoro.torch_adapter:KokoroTorchAdapter"
 kokoro = "vox_kokoro.adapter:KokoroAdapter"
 kokoro-torch = "vox_kokoro.torch_adapter:KokoroTorchAdapter"
 

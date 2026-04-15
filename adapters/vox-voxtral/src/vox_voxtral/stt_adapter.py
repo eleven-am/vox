@@ -69,9 +69,9 @@ class VoxtralSTTAdapter(STTAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="voxtral-stt",
+            name="voxtral-stt-torch",
             type=ModelType.STT,
-            architectures=("voxtral", "voxtral-mini", "voxtral-small", "voxtral-realtime"),
+            architectures=("voxtral-stt-torch", "voxtral", "voxtral-mini", "voxtral-small", "voxtral-realtime"),
             default_sample_rate=VOXTRAL_SAMPLE_RATE,
             supported_formats=(ModelFormat.PYTORCH,),
             supports_streaming=False,

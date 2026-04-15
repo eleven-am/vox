@@ -86,11 +86,11 @@ class TestLookup:
         store = _make_store(tmp_path)
         registry = _make_registry(store)
 
-        entry = registry.lookup("whisper", "large-v3")
+        entry = registry.lookup("whisper-stt-ct2", "large-v3")
         assert entry is not None
         assert entry["source"] == "Systran/faster-whisper-large-v3"
         assert entry["type"] == "stt"
-        assert entry["adapter"] == "whisper"
+        assert entry["adapter"] == "whisper-stt-ct2"
 
     def test_lookup_missing_model(self, tmp_path: Path):
         store = _make_store(tmp_path)
@@ -102,8 +102,44 @@ class TestLookup:
         store = _make_store(tmp_path)
         registry = _make_registry(store)
 
-        # "whisper" exists but "no-such-tag" does not
-        assert registry.lookup("whisper", "no-such-tag") is None
+        assert registry.lookup("whisper-stt-ct2", "no-such-tag") is None
+
+    def test_lookup_bare_family_prefers_spark_alias_when_cuda(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        store = _make_store(tmp_path)
+        registry = _make_registry(store)
+        monkeypatch.setenv("VOX_DEVICE", "cuda")
+        monkeypatch.setattr("vox.core.registry.platform.machine", lambda: "arm64")
+
+        entry = registry.lookup("parakeet")
+        assert entry is not None
+        assert entry is CATALOG["parakeet-stt-nemo"]["tdt-0.6b-v3"]
+
+        kokoro = registry.lookup("kokoro")
+        assert kokoro is not None
+        assert kokoro is CATALOG["kokoro-tts-torch"]["v1.0"]
+
+    def test_lookup_bare_family_prefers_default_alias_off_spark(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        store = _make_store(tmp_path)
+        registry = _make_registry(store)
+        monkeypatch.setenv("VOX_DEVICE", "auto")
+        monkeypatch.setattr("vox.core.registry.platform.machine", lambda: "arm64")
+
+        entry = registry.lookup("parakeet")
+        assert entry is not None
+        assert entry is CATALOG["parakeet-stt-onnx"]["tdt-0.6b-v3"]
+
+        kokoro = registry.lookup("kokoro")
+        assert kokoro is not None
+        assert kokoro is CATALOG["kokoro-tts-onnx"]["v1.0"]
+
+    def test_lookup_explicit_latest_is_not_rewritten(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        store = _make_store(tmp_path)
+        registry = _make_registry(store)
+        monkeypatch.setenv("VOX_DEVICE", "cuda")
+        monkeypatch.setattr("vox.core.registry.platform.machine", lambda: "arm64")
+
+        assert registry.lookup("parakeet", "latest", explicit_tag=True) is None
+        assert registry.resolve_model_ref("parakeet", "latest", explicit_tag=True) == ("parakeet", "latest")
 
 
 # ---------------------------------------------------------------------------
@@ -237,55 +273,87 @@ class TestAvailableModels:
 
         catalog = registry.available_models()
         assert catalog is CATALOG
-        assert "whisper" in catalog
-        assert "kokoro" in catalog
+        assert "whisper-stt-ct2" in catalog
+        assert "kokoro-tts-onnx" in catalog
 
     def test_whisper_catalog_uses_ct2_and_whisper_adapter_package(self):
-        whisper = CATALOG["whisper"]
+        whisper = CATALOG["whisper-stt-ct2"]
 
-        assert set(whisper) == {"large-v3", "large-v3-turbo", "base.en"}
+        assert set(whisper) == {"large-v3", "large-v3-turbo", "base.en", "small.en", "medium.en"}
         for _tag, entry in whisper.items():
             assert entry["adapter_package"] == "vox-whisper"
             assert entry["format"] == "ct2"
-            assert entry["adapter"] == "whisper"
+            assert entry["adapter"] == "whisper-stt-ct2"
             assert entry["type"] == "stt"
             assert entry["parameters"]["sample_rate"] == 16000
 
     def test_sesame_catalog_entry_has_default_voice(self):
-        sesame = CATALOG["sesame"]["csm-1b"]
+        sesame = CATALOG["sesame-tts-torch"]["csm-1b"]
 
         assert sesame["adapter_package"] == "vox-sesame"
         assert sesame["parameters"]["sample_rate"] == 24_000
         assert sesame["parameters"]["default_voice"] == "0"
 
     def test_parakeet_nemo_catalog_entry_is_explicit_and_pytorch(self):
-        parakeet_nemo = CATALOG["parakeet"]["tdt-0.6b-v3-nemo"]
+        parakeet_nemo = CATALOG["parakeet-stt-nemo"]["tdt-0.6b-v3"]
 
         assert parakeet_nemo["adapter_package"] == "vox-parakeet"
-        assert parakeet_nemo["adapter"] == "parakeet-nemo"
+        assert parakeet_nemo["adapter"] == "parakeet-stt-nemo"
         assert parakeet_nemo["format"] == "pytorch"
         assert parakeet_nemo["files"] == ["parakeet-tdt-0.6b-v3.nemo"]
         assert parakeet_nemo["parameters"]["sample_rate"] == 16_000
 
     def test_parakeet_cuda_alias_points_to_nemo_backend(self):
-        parakeet_cuda = CATALOG["parakeet"]["tdt-0.6b-v3-cuda"]
+        registry_entry = CATALOG["parakeet-stt-nemo"]["tdt-0.6b-v3"]
 
-        assert parakeet_cuda["adapter_package"] == "vox-parakeet"
-        assert parakeet_cuda["adapter"] == "parakeet-nemo"
-        assert parakeet_cuda["format"] == "pytorch"
-        assert parakeet_cuda["files"] == ["parakeet-tdt-0.6b-v3.nemo"]
+        assert registry_entry["adapter_package"] == "vox-parakeet"
+        assert registry_entry["adapter"] == "parakeet-stt-nemo"
+        assert registry_entry["format"] == "pytorch"
+        assert registry_entry["files"] == ["parakeet-tdt-0.6b-v3.nemo"]
+
+    def test_parakeet_1_1b_variants_use_nemo_backend(self):
+        parakeet_nemo = CATALOG["parakeet-stt-nemo"]["tdt-1.1b"]
+
+        assert parakeet_nemo["adapter_package"] == "vox-parakeet"
+        assert parakeet_nemo["adapter"] == "parakeet-stt-nemo"
+        assert parakeet_nemo["files"] == ["parakeet-tdt-1.1b.nemo"]
+
+    def test_voxtral_24b_alias_points_to_large_stt_source(self):
+        voxtral_24b = CATALOG["voxtral-stt-torch"]["24b"]
+
+        assert voxtral_24b["adapter_package"] == "vox-voxtral"
+        assert voxtral_24b["adapter"] == "voxtral-stt-torch"
+        assert voxtral_24b["source"] == "mistralai/Voxtral-Small-24B-2507"
 
     def test_kokoro_torch_catalog_entry_is_explicit_and_pytorch(self):
-        kokoro_torch = CATALOG["kokoro"]["v1.0-torch"]
+        kokoro_torch = CATALOG["kokoro-tts-torch"]["v1.0"]
 
         assert kokoro_torch["adapter_package"] == "vox-kokoro"
-        assert kokoro_torch["adapter"] == "kokoro-torch"
+        assert kokoro_torch["adapter"] == "kokoro-tts-torch"
         assert kokoro_torch["format"] == "pytorch"
         assert kokoro_torch["files"] == ["kokoro-v1_0.pth"]
         assert kokoro_torch["parameters"]["default_voice"] == "af_heart"
 
+    def test_resolve_model_ref_uses_aliases(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        store = _make_store(tmp_path)
+        registry = _make_registry(store)
+        monkeypatch.setenv("VOX_DEVICE", "cuda")
+        monkeypatch.setattr("vox.core.registry.platform.machine", lambda: "arm64")
+
+        assert registry.resolve_model_ref("parakeet") == ("parakeet-stt-nemo", "tdt-0.6b-v3")
+        assert registry.resolve_model_ref("kokoro") == ("kokoro-tts-torch", "v1.0")
+
+    def test_resolve_model_ref_keeps_explicit_tags(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+        store = _make_store(tmp_path)
+        registry = _make_registry(store)
+        monkeypatch.setenv("VOX_DEVICE", "cuda")
+        monkeypatch.setattr("vox.core.registry.platform.machine", lambda: "arm64")
+
+        assert registry.resolve_model_ref("parakeet", "latest", explicit_tag=True) == ("parakeet", "latest")
+        assert registry.resolve_model_ref("kokoro", "v1.0", explicit_tag=True) == ("kokoro-tts-onnx", "v1.0")
+
     def test_openvoice_catalog_entry_has_checkpoint_files(self):
-        openvoice = CATALOG["openvoice"]["v1"]
+        openvoice = CATALOG["openvoice-tts-torch"]["v1"]
 
         assert openvoice["adapter_package"] == "vox-openvoice"
         assert openvoice["parameters"]["sample_rate"] == 22_050
@@ -293,10 +361,18 @@ class TestAvailableModels:
         assert "checkpoints/base_speakers/EN/config.json" in openvoice["files"]
 
     def test_xtts_catalog_entry_uses_huggingface_repo_id(self):
-        xtts = CATALOG["xtts"]["v2"]
+        xtts = CATALOG["xtts-tts-torch"]["v2"]
 
         assert xtts["source"] == "coqui/XTTS-v2"
         assert xtts["adapter_package"] == "vox-xtts"
+
+    def test_resolve_legacy_aliases_to_canonical_names(self, tmp_path: Path):
+        store = _make_store(tmp_path)
+        registry = _make_registry(store)
+
+        assert registry.resolve_model_ref("qwen3-asr", "0.6b", explicit_tag=True) == ("qwen3-stt-torch", "0.6b")
+        assert registry.resolve_model_ref("speecht5", "asr", explicit_tag=True) == ("speecht5-stt-torch", "base")
+        assert registry.resolve_model_ref("voxtral", "tts-4b", explicit_tag=True) == ("voxtral-tts-vllm", "4b")
 
 
 # ---------------------------------------------------------------------------

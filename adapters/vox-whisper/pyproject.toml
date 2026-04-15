@@ -1,10 +1,11 @@
 [project]
 name = "vox-whisper"
-version = "0.1.0"
+version = "0.2.1"
 description = "faster-whisper / CTranslate2 Whisper adapter for Vox"
+readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
 dependencies = [
-    "vox>=0.1.0",
+    "vox-runtime>=0.2.2",
     "faster-whisper>=1.2.1,<2.0.0",
     "ctranslate2>=4.7.1,<5.0.0",
     "torch>=2.1.0",
@@ -12,6 +13,7 @@ dependencies = [
 ]
 
 [project.entry-points."vox.adapters"]
+whisper-stt-ct2 = "vox_whisper.adapter:WhisperAdapter"
 whisper = "vox_whisper.adapter:WhisperAdapter"
 
 [build-system]

@@ -1,10 +1,11 @@
 [project]
 name = "vox-parakeet"
-version = "0.1.1"
+version = "0.2.1"
 description = "NVIDIA Parakeet STT adapters for Vox"
+readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
 dependencies = [
-    "vox>=0.1.0",
+    "vox-runtime>=0.2.2",
     "onnx-asr[gpu,hub]>=0.10.0; platform_machine == 'x86_64'",
     "onnx-asr[hub]>=0.10.0; platform_machine != 'x86_64'",
     "numpy>=1.26.0,<2.4",
@@ -14,6 +15,8 @@ dependencies = [
 ]
 
 [project.entry-points."vox.adapters"]
+parakeet-stt-onnx = "vox_parakeet.adapter:ParakeetAdapter"
+parakeet-stt-nemo = "vox_parakeet.nemo_adapter:ParakeetNemoAdapter"
 parakeet = "vox_parakeet.adapter:ParakeetAdapter"
 parakeet-nemo = "vox_parakeet.nemo_adapter:ParakeetNemoAdapter"
 

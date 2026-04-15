@@ -35,7 +35,7 @@ class TestOpenVoiceAdapterInfo:
             adapter = OpenVoiceTTSAdapter()
             info = adapter.info()
 
-            assert info.name == "openvoice"
+            assert info.name == "openvoice-tts-torch"
             assert info.type == ModelType.TTS
             assert "openvoice" in info.architectures
             assert info.default_sample_rate == 22_050

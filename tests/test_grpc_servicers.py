@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
@@ -14,6 +13,12 @@ from vox.grpc import vox_pb2
 
 def _make_store(tmp_path: Path) -> BlobStore:
     return BlobStore(root=tmp_path)
+
+
+def _make_registry_mock() -> MagicMock:
+    registry = MagicMock()
+    registry.resolve_model_ref.side_effect = lambda name, tag, explicit_tag=False: (name, tag)
+    return registry
 
 
 class FakeContext:
@@ -82,7 +87,7 @@ class TestModelServicer:
         from vox.grpc.model_servicer import ModelServicer
 
         store = _make_store(tmp_path)
-        registry = MagicMock()
+        registry = _make_registry_mock()
         scheduler = MagicMock()
 
         model_info = MagicMock()
@@ -107,7 +112,7 @@ class TestModelServicer:
         from vox.grpc.model_servicer import ModelServicer
 
         store = _make_store(tmp_path)
-        registry = MagicMock()
+        registry = _make_registry_mock()
         scheduler = MagicMock()
 
         servicer = ModelServicer(store, registry, scheduler)
@@ -121,7 +126,7 @@ class TestModelServicer:
         from vox.grpc.model_servicer import ModelServicer
 
         store = _make_store(tmp_path)
-        registry = MagicMock()
+        registry = _make_registry_mock()
         scheduler = MagicMock()
         scheduler.unload = AsyncMock(return_value=True)
 
@@ -136,7 +141,7 @@ class TestModelServicer:
         from vox.grpc.model_servicer import ModelServicer
 
         store = _make_store(tmp_path)
-        registry = MagicMock()
+        registry = _make_registry_mock()
         registry.lookup.return_value = None
         scheduler = MagicMock()
 

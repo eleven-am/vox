@@ -34,8 +34,10 @@ async def pull_model(req: PullRequest, request: Request):
     store = request.app.state.store
     registry = request.app.state.registry
 
+    explicit_tag = ":" in req.name
     name, tag = parse_model_name(req.name)
-    catalog_entry = registry.lookup(name, tag)
+    resolved_name, resolved_tag = registry.resolve_model_ref(name, tag, explicit_tag=explicit_tag)
+    catalog_entry = registry.lookup(name, tag, explicit_tag=explicit_tag)
     if not catalog_entry:
         raise HTTPException(status_code=404, detail=f"Model '{req.name}' not found in catalog")
 
@@ -121,7 +123,7 @@ async def pull_model(req: PullRequest, request: Request):
                     "adapter_package": catalog_entry.get("adapter_package", ""),
                 },
             )
-            store.save_manifest(name, tag, manifest)
+            store.save_manifest(resolved_name, resolved_tag, manifest)
 
             yield json.dumps({"status": "success"}) + "\n"
 
@@ -154,15 +156,23 @@ async def list_models(request: Request):
 @router.post("/api/show")
 async def show_model(req: ShowRequest, request: Request):
     store = request.app.state.store
+    registry = request.app.state.registry
+    explicit_tag = ":" in req.name
     name, tag = parse_model_name(req.name)
-    manifest = store.resolve_model(name, tag)
+    resolved_name, resolved_tag = registry.resolve_model_ref(name, tag, explicit_tag=explicit_tag)
+    manifest = store.resolve_model(resolved_name, resolved_tag)
     if not manifest:
         raise HTTPException(status_code=404, detail=f"Model '{req.name}' not found")
     return {
         "name": req.name,
         "config": manifest.config,
         "layers": [
-            {"media_type": layer_dict.media_type, "digest": layer_dict.digest, "size": layer_dict.size, "filename": layer_dict.filename}
+            {
+                "media_type": layer_dict.media_type,
+                "digest": layer_dict.digest,
+                "size": layer_dict.size,
+                "filename": layer_dict.filename,
+            }
             for layer_dict in manifest.layers
         ],
     }
@@ -172,17 +182,20 @@ async def show_model(req: ShowRequest, request: Request):
 async def delete_model(req: DeleteRequest, request: Request):
     store = request.app.state.store
     scheduler = request.app.state.scheduler
+    registry = request.app.state.registry
+    explicit_tag = ":" in req.name
     name, tag = parse_model_name(req.name)
+    resolved_name, resolved_tag = registry.resolve_model_ref(name, tag, explicit_tag=explicit_tag)
 
     # Unload if loaded
-    unloaded = await scheduler.unload(req.name)
+    unloaded = await scheduler.unload(f"{resolved_name}:{resolved_tag}")
     if not unloaded:
         raise HTTPException(status_code=409, detail=f"Model '{req.name}' is currently in use")
 
-    manifest = store.resolve_model(name, tag)
+    manifest = store.resolve_model(resolved_name, resolved_tag)
     if not manifest:
         raise HTTPException(status_code=404, detail=f"Model '{req.name}' not found")
 
-    store.delete_model(name, tag)
+    store.delete_model(resolved_name, resolved_tag)
     store.gc_blobs()
     return {"status": "success"}

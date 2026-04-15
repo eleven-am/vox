@@ -88,7 +88,7 @@ class TestVoxtralSTTAdapterInfo:
             adapter = VoxtralSTTAdapter()
             info = adapter.info()
 
-            assert info.name == "voxtral-stt"
+            assert info.name == "voxtral-stt-torch"
             assert info.type == ModelType.STT
             assert "voxtral" in info.architectures
             assert info.default_sample_rate == 16000
@@ -233,9 +233,9 @@ class TestVoxtralTTSAdapterInfo:
             adapter = VoxtralTTSAdapter()
             info = adapter.info()
 
-            assert info.name == "voxtral-tts"
+            assert info.name == "voxtral-tts-vllm"
             assert info.type == ModelType.TTS
-            assert "voxtral-tts" in info.architectures
+            assert "voxtral-tts-vllm" in info.architectures
             assert info.default_sample_rate == 24000
             assert ModelFormat.PYTORCH in info.supported_formats
             assert info.supports_voice_cloning is False

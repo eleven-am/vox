@@ -42,7 +42,7 @@ def _write_piper_bundle(root: Path) -> tuple[Path, Path]:
 
 class TestPiperAdapter:
     def test_registry_points_to_specific_voice_bundle(self):
-        entry = CATALOG["piper"]["en-us-lessac-medium"]
+        entry = CATALOG["piper-tts-onnx"]["en-us-lessac-medium"]
 
         assert entry["source"] == "rhasspy/piper-voices"
         assert entry["format"] == "onnx"
@@ -65,7 +65,7 @@ class TestPiperAdapter:
             adapter = PiperAdapter()
             info = adapter.info()
 
-            assert info.name == "piper"
+            assert info.name == "piper-tts-onnx"
             assert info.type == ModelType.TTS
             assert "piper" in info.architectures
             assert info.default_sample_rate == 22050

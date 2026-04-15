@@ -1,10 +1,11 @@
 [project]
 name = "vox-dia"
-version = "0.1.0"
+version = "0.2.1"
 description = "Dia TTS adapter for Vox"
+readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
 dependencies = [
-    "vox>=0.1.0",
+    "vox-runtime>=0.2.2",
     "transformers>=4.52.1",
     "torch>=2.1.0",
     "numpy>=1.26.0,<2.4",
@@ -13,6 +14,7 @@ dependencies = [
 ]
 
 [project.entry-points."vox.adapters"]
+dia-tts-torch = "vox_dia.adapter:DiaAdapter"
 dia = "vox_dia.adapter:DiaAdapter"
 
 [build-system]

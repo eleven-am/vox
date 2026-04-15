@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import platform
 import subprocess
 import sys
 from dataclasses import replace
@@ -22,12 +23,12 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 CATALOG: dict[str, dict[str, dict[str, Any]]] = {
-    "parakeet": {
+    "parakeet-stt-onnx": {
         "tdt-0.6b": {
             "source": "nvidia/parakeet-tdt-0.6b-v2",
             "architecture": "parakeet",
             "type": "stt",
-            "adapter": "parakeet",
+            "adapter": "parakeet-stt-onnx",
             "format": "onnx",
             "description": "NVIDIA Parakeet TDT 0.6B — top Open ASR Leaderboard model",
             "license": "CC-BY-4.0",
@@ -38,18 +39,20 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "source": "nvidia/parakeet-tdt-0.6b-v3",
             "architecture": "parakeet",
             "type": "stt",
-            "adapter": "parakeet",
+            "adapter": "parakeet-stt-onnx",
             "format": "onnx",
             "description": "NVIDIA Parakeet TDT 0.6B v3 — 25 languages, streaming support",
             "license": "CC-BY-4.0",
             "parameters": {"sample_rate": 16000},
             "adapter_package": "vox-parakeet",
         },
-        "tdt-0.6b-v3-nemo": {
+    },
+    "parakeet-stt-nemo": {
+        "tdt-0.6b-v3": {
             "source": "nvidia/parakeet-tdt-0.6b-v3",
             "architecture": "parakeet-nemo",
             "type": "stt",
-            "adapter": "parakeet-nemo",
+            "adapter": "parakeet-stt-nemo",
             "format": "pytorch",
             "description": "NVIDIA Parakeet TDT 0.6B v3 — native NeMo/PyTorch CUDA ASR",
             "license": "CC-BY-4.0",
@@ -57,36 +60,38 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "files": ["parakeet-tdt-0.6b-v3.nemo"],
             "adapter_package": "vox-parakeet",
         },
-        "tdt-0.6b-v3-cuda": {
-            "source": "nvidia/parakeet-tdt-0.6b-v3",
+        "tdt-1.1b": {
+            "source": "nvidia/parakeet-tdt-1.1b",
             "architecture": "parakeet-nemo",
             "type": "stt",
-            "adapter": "parakeet-nemo",
+            "adapter": "parakeet-stt-nemo",
             "format": "pytorch",
-            "description": "NVIDIA Parakeet TDT 0.6B v3 — CUDA/NeMo backend alias",
+            "description": "NVIDIA Parakeet TDT 1.1B — larger native NeMo/PyTorch CUDA ASR",
             "license": "CC-BY-4.0",
             "parameters": {"sample_rate": 16000},
-            "files": ["parakeet-tdt-0.6b-v3.nemo"],
+            "files": ["parakeet-tdt-1.1b.nemo"],
             "adapter_package": "vox-parakeet",
         },
     },
-    "kokoro": {
+    "kokoro-tts-onnx": {
         "v1.0": {
             "source": "onnx-community/Kokoro-82M-v1.0-ONNX",
             "architecture": "kokoro",
             "type": "tts",
-            "adapter": "kokoro",
+            "adapter": "kokoro-tts-onnx",
             "format": "onnx",
             "description": "Kokoro 82M ONNX — fast, lightweight TTS with preset voices",
             "license": "Apache-2.0",
             "parameters": {"sample_rate": 24000, "default_voice": "af_heart"},
             "adapter_package": "vox-kokoro",
         },
-        "v1.0-torch": {
+    },
+    "kokoro-tts-torch": {
+        "v1.0": {
             "source": "hexgrad/Kokoro-82M",
             "architecture": "kokoro-torch",
             "type": "tts",
-            "adapter": "kokoro-torch",
+            "adapter": "kokoro-tts-torch",
             "format": "pytorch",
             "description": "Kokoro 82M native runtime — PyTorch backend for Spark/CUDA systems",
             "license": "Apache-2.0",
@@ -95,24 +100,24 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-kokoro",
         },
     },
-    "xtts": {
+    "xtts-tts-torch": {
         "v2": {
             "source": "coqui/XTTS-v2",
             "architecture": "xtts-v2",
             "type": "tts",
-            "adapter": "xtts",
+            "adapter": "xtts-tts-torch",
             "format": "pytorch",
             "description": "Coqui XTTS-v2 — multilingual voice cloning TTS",
             "parameters": {"sample_rate": 24000},
             "adapter_package": "vox-xtts",
         },
     },
-    "whisper": {
+    "whisper-stt-ct2": {
         "large-v3": {
             "source": "Systran/faster-whisper-large-v3",
             "architecture": "whisper",
             "type": "stt",
-            "adapter": "whisper",
+            "adapter": "whisper-stt-ct2",
             "format": "ct2",
             "description": "OpenAI Whisper Large V3 via CTranslate2",
             "license": "MIT",
@@ -123,7 +128,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "source": "deepdml/faster-whisper-large-v3-turbo-ct2",
             "architecture": "whisper",
             "type": "stt",
-            "adapter": "whisper",
+            "adapter": "whisper-stt-ct2",
             "format": "ct2",
             "description": "OpenAI Whisper Large V3 Turbo — faster with minor quality loss",
             "license": "MIT",
@@ -134,20 +139,42 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "source": "Systran/faster-whisper-base.en",
             "architecture": "whisper",
             "type": "stt",
-            "adapter": "whisper",
+            "adapter": "whisper-stt-ct2",
             "format": "ct2",
             "description": "OpenAI Whisper Base English — small and fast",
             "license": "MIT",
             "parameters": {"sample_rate": 16000},
             "adapter_package": "vox-whisper",
         },
+        "small.en": {
+            "source": "Systran/faster-whisper-small.en",
+            "architecture": "whisper",
+            "type": "stt",
+            "adapter": "whisper-stt-ct2",
+            "format": "ct2",
+            "description": "OpenAI Whisper Small English — stronger English transcription than base.en",
+            "license": "MIT",
+            "parameters": {"sample_rate": 16000},
+            "adapter_package": "vox-whisper",
+        },
+        "medium.en": {
+            "source": "Systran/faster-whisper-medium.en",
+            "architecture": "whisper",
+            "type": "stt",
+            "adapter": "whisper-stt-ct2",
+            "format": "ct2",
+            "description": "OpenAI Whisper Medium English — larger English CTranslate2 checkpoint",
+            "license": "MIT",
+            "parameters": {"sample_rate": 16000},
+            "adapter_package": "vox-whisper",
+        },
     },
-    "piper": {
+    "piper-tts-onnx": {
         "en-us-lessac-medium": {
             "source": "rhasspy/piper-voices",
             "architecture": "piper",
             "type": "tts",
-            "adapter": "piper",
+            "adapter": "piper-tts-onnx",
             "format": "onnx",
             "description": "Piper English US Lessac Medium — single-voice ONNX TTS",
             "license": "MIT",
@@ -159,12 +186,12 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-piper",
         },
     },
-    "fish-speech": {
+    "fish-speech-tts-torch": {
         "v1.4": {
             "source": "fishaudio/fish-speech-1.4",
             "architecture": "fish-speech",
             "type": "tts",
-            "adapter": "fish-speech",
+            "adapter": "fish-speech-tts-torch",
             "format": "pytorch",
             "description": "Fish Speech 1.4 — high quality multilingual TTS with voice cloning",
             "license": "CC-BY-NC-SA-4.0",
@@ -172,12 +199,12 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-fish-speech",
         },
     },
-    "orpheus": {
+    "orpheus-tts-torch": {
         "3b": {
             "source": "canopylabs/orpheus-3b-0.1-ft",
             "architecture": "orpheus",
             "type": "tts",
-            "adapter": "orpheus",
+            "adapter": "orpheus-tts-torch",
             "format": "pytorch",
             "description": "Orpheus 3B — LLM-based emotional TTS with inline emotion tags",
             "license": "Apache-2.0",
@@ -185,12 +212,12 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-orpheus",
         },
     },
-    "dia": {
+    "dia-tts-torch": {
         "1.6b": {
             "source": "nari-labs/Dia-1.6B",
             "architecture": "dia",
             "type": "tts",
-            "adapter": "dia",
+            "adapter": "dia-tts-torch",
             "format": "pytorch",
             "description": "Dia 1.6B — multi-speaker dialogue TTS with non-verbal sounds",
             "license": "Apache-2.0",
@@ -198,12 +225,12 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-dia",
         },
     },
-    "sesame": {
+    "sesame-tts-torch": {
         "csm-1b": {
             "source": "sesame/csm-1b",
             "architecture": "sesame",
             "type": "tts",
-            "adapter": "sesame",
+            "adapter": "sesame-tts-torch",
             "format": "pytorch",
             "description": "Sesame CSM 1B — context-aware conversational speech model",
             "license": "Apache-2.0",
@@ -211,12 +238,12 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-sesame",
         },
     },
-    "openvoice": {
+    "openvoice-tts-torch": {
         "v1": {
             "source": "myshell-ai/OpenVoice",
             "architecture": "openvoice",
             "type": "tts",
-            "adapter": "openvoice",
+            "adapter": "openvoice-tts-torch",
             "format": "pytorch",
             "description": "MyShell OpenVoice V1 — instant voice cloning and style control",
             "license": "MIT",
@@ -235,12 +262,12 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-openvoice",
         },
     },
-    "voxtral": {
+    "voxtral-stt-torch": {
         "mini-3b": {
             "source": "mistralai/Voxtral-Mini-3B-2507",
             "architecture": "voxtral-mini",
             "type": "stt",
-            "adapter": "voxtral-stt",
+            "adapter": "voxtral-stt-torch",
             "format": "pytorch",
             "description": "Mistral Voxtral Mini 3B — audio understanding and transcription",
             "license": "Apache-2.0",
@@ -251,9 +278,20 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "source": "mistralai/Voxtral-Small-24B-2507",
             "architecture": "voxtral-small",
             "type": "stt",
-            "adapter": "voxtral-stt",
+            "adapter": "voxtral-stt-torch",
             "format": "pytorch",
             "description": "Mistral Voxtral Small 24B — high-quality audio understanding and transcription",
+            "license": "Apache-2.0",
+            "parameters": {"sample_rate": 16000},
+            "adapter_package": "vox-voxtral",
+        },
+        "24b": {
+            "source": "mistralai/Voxtral-Small-24B-2507",
+            "architecture": "voxtral-small",
+            "type": "stt",
+            "adapter": "voxtral-stt-torch",
+            "format": "pytorch",
+            "description": "Mistral Voxtral 24B — size alias for the larger Small 24B transcription model",
             "license": "Apache-2.0",
             "parameters": {"sample_rate": 16000},
             "adapter_package": "vox-voxtral",
@@ -262,18 +300,20 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "source": "mistralai/Voxtral-Mini-4B-Realtime-2602",
             "architecture": "voxtral-realtime",
             "type": "stt",
-            "adapter": "voxtral-stt",
+            "adapter": "voxtral-stt-torch",
             "format": "pytorch",
             "description": "Mistral Voxtral Realtime 4B — sub-500ms latency transcription, 13 languages",
             "license": "Apache-2.0",
             "parameters": {"sample_rate": 16000},
             "adapter_package": "vox-voxtral",
         },
-        "tts-4b": {
+    },
+    "voxtral-tts-vllm": {
+        "4b": {
             "source": "mistralai/Voxtral-4B-TTS-2603",
             "architecture": "voxtral-tts",
             "type": "tts",
-            "adapter": "voxtral-tts",
+            "adapter": "voxtral-tts-vllm",
             "format": "pytorch",
             "description": "Mistral Voxtral TTS 4B — preset-voice TTS, 9 languages, ~90ms TTFA",
             "license": "CC-BY-NC-4.0",
@@ -281,23 +321,25 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-voxtral",
         },
     },
-    "speecht5": {
-        "tts": {
+    "speecht5-tts-torch": {
+        "base": {
             "source": "microsoft/speecht5_tts",
             "architecture": "speecht5-tts",
             "type": "tts",
-            "adapter": "speecht5-tts",
+            "adapter": "speecht5-tts-torch",
             "format": "pytorch",
             "description": "Microsoft SpeechT5 TTS — lightweight text-to-speech with speaker embeddings",
             "license": "MIT",
             "parameters": {"sample_rate": 16000},
             "adapter_package": "vox-microsoft",
         },
-        "asr": {
+    },
+    "speecht5-stt-torch": {
+        "base": {
             "source": "microsoft/speecht5_asr",
             "architecture": "speecht5-asr",
             "type": "stt",
-            "adapter": "speecht5-stt",
+            "adapter": "speecht5-stt-torch",
             "format": "pytorch",
             "description": "Microsoft SpeechT5 ASR — lightweight speech recognition",
             "license": "MIT",
@@ -305,12 +347,12 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-microsoft",
         },
     },
-    "vibevoice": {
+    "vibevoice-tts-torch": {
         "realtime-0.5b": {
             "source": "microsoft/VibeVoice-Realtime-0.5B",
             "architecture": "vibevoice-realtime",
             "type": "tts",
-            "adapter": "vibevoice-tts",
+            "adapter": "vibevoice-tts-torch",
             "format": "pytorch",
             "description": "Microsoft VibeVoice Realtime 0.5B — ~300ms streaming TTS",
             "license": "MIT",
@@ -321,7 +363,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "source": "microsoft/VibeVoice-1.5B",
             "architecture": "vibevoice",
             "type": "tts",
-            "adapter": "vibevoice-tts",
+            "adapter": "vibevoice-tts-torch",
             "format": "pytorch",
             "description": "Microsoft VibeVoice 1.5B — high-quality TTS with 64K token context",
             "license": "MIT",
@@ -329,12 +371,12 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-microsoft",
         },
     },
-    "qwen3-asr": {
+    "qwen3-stt-torch": {
         "1.7b": {
             "source": "Qwen/Qwen3-ASR-1.7B",
             "architecture": "qwen3-asr",
             "type": "stt",
-            "adapter": "qwen3-asr",
+            "adapter": "qwen3-stt-torch",
             "format": "pytorch",
             "description": "Alibaba Qwen3-ASR 1.7B — 52 languages, word timestamps",
             "license": "Apache-2.0",
@@ -345,7 +387,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "source": "Qwen/Qwen3-ASR-0.6B",
             "architecture": "qwen3-asr",
             "type": "stt",
-            "adapter": "qwen3-asr",
+            "adapter": "qwen3-stt-torch",
             "format": "pytorch",
             "description": "Alibaba Qwen3-ASR 0.6B — lightweight 52-language speech recognition",
             "license": "Apache-2.0",
@@ -353,12 +395,12 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-qwen",
         },
     },
-    "qwen3-tts": {
+    "qwen3-tts-torch": {
         "1.7b": {
             "source": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
             "architecture": "qwen3-tts",
             "type": "tts",
-            "adapter": "qwen3-tts",
+            "adapter": "qwen3-tts-torch",
             "format": "pytorch",
             "description": "Alibaba Qwen3-TTS 1.7B — multilingual speaker-based CustomVoice TTS with streaming",
             "license": "Apache-2.0",
@@ -369,7 +411,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "source": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
             "architecture": "qwen3-tts",
             "type": "tts",
-            "adapter": "qwen3-tts",
+            "adapter": "qwen3-tts-torch",
             "format": "pytorch",
             "description": "Alibaba Qwen3-TTS 0.6B — lightweight multilingual speaker-based CustomVoice TTS",
             "license": "Apache-2.0",
@@ -388,6 +430,84 @@ ADAPTERS_DIR = "adapters"  # relative to vox home
 REGISTRY_BASE_URL = "https://raw.githubusercontent.com/eleven-am/vox-registry/main"
 BUNDLED_ADAPTERS_ENV = "VOX_BUNDLED_ADAPTERS"
 BUNDLED_ADAPTERS_NO_DEPS_ENV = "VOX_BUNDLED_ADAPTERS_NO_DEPS"
+IMPLICIT_MODEL_ALIASES: dict[str, dict[str, tuple[str, str]]] = {
+    "parakeet": {
+        "spark": ("parakeet-stt-nemo", "tdt-0.6b-v3"),
+        "default": ("parakeet-stt-onnx", "tdt-0.6b-v3"),
+    },
+    "kokoro": {
+        "spark": ("kokoro-tts-torch", "v1.0"),
+        "default": ("kokoro-tts-onnx", "v1.0"),
+    },
+}
+
+LEGACY_MODEL_REF_ALIASES: dict[tuple[str, str], tuple[str, str]] = {
+    ("kokoro", "v1.0"): ("kokoro-tts-onnx", "v1.0"),
+    ("kokoro", "v1.0-torch"): ("kokoro-tts-torch", "v1.0"),
+    ("parakeet", "tdt-0.6b"): ("parakeet-stt-onnx", "tdt-0.6b"),
+    ("parakeet", "tdt-0.6b-v3"): ("parakeet-stt-onnx", "tdt-0.6b-v3"),
+    ("parakeet", "tdt-0.6b-v3-nemo"): ("parakeet-stt-nemo", "tdt-0.6b-v3"),
+    ("parakeet", "tdt-0.6b-v3-cuda"): ("parakeet-stt-nemo", "tdt-0.6b-v3"),
+    ("parakeet", "tdt-1.1b-nemo"): ("parakeet-stt-nemo", "tdt-1.1b"),
+    ("parakeet", "tdt-1.1b-cuda"): ("parakeet-stt-nemo", "tdt-1.1b"),
+    ("speecht5", "asr"): ("speecht5-stt-torch", "base"),
+    ("speecht5", "tts"): ("speecht5-tts-torch", "base"),
+    ("voxtral", "mini-3b"): ("voxtral-stt-torch", "mini-3b"),
+    ("voxtral", "small-24b"): ("voxtral-stt-torch", "small-24b"),
+    ("voxtral", "24b"): ("voxtral-stt-torch", "24b"),
+    ("voxtral", "realtime-4b"): ("voxtral-stt-torch", "realtime-4b"),
+    ("voxtral", "tts-4b"): ("voxtral-tts-vllm", "4b"),
+}
+
+LEGACY_NAME_ALIASES: dict[str, str] = {
+    "dia": "dia-tts-torch",
+    "fish-speech": "fish-speech-tts-torch",
+    "kokoro-torch": "kokoro-tts-torch",
+    "openvoice": "openvoice-tts-torch",
+    "orpheus": "orpheus-tts-torch",
+    "parakeet-nemo": "parakeet-stt-nemo",
+    "piper": "piper-tts-onnx",
+    "qwen3-asr": "qwen3-stt-torch",
+    "qwen3-tts": "qwen3-tts-torch",
+    "sesame": "sesame-tts-torch",
+    "speecht5-stt": "speecht5-stt-torch",
+    "speecht5-tts": "speecht5-tts-torch",
+    "vibevoice": "vibevoice-tts-torch",
+    "vibevoice-tts": "vibevoice-tts-torch",
+    "voxtral-stt": "voxtral-stt-torch",
+    "voxtral-tts": "voxtral-tts-vllm",
+    "whisper": "whisper-stt-ct2",
+    "xtts": "xtts-tts-torch",
+}
+
+
+def _runtime_profile() -> str:
+    """Return a coarse runtime profile used for family alias selection."""
+    device = os.environ.get("VOX_DEVICE", "auto").strip().lower()
+    machine = platform.machine().strip().lower()
+    if device == "cuda" and machine in {"arm64", "aarch64"}:
+        return "spark"
+    return "default"
+
+
+def resolve_family_alias(name: str, tag: str = "latest", *, explicit_tag: bool = False) -> tuple[str, str]:
+    """Resolve model references to canonical names.
+
+    Canonical names follow ``<family>-<task>-<backend>:<variant>``.
+    Legacy names and bare family shorthands are mapped to canonical entries.
+    """
+    if not explicit_tag and tag == "latest":
+        aliases = IMPLICIT_MODEL_ALIASES.get(name)
+        if aliases is not None:
+            profile = _runtime_profile()
+            return aliases.get(profile) or aliases["default"]
+
+    exact_alias = LEGACY_MODEL_REF_ALIASES.get((name, tag))
+    if exact_alias is not None:
+        return exact_alias
+
+    resolved_name = LEGACY_NAME_ALIASES.get(name, name)
+    return resolved_name, tag
 
 
 def fetch_from_registry(name: str, tag: str) -> dict[str, Any] | None:
@@ -511,8 +631,13 @@ class ModelRegistry:
 
     # -- catalog helpers -----------------------------------------------------
 
-    def lookup(self, name: str, tag: str = "latest") -> dict | None:
+    def resolve_model_ref(self, name: str, tag: str = "latest", *, explicit_tag: bool = False) -> tuple[str, str]:
+        """Resolve a possibly-bare model reference to a concrete catalog tag."""
+        return resolve_family_alias(name, tag, explicit_tag=explicit_tag)
+
+    def lookup(self, name: str, tag: str = "latest", *, explicit_tag: bool = False) -> dict | None:
         """Look up a model — local catalog first, then remote registry."""
+        name, tag = self.resolve_model_ref(name, tag, explicit_tag=explicit_tag)
         tags = CATALOG.get(name)
         if tags is not None:
             entry = tags.get(tag)
@@ -570,7 +695,7 @@ class ModelRegistry:
 
     # -- resolution ----------------------------------------------------------
 
-    def resolve(self, name: str, tag: str = "latest") -> tuple[ModelInfo, Path]:
+    def resolve(self, name: str, tag: str = "latest", *, explicit_tag: bool = False) -> tuple[ModelInfo, Path]:
         """Resolve a model to its :class:`ModelInfo` and a model directory path.
 
         The model must already be pulled (i.e. a manifest must exist in the
@@ -580,6 +705,7 @@ class ModelRegistry:
         original filenames, so adapters can load files by name (e.g.
         ``model.onnx``, ``voices.bin``).
         """
+        name, tag = self.resolve_model_ref(name, tag, explicit_tag=explicit_tag)
         manifest = self._store.resolve_model(name, tag)
         if manifest is None:
             raise ModelNotFoundError(f"{name}:{tag}")

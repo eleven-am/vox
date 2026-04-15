@@ -220,9 +220,9 @@ class OpenVoiceTTSAdapter(TTSAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="openvoice",
+            name="openvoice-tts-torch",
             type=ModelType.TTS,
-            architectures=("openvoice", "openvoice-v1"),
+            architectures=("openvoice-tts-torch", "openvoice", "openvoice-v1"),
             default_sample_rate=OPENVOICE_SAMPLE_RATE,
             supported_formats=(ModelFormat.PYTORCH,),
             supports_streaming=False,

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import importlib
+import json
 import subprocess
 import sys
-import base64
-import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -57,7 +57,7 @@ class TestQwen3ASRAdapterInfo:
             adapter = Qwen3ASRAdapter()
             info = adapter.info()
 
-            assert info.name == "qwen3-asr"
+            assert info.name == "qwen3-stt-torch"
             assert info.type == ModelType.STT
             assert "qwen3-asr" in info.architectures
             assert info.default_sample_rate == 16000
@@ -254,7 +254,7 @@ class TestQwen3TTSAdapterInfo:
             adapter = Qwen3TTSAdapter()
             info = adapter.info()
 
-            assert info.name == "qwen3-tts"
+            assert info.name == "qwen3-tts-torch"
             assert info.type == ModelType.TTS
             assert "qwen3-tts" in info.architectures
             assert info.default_sample_rate == 24000
@@ -473,7 +473,8 @@ class TestQwen3TTSAdapterInfo:
                     chunks.append(chunk)
                 return chunks
 
-            with patch("vox_qwen.tts_adapter.subprocess.run", return_value=subprocess.CompletedProcess([], 0, payload, "")):
+            completed = subprocess.CompletedProcess([], 0, payload, "")
+            with patch("vox_qwen.tts_adapter.subprocess.run", return_value=completed):
                 chunks = asyncio.run(collect())
 
             assert any(chunk.audio for chunk in chunks)

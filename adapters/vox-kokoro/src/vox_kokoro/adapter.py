@@ -77,9 +77,9 @@ class KokoroAdapter(TTSAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="kokoro",
+            name="kokoro-tts-onnx",
             type=ModelType.TTS,
-            architectures=("kokoro",),
+            architectures=("kokoro-tts-onnx", "kokoro"),
             default_sample_rate=SAMPLE_RATE,
             supported_formats=(ModelFormat.ONNX,),
             supports_streaming=True,

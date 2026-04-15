@@ -235,9 +235,9 @@ class VibeVoiceTTSAdapter(TTSAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="vibevoice-tts",
+            name="vibevoice-tts-torch",
             type=ModelType.TTS,
-            architectures=("vibevoice", "vibevoice-realtime"),
+            architectures=("vibevoice-tts-torch", "vibevoice", "vibevoice-realtime"),
             default_sample_rate=VIBEVOICE_SAMPLE_RATE,
             supported_formats=(ModelFormat.PYTORCH,),
             # This adapter buffers model.generate() output before chunking it.

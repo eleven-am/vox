@@ -177,9 +177,9 @@ class Qwen3ASRAdapter(STTAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="qwen3-asr",
+            name="qwen3-stt-torch",
             type=ModelType.STT,
-            architectures=("qwen3-asr",),
+            architectures=("qwen3-stt-torch", "qwen3-asr"),
             default_sample_rate=QWEN_ASR_SAMPLE_RATE,
             supported_formats=(ModelFormat.PYTORCH,),
             supports_streaming=False,

@@ -1,10 +1,11 @@
 [project]
 name = "vox-xtts"
-version = "0.1.0"
+version = "0.2.1"
 description = "Coqui XTTS-v2 adapter for Vox"
+readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
 dependencies = [
-    "vox>=0.1.0",
+    "vox-runtime>=0.2.2",
     "coqui-tts>=0.27.5",
     "torch>=2.2.0",
     "torchaudio>=2.2.0",
@@ -13,6 +14,7 @@ dependencies = [
 ]
 
 [project.entry-points."vox.adapters"]
+xtts-tts-torch = "vox_xtts.adapter:XTTSAdapter"
 xtts = "vox_xtts.adapter:XTTSAdapter"
 
 [build-system]

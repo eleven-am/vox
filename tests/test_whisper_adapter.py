@@ -49,9 +49,9 @@ class TestWhisperAdapterInfo:
             adapter = WhisperAdapter()
             info = adapter.info()
 
-            assert info.name == "whisper"
+            assert info.name == "whisper-stt-ct2"
             assert info.type == ModelType.STT
-            assert info.architectures == ("whisper",)
+            assert info.architectures == ("whisper-stt-ct2", "whisper")
             assert info.default_sample_rate == 16_000
             assert info.supported_formats == (ModelFormat.CT2,)
             assert info.supports_streaming is False

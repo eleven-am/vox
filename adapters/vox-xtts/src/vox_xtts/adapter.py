@@ -190,9 +190,9 @@ class XTTSAdapter(TTSAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="xtts",
+            name="xtts-tts-torch",
             type=ModelType.TTS,
-            architectures=("xtts", "xtts-v2"),
+            architectures=("xtts-tts-torch", "xtts", "xtts-v2"),
             default_sample_rate=XTTS_SAMPLE_RATE,
             supported_formats=(ModelFormat.PYTORCH,),
             supports_streaming=False,

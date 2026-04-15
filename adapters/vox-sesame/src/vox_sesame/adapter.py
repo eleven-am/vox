@@ -103,9 +103,9 @@ class SesameTTSAdapter(TTSAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="sesame",
+            name="sesame-tts-torch",
             type=ModelType.TTS,
-            architectures=("sesame", "csm"),
+            architectures=("sesame-tts-torch", "sesame", "csm"),
             default_sample_rate=SESAME_SAMPLE_RATE,
             supported_formats=(ModelFormat.PYTORCH,),
             supports_streaming=True,

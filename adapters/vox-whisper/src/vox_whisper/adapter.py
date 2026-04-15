@@ -126,9 +126,9 @@ class WhisperAdapter(STTAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="whisper",
+            name="whisper-stt-ct2",
             type=ModelType.STT,
-            architectures=("whisper",),
+            architectures=("whisper-stt-ct2", "whisper"),
             default_sample_rate=WHISPER_SAMPLE_RATE,
             supported_formats=(ModelFormat.CT2,),
             supports_streaming=False,

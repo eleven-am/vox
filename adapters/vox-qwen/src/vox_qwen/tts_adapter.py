@@ -2,16 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import importlib
 import json
 import logging
 import os
-from pathlib import Path
 import subprocess
 import sys
 import time
 from collections.abc import AsyncIterator
 from importlib.util import find_spec
-import importlib
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -162,9 +162,9 @@ class Qwen3TTSAdapter(TTSAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="qwen3-tts",
+            name="qwen3-tts-torch",
             type=ModelType.TTS,
-            architectures=("qwen3-tts",),
+            architectures=("qwen3-tts-torch", "qwen3-tts"),
             default_sample_rate=QWEN_TTS_SAMPLE_RATE,
             supported_formats=(ModelFormat.PYTORCH,),
             supports_streaming=True,

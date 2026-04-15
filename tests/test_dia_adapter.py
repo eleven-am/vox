@@ -26,9 +26,9 @@ class TestDiaAdapterInfo:
             adapter = DiaAdapter()
             info = adapter.info()
 
-            assert info.name == "dia"
+            assert info.name == "dia-tts-torch"
             assert info.type == ModelType.TTS
-            assert info.architectures == ("dia",)
+            assert info.architectures == ("dia-tts-torch", "dia")
             assert info.default_sample_rate == 44100
             assert ModelFormat.PYTORCH in info.supported_formats
             assert info.supports_streaming is False

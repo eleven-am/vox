@@ -22,7 +22,7 @@ class TestXTTSAdapter:
         adapter = XTTSAdapter()
         info = adapter.info()
 
-        assert info.name == "xtts"
+        assert info.name == "xtts-tts-torch"
         assert info.type == ModelType.TTS
         assert "xtts-v2" in info.architectures
         assert info.default_sample_rate == 24_000
@@ -150,8 +150,8 @@ class TestXTTSAdapter:
 def test_registry_contains_xtts_catalog_entry():
     from vox.core.registry import CATALOG
 
-    entry = CATALOG["xtts"]["v2"]
+    entry = CATALOG["xtts-tts-torch"]["v2"]
     assert entry["source"] == "coqui/XTTS-v2"
-    assert entry["adapter"] == "xtts"
+    assert entry["adapter"] == "xtts-tts-torch"
     assert entry["format"] == "pytorch"
     assert entry["parameters"]["sample_rate"] == 24_000

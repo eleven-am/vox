@@ -1,25 +1,55 @@
 # Vox
 
-Local runtime for speech-to-text and text-to-speech models. Pull a model, start the server, hit an API.
+Vox is a local runtime for speech models.
+
+If Ollama made local LLMs feel operationally simple, Vox applies that same kind of ergonomics to speech: pull a model, serve one API, and run speech-to-text and text-to-speech workloads locally without hand-wiring every model family yourself. Vox is its own runtime, though, not an Ollama wrapper. It is built around speech-native concerns like streaming audio, voice selection, backend-specific adapters, and one consistent interface across STT and TTS models.
+
+## Why Vox
+
+- One runtime for both speech-to-text and text-to-speech
+- One CLI and one API surface across many model families
+- Pull-on-demand model and adapter installation
+- Multiple backends behind the same runtime: ONNX, Torch, NeMo, CTranslate2, and vLLM
+- REST, WebSocket, gRPC, and OpenAI-compatible endpoints
+- Local-first deployment with Docker images that start empty and install only what you use
+
+## Quickstart
+
+```bash
+pip install vox-runtime
+
+vox pull kokoro-tts-onnx:v1.0
+vox pull whisper-stt-ct2:large-v3
+vox serve
+```
+
+Then hit the local API:
+
+```bash
+curl -X POST http://localhost:11435/api/synthesize \
+  -H "Content-Type: application/json" \
+  -d '{"model":"kokoro-tts-onnx:v1.0","input":"Hello from Vox"}' \
+  -o output.wav
+```
 
 ## What it does
 
-Vox manages STT and TTS models through a REST API. Models are downloaded from HuggingFace, and each model family (Whisper, Kokoro, Parakeet, etc.) is handled by a plugin adapter that is installed automatically on first pull.
+Vox manages STT and TTS models through a consistent runtime API. Models are downloaded from Hugging Face, and each model family is handled by an adapter that is installed automatically on first pull.
 
 The Docker images intentionally start without any models or adapter packages installed. Pulling a model installs the matching adapter on demand.
 
-```
-vox pull kokoro:v1.0       # downloads model + installs adapter
-vox pull whisper:large-v3   # same for STT
-vox serve                   # starts REST API on :11435
+```bash
+vox pull kokoro-tts-onnx:v1.0
+vox pull whisper-stt-ct2:large-v3
+vox serve
 ```
 
 ## Install
 
 ```bash
-pip install vox
+pip install vox-runtime
 # or
-uv pip install vox
+uv pip install vox-runtime
 ```
 
 ## Usage
@@ -33,8 +63,8 @@ vox serve --port 11435 --device auto
 ### Pull a model
 
 ```bash
-vox pull kokoro:v1.0
-vox pull parakeet:tdt-0.6b-v3
+vox pull kokoro-tts-onnx:v1.0
+vox pull parakeet-stt-onnx:tdt-0.6b-v3
 vox list
 ```
 
@@ -42,8 +72,8 @@ vox list
 
 ```bash
 # CLI
-vox run parakeet:tdt-0.6b-v3 recording.wav
-vox stream-transcribe parakeet:tdt-0.6b-v3 meeting.mp3
+vox run parakeet-stt-onnx:tdt-0.6b-v3 recording.wav
+vox stream-transcribe parakeet-stt-onnx:tdt-0.6b-v3 meeting.mp3
 
 # API
 curl -F file=@recording.wav http://localhost:11435/api/transcribe
@@ -56,19 +86,19 @@ curl -F file=@recording.wav http://localhost:11435/v1/audio/transcriptions
 
 ```bash
 # CLI
-vox run kokoro:v1.0 "Hello, how are you?" -o output.wav
-vox stream-synthesize kokoro:v1.0 "Hello, how are you?" -o output.wav
+vox run kokoro-tts-onnx:v1.0 "Hello, how are you?" -o output.wav
+vox stream-synthesize kokoro-tts-onnx:v1.0 "Hello, how are you?" -o output.wav
 
 # API
 curl -X POST http://localhost:11435/api/synthesize \
   -H "Content-Type: application/json" \
-  -d '{"model":"kokoro:v1.0","input":"Hello, how are you?"}' \
+  -d '{"model":"kokoro-tts-onnx:v1.0","input":"Hello, how are you?"}' \
   -o output.wav
 
 # OpenAI-compatible
 curl -X POST http://localhost:11435/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d '{"model":"kokoro:v1.0","input":"Hello"}' \
+  -d '{"model":"kokoro-tts-onnx:v1.0","input":"Hello"}' \
   -o output.wav
 ```
 
@@ -85,9 +115,9 @@ vox search --type stt
 ```bash
 vox list          # downloaded models
 vox ps            # loaded models
-vox show kokoro:v1.0
-vox rm kokoro:v1.0
-vox voices kokoro:v1.0
+vox show kokoro-tts-onnx:v1.0
+vox rm kokoro-tts-onnx:v1.0
+vox voices kokoro-tts-onnx:v1.0
 ```
 
 ## Streaming APIs
@@ -124,7 +154,7 @@ Example config:
 ```json
 {
   "type": "config",
-  "model": "parakeet:tdt-0.6b-v3",
+  "model": "parakeet-stt-onnx:tdt-0.6b-v3",
   "input_format": "pcm16",
   "sample_rate": 16000,
   "language": "en",
@@ -137,7 +167,7 @@ Example config:
 Server events:
 
 ```json
-{"type":"ready","model":"parakeet:tdt-0.6b-v3","input_format":"pcm16","sample_rate":16000}
+{"type":"ready","model":"parakeet-stt-onnx:tdt-0.6b-v3","input_format":"pcm16","sample_rate":16000}
 {"type":"progress","uploaded_ms":60000,"processed_ms":30000,"chunks_completed":1}
 {"type":"done","text":"full transcript","duration_ms":120000,"processing_ms":8420,"segments":[]}
 ```
@@ -171,7 +201,7 @@ Example config:
 ```json
 {
   "type": "config",
-  "model": "kokoro:v1.0",
+  "model": "kokoro-tts-onnx:v1.0",
   "voice": "af_heart",
   "speed": 1.0,
   "response_format": "pcm16"
@@ -181,7 +211,7 @@ Example config:
 Server events:
 
 ```json
-{"type":"ready","model":"kokoro:v1.0","response_format":"pcm16"}
+{"type":"ready","model":"kokoro-tts-onnx:v1.0","response_format":"pcm16"}
 {"type":"audio_start","sample_rate":24000,"response_format":"pcm16"}
 {"type":"progress","completed_chars":120,"total_chars":480,"chunks_completed":1,"chunks_total":4}
 {"type":"done","response_format":"pcm16","audio_duration_ms":2450,"processing_ms":891}
@@ -194,9 +224,9 @@ Binary frames between `audio_start` and `done` carry the synthesized audio paylo
 These commands sit on top of the WebSocket APIs:
 
 ```bash
-vox stream-transcribe parakeet:tdt-0.6b-v3 meeting.mp3
-vox stream-transcribe parakeet:tdt-0.6b-v3 meeting.wav --json-output
-vox stream-synthesize kokoro:v1.0 script.txt -o script.wav
+vox stream-transcribe parakeet-stt-onnx:tdt-0.6b-v3 meeting.mp3
+vox stream-transcribe parakeet-stt-onnx:tdt-0.6b-v3 meeting.wav --json-output
+vox stream-synthesize kokoro-tts-onnx:v1.0 script.txt -o script.wav
 ```
 
 `vox stream-transcribe` transcodes the local input to streamed mono `pcm16` on the client side, then uploads chunk-by-chunk over the WebSocket session. For compressed inputs this uses `ffmpeg`; install it if you want the helper to handle formats that `soundfile` cannot stream directly.
@@ -206,7 +236,7 @@ vox stream-synthesize kokoro:v1.0 script.txt -o script.wav
 ```bash
 # GPU (default)
 docker compose up -d
-vox pull kokoro:v1.0  # auto-installs adapter inside container
+vox pull kokoro-tts-onnx:v1.0  # auto-installs adapter inside container
 
 # CPU
 docker compose --profile cpu up -d
@@ -249,21 +279,24 @@ Notes:
   - or `SPARK_ORT_INDEX_URL` / `SPARK_ORT_EXTRA_INDEX_URL`
 - The generic `make build` path is unchanged and still produces the normal multi-arch image.
 
-## Available models
+## Representative models
 
 | Model | Type | Description |
 |-------|------|-------------|
-| `parakeet:tdt-0.6b` | STT | NVIDIA Parakeet TDT 0.6B |
-| `parakeet:tdt-0.6b-v3` | STT | Parakeet TDT 0.6B v3, 25 languages |
-| `whisper:large-v3` | STT | OpenAI Whisper Large V3 via CTranslate2 |
-| `whisper:large-v3-turbo` | STT | Whisper Large V3 Turbo |
-| `whisper:base.en` | STT | Whisper Base English |
-| `kokoro:v1.0` | TTS | Kokoro 82M ONNX, preset voices |
-| `piper:en-us-lessac-medium` | TTS | Piper English US Lessac |
-| `fish-speech:v1.4` | TTS | Fish Speech 1.4, multilingual, voice cloning |
-| `orpheus:3b` | TTS | Orpheus 3B, emotional speech |
-| `dia:1.6b` | TTS | Dia 1.6B, multi-speaker dialogue |
-| `sesame:csm-1b` | TTS | Sesame CSM 1B, conversational speech |
+| `parakeet-stt-onnx:tdt-0.6b-v3` | STT | NVIDIA Parakeet TDT 0.6B v3 via ONNX |
+| `parakeet-stt-nemo:tdt-0.6b-v3` | STT | NVIDIA Parakeet TDT 0.6B v3 via NeMo |
+| `whisper-stt-ct2:large-v3` | STT | OpenAI Whisper Large V3 via CTranslate2 |
+| `whisper-stt-ct2:base.en` | STT | Whisper Base English |
+| `qwen3-stt-torch:0.6b` | STT | Qwen3 ASR 0.6B |
+| `voxtral-stt-torch:mini-3b` | STT | Voxtral Mini 3B speech-to-text |
+| `kokoro-tts-onnx:v1.0` | TTS | Kokoro 82M ONNX with preset voices |
+| `kokoro-tts-torch:v1.0` | TTS | Kokoro native runtime backend |
+| `qwen3-tts-torch:0.6b` | TTS | Qwen3 TTS 0.6B |
+| `voxtral-tts-vllm:4b` | TTS | Voxtral 4B TTS via vLLM-Omni |
+| `openvoice-tts-torch:v1` | TTS | OpenVoice voice-cloning backend |
+| `piper-tts-onnx:en-us-lessac-medium` | TTS | Piper English US Lessac |
+| `dia-tts-torch:1.6b` | TTS | Dia 1.6B multi-speaker dialogue |
+| `sesame-tts-torch:csm-1b` | TTS | Sesame CSM 1B conversational speech |
 
 More models at [vox-registry](https://github.com/eleven-am/vox-registry). Add a model by submitting a PR with a JSON file.
 

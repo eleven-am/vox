@@ -35,7 +35,7 @@ class TestSesameAdapterInfo:
             adapter = SesameTTSAdapter()
             info = adapter.info()
 
-            assert info.name == "sesame"
+            assert info.name == "sesame-tts-torch"
             assert info.type == ModelType.TTS
             assert "sesame" in info.architectures
             assert info.default_sample_rate == 24_000

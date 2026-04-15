@@ -1,10 +1,11 @@
 [project]
 name = "vox-qwen"
-version = "0.1.0"
+version = "0.2.1"
 description = "Alibaba Qwen3-ASR and Qwen3-TTS adapters for Vox"
+readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
 dependencies = [
-    "vox>=0.1.0",
+    "vox-runtime>=0.2.2",
     "torch>=2.1.0",
     "accelerate>=0.26.0",
     "numpy>=1.26.0,<2.4",
@@ -13,6 +14,8 @@ dependencies = [
 ]
 
 [project.entry-points."vox.adapters"]
+qwen3-stt-torch = "vox_qwen.asr_adapter:Qwen3ASRAdapter"
+qwen3-tts-torch = "vox_qwen.tts_adapter:Qwen3TTSAdapter"
 qwen3-asr = "vox_qwen.asr_adapter:Qwen3ASRAdapter"
 qwen3-tts = "vox_qwen.tts_adapter:Qwen3TTSAdapter"
 

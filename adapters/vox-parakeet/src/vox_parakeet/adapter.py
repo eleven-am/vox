@@ -161,9 +161,9 @@ class ParakeetAdapter(STTAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="parakeet",
+            name="parakeet-stt-onnx",
             type=ModelType.STT,
-            architectures=("parakeet", "parakeet-tdt", "parakeet-ctc"),
+            architectures=("parakeet-stt-onnx", "parakeet", "parakeet-tdt", "parakeet-ctc"),
             default_sample_rate=PARAKEET_SAMPLE_RATE,
             supported_formats=(ModelFormat.ONNX,),
             supports_streaming=False,

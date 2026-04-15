@@ -112,9 +112,9 @@ class DiaAdapter(TTSAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="dia",
+            name="dia-tts-torch",
             type=ModelType.TTS,
-            architectures=("dia",),
+            architectures=("dia-tts-torch", "dia"),
             default_sample_rate=DIA_SAMPLE_RATE,
             supported_formats=(ModelFormat.PYTORCH,),
             supports_streaming=False,

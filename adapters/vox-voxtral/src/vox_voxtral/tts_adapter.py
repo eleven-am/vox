@@ -109,9 +109,9 @@ class VoxtralTTSAdapter(TTSAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="voxtral-tts",
+            name="voxtral-tts-vllm",
             type=ModelType.TTS,
-            architectures=("voxtral-tts",),
+            architectures=("voxtral-tts-vllm", "voxtral-tts"),
             default_sample_rate=VOXTRAL_TTS_SAMPLE_RATE,
             supported_formats=(ModelFormat.PYTORCH,),
             supports_streaming=True,

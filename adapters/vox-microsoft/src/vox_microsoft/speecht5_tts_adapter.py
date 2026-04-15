@@ -65,9 +65,9 @@ class SpeechT5TTSAdapter(TTSAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="speecht5-tts",
+            name="speecht5-tts-torch",
             type=ModelType.TTS,
-            architectures=("speecht5", "speecht5-tts"),
+            architectures=("speecht5-tts-torch", "speecht5", "speecht5-tts"),
             default_sample_rate=SPEECHT5_TTS_SAMPLE_RATE,
             supported_formats=(ModelFormat.PYTORCH,),
             supports_streaming=False,

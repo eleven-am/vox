@@ -192,9 +192,9 @@ class PiperAdapter(TTSAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="piper",
+            name="piper-tts-onnx",
             type=ModelType.TTS,
-            architectures=("piper",),
+            architectures=("piper-tts-onnx", "piper"),
             default_sample_rate=PIPER_SAMPLE_RATE,
             supported_formats=(ModelFormat.ONNX,),
             supports_streaming=True,
