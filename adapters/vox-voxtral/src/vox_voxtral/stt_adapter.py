@@ -76,7 +76,7 @@ class VoxtralSTTAdapter(STTAdapter):
             supported_formats=(ModelFormat.PYTORCH,),
             supports_streaming=False,
             supports_word_timestamps=False,
-            supports_language_detection=True,
+            supports_language_detection=False,
             supported_languages=SUPPORTED_LANGUAGES,
         )
 
@@ -125,6 +125,16 @@ class VoxtralSTTAdapter(STTAdapter):
     ) -> dict[str, Any]:
         if self._processor is None or self._model is None:
             raise RuntimeError("Voxtral STT model is not loaded — call load() first")
+
+        if language is None:
+            # The current Transformers Voxtral processor requires an explicit language for
+            # transcription requests, even though the underlying Mistral request schema treats it
+            # as optional. Default to English instead of crashing on a missing value.
+            language = "en"
+            logger.warning(
+                "No language provided for Voxtral STT; defaulting to 'en' because the "
+                "Transformers Voxtral processor currently requires an explicit language."
+            )
 
         inputs = self._processor.apply_transcription_request(
             audio=[audio],

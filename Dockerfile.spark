@@ -11,6 +11,7 @@ RUN apt-get update && \
     ca-certificates \
     curl \
     ffmpeg \
+    gosu \
     libsndfile1 \
     libopus0 \
     libsoxr0 \
@@ -41,13 +42,18 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --compile-bytecode --no-install-project --python-preference only-system --python 3.12
 
 COPY --chown=vox:vox . .
+COPY --chmod=755 docker/vox-entrypoint.sh /usr/local/bin/vox-entrypoint.sh
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --compile-bytecode --python-preference only-system --python 3.12 && \
     install -d -o vox -g vox \
         $HOME/.vox/adapters \
+        $HOME/.cache \
+        $HOME/.cache/huggingface \
         $HOME/.cache/huggingface/hub \
-        $HOME/.cache/torch/hub
+        $HOME/.cache/torch \
+        $HOME/.cache/torch/hub \
+        /tmp/uvcache
 
 ARG TARGETARCH
 ARG SPARK_ORT_PACKAGE=onnxruntime-gpu
@@ -85,22 +91,22 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         pillow \
         "protobuf>=6.31.1" \
         sentencepiece \
-        "transformers==4.51.3" \
+        "transformers==4.57.1" \
         colorlog \
         espeakng-loader \
-        phonemizer-fork \
-        "vibevoice[streamingtts] @ git+https://github.com/microsoft/VibeVoice.git@main" && \
+        phonemizer-fork && \
     uv pip install --python .venv/bin/python --no-deps \
+        "vibevoice[streamingtts] @ git+https://github.com/microsoft/VibeVoice.git@main" \
         kokoro-onnx==0.4.9 \
         onnx-asr[hub]==0.11.0
-
-USER vox
 
 ENV PATH="$HOME/app/.venv/bin:$PATH" \
     VOX_HOME=$HOME/.vox \
     VOX_BUNDLED_ADAPTERS=$HOME/app/adapters \
     VOX_BUNDLED_ADAPTERS_NO_DEPS=1 \
     VOX_DEVICE=cuda \
+    UV_CACHE_DIR=/tmp/uvcache \
+    UV_LINK_MODE=copy \
     HF_HUB_ENABLE_HF_TRANSFER=0 \
     DO_NOT_TRACK=1 \
     HF_HUB_DISABLE_TELEMETRY=1 \
@@ -110,4 +116,5 @@ EXPOSE 11435
 EXPOSE 9090
 VOLUME $HOME/.vox
 
+ENTRYPOINT ["/usr/local/bin/vox-entrypoint.sh"]
 CMD ["vox", "serve", "--host", "0.0.0.0"]
