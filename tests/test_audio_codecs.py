@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import sys
+from unittest.mock import MagicMock, patch
+
 import numpy as np
 import pytest
 
@@ -36,6 +39,16 @@ def test_encode_wav_decode_roundtrip():
     audio = _sine_wave()
     wav_bytes = encode_wav(audio, SAMPLE_RATE)
     decoded, sr = decode_audio(wav_bytes)
+
+    assert sr == SAMPLE_RATE
+    assert decoded.shape == audio.shape
+    np.testing.assert_allclose(decoded, audio, atol=1e-6)
+
+
+def test_decode_wav_with_format_hint_uses_container_detection():
+    audio = _sine_wave()
+    wav_bytes = encode_wav(audio, SAMPLE_RATE)
+    decoded, sr = decode_audio(wav_bytes, format_hint="wav")
 
     assert sr == SAMPLE_RATE
     assert decoded.shape == audio.shape
@@ -112,9 +125,6 @@ def test_decode_audio_invalid_bytes_raises():
 # Pydub fallback path
 # ---------------------------------------------------------------------------
 
-import sys
-from unittest.mock import patch, MagicMock
-
 
 def _mock_pydub_module():
     """Create a mock pydub module that works even when pydub can't import (Python 3.13+)."""
@@ -136,9 +146,11 @@ def test_decode_audio_pydub_fallback():
     mock_pydub, mock_AudioSegment = _mock_pydub_module()
     mock_AudioSegment.from_file.return_value = fake_segment
 
-    with patch("soundfile.read", side_effect=sf.SoundFileError("unsupported format")):
-        with patch.dict(sys.modules, {"pydub": mock_pydub, "pydub.AudioSegment": mock_AudioSegment}):
-            audio, sr = decode_audio(b"\xff\xfb\x90\x00fake-mp3-data")
+    with (
+        patch("soundfile.read", side_effect=sf.SoundFileError("unsupported format")),
+        patch.dict(sys.modules, {"pydub": mock_pydub, "pydub.AudioSegment": mock_AudioSegment}),
+    ):
+        audio, sr = decode_audio(b"\xff\xfb\x90\x00fake-mp3-data")
 
     assert sr == 16000
     assert audio.dtype == np.float32
@@ -158,9 +170,11 @@ def test_decode_audio_pydub_fallback_stereo():
     mock_pydub, mock_AudioSegment = _mock_pydub_module()
     mock_AudioSegment.from_file.return_value = fake_segment
 
-    with patch("soundfile.read", side_effect=sf.SoundFileError("bad")):
-        with patch.dict(sys.modules, {"pydub": mock_pydub, "pydub.AudioSegment": mock_AudioSegment}):
-            audio, sr = decode_audio(b"\x00" * 10)
+    with (
+        patch("soundfile.read", side_effect=sf.SoundFileError("bad")),
+        patch.dict(sys.modules, {"pydub": mock_pydub, "pydub.AudioSegment": mock_AudioSegment}),
+    ):
+        audio, sr = decode_audio(b"\x00" * 10)
 
     assert sr == 44100
     assert audio.shape == (2, 2)  # 2 frames, 2 channels
@@ -173,8 +187,10 @@ def test_decode_audio_both_fail_raises_runtime_error():
     mock_pydub, mock_AudioSegment = _mock_pydub_module()
     mock_AudioSegment.from_file.side_effect = ValueError("pydub broke")
 
-    with patch("soundfile.read", side_effect=sf.SoundFileError("sf broke")):
-        with patch.dict(sys.modules, {"pydub": mock_pydub, "pydub.AudioSegment": mock_AudioSegment}):
-            with pytest.raises(RuntimeError, match="sf broke") as exc_info:
-                decode_audio(b"\x00" * 10)
-            assert "pydub broke" in str(exc_info.value)
+    with (
+        patch("soundfile.read", side_effect=sf.SoundFileError("sf broke")),
+        patch.dict(sys.modules, {"pydub": mock_pydub, "pydub.AudioSegment": mock_AudioSegment}),
+        pytest.raises(RuntimeError, match="sf broke") as exc_info,
+    ):
+        decode_audio(b"\x00" * 10)
+    assert "pydub broke" in str(exc_info.value)

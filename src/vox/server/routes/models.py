@@ -114,6 +114,7 @@ async def pull_model(req: PullRequest, request: Request):
                     "type": catalog_entry["type"],
                     "adapter": catalog_entry["adapter"],
                     "format": catalog_entry["format"],
+                    "source": source,
                     "parameters": catalog_entry.get("parameters", {}),
                     "description": catalog_entry.get("description", ""),
                     "license": catalog_entry.get("license", ""),

@@ -1,14 +1,24 @@
 from __future__ import annotations
 
+import importlib
 import logging
+import os
+import subprocess
+import sys
 import time
 from collections.abc import AsyncIterator
+from contextlib import contextmanager
+from copy import deepcopy
+from importlib import metadata
+from importlib.util import find_spec
+from pathlib import Path
 from typing import Any
+from urllib.request import urlretrieve
 
 import numpy as np
 import torch
 from numpy.typing import NDArray
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoConfig, AutoModel, AutoModelForCausalLM
 
 from vox.core.adapter import TTSAdapter
 from vox.core.types import (
@@ -22,6 +32,19 @@ from vox.core.types import (
 logger = logging.getLogger(__name__)
 
 VIBEVOICE_SAMPLE_RATE = 24_000
+VIBEVOICE_RUNTIME_PACKAGE = "vibevoice"
+VIBEVOICE_RUNTIME_SPEC = "vibevoice[streamingtts] @ git+https://github.com/microsoft/VibeVoice.git@main"
+VIBEVOICE_MIN_VERSIONS: dict[str, str] = {
+    VIBEVOICE_RUNTIME_PACKAGE: "0.1.0",
+    "transformers": "4.51.3",
+    "accelerate": "1.6.0",
+}
+VIBEVOICE_BOOTSTRAP_PACKAGES: tuple[str, ...] = ("vibevoice", "diffusers")
+VIBEVOICE_STREAMING_DEFAULT_VOICE = "en-Carter_man"
+VIBEVOICE_STREAMING_VOICE_URL = (
+    "https://raw.githubusercontent.com/microsoft/VibeVoice/main/"
+    "demo/voices/streaming_model/{voice}.pt"
+)
 
 _VRAM_ESTIMATES: dict[str, int] = {
     "0.5b": 2_000_000_000,
@@ -53,14 +76,162 @@ def _estimate_vram(model_id: str) -> int:
     return _VRAM_ESTIMATES["0.5b"]
 
 
+def _version_tuple(version: str) -> tuple[int, ...]:
+    parts: list[int] = []
+    for token in version.split("."):
+        digits = "".join(character for character in token if character.isdigit())
+        if digits:
+            parts.append(int(digits))
+    return tuple(parts)
+
+
+def _require_runtime() -> None:
+    problems: list[str] = []
+    for package_name, required_version in VIBEVOICE_MIN_VERSIONS.items():
+        try:
+            installed_version = metadata.version(package_name)
+        except metadata.PackageNotFoundError:
+            problems.append(f"{package_name} is not installed")
+            continue
+        if _version_tuple(installed_version) < _version_tuple(required_version):
+            problems.append(
+                f"{package_name}>={required_version} required (found {installed_version})"
+            )
+
+    if problems:
+        details = "; ".join(problems)
+        raise RuntimeError(
+            "VibeVoice requires the community vibevoice runtime package and exact pinned dependencies "
+            f"({', '.join(f'{name}>={version}' for name, version in VIBEVOICE_MIN_VERSIONS.items())}). "
+            "Install the community VibeVoice codebase before pulling or serving this model. "
+            f"Problems: {details}"
+        )
+
+
+def _bootstrap_runtime() -> None:
+    package_specs = {
+        "vibevoice": VIBEVOICE_RUNTIME_SPEC,
+        "diffusers": "diffusers",
+    }
+    missing_packages = [
+        package_name for package_name in VIBEVOICE_BOOTSTRAP_PACKAGES if find_spec(package_name) is None
+    ]
+    if not missing_packages:
+        return
+
+    installers = [
+        ["uv", "pip", "install", "--python", sys.executable, "--no-deps"],
+        [sys.executable, "-m", "pip", "install", "--no-deps"],
+    ]
+    for package_name in missing_packages:
+        package_spec = package_specs[package_name]
+        for installer in installers:
+            cmd = [*installer, package_spec]
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=600,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                continue
+            if result.returncode == 0:
+                logger.info("Bootstrapped VibeVoice runtime package: %s", package_spec)
+                break
+            logger.warning("%s failed: %s", " ".join(installer), result.stderr)
+        else:
+            raise RuntimeError(
+                f"VibeVoice runtime package is missing and could not be bootstrapped: {package_name}. "
+                "Install the community VibeVoice codebase before pulling or serving this model."
+            )
+
+
+def _prime_runtime(model_id: str) -> None:
+    @contextmanager
+    def ignore_duplicate_registrations() -> Any:
+        original_config_register = AutoConfig.register
+        original_model_register = AutoModel.register
+        original_causal_lm_register = AutoModelForCausalLM.register
+
+        def _wrap_register(register_fn: Any) -> Any:
+            def _wrapped(*args: Any, **kwargs: Any) -> Any:
+                try:
+                    return register_fn(*args, **kwargs)
+                except ValueError as exc:
+                    message = str(exc)
+                    if "already used by a Transformers model" not in message:
+                        raise
+                    logger.info("Ignoring duplicate VibeVoice Transformers registration: %s", message)
+                    return None
+
+            return _wrapped
+
+        AutoConfig.register = _wrap_register(original_config_register)
+        AutoModel.register = _wrap_register(original_model_register)
+        AutoModelForCausalLM.register = _wrap_register(original_causal_lm_register)
+        try:
+            yield
+        finally:
+            AutoConfig.register = original_config_register
+            AutoModel.register = original_model_register
+            AutoModelForCausalLM.register = original_causal_lm_register
+
+    lower = model_id.lower()
+    is_streaming = "realtime" in lower or "streaming" in lower
+    module_name = (
+        "vibevoice.modular.modeling_vibevoice_streaming_inference"
+        if is_streaming
+        else "vibevoice.modular.modeling_vibevoice"
+    )
+    config_module_name = (
+        "vibevoice.modular.configuration_vibevoice_streaming"
+        if is_streaming
+        else "vibevoice.modular.configuration_vibevoice"
+    )
+    with ignore_duplicate_registrations():
+        config_module = importlib.import_module(config_module_name)
+        config_class = config_module.VibeVoiceStreamingConfig if is_streaming else config_module.VibeVoiceConfig
+        AutoConfig.register(config_class.model_type, config_class, exist_ok=True)
+        importlib.import_module(module_name)
+
+
 class VibeVoiceTTSAdapter(TTSAdapter):
 
     def __init__(self) -> None:
         self._model: Any = None
-        self._tokenizer: Any = None
+        self._processor: Any = None
         self._loaded = False
         self._model_id: str = ""
         self._device: str = "cpu"
+        self._streaming_prompt_cache: dict[str, Any] = {}
+
+    def _streaming_prompt_dir(self) -> Path:
+        vox_home = Path(os.environ.get("VOX_HOME", str(Path.home() / ".vox")))
+        return vox_home / "runtime" / "vibevoice" / "voices" / "streaming_model"
+
+    def _ensure_streaming_prompt_file(self, voice: str | None) -> Path:
+        voice_key = (voice or VIBEVOICE_STREAMING_DEFAULT_VOICE).strip() or VIBEVOICE_STREAMING_DEFAULT_VOICE
+        prompt_dir = self._streaming_prompt_dir()
+        prompt_dir.mkdir(parents=True, exist_ok=True)
+        prompt_path = prompt_dir / f"{voice_key}.pt"
+        if not prompt_path.exists():
+            url = VIBEVOICE_STREAMING_VOICE_URL.format(voice=voice_key)
+            logger.info("Downloading VibeVoice streaming prompt %s from %s", voice_key, url)
+            urlretrieve(url, prompt_path)
+        return prompt_path
+
+    def _load_streaming_prompt(self, voice: str | None) -> Any:
+        voice_key = (voice or VIBEVOICE_STREAMING_DEFAULT_VOICE).strip() or VIBEVOICE_STREAMING_DEFAULT_VOICE
+        if voice_key not in self._streaming_prompt_cache:
+            prompt_path = self._ensure_streaming_prompt_file(voice_key)
+            target_device = self._device if self._device != "cpu" else "cpu"
+            self._streaming_prompt_cache[voice_key] = torch.load(
+                prompt_path,
+                map_location=target_device,
+                weights_only=False,
+            )
+        return self._streaming_prompt_cache[voice_key]
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
@@ -69,7 +240,8 @@ class VibeVoiceTTSAdapter(TTSAdapter):
             architectures=("vibevoice", "vibevoice-realtime"),
             default_sample_rate=VIBEVOICE_SAMPLE_RATE,
             supported_formats=(ModelFormat.PYTORCH,),
-            supports_streaming=True,
+            # This adapter buffers model.generate() output before chunking it.
+            supports_streaming=False,
             supports_voice_cloning=False,
             supported_languages=("en",),
         )
@@ -82,16 +254,64 @@ class VibeVoiceTTSAdapter(TTSAdapter):
         self._model_id = source if source else model_path
         self._device = _select_device(device)
         dtype = _select_dtype(self._device)
+        _bootstrap_runtime()
+        _require_runtime()
+        _prime_runtime(self._model_id)
+
+        lower = self._model_id.lower()
+        is_streaming = "realtime" in lower or "streaming" in lower
+        processor_module_name = (
+            "vibevoice.processor.vibevoice_streaming_processor"
+            if is_streaming
+            else "vibevoice.processor.vibevoice_processor"
+        )
+        model_module_name = (
+            "vibevoice.modular.modeling_vibevoice_streaming_inference"
+            if is_streaming
+            else "vibevoice.modular.modeling_vibevoice"
+        )
+        processor_module = importlib.import_module(processor_module_name)
+        model_module = importlib.import_module(model_module_name)
+        processor_class = (
+            processor_module.VibeVoiceStreamingProcessor if is_streaming else processor_module.VibeVoiceProcessor
+        )
+        model_class = (
+            model_module.VibeVoiceStreamingForConditionalGenerationInference
+            if is_streaming
+            else model_module.VibeVoiceForConditionalGeneration
+        )
+
+        attn_implementation = "flash_attention_2" if self._device == "cuda" else "sdpa"
+        device_map: str | None = self._device if self._device in ("cuda", "cpu") else None
 
         logger.info("Loading VibeVoice TTS model: %s (device=%s, dtype=%s)", self._model_id, self._device, dtype)
         start = time.perf_counter()
 
-        self._tokenizer = AutoTokenizer.from_pretrained(self._model_id, trust_remote_code=True)
-        self._model = AutoModel.from_pretrained(
-            self._model_id,
-            torch_dtype=dtype,
-            trust_remote_code=True,
-        ).to(self._device)
+        self._processor = processor_class.from_pretrained(self._model_id)
+        try:
+            self._model = model_class.from_pretrained(
+                self._model_id,
+                torch_dtype=dtype,
+                device_map=device_map,
+                attn_implementation=attn_implementation,
+            )
+        except Exception:
+            if attn_implementation != "flash_attention_2":
+                raise
+            logger.info("Falling back to SDPA for VibeVoice model load")
+            self._model = model_class.from_pretrained(
+                self._model_id,
+                torch_dtype=dtype,
+                device_map=device_map,
+                attn_implementation="sdpa",
+            )
+
+        if self._device == "mps":
+            self._model = self._model.to("mps")
+        self._model.eval()
+
+        if is_streaming and hasattr(self._model, "set_ddpm_inference_steps"):
+            self._model.set_ddpm_inference_steps(num_steps=5)
 
         elapsed = time.perf_counter() - start
         logger.info("VibeVoice TTS model loaded in %.2fs", elapsed)
@@ -99,8 +319,9 @@ class VibeVoiceTTSAdapter(TTSAdapter):
 
     def unload(self) -> None:
         self._model = None
-        self._tokenizer = None
+        self._processor = None
         self._loaded = False
+        self._streaming_prompt_cache.clear()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         logger.info("VibeVoice TTS adapter unloaded")
@@ -119,17 +340,53 @@ class VibeVoiceTTSAdapter(TTSAdapter):
         reference_audio: NDArray[np.float32] | None = None,
         reference_text: str | None = None,
     ) -> AsyncIterator[SynthesizeChunk]:
-        if not self._loaded or self._model is None or self._tokenizer is None:
+        if not self._loaded or self._model is None or self._processor is None:
             raise RuntimeError("VibeVoice TTS model is not loaded — call load() first")
 
         if not text or not text.strip():
             return
 
-        inputs = self._tokenizer(text, return_tensors="pt")
+        script = text.strip()
+        if "speaker" not in script.lower():
+            script = f"Speaker 1: {script}"
+
+        if "streaming" in self._model_id.lower() or "realtime" in self._model_id.lower():
+            cached_prompt = self._load_streaming_prompt(voice)
+            inputs = self._processor.process_input_with_cached_prompt(
+                text=script,
+                cached_prompt=cached_prompt,
+                padding=True,
+                truncation=False,
+                return_tensors="pt",
+                return_attention_mask=True,
+            )
+        else:
+            voice_samples = [reference_audio] if reference_audio is not None else None
+            inputs = self._processor(
+                text=script,
+                voice_samples=voice_samples,
+                padding=True,
+                truncation=False,
+                return_tensors="pt",
+                return_attention_mask=True,
+            )
+
         inputs = {k: v.to(self._device) if hasattr(v, "to") else v for k, v in inputs.items()}
 
         with torch.inference_mode():
-            output = self._model.generate(**inputs)
+            output = self._model.generate(
+                **inputs,
+                tokenizer=getattr(self._processor, "tokenizer", None),
+                generation_config={"do_sample": False},
+                is_prefill=reference_audio is not None,
+                cfg_scale=1.0,
+                all_prefilled_outputs=(
+                    deepcopy(cached_prompt)
+                    if "streaming" in self._model_id.lower() or "realtime" in self._model_id.lower()
+                    else inputs.get("speech_tensors")
+                ),
+                verbose=False,
+            )
 
         if hasattr(output, "audio"):
             audio = output.audio[0].cpu().numpy().astype(np.float32)

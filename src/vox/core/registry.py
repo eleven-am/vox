@@ -45,6 +45,18 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "parameters": {"sample_rate": 16000},
             "adapter_package": "vox-parakeet",
         },
+        "tdt-0.6b-v3-nemo": {
+            "source": "nvidia/parakeet-tdt-0.6b-v3",
+            "architecture": "parakeet-nemo",
+            "type": "stt",
+            "adapter": "parakeet-nemo",
+            "format": "pytorch",
+            "description": "NVIDIA Parakeet TDT 0.6B v3 — native NeMo/PyTorch CUDA ASR",
+            "license": "CC-BY-4.0",
+            "parameters": {"sample_rate": 16000},
+            "files": ["parakeet-tdt-0.6b-v3.nemo"],
+            "adapter_package": "vox-parakeet-nemo",
+        },
     },
     "kokoro": {
         "v1.0": {
@@ -56,8 +68,19 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "description": "Kokoro 82M ONNX — fast, lightweight TTS with preset voices",
             "license": "Apache-2.0",
             "parameters": {"sample_rate": 24000, "default_voice": "af_heart"},
-            "files": ["model.onnx", "voices.bin"],
             "adapter_package": "vox-kokoro",
+        },
+    },
+    "xtts": {
+        "v2": {
+            "source": "tts_models/multilingual/multi-dataset/xtts_v2",
+            "architecture": "xtts-v2",
+            "type": "tts",
+            "adapter": "xtts",
+            "format": "pytorch",
+            "description": "Coqui XTTS-v2 — multilingual voice cloning TTS",
+            "parameters": {"sample_rate": 24000},
+            "adapter_package": "vox-xtts",
         },
     },
     "whisper": {
@@ -102,9 +125,13 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "type": "tts",
             "adapter": "piper",
             "format": "onnx",
-            "description": "Piper English US Lessac Medium voice",
+            "description": "Piper English US Lessac Medium — single-voice ONNX TTS",
             "license": "MIT",
             "parameters": {"sample_rate": 22050},
+            "files": [
+                "en/en_US/lessac/medium/en_US-lessac-medium.onnx",
+                "en/en_US/lessac/medium/en_US-lessac-medium.onnx.json",
+            ],
             "adapter_package": "vox-piper",
         },
     },
@@ -156,8 +183,32 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "format": "pytorch",
             "description": "Sesame CSM 1B — context-aware conversational speech model",
             "license": "Apache-2.0",
-            "parameters": {"sample_rate": 24000},
+            "parameters": {"sample_rate": 24000, "default_voice": "0"},
             "adapter_package": "vox-sesame",
+        },
+    },
+    "openvoice": {
+        "v1": {
+            "source": "myshell-ai/OpenVoice",
+            "architecture": "openvoice",
+            "type": "tts",
+            "adapter": "openvoice",
+            "format": "pytorch",
+            "description": "MyShell OpenVoice V1 — instant voice cloning and style control",
+            "license": "MIT",
+            "parameters": {"sample_rate": 22050, "default_voice": "en/default"},
+            "files": [
+                "checkpoints/base_speakers/EN/checkpoint.pth",
+                "checkpoints/base_speakers/EN/config.json",
+                "checkpoints/base_speakers/EN/en_default_se.pth",
+                "checkpoints/base_speakers/EN/en_style_se.pth",
+                "checkpoints/base_speakers/ZH/checkpoint.pth",
+                "checkpoints/base_speakers/ZH/config.json",
+                "checkpoints/base_speakers/ZH/zh_default_se.pth",
+                "checkpoints/converter/checkpoint.pth",
+                "checkpoints/converter/config.json",
+            ],
+            "adapter_package": "vox-openvoice",
         },
     },
     "voxtral": {
@@ -200,9 +251,9 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "type": "tts",
             "adapter": "voxtral-tts",
             "format": "pytorch",
-            "description": "Mistral Voxtral TTS 4B — zero-shot voice cloning, 9 languages, ~90ms TTFA",
+            "description": "Mistral Voxtral TTS 4B — preset-voice TTS, 9 languages, ~90ms TTFA",
             "license": "CC-BY-NC-4.0",
-            "parameters": {"sample_rate": 24000},
+            "parameters": {"sample_rate": 24000, "default_voice": "neutral_female"},
             "adapter_package": "vox-voxtral",
         },
     },
@@ -280,25 +331,25 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
     },
     "qwen3-tts": {
         "1.7b": {
-            "source": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+            "source": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
             "architecture": "qwen3-tts",
             "type": "tts",
             "adapter": "qwen3-tts",
             "format": "pytorch",
-            "description": "Alibaba Qwen3-TTS 1.7B — multilingual TTS with voice cloning and streaming",
+            "description": "Alibaba Qwen3-TTS 1.7B — multilingual speaker-based CustomVoice TTS with streaming",
             "license": "Apache-2.0",
-            "parameters": {"sample_rate": 24000},
+            "parameters": {"sample_rate": 24000, "default_voice": "Ryan"},
             "adapter_package": "vox-qwen",
         },
         "0.6b": {
-            "source": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+            "source": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
             "architecture": "qwen3-tts",
             "type": "tts",
             "adapter": "qwen3-tts",
             "format": "pytorch",
-            "description": "Alibaba Qwen3-TTS 0.6B — lightweight multilingual TTS with voice cloning",
+            "description": "Alibaba Qwen3-TTS 0.6B — lightweight multilingual speaker-based CustomVoice TTS",
             "license": "Apache-2.0",
-            "parameters": {"sample_rate": 24000},
+            "parameters": {"sample_rate": 24000, "default_voice": "Ryan"},
             "adapter_package": "vox-qwen",
         },
     },
@@ -531,6 +582,7 @@ class ModelRegistry:
         for layer in manifest.layers:
             link_path = model_dir / layer.filename
             blob_path = self._store.get_blob_path(layer.digest)
+            link_path.parent.mkdir(parents=True, exist_ok=True)
             # Remove stale/broken symlinks before recreating
             if link_path.is_symlink() and not link_path.exists():
                 link_path.unlink()

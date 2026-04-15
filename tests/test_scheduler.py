@@ -400,6 +400,33 @@ async def test_select_device_uses_estimate_and_routes_to_cpu_when_cuda_is_tight(
 
 
 @pytest.mark.asyncio
+async def test_scheduler_passes_source_hint_to_adapter_load():
+    class SourceAwareAdapter(FakeSTTAdapter):
+        load_kwargs: dict[str, Any] | None = None
+
+        def load(self, model_path: str, device: str, **kwargs: Any) -> None:
+            type(self).load_kwargs = kwargs
+            super().load(model_path, device, **kwargs)
+
+    registry = _make_registry_with_model(
+        adapter_cls=SourceAwareAdapter,
+        parameters={
+            "sample_rate": 16000,
+            "_source": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+        },
+    )
+    sched = Scheduler(registry, default_device="cpu", max_loaded=3)
+
+    async with sched.acquire("whisper:large-v3") as adapter:
+        assert isinstance(adapter, SourceAwareAdapter)
+
+    assert SourceAwareAdapter.load_kwargs == {
+        "sample_rate": 16000,
+        "_source": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+    }
+
+
+@pytest.mark.asyncio
 async def test_select_device_keeps_cuda_when_estimate_fits():
     class EstimatedAdapter(FakeSTTAdapter):
         def estimate_vram_bytes(self, **kwargs: Any) -> int:

@@ -1,0 +1,22 @@
+[project]
+name = "vox-parakeet-nemo"
+version = "0.1.0"
+description = "NVIDIA Parakeet NeMo CUDA adapter for Vox"
+requires-python = ">=3.11"
+dependencies = [
+    "vox>=0.1.0",
+    "numpy>=1.26.0,<2.4",
+    "soundfile>=0.13.1",
+    "torch>=2.1.0",
+    "nemo-toolkit[asr]>=2.7.0",
+]
+
+[project.entry-points."vox.adapters"]
+parakeet-nemo = "vox_parakeet_nemo.adapter:ParakeetNemoAdapter"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vox_parakeet_nemo"]

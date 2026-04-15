@@ -328,7 +328,7 @@ def cli(ctx, host: str):
 @click.option("--port", default=11435, help="HTTP port to listen on")
 @click.option("--grpc-port", default=9090, help="gRPC port to listen on (0 to disable)")
 @click.option("--host", "bind_host", default="0.0.0.0", help="Host to bind to")
-@click.option("--device", default="auto", help="Device: auto, cuda, cpu, mps")
+@click.option("--device", default="auto", envvar="VOX_DEVICE", help="Device: auto, cuda, cpu, mps")
 @click.option("--max-loaded", default=3, help="Max models loaded simultaneously")
 @click.option("--ttl", default=300, help="Idle model TTL in seconds")
 def serve(port: int, grpc_port: int, bind_host: str, device: str, max_loaded: int, ttl: int):

@@ -182,10 +182,11 @@ class Scheduler:
                 )
 
         # Try loading on preferred device, fallback to CPU on OOM
+        load_kwargs = {**info.parameters}
         try:
             logger.info(f"Loading {full_name} on {device}")
             start = time.perf_counter()
-            await asyncio.to_thread(adapter.load, str(model_path), device, **info.parameters)
+            await asyncio.to_thread(adapter.load, str(model_path), device, **load_kwargs)
             elapsed = time.perf_counter() - start
             logger.info(f"Loaded {full_name} in {elapsed:.2f}s on {device}")
         except Exception as e:
@@ -194,7 +195,7 @@ class Scheduler:
                 _clear_gpu_cache()
                 device = "cpu"
                 try:
-                    await asyncio.to_thread(adapter.load, str(model_path), device, **info.parameters)
+                    await asyncio.to_thread(adapter.load, str(model_path), device, **load_kwargs)
                 except Exception as e2:
                     raise ModelLoadError(f"Failed to load {full_name}: {e2}") from e2
             else:

@@ -26,12 +26,10 @@ SPEECHT5_SAMPLE_RATE = 16_000
 def _select_device(device: str) -> str:
     if device == "cpu":
         return "cpu"
-    if device in ("cuda", "auto"):
-        if torch.cuda.is_available():
-            return "cuda"
-    if device in ("mps", "auto"):
-        if torch.backends.mps.is_available():
-            return "mps"
+    if device in ("cuda", "auto") and torch.cuda.is_available():
+        return "cuda"
+    if device in ("mps", "auto") and torch.backends.mps.is_available():
+        return "mps"
     return "cpu"
 
 
@@ -70,6 +68,7 @@ class SpeechT5STTAdapter(STTAdapter):
 
         self._processor = SpeechT5Processor.from_pretrained(self._model_id)
         self._model = SpeechT5ForSpeechToText.from_pretrained(self._model_id).to(self._device)
+        self._model.eval()
 
         elapsed = time.perf_counter() - start
         logger.info("SpeechT5 ASR model loaded in %.2fs", elapsed)

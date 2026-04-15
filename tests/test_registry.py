@@ -155,6 +155,38 @@ class TestResolve:
         assert link.is_symlink()
         assert link.resolve().exists()
 
+    def test_resolve_creates_parent_dirs_for_nested_filenames(self, tmp_path: Path):
+        store = _make_store(tmp_path)
+        digest = "sha256-" + "cd" * 32
+        blob_path = store.blobs_dir / digest
+        blob_path.parent.mkdir(parents=True, exist_ok=True)
+        blob_path.write_bytes(b"nested-model")
+        manifest = Manifest(
+            layers=[
+                ManifestLayer(
+                    media_type="application/vox.model.onnx",
+                    digest=digest,
+                    size=12,
+                    filename="onnx/model.onnx",
+                )
+            ],
+            config={
+                "architecture": "test-arch",
+                "type": "tts",
+                "adapter": "kokoro",
+                "format": "onnx",
+                "parameters": {"sample_rate": 24000},
+            },
+        )
+        store.save_manifest("kokoro", "v1", manifest)
+        registry = _make_registry(store)
+
+        _, model_dir = registry.resolve("kokoro", "v1")
+
+        link = model_dir / "onnx" / "model.onnx"
+        assert link.is_symlink()
+        assert link.resolve().exists()
+
     def test_resolve_handles_stale_symlinks(self, tmp_path: Path):
         store = _make_store(tmp_path)
         _write_manifest(store, "mymodel", "v1")
@@ -207,6 +239,41 @@ class TestAvailableModels:
         assert catalog is CATALOG
         assert "whisper" in catalog
         assert "kokoro" in catalog
+
+    def test_whisper_catalog_uses_ct2_and_whisper_adapter_package(self):
+        whisper = CATALOG["whisper"]
+
+        assert set(whisper) == {"large-v3", "large-v3-turbo", "base.en"}
+        for _tag, entry in whisper.items():
+            assert entry["adapter_package"] == "vox-whisper"
+            assert entry["format"] == "ct2"
+            assert entry["adapter"] == "whisper"
+            assert entry["type"] == "stt"
+            assert entry["parameters"]["sample_rate"] == 16000
+
+    def test_sesame_catalog_entry_has_default_voice(self):
+        sesame = CATALOG["sesame"]["csm-1b"]
+
+        assert sesame["adapter_package"] == "vox-sesame"
+        assert sesame["parameters"]["sample_rate"] == 24_000
+        assert sesame["parameters"]["default_voice"] == "0"
+
+    def test_parakeet_nemo_catalog_entry_is_explicit_and_pytorch(self):
+        parakeet_nemo = CATALOG["parakeet"]["tdt-0.6b-v3-nemo"]
+
+        assert parakeet_nemo["adapter_package"] == "vox-parakeet-nemo"
+        assert parakeet_nemo["adapter"] == "parakeet-nemo"
+        assert parakeet_nemo["format"] == "pytorch"
+        assert parakeet_nemo["files"] == ["parakeet-tdt-0.6b-v3.nemo"]
+        assert parakeet_nemo["parameters"]["sample_rate"] == 16_000
+
+    def test_openvoice_catalog_entry_has_checkpoint_files(self):
+        openvoice = CATALOG["openvoice"]["v1"]
+
+        assert openvoice["adapter_package"] == "vox-openvoice"
+        assert openvoice["parameters"]["sample_rate"] == 22_050
+        assert openvoice["parameters"]["default_voice"] == "en/default"
+        assert "checkpoints/base_speakers/EN/config.json" in openvoice["files"]
 
 
 # ---------------------------------------------------------------------------

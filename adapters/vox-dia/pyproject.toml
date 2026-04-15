@@ -1,0 +1,26 @@
+[project]
+name = "vox-dia"
+version = "0.1.0"
+description = "Dia TTS adapter for Vox"
+requires-python = ">=3.11"
+dependencies = [
+    "vox>=0.1.0",
+    "transformers @ git+https://github.com/huggingface/transformers.git@main",
+    "torch>=2.1.0",
+    "numpy>=1.26.0,<2.4",
+    "soundfile>=0.13.1",
+    "sentencepiece>=0.2.0",
+]
+
+[project.entry-points."vox.adapters"]
+dia = "vox_dia.adapter:DiaAdapter"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vox_dia"]

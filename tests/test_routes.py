@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -14,7 +15,7 @@ from fastapi.testclient import TestClient
 
 from vox.core.adapter import STTAdapter, TTSAdapter
 from vox.core.errors import ModelNotFoundError
-from vox.core.store import Manifest, ManifestLayer
+from vox.core.store import BlobStore, Manifest, ManifestLayer
 from vox.core.types import (
     AdapterInfo,
     ModelFormat,
@@ -208,6 +209,44 @@ class TestListModels:
         resp = client.get("/api/list")
         assert resp.status_code == 200
         assert resp.json()["models"] == []
+
+
+class TestPullModels:
+    def test_pull_persists_catalog_source_in_manifest(self, tmp_path: Path):
+        store = BlobStore(root=tmp_path)
+        registry = MagicMock()
+        registry.lookup.return_value = {
+            "architecture": "qwen3-tts",
+            "type": "tts",
+            "adapter": "qwen3-tts",
+            "format": "pytorch",
+            "source": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+            "parameters": {"default_voice": "Ryan"},
+            "adapter_package": "",
+        }
+        app = _build_app(registry=registry, store=store)
+        client = TestClient(app)
+
+        downloaded = tmp_path / "model.bin"
+        downloaded.write_bytes(b"fake-qwen-model")
+
+        with (
+            patch("huggingface_hub.HfApi") as mock_api_cls,
+            patch("huggingface_hub.hf_hub_download", return_value=str(downloaded)),
+        ):
+            mock_api = mock_api_cls.return_value
+            mock_api.repo_info.return_value = MagicMock(
+                siblings=[MagicMock(rfilename="model.bin")]
+            )
+
+            resp = client.post("/api/pull", json={"name": "qwen3-tts:0.6b"})
+
+        assert resp.status_code == 200
+        assert '"status": "success"' in resp.text
+
+        manifest = store.resolve_model("qwen3-tts", "0.6b")
+        assert manifest is not None
+        assert manifest.config["source"] == "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
 
 
 # ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ LABEL org.opencontainers.image.licenses="Apache-2.0"
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    build-essential \
     ca-certificates \
     curl \
     ffmpeg \
@@ -61,12 +62,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     if [ -n "$SPARK_ORT_WHEEL" ]; then \
-        uv pip install --python .venv/bin/python "$SPARK_ORT_WHEEL" transformers huggingface-hub; \
+        uv pip install --python .venv/bin/python "$SPARK_ORT_WHEEL" huggingface-hub; \
     elif [ -n "$SPARK_ORT_INDEX_URL" ] || [ -n "$SPARK_ORT_EXTRA_INDEX_URL" ]; then \
         set --; \
         if [ -n "$SPARK_ORT_INDEX_URL" ]; then set -- "$@" --index-url "$SPARK_ORT_INDEX_URL"; fi; \
         if [ -n "$SPARK_ORT_EXTRA_INDEX_URL" ]; then set -- "$@" --extra-index-url "$SPARK_ORT_EXTRA_INDEX_URL"; fi; \
-        uv pip install --python .venv/bin/python "$@" "$SPARK_ORT_PACKAGE" transformers huggingface-hub; \
+        uv pip install --python .venv/bin/python "$@" "$SPARK_ORT_PACKAGE" huggingface-hub; \
     else \
         echo "Spark build requires SPARK_ORT_WHEEL or SPARK_ORT_INDEX_URL/SPARK_ORT_EXTRA_INDEX_URL" >&2; \
         exit 1; \
@@ -76,12 +77,20 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python .venv/bin/python \
         accelerate \
+        "cuda-python>=12.3" \
         datasets \
         librosa \
+        mistral-common[audio] \
+        nemo-toolkit[asr] \
+        "numpy<2" \
+        pillow \
+        "protobuf>=6.31.1" \
         sentencepiece \
+        "transformers==4.51.3" \
         colorlog \
         espeakng-loader \
-        phonemizer-fork && \
+        phonemizer-fork \
+        "vibevoice[streamingtts] @ git+https://github.com/microsoft/VibeVoice.git@main" && \
     uv pip install --python .venv/bin/python --no-deps \
         kokoro-onnx==0.4.9 \
         onnx-asr[hub]==0.11.0 && \
@@ -93,7 +102,7 @@ ENV PATH="$HOME/app/.venv/bin:$PATH" \
     VOX_HOME=$HOME/.vox \
     VOX_BUNDLED_ADAPTERS=$HOME/app/adapters \
     VOX_BUNDLED_ADAPTERS_NO_DEPS=1 \
-    VOX_DEVICE=auto \
+    VOX_DEVICE=cuda \
     HF_HUB_ENABLE_HF_TRANSFER=0 \
     DO_NOT_TRACK=1 \
     HF_HUB_DISABLE_TELEMETRY=1 \

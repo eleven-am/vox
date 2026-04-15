@@ -117,6 +117,30 @@ class VoxtralSTTAdapter(STTAdapter):
     def is_loaded(self) -> bool:
         return self._loaded
 
+    def _prepare_transcription_inputs(
+        self,
+        audio: NDArray[np.float32],
+        *,
+        language: str | None = None,
+    ) -> dict[str, Any]:
+        if self._processor is None or self._model is None:
+            raise RuntimeError("Voxtral STT model is not loaded — call load() first")
+
+        inputs = self._processor.apply_transcription_request(
+            audio=[audio],
+            model_id=self._model_id,
+            language=language,
+            sampling_rate=VOXTRAL_SAMPLE_RATE,
+            format=["wav"],
+            tokenize=True,
+            return_dict=True,
+            return_tensors="pt",
+        )
+        return {
+            k: v.to(self._model.device) if hasattr(v, "to") else v
+            for k, v in inputs.items()
+        }
+
     def transcribe(
         self,
         audio: NDArray[np.float32],
@@ -134,24 +158,7 @@ class VoxtralSTTAdapter(STTAdapter):
 
         audio_duration_ms = int(len(audio) / VOXTRAL_SAMPLE_RATE * 1000)
 
-        prompt = initial_prompt or "Transcribe this audio."
-        conversation = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "audio", "audio": (audio.tolist(), VOXTRAL_SAMPLE_RATE)},
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ]
-
-        inputs = self._processor.apply_chat_template(
-            conversation,
-            tokenize=True,
-            return_dict=True,
-            return_tensors="pt",
-        )
-        inputs = {k: v.to(self._model.device) if hasattr(v, "to") else v for k, v in inputs.items()}
+        inputs = self._prepare_transcription_inputs(audio, language=language)
 
         with torch.inference_mode():
             output_ids = self._model.generate(
@@ -191,34 +198,10 @@ class VoxtralSTTAdapter(STTAdapter):
     def detect_language(self, audio: NDArray[np.float32]) -> str:
         if not self._loaded or self._model is None or self._processor is None:
             raise RuntimeError("Voxtral STT model is not loaded — call load() first")
-
-        conversation = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "audio", "audio": (audio[:VOXTRAL_SAMPLE_RATE * 10].tolist(), VOXTRAL_SAMPLE_RATE)},
-                    {
-                        "type": "text",
-                        "text": "What language is being spoken? Reply with only the ISO 639-1 language code.",
-                    },
-                ],
-            }
-        ]
-
-        inputs = self._processor.apply_chat_template(
-            conversation,
-            tokenize=True,
-            return_dict=True,
-            return_tensors="pt",
+        raise NotImplementedError(
+            "Standalone language detection is not implemented for the Hugging Face Voxtral "
+            "transcription path; omit `language` during transcription to let the model auto-detect it."
         )
-        inputs = {k: v.to(self._model.device) if hasattr(v, "to") else v for k, v in inputs.items()}
-
-        with torch.inference_mode():
-            output_ids = self._model.generate(**inputs, max_new_tokens=10)
-
-        prompt_len = inputs["input_ids"].shape[1]
-        lang = self._processor.decode(output_ids[0][prompt_len:], skip_special_tokens=True).strip().lower()[:2]
-        return lang
 
     def estimate_vram_bytes(self, **kwargs: Any) -> int:
         model_id = kwargs.get("_source") or kwargs.get("model_id") or self._model_id

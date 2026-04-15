@@ -153,6 +153,21 @@ class TestServe:
         call_kwargs = mock_uvicorn.run.call_args
         assert call_kwargs[1]["port"] == 9999 or call_kwargs[0][0] is mock_app
 
+    @patch("vox.cli.uvicorn", create=True)
+    @patch("vox.server.app.create_app")
+    def test_serve_uses_vox_device_env(self, mock_create_app, mock_uvicorn, runner, monkeypatch):
+        mock_app = MagicMock()
+        mock_create_app.return_value = mock_app
+        mock_uvicorn.run = MagicMock()
+        monkeypatch.setenv("VOX_DEVICE", "cuda")
+
+        with patch.dict("sys.modules", {"uvicorn": mock_uvicorn}):
+            result = runner.invoke(cli, ["serve"])
+
+        assert result.exit_code == 0
+        mock_create_app.assert_called_once()
+        assert mock_create_app.call_args.kwargs["default_device"] == "cuda"
+
 
 # ---------------------------------------------------------------------------
 # pull

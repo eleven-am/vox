@@ -49,22 +49,39 @@ def _normalize_model_id(model_id: str) -> str:
     return model_id
 
 
+def _resolve_model_id(model_path: str, source: str | None) -> str:
+    """Resolve the ONNX-ASR model identifier for a local path or catalog source."""
+    if source:
+        return _normalize_model_id(source)
+
+    path = Path(model_path)
+    if path.exists():
+        return str(path)
+
+    return _normalize_model_id(model_path)
+
+
 def _get_providers(device: str) -> list[str]:
     """Return ONNX Runtime execution providers for *device*."""
+    if device == "cpu":
+        return ["CPUExecutionProvider"]
+
     if device == "cuda":
         try:
             import onnxruntime as ort
 
             available = ort.get_available_providers()
-            if "CUDAExecutionProvider" in available:
-                return ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            logger.warning(
-                "CUDA requested but CUDAExecutionProvider not available, falling back to CPU"
-            )
         except ImportError:
-            logger.warning("onnxruntime not installed, falling back to CPU")
-        except Exception as e:
-            logger.error(f"ONNX provider check failed: {e} — falling back to CPU")
+            raise RuntimeError("Parakeet requires onnxruntime to be installed") from None
+
+        if "CUDAExecutionProvider" in available:
+            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+        raise RuntimeError(
+            "Parakeet requires CUDAExecutionProvider for non-CPU devices; "
+            "CPU fallback is disabled"
+        )
+
     return ["CPUExecutionProvider"]
 
 
@@ -163,7 +180,7 @@ class ParakeetAdapter(STTAdapter):
         # Prefer the catalog source (HuggingFace repo ID) passed via _source;
         # fall back to model_path for backward compatibility.
         source = kwargs.pop("_source", None)
-        self._model_id = _normalize_model_id(source if source else model_path)
+        self._model_id = _resolve_model_id(model_path, source)
 
         logger.info("Loading Parakeet ONNX model: %s", self._model_id)
         start = time.perf_counter()

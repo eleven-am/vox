@@ -26,11 +26,13 @@ def decode_audio(
     """
     # Try soundfile first (fast, no subprocess)
     try:
-        audio, sample_rate = sf.read(
-            io.BytesIO(data),
-            dtype="float32",
-            format=format_hint,
-        )
+        soundfile_kwargs: dict[str, str] = {"dtype": "float32"}
+        # libsndfile rejects explicit format hints for existing non-RAW files.
+        # Keep the hint only for true raw input and let the parser inspect
+        # containerized formats like WAV/FLAC/OGG on its own.
+        if format_hint and format_hint.lower() == "raw":
+            soundfile_kwargs["format"] = format_hint
+        audio, sample_rate = sf.read(io.BytesIO(data), **soundfile_kwargs)
         return audio.astype(np.float32), sample_rate
     except (sf.SoundFileError, sf.SoundFileRuntimeError) as sf_err:
         logger.warning("soundfile failed: %s — falling back to pydub", sf_err)
@@ -41,10 +43,7 @@ def decode_audio(
 
     buffer = io.BytesIO(data)
     try:
-        if format_hint:
-            segment = AudioSegment.from_file(buffer, format=format_hint)
-        else:
-            segment = AudioSegment.from_file(buffer)
+        segment = AudioSegment.from_file(buffer, format=format_hint) if format_hint else AudioSegment.from_file(buffer)
     except Exception as pydub_err:
         raise RuntimeError(
             f"Failed to decode audio: soundfile error: {_sf_error}; pydub error: {pydub_err}"

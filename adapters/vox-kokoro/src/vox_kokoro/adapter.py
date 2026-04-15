@@ -4,10 +4,11 @@ import logging
 import platform
 from collections.abc import AsyncIterator
 from pathlib import Path
+from types import MethodType
 from typing import Any
 
 import numpy as np
-from kokoro_onnx import Kokoro
+from kokoro_onnx import Kokoro, KoKoroConfig, Tokenizer
 from onnxruntime import InferenceSession, get_available_providers
 
 from vox.core.adapter import TTSAdapter
@@ -24,39 +25,26 @@ logger = logging.getLogger(__name__)
 SAMPLE_RATE = 24000
 
 # Maps the first 3 characters of a Kokoro voice ID (e.g. "af_") to the
-# single-letter language code expected by kokoro-onnx's create_stream().
-VOICE_PREFIX_TO_LANG: dict[str, str] = {
-    "af_": "a",  # American English female
-    "am_": "a",  # American English male
-    "bf_": "b",  # British English female
-    "bm_": "b",  # British English male
-    "jf_": "j",  # Japanese female
-    "jm_": "j",  # Japanese male
-    "zf_": "z",  # Chinese female
-    "zm_": "z",  # Chinese male
-    "ef_": "e",  # Spanish female
-    "em_": "e",  # Spanish male
-    "ff_": "f",  # French female
-    "fm_": "f",  # French male
-    "hf_": "h",  # Hindi female
-    "hm_": "h",  # Hindi male
-    "if_": "i",  # Italian female
-    "im_": "i",  # Italian male
-    "pf_": "p",  # Portuguese female
-    "pm_": "p",  # Portuguese male
-}
-
-# Human-readable language labels keyed by the Kokoro single-letter lang code.
-LANG_CODE_TO_LANGUAGE: dict[str, str] = {
-    "a": "en-us",
-    "b": "en-gb",
-    "j": "ja",
-    "z": "zh",
-    "e": "es",
-    "f": "fr",
-    "h": "hi",
-    "i": "it",
-    "p": "pt",
+# language tag expected by kokoro-onnx's phonemizer.
+VOICE_PREFIX_TO_LANGUAGE: dict[str, str] = {
+    "af_": "en-us",  # American English female
+    "am_": "en-us",  # American English male
+    "bf_": "en-gb",  # British English female
+    "bm_": "en-gb",  # British English male
+    "jf_": "ja",     # Japanese female
+    "jm_": "ja",     # Japanese male
+    "zf_": "zh",     # Chinese female
+    "zm_": "zh",     # Chinese male
+    "ef_": "es",     # Spanish female
+    "em_": "es",     # Spanish male
+    "ff_": "fr",     # French female
+    "fm_": "fr",     # French male
+    "hf_": "hi",     # Hindi female
+    "hm_": "hi",     # Hindi male
+    "if_": "it",     # Italian female
+    "im_": "it",     # Italian male
+    "pf_": "pt",     # Portuguese female
+    "pm_": "pt",     # Portuguese male
 }
 
 # Gender hint derived from the second character of the voice prefix.
@@ -82,6 +70,12 @@ def _get_onnx_providers(device: str) -> list[tuple[str, dict]]:
     if "CUDAExecutionProvider" in available:
         providers.append(("CUDAExecutionProvider", {}))
 
+    if not providers:
+        raise RuntimeError(
+            "Kokoro requires a GPU-capable ONNX Runtime provider for non-CPU devices; "
+            "CPU fallback is disabled"
+        )
+
     providers.append(("CPUExecutionProvider", {}))
 
     logger.info("Using ONNX providers: %s", providers)
@@ -89,16 +83,15 @@ def _get_onnx_providers(device: str) -> list[tuple[str, dict]]:
 
 
 def _voice_lang(voice_id: str) -> str:
-    """Return the Kokoro single-letter language code for a voice ID."""
+    """Return the Kokoro language tag for a voice ID."""
     prefix = voice_id[:3] if len(voice_id) >= 3 else ""
-    return VOICE_PREFIX_TO_LANG.get(prefix, "a")
+    return VOICE_PREFIX_TO_LANGUAGE.get(prefix, "en-us")
 
 
 def _voice_info(voice_id: str) -> VoiceInfo:
     """Build a VoiceInfo from a Kokoro voice ID like ``af_heart``."""
     prefix = voice_id[:3] if len(voice_id) >= 3 else ""
-    lang_code = VOICE_PREFIX_TO_LANG.get(prefix, "a")
-    language = LANG_CODE_TO_LANGUAGE.get(lang_code)
+    language = VOICE_PREFIX_TO_LANGUAGE.get(prefix, "en-us")
     gender = _GENDER_MAP.get(prefix[1:2]) if len(prefix) >= 2 else None
     return VoiceInfo(
         id=voice_id,
@@ -128,32 +121,82 @@ class KokoroAdapter(TTSAdapter):
             supported_formats=(ModelFormat.ONNX,),
             supports_streaming=True,
             supports_voice_cloning=False,
-            supported_languages=tuple(LANG_CODE_TO_LANGUAGE.values()),
+            supported_languages=tuple(sorted(set(VOICE_PREFIX_TO_LANGUAGE.values()))),
         )
 
     def load(self, model_path: str, device: str, **kwargs: Any) -> None:
         """Load the Kokoro model from *model_path*.
 
-        *model_path* should be a directory containing ``model.onnx`` and
-        ``voices.bin``.  *device* is mapped to ONNX execution providers
-        (``"cpu"``, ``"cuda"``, or ``"auto"``).
+        Supports both the legacy layout:
+        - ``model.onnx``
+        - ``voices.bin``
+
+        and the current Hugging Face layout:
+        - ``onnx/model.onnx``
+        - ``voices/*.bin``
+
+        *device* is mapped to ONNX execution providers (``"cpu"``,
+        ``"cuda"``, or ``"auto"``).
         """
         model_dir = Path(model_path)
-        model_file = model_dir / "model.onnx"
+        model_file = self._resolve_model_file(model_dir)
         voices_file = model_dir / "voices.bin"
+        voices_dir = model_dir / "voices"
 
-        if not model_file.exists():
-            raise FileNotFoundError(f"model.onnx not found in {model_dir}")
-        if not voices_file.exists():
-            raise FileNotFoundError(f"voices.bin not found in {model_dir}")
+        if model_file is None:
+            raise FileNotFoundError(f"No Kokoro ONNX model file found in {model_dir}")
+        if not voices_file.exists() and not voices_dir.is_dir():
+            raise FileNotFoundError(f"No Kokoro voices found in {model_dir}")
 
         self._device = device
         providers = _get_onnx_providers(device)
 
         logger.info("Loading Kokoro model from %s (device=%s)", model_dir, device)
         session = InferenceSession(str(model_file), providers=providers)
-        self._kokoro = Kokoro.from_session(session, str(voices_file))
+        if voices_file.exists():
+            self._kokoro = Kokoro.from_session(session, str(voices_file))
+        else:
+            self._kokoro = self._load_directory_layout(session, model_file, voices_dir)
+        self._patch_runtime_compat()
         logger.info("Kokoro model loaded")
+
+    def _resolve_model_file(self, model_dir: Path) -> Path | None:
+        for candidate in (model_dir / "model.onnx", model_dir / "onnx" / "model.onnx"):
+            if candidate.exists():
+                return candidate
+        return None
+
+    def _load_directory_layout(self, session: InferenceSession, model_file: Path, voices_dir: Path) -> Kokoro:
+        voices = self._load_voice_tensors(voices_dir)
+        kokoro = Kokoro.__new__(Kokoro)
+        kokoro.sess = session
+        kokoro.config = KoKoroConfig(str(model_file), str(voices_dir))
+        kokoro.voices = voices
+        kokoro.tokenizer = Tokenizer(None, vocab={})
+        return kokoro
+
+    def _load_voice_tensors(self, voices_dir: Path) -> dict[str, np.ndarray]:
+        voices: dict[str, np.ndarray] = {}
+        for voice_file in sorted(voices_dir.glob("*.bin")):
+            data = np.fromfile(voice_file, dtype=np.float32)
+            if data.size == 0 or data.size % 256 != 0:
+                raise ValueError(f"Unexpected Kokoro voice tensor shape in {voice_file}")
+            voices[voice_file.stem] = data.reshape(-1, 1, 256)
+        if not voices:
+            raise FileNotFoundError(f"No Kokoro voice bins found in {voices_dir}")
+        return voices
+
+    def _patch_runtime_compat(self) -> None:
+        if self._kokoro is None:
+            return
+
+        input_types = {
+            input_meta.name: input_meta.type
+            for input_meta in self._kokoro.sess.get_inputs()
+        }
+        if input_types.get("input_ids") and input_types.get("speed") == "tensor(float)":
+            logger.info("Patching Kokoro runtime for float speed input")
+            self._kokoro._create_audio = MethodType(_create_audio_float_speed, self._kokoro)
 
     def unload(self) -> None:
         if self._kokoro is not None:
@@ -183,17 +226,7 @@ class KokoroAdapter(TTSAdapter):
         voice_id = voice or "af_heart"
         speed = max(0.5, min(speed, 2.0))
 
-        # Determine the language code Kokoro expects.
-        if language is not None:
-            # Allow callers to pass the single-letter code directly or a
-            # BCP-47-style tag (e.g. "en-us").  We try a reverse lookup first.
-            lang = language
-            for code, bcp in LANG_CODE_TO_LANGUAGE.items():
-                if bcp == language:
-                    lang = code
-                    break
-        else:
-            lang = _voice_lang(voice_id)
+        lang = language or _voice_lang(voice_id)
 
         async for audio_chunk, _token in self._kokoro.create_stream(
             text, voice_id, lang=lang, speed=speed
@@ -219,3 +252,16 @@ class KokoroAdapter(TTSAdapter):
     def estimate_vram_bytes(self, **kwargs: Any) -> int:
         # Kokoro-82M ONNX is ~330 MB in memory.
         return 330 * 1024 * 1024
+
+
+def _create_audio_float_speed(self, phonemes: str, voice: np.ndarray, speed: float) -> tuple[np.ndarray, int]:
+    tokens = np.array(self.tokenizer.tokenize(phonemes), dtype=np.int64)
+    voice = voice[len(tokens)]
+    padded_tokens = np.array([[0, *tokens.tolist(), 0]], dtype=np.int64)
+    inputs = {
+        "input_ids": padded_tokens,
+        "style": np.array(voice, dtype=np.float32),
+        "speed": np.array([speed], dtype=np.float32),
+    }
+    audio = self.sess.run(None, inputs)[0]
+    return audio, SAMPLE_RATE

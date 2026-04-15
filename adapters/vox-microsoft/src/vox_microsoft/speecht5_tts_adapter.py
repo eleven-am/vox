@@ -45,12 +45,10 @@ VOICE_TO_XVECTOR_INDEX: dict[str, int] = {
 def _select_device(device: str) -> str:
     if device == "cpu":
         return "cpu"
-    if device in ("cuda", "auto"):
-        if torch.cuda.is_available():
-            return "cuda"
-    if device in ("mps", "auto"):
-        if torch.backends.mps.is_available():
-            return "mps"
+    if device in ("cuda", "auto") and torch.cuda.is_available():
+        return "cuda"
+    if device in ("mps", "auto") and torch.backends.mps.is_available():
+        return "mps"
     return "cpu"
 
 
@@ -91,6 +89,8 @@ class SpeechT5TTSAdapter(TTSAdapter):
         self._processor = SpeechT5Processor.from_pretrained(self._model_id)
         self._model = SpeechT5ForTextToSpeech.from_pretrained(self._model_id).to(self._device)
         self._vocoder = SpeechT5HifiGan.from_pretrained("microsoft/speecht5_hifigan").to(self._device)
+        self._model.eval()
+        self._vocoder.eval()
 
         self._load_speaker_embeddings()
 

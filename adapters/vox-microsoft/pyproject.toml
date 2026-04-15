@@ -5,12 +5,14 @@ description = "Microsoft SpeechT5 and VibeVoice STT/TTS adapters for Vox"
 requires-python = ">=3.11"
 dependencies = [
     "vox>=0.1.0",
-    "transformers>=4.45.0",
+    "transformers>=4.51.3",
+    "accelerate>=1.6.0",
+    "datasets>=3.5.0",
     "torch>=2.1.0",
     "numpy>=1.26.0,<2.4",
+    "pillow>=10.0.0",
     "soundfile>=0.13.1",
     "sentencepiece>=0.2.0",
-    "datasets>=3.0.0",
 ]
 
 [project.entry-points."vox.adapters"]
