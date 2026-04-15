@@ -43,10 +43,10 @@ COPY --chown=vox:vox . .
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --compile-bytecode --python-preference only-system --python 3.12 && \
-    mkdir -p $HOME/.vox/adapters && \
-    mkdir -p $HOME/.cache/huggingface/hub && \
-    mkdir -p $HOME/.cache/torch/hub && \
-    chown -R vox:vox $HOME
+    install -d -o vox -g vox \
+        $HOME/.vox/adapters \
+        $HOME/.cache/huggingface/hub \
+        $HOME/.cache/torch/hub
 
 ARG TARGETARCH
 
@@ -63,8 +63,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         uv pip install --python .venv/bin/python onnxruntime-gpu transformers huggingface-hub; \
     else \
         uv pip install --python .venv/bin/python onnxruntime transformers huggingface-hub; \
-    fi && \
-    chown -R vox:vox $HOME
+    fi
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install --python .venv/bin/python \
@@ -77,8 +76,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         phonemizer-fork && \
     uv pip install --python .venv/bin/python --no-deps \
         kokoro-onnx==0.4.9 \
-        onnx-asr[hub]==0.11.0 && \
-    chown -R vox:vox $HOME
+        onnx-asr[hub]==0.11.0
 
 USER vox
 
