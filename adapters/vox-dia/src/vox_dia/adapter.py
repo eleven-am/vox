@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import logging
+import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import AsyncIterator
@@ -35,14 +39,67 @@ def _select_device(device: str) -> str:
 def _load_transformers_runtime() -> tuple[Any, Any]:
     try:
         from transformers import AutoProcessor, DiaForConditionalGeneration
-    except ImportError as exc:
-        raise RuntimeError(
-            "Dia requires Hugging Face Transformers with DiaForConditionalGeneration support. "
-            "Install the main branch of transformers: "
-            "`pip install git+https://github.com/huggingface/transformers.git`."
-        ) from exc
+    except ImportError:
+        _install_transformers_runtime()
+        _clear_transformers_modules()
+        try:
+            from transformers import AutoProcessor, DiaForConditionalGeneration
+        except ImportError as retry_exc:
+            raise RuntimeError(
+                "Dia requires Hugging Face Transformers with DiaForConditionalGeneration support. "
+                "Install the main branch of transformers: "
+                "`pip install git+https://github.com/huggingface/transformers.git`."
+            ) from retry_exc
+        return AutoProcessor, DiaForConditionalGeneration
 
     return AutoProcessor, DiaForConditionalGeneration
+
+
+def _clear_transformers_modules() -> None:
+    for name in list(sys.modules):
+        if name == "transformers" or name.startswith("transformers."):
+            sys.modules.pop(name, None)
+    importlib.invalidate_caches()
+
+
+def _ensure_pip_available() -> None:
+    if importlib.util.find_spec("pip") is not None:
+        return
+
+    result = subprocess.run(
+        [sys.executable, "-m", "ensurepip", "--default-pip"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Failed to bootstrap pip for Dia's runtime install. "
+            f"stderr: {result.stderr.strip()}"
+        )
+
+
+def _install_transformers_runtime() -> None:
+    _ensure_pip_available()
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "git+https://github.com/huggingface/transformers.git@main",
+            "sentencepiece>=0.2.0",
+            "tiktoken>=0.9.0",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Failed to install Dia runtime from Hugging Face Transformers main branch. "
+            f"stderr: {result.stderr.strip()}"
+        ) from None
 
 
 class DiaAdapter(TTSAdapter):
@@ -82,7 +139,13 @@ class DiaAdapter(TTSAdapter):
         logger.info("Loading Dia model: %s (device=%s)", self._model_id, self._device)
         start = time.perf_counter()
 
-        self._processor = AutoProcessor.from_pretrained(self._model_id)
+        try:
+            self._processor = AutoProcessor.from_pretrained(self._model_id)
+        except ValueError as exc:
+            message = str(exc)
+            if "sentencepiece" not in message and "tiktoken" not in message:
+                raise
+            self._processor = AutoProcessor.from_pretrained(self._model_id, use_fast=False)
         self._model = DiaForConditionalGeneration.from_pretrained(self._model_id).to(self._device)
         self._model.eval()
 

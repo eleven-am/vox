@@ -57,6 +57,18 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "files": ["parakeet-tdt-0.6b-v3.nemo"],
             "adapter_package": "vox-parakeet-nemo",
         },
+        "tdt-0.6b-v3-cuda": {
+            "source": "nvidia/parakeet-tdt-0.6b-v3",
+            "architecture": "parakeet-nemo",
+            "type": "stt",
+            "adapter": "parakeet-nemo",
+            "format": "pytorch",
+            "description": "NVIDIA Parakeet TDT 0.6B v3 — CUDA/NeMo backend alias",
+            "license": "CC-BY-4.0",
+            "parameters": {"sample_rate": 16000},
+            "files": ["parakeet-tdt-0.6b-v3.nemo"],
+            "adapter_package": "vox-parakeet-nemo",
+        },
     },
     "kokoro": {
         "v1.0": {
@@ -70,10 +82,22 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "parameters": {"sample_rate": 24000, "default_voice": "af_heart"},
             "adapter_package": "vox-kokoro",
         },
+        "v1.0-torch": {
+            "source": "hexgrad/Kokoro-82M",
+            "architecture": "kokoro-torch",
+            "type": "tts",
+            "adapter": "kokoro-torch",
+            "format": "pytorch",
+            "description": "Kokoro 82M native runtime — PyTorch backend for Spark/CUDA systems",
+            "license": "Apache-2.0",
+            "parameters": {"sample_rate": 24000, "default_voice": "af_heart"},
+            "files": ["kokoro-v1_0.pth"],
+            "adapter_package": "vox-kokoro",
+        },
     },
     "xtts": {
         "v2": {
-            "source": "tts_models/multilingual/multi-dataset/xtts_v2",
+            "source": "coqui/XTTS-v2",
             "architecture": "xtts-v2",
             "type": "tts",
             "adapter": "xtts",

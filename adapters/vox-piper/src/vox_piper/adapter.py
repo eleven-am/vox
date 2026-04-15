@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import io
+import importlib.util
 import json
 import logging
-import wave
+import subprocess
+import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -127,8 +128,57 @@ def _load_piper_voice_class() -> Any:
     try:
         from piper import PiperVoice
         return PiperVoice
-    except ImportError as exc:  # pragma: no cover - depends on runtime image
-        raise RuntimeError("Piper requires the piper-tts runtime package") from exc
+    except ImportError:
+        _install_piper_runtime()
+        try:
+            from piper import PiperVoice
+            return PiperVoice
+        except ImportError as exc:  # pragma: no cover - depends on runtime image
+            raise RuntimeError("Piper requires the piper-tts runtime package") from exc
+
+
+def _build_synthesis_config(
+    config: dict[str, Any],
+    voice: str | None,
+    speed: float,
+) -> Any:
+    from piper.config import SynthesisConfig
+
+    speaker_id = _speaker_id_for_voice(config, voice)
+    length_scale = max(0.25, min(4.0, 1.0 / max(speed, 0.01)))
+    return SynthesisConfig(speaker_id=speaker_id, length_scale=length_scale)
+
+
+def _ensure_pip_available() -> None:
+    if importlib.util.find_spec("pip") is not None:
+        return
+
+    result = subprocess.run(
+        [sys.executable, "-m", "ensurepip", "--default-pip"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Failed to bootstrap pip for Piper runtime install. "
+            f"stderr: {result.stderr.strip()}"
+        )
+
+
+def _install_piper_runtime() -> None:
+    _ensure_pip_available()
+    result = subprocess.run(
+        [sys.executable, "-m", "pip", "install", "piper-tts>=1.2.0,<2.0.0"],
+        capture_output=True,
+        text=True,
+        timeout=900,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Failed to install Piper runtime package. "
+            f"stderr: {result.stderr.strip()}"
+        )
 
 
 class PiperAdapter(TTSAdapter):
@@ -204,27 +254,31 @@ class PiperAdapter(TTSAdapter):
         if not text or not text.strip():
             return
 
-        speaker_id = _speaker_id_for_voice(self._config, voice)
-        length_scale = max(0.25, min(4.0, 1.0 / max(speed, 0.01)))
+        syn_config = _build_synthesis_config(self._config, voice, speed)
+        audio_chunks = list(self._voice.synthesize(text, syn_config=syn_config))
+        if not audio_chunks:
+            raise RuntimeError("Piper produced no audio")
 
-        wav_io = io.BytesIO()
-        with wave.open(wav_io, "wb") as wav_file:
-            wav_file.setnchannels(1)
-            wav_file.setsampwidth(2)
-            wav_file.setframerate(self._sample_rate)
-            self._voice.synthesize(
-                text,
-                wav_file,
-                speaker_id=speaker_id,
-                length_scale=length_scale,
-                sentence_silence=0.2,
-            )
+        sample_rate = int(getattr(audio_chunks[0], "sample_rate", self._sample_rate))
+        audio_arrays: list[NDArray[np.float32]] = []
+        for chunk in audio_chunks:
+            audio = getattr(chunk, "audio_float_array", None)
+            if audio is None:
+                audio = getattr(chunk, "_audio_int16_array", None)
+                if audio is None:
+                    audio_bytes = getattr(chunk, "_audio_int16_bytes", None)
+                    if audio_bytes is not None:
+                        audio = np.frombuffer(audio_bytes, dtype=np.int16)
+            if audio is None:
+                continue
+            audio_arrays.append(np.asarray(audio, dtype=np.float32).reshape(-1))
 
-        wav_io.seek(0)
-        with wave.open(wav_io, "rb") as wav_file:
-            sample_rate = wav_file.getframerate()
-            pcm = wav_file.readframes(wav_file.getnframes())
-            audio = _pcm16_to_float32_bytes(pcm)
+        if not audio_arrays:
+            raise RuntimeError("Piper produced no audio")
+
+        audio = np.concatenate(audio_arrays)
+        if audio.dtype != np.float32:
+            audio = audio.astype(np.float32)
 
         if audio.size == 0:
             raise RuntimeError("Piper produced no audio")

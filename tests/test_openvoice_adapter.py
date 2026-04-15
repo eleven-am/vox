@@ -124,6 +124,34 @@ class TestOpenVoiceAdapterInfo:
             ):
                 adapter.load(str(model_root), "cpu")
 
+    def test_install_runtime_bootstraps_pip_before_git_install(self):
+        torch = MagicMock()
+        torch.cuda.is_available.return_value = False
+        torch.backends.mps.is_available.return_value = False
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            mock = MagicMock()
+            mock.returncode = 0
+            mock.stderr = ""
+            calls.append(cmd)
+            return mock
+
+        with patch.dict("sys.modules", {"torch": torch, "librosa": MagicMock(), "soundfile": MagicMock()}):
+            _clear_openvoice_modules()
+            from vox_openvoice.adapter import _install_openvoice_runtime
+
+            with (
+                patch("vox_openvoice.adapter.importlib.util.find_spec", return_value=None),
+                patch("vox_openvoice.adapter.subprocess.run", side_effect=fake_run),
+            ):
+                _install_openvoice_runtime()
+
+        assert calls[0][0].endswith("uv")
+        assert calls[0][1:5] == ["pip", "install", "--python", sys.executable]
+        assert "--no-build-isolation" in calls[0]
+        assert "--no-deps" in calls[0]
+
 
 class TestOpenVoiceAdapterSynthesis:
     def test_synthesize_emits_chunks(self, tmp_path: Path):

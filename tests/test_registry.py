@@ -267,6 +267,23 @@ class TestAvailableModels:
         assert parakeet_nemo["files"] == ["parakeet-tdt-0.6b-v3.nemo"]
         assert parakeet_nemo["parameters"]["sample_rate"] == 16_000
 
+    def test_parakeet_cuda_alias_points_to_nemo_backend(self):
+        parakeet_cuda = CATALOG["parakeet"]["tdt-0.6b-v3-cuda"]
+
+        assert parakeet_cuda["adapter_package"] == "vox-parakeet-nemo"
+        assert parakeet_cuda["adapter"] == "parakeet-nemo"
+        assert parakeet_cuda["format"] == "pytorch"
+        assert parakeet_cuda["files"] == ["parakeet-tdt-0.6b-v3.nemo"]
+
+    def test_kokoro_torch_catalog_entry_is_explicit_and_pytorch(self):
+        kokoro_torch = CATALOG["kokoro"]["v1.0-torch"]
+
+        assert kokoro_torch["adapter_package"] == "vox-kokoro"
+        assert kokoro_torch["adapter"] == "kokoro-torch"
+        assert kokoro_torch["format"] == "pytorch"
+        assert kokoro_torch["files"] == ["kokoro-v1_0.pth"]
+        assert kokoro_torch["parameters"]["default_voice"] == "af_heart"
+
     def test_openvoice_catalog_entry_has_checkpoint_files(self):
         openvoice = CATALOG["openvoice"]["v1"]
 
@@ -274,6 +291,12 @@ class TestAvailableModels:
         assert openvoice["parameters"]["sample_rate"] == 22_050
         assert openvoice["parameters"]["default_voice"] == "en/default"
         assert "checkpoints/base_speakers/EN/config.json" in openvoice["files"]
+
+    def test_xtts_catalog_entry_uses_huggingface_repo_id(self):
+        xtts = CATALOG["xtts"]["v2"]
+
+        assert xtts["source"] == "coqui/XTTS-v2"
+        assert xtts["adapter_package"] == "vox-xtts"
 
 
 # ---------------------------------------------------------------------------

@@ -1,3 +1,8 @@
-from vox_kokoro.adapter import KokoroAdapter
+from vox_kokoro.torch_adapter import KokoroTorchAdapter
 
-__all__ = ["KokoroAdapter"]
+try:
+    from vox_kokoro.adapter import KokoroAdapter
+except ModuleNotFoundError:
+    KokoroAdapter = None
+
+__all__ = ["KokoroAdapter", "KokoroTorchAdapter"]

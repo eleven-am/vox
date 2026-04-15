@@ -4,7 +4,7 @@ import asyncio
 import sys
 from pathlib import Path
 from types import ModuleType
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -70,6 +70,34 @@ class _FakeConfig:
         self.espeak_config = espeak_config
 
 
+class _FakePipeline:
+    inits = []
+
+    def __init__(self, lang_code, model, device):
+        self.lang_code = lang_code
+        self.model = model
+        self.device = device
+        self.calls = []
+        self._voices = ["af_heart", "bf_emma"]
+        type(self).inits.append(
+            {"lang_code": lang_code, "model": model, "device": device}
+        )
+
+    def __call__(self, text, *, voice, speed, split_pattern):
+        self.calls.append(
+            {
+                "text": text,
+                "voice": voice,
+                "speed": speed,
+                "split_pattern": split_pattern,
+            }
+        )
+        yield "gs", "ps", np.array([0.0, 0.25, -0.25], dtype=np.float32)
+
+    def get_voices(self):
+        return self._voices
+
+
 def _install_fake_modules(*, providers=None):
     fake_kokoro = ModuleType("kokoro_onnx")
     fake_kokoro.Kokoro = _FakeKokoro
@@ -87,10 +115,19 @@ def _install_fake_modules(*, providers=None):
     return fake_ort
 
 
+def _install_fake_native_modules():
+    fake_kokoro = ModuleType("kokoro")
+    fake_kokoro.KPipeline = _FakePipeline
+    _FakePipeline.inits = []
+    sys.modules["kokoro"] = fake_kokoro
+    return fake_kokoro
+
+
 def test_kokoro_load_supports_directory_layout(tmp_path: Path):
     fake_ort = _install_fake_modules()
     sys.modules.pop("vox_kokoro", None)
     sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
 
     model_dir = tmp_path / "kokoro"
     (model_dir / "onnx").mkdir(parents=True)
@@ -115,6 +152,7 @@ def test_kokoro_load_supports_legacy_layout(tmp_path: Path):
     fake_ort = _install_fake_modules()
     sys.modules.pop("vox_kokoro", None)
     sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
 
     model_dir = tmp_path / "kokoro"
     model_dir.mkdir(parents=True)
@@ -135,6 +173,7 @@ def test_kokoro_synthesize_uses_bcp47_language_tags(tmp_path: Path):
     _install_fake_modules()
     sys.modules.pop("vox_kokoro", None)
     sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
 
     model_dir = tmp_path / "kokoro"
     (model_dir / "onnx").mkdir(parents=True)
@@ -180,6 +219,7 @@ def test_kokoro_patches_float_speed_runtime(tmp_path: Path):
     )
     sys.modules.pop("vox_kokoro", None)
     sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
 
     model_dir = tmp_path / "kokoro"
     (model_dir / "onnx").mkdir(parents=True)
@@ -203,6 +243,7 @@ def test_kokoro_rejects_cuda_when_no_gpu_provider_is_available(tmp_path: Path):
     fake_ort = _install_fake_modules(providers=["CPUExecutionProvider"])
     sys.modules.pop("vox_kokoro", None)
     sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
 
     model_dir = tmp_path / "kokoro"
     (model_dir / "onnx").mkdir(parents=True)
@@ -218,3 +259,109 @@ def test_kokoro_rejects_cuda_when_no_gpu_provider_is_available(tmp_path: Path):
         adapter.load(str(model_dir), "cuda")
 
     fake_ort.InferenceSession.assert_not_called()
+
+
+def test_kokoro_torch_loads_native_runtime_and_streams_audio(tmp_path: Path):
+    _install_fake_native_modules()
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    model_dir = tmp_path / "kokoro"
+    model_dir.mkdir(parents=True)
+    (model_dir / "kokoro-v1_0.pth").write_bytes(b"weights")
+
+    from vox_kokoro.torch_adapter import KokoroTorchAdapter
+
+    adapter = KokoroTorchAdapter()
+    adapter.load(str(model_dir), "cpu")
+
+    assert adapter.is_loaded is True
+    assert _FakePipeline.inits == [
+        {"lang_code": "a", "model": str(model_dir / "kokoro-v1_0.pth"), "device": "cpu"}
+    ]
+    assert [voice.id for voice in adapter.list_voices()] == ["af_heart", "bf_emma"]
+
+    async def _collect():
+        return [
+            chunk
+            async for chunk in adapter.synthesize("Hello world", voice="bf_emma")
+        ]
+
+    chunks = asyncio.run(_collect())
+
+    assert len(chunks) == 2
+    assert chunks[0].sample_rate == 24000
+    assert chunks[0].audio
+    assert chunks[1].is_final is True
+    assert adapter._pipelines["b"].calls == [
+        {
+            "text": "Hello world",
+            "voice": "bf_emma",
+            "speed": 1.0,
+            "split_pattern": r"\n+",
+        }
+    ]
+    assert _FakePipeline.inits[-1] == {
+        "lang_code": "b",
+        "model": str(model_dir / "kokoro-v1_0.pth"),
+        "device": "cpu",
+    }
+
+
+def test_kokoro_torch_honors_explicit_language_override(tmp_path: Path):
+    _install_fake_native_modules()
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    model_dir = tmp_path / "kokoro"
+    model_dir.mkdir(parents=True)
+    (model_dir / "model.pth").write_bytes(b"weights")
+
+    from vox_kokoro.torch_adapter import KokoroTorchAdapter
+
+    adapter = KokoroTorchAdapter()
+    adapter.load(str(model_dir), "cpu")
+
+    async def _collect():
+        return [
+            chunk
+            async for chunk in adapter.synthesize("Hello world", voice="af_heart", language="en-gb")
+        ]
+
+    chunks = asyncio.run(_collect())
+
+    assert len(chunks) == 2
+    assert adapter._pipelines["b"].calls == [
+        {
+            "text": "Hello world",
+            "voice": "af_heart",
+            "speed": 1.0,
+            "split_pattern": r"\n+",
+        }
+    ]
+
+
+def test_kokoro_torch_requires_runtime_package(tmp_path: Path):
+    sys.modules.pop("kokoro", None)
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    model_dir = tmp_path / "kokoro"
+    model_dir.mkdir(parents=True)
+    (model_dir / "model.pth").write_bytes(b"weights")
+
+    from vox_kokoro.torch_adapter import KokoroTorchAdapter
+
+    adapter = KokoroTorchAdapter()
+
+    with (
+        patch(
+            "vox_kokoro.torch_adapter._install_runtime",
+            side_effect=RuntimeError("official 'kokoro' runtime package"),
+        ),
+        pytest.raises(RuntimeError, match="official 'kokoro' runtime package"),
+    ):
+        adapter.load(str(model_dir), "cpu")

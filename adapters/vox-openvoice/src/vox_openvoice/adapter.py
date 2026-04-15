@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import logging
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -29,6 +31,18 @@ logger = logging.getLogger(__name__)
 
 OPENVOICE_SAMPLE_RATE = 22_050
 OPENVOICE_REPO = "git+https://github.com/myshell-ai/OpenVoice.git"
+OPENVOICE_RUNTIME_DEPS = (
+    "unidecode==1.3.7",
+    "eng_to_ipa==0.0.2",
+    "inflect==7.0.0",
+    "pypinyin==0.50.0",
+    "cn2an==0.5.22",
+    "proces==0.1.7",
+    "jieba==0.42.1",
+    "pydub==0.25.1",
+    "wavmark==0.0.3",
+    "langid==1.1.6",
+)
 OPENVOICE_VOICE_NAMES = (
     "default",
     "whispering",
@@ -104,12 +118,47 @@ def _build_voice_list() -> list[VoiceInfo]:
 
 def _install_openvoice_runtime() -> None:
     logger.info("Installing OpenVoice runtime from %s", OPENVOICE_REPO)
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", OPENVOICE_REPO],
-        capture_output=True,
-        text=True,
-        timeout=900,
-    )
+    uv_executable = shutil.which("uv") or "/usr/bin/uv"
+    install_cmd = [
+        uv_executable,
+        "pip",
+        "install",
+        "--python",
+        sys.executable,
+        "--no-build-isolation",
+        "--no-deps",
+        OPENVOICE_REPO,
+        *OPENVOICE_RUNTIME_DEPS,
+    ]
+    result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=900)
+    if result.returncode != 0:
+        if importlib.util.find_spec("pip") is None:
+            bootstrap = subprocess.run(
+                [sys.executable, "-m", "ensurepip", "--default-pip"],
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            if bootstrap.returncode != 0:
+                raise RuntimeError(
+                    "Failed to bootstrap pip for OpenVoice runtime install. "
+                    f"stderr: {bootstrap.stderr.strip()}"
+                )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--no-build-isolation",
+                "--no-deps",
+                OPENVOICE_REPO,
+                *OPENVOICE_RUNTIME_DEPS,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
     if result.returncode != 0:
         raise RuntimeError(
             "Failed to install OpenVoice runtime from GitHub. "
@@ -117,11 +166,21 @@ def _install_openvoice_runtime() -> None:
         )
 
 
+def _clear_openvoice_modules() -> None:
+    for module_name in list(sys.modules):
+        if module_name == "openvoice" or module_name.startswith(
+            ("openvoice.", "cn2an", "cn2an.", "proces", "proces.", "jieba", "jieba.")
+        ):
+            sys.modules.pop(module_name, None)
+    importlib.invalidate_caches()
+
+
 def _load_openvoice_api() -> tuple[type[Any], type[Any]]:
     try:
         module = importlib.import_module("openvoice.api")
     except ImportError:
         _install_openvoice_runtime()
+        _clear_openvoice_modules()
         module = importlib.import_module("openvoice.api")
 
     try:
@@ -189,7 +248,14 @@ class OpenVoiceTTSAdapter(TTSAdapter):
         logger.info("Loading OpenVoice converter from %s (device=%s)", self._model_root, self._device)
         start = time.perf_counter()
 
-        self._converter = ToneColorConverter(str(converter_config), device=self._device, enable_watermark=False)
+        try:
+            self._converter = ToneColorConverter(
+                str(converter_config),
+                device=self._device,
+                enable_watermark=False,
+            )
+        except TypeError:
+            self._converter = ToneColorConverter(str(converter_config), device=self._device)
         self._converter.load_ckpt(str(converter_ckpt))
 
         elapsed = time.perf_counter() - start

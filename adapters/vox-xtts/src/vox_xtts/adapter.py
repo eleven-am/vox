@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import importlib
 import logging
+import os
+import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import AsyncIterator
@@ -18,7 +22,73 @@ from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk,
 logger = logging.getLogger(__name__)
 
 XTTS_SAMPLE_RATE = 24_000
-XTTS_MODEL_NAME = "tts_models/multilingual/multi-dataset/xtts_v2"
+XTTS_MODEL_NAME = "coqui/XTTS-v2"
+
+
+def _runtime_root() -> Path:
+    vox_home = Path(os.environ.get("VOX_HOME", str(Path.home() / ".vox")))
+    return vox_home / "runtime" / "xtts"
+
+
+def _clear_modules(prefixes: tuple[str, ...]) -> None:
+    for module_name in list(sys.modules):
+        if any(module_name == prefix or module_name.startswith(f"{prefix}.") for prefix in prefixes):
+            sys.modules.pop(module_name, None)
+    importlib.invalidate_caches()
+
+
+def _ensure_runtime_path() -> str:
+    runtime_path = str(_runtime_root())
+    _runtime_root().mkdir(parents=True, exist_ok=True)
+    if runtime_path not in sys.path:
+        sys.path.insert(0, runtime_path)
+    return runtime_path
+
+
+def _install_xtts_runtime() -> None:
+    runtime_path = _ensure_runtime_path()
+    installers = [
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
+            "--target",
+            runtime_path,
+            "coqui-tts>=0.27.5",
+            "accelerate>=1.10.0,<2.0.0",
+        ],
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--target",
+            runtime_path,
+            "coqui-tts>=0.27.5",
+            "accelerate>=1.10.0,<2.0.0",
+        ],
+    ]
+    for installer in installers:
+        try:
+            result = subprocess.run(
+                installer,
+                capture_output=True,
+                text=True,
+                timeout=1800,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            logger.info("Bootstrapped XTTS runtime into %s", runtime_path)
+            return
+        logger.warning("%s failed: %s", " ".join(installer), result.stderr)
+
+    raise RuntimeError(
+        "XTTS-v2 requires the Coqui TTS runtime package. "
+        "Install `coqui-tts>=0.27.5` plus PyTorch in the image."
+    )
 
 
 def _load_torch_runtime() -> Any | None:
@@ -28,6 +98,26 @@ def _load_torch_runtime() -> Any | None:
         return torch_module
     except ImportError:
         return None
+
+
+def _patch_transformers_runtime() -> None:
+    try:
+        import transformers.pytorch_utils as pytorch_utils
+    except ImportError:
+        return
+
+    if hasattr(pytorch_utils, "isin_mps_friendly"):
+        return
+
+    torch_runtime = _load_torch_runtime()
+    if torch_runtime is not None and hasattr(torch_runtime, "isin"):
+        pytorch_utils.isin_mps_friendly = torch_runtime.isin
+        return
+
+    def _numpy_fallback(elements, test_elements):
+        return np.isin(np.asarray(elements), np.asarray(test_elements))
+
+    pytorch_utils.isin_mps_friendly = _numpy_fallback
 
 
 def _select_device(device: str) -> str:
@@ -42,15 +132,25 @@ def _select_device(device: str) -> str:
 
 
 def _load_tts_runtime() -> type[Any]:
+    _ensure_runtime_path()
+    _patch_transformers_runtime()
     try:
         from TTS.api import TTS
 
         return TTS
-    except ImportError as exc:
-        raise RuntimeError(
-            "XTTS-v2 requires the Coqui TTS runtime package. "
-            "Install `coqui-tts>=0.27.5` plus PyTorch in the image."
-        ) from exc
+    except ImportError:
+        _install_xtts_runtime()
+        _clear_modules(("TTS", "transformers", "tokenizers", "huggingface_hub", "accelerate"))
+        _patch_transformers_runtime()
+        try:
+            from TTS.api import TTS
+
+            return TTS
+        except ImportError as exc:
+            raise RuntimeError(
+                "XTTS-v2 requires the Coqui TTS runtime package. "
+                "Install `coqui-tts>=0.27.5` plus PyTorch in the image."
+            ) from exc
 
 
 def _extract_audio(output: Any) -> np.ndarray:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import sys
+from types import ModuleType
 from unittest.mock import ANY, MagicMock, patch
 
 import numpy as np
@@ -62,6 +63,47 @@ class TestDiaAdapterInfo:
                 adapter = DiaAdapter()
                 with pytest.raises(RuntimeError, match="Dia requires Hugging Face Transformers"):
                     adapter.load("nari-labs/Dia-1.6B", "cuda")
+
+    def test_load_bootstraps_transformers_when_dia_symbol_is_missing(self):
+        torch = MagicMock()
+        module = ModuleType("transformers")
+        processor_cls = MagicMock()
+        processor = MagicMock()
+        processor_cls.from_pretrained.return_value = processor
+        module.AutoProcessor = processor_cls
+        module._bootstrapped = False  # type: ignore[attr-defined]
+
+        def module_getattr(name: str):
+            if name == "DiaForConditionalGeneration" and not getattr(module, "_bootstrapped", False):
+                raise ImportError("DiaForConditionalGeneration not available")
+            raise AttributeError(name)
+
+        module.__getattr__ = module_getattr  # type: ignore[attr-defined]
+
+        with patch.dict("sys.modules", {"torch": torch, "transformers": module}):
+            from vox_dia.adapter import DiaAdapter
+
+            model_cls = MagicMock()
+            model = MagicMock()
+            model.to.return_value = model
+            model_cls.from_pretrained.return_value = model
+
+            def install_side_effect():
+                module._bootstrapped = True  # type: ignore[attr-defined]
+                module.DiaForConditionalGeneration = model_cls  # type: ignore[attr-defined]
+                sys.modules["transformers"] = module
+
+            with (
+                patch("vox_dia.adapter._install_transformers_runtime", side_effect=install_side_effect),
+                patch("vox_dia.adapter._clear_transformers_modules"),
+            ):
+                adapter = DiaAdapter()
+                adapter.load("nari-labs/Dia-1.6B", "cuda")
+
+            processor_cls.from_pretrained.assert_called_once_with("nari-labs/Dia-1.6B")
+            model_cls.from_pretrained.assert_called_once_with("nari-labs/Dia-1.6B")
+            model.to.assert_called_once_with("cuda")
+            model.eval.assert_called_once()
 
     def test_load_puts_model_in_eval_mode(self):
         torch = MagicMock()

@@ -151,7 +151,7 @@ def test_registry_contains_xtts_catalog_entry():
     from vox.core.registry import CATALOG
 
     entry = CATALOG["xtts"]["v2"]
-    assert entry["source"] == "tts_models/multilingual/multi-dataset/xtts_v2"
+    assert entry["source"] == "coqui/XTTS-v2"
     assert entry["adapter"] == "xtts"
     assert entry["format"] == "pytorch"
     assert entry["parameters"]["sample_rate"] == 24_000

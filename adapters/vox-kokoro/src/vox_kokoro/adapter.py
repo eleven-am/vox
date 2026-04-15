@@ -19,37 +19,9 @@ from vox.core.types import (
     SynthesizeChunk,
     VoiceInfo,
 )
+from vox_kokoro.common import SAMPLE_RATE, SUPPORTED_LANGUAGES, voice_info, voice_lang_tag
 
 logger = logging.getLogger(__name__)
-
-SAMPLE_RATE = 24000
-
-# Maps the first 3 characters of a Kokoro voice ID (e.g. "af_") to the
-# language tag expected by kokoro-onnx's phonemizer.
-VOICE_PREFIX_TO_LANGUAGE: dict[str, str] = {
-    "af_": "en-us",  # American English female
-    "am_": "en-us",  # American English male
-    "bf_": "en-gb",  # British English female
-    "bm_": "en-gb",  # British English male
-    "jf_": "ja",     # Japanese female
-    "jm_": "ja",     # Japanese male
-    "zf_": "zh",     # Chinese female
-    "zm_": "zh",     # Chinese male
-    "ef_": "es",     # Spanish female
-    "em_": "es",     # Spanish male
-    "ff_": "fr",     # French female
-    "fm_": "fr",     # French male
-    "hf_": "hi",     # Hindi female
-    "hm_": "hi",     # Hindi male
-    "if_": "it",     # Italian female
-    "im_": "it",     # Italian male
-    "pf_": "pt",     # Portuguese female
-    "pm_": "pt",     # Portuguese male
-}
-
-# Gender hint derived from the second character of the voice prefix.
-_GENDER_MAP: dict[str, str] = {"f": "female", "m": "male"}
-
 
 def _get_onnx_providers(device: str) -> list[tuple[str, dict]]:
     """Choose ONNX execution providers based on *device* and platform."""
@@ -84,21 +56,12 @@ def _get_onnx_providers(device: str) -> list[tuple[str, dict]]:
 
 def _voice_lang(voice_id: str) -> str:
     """Return the Kokoro language tag for a voice ID."""
-    prefix = voice_id[:3] if len(voice_id) >= 3 else ""
-    return VOICE_PREFIX_TO_LANGUAGE.get(prefix, "en-us")
+    return voice_lang_tag(voice_id)
 
 
 def _voice_info(voice_id: str) -> VoiceInfo:
     """Build a VoiceInfo from a Kokoro voice ID like ``af_heart``."""
-    prefix = voice_id[:3] if len(voice_id) >= 3 else ""
-    language = VOICE_PREFIX_TO_LANGUAGE.get(prefix, "en-us")
-    gender = _GENDER_MAP.get(prefix[1:2]) if len(prefix) >= 2 else None
-    return VoiceInfo(
-        id=voice_id,
-        name=voice_id,
-        language=language,
-        gender=gender,
-    )
+    return voice_info(voice_id)
 
 
 class KokoroAdapter(TTSAdapter):
@@ -121,7 +84,7 @@ class KokoroAdapter(TTSAdapter):
             supported_formats=(ModelFormat.ONNX,),
             supports_streaming=True,
             supports_voice_cloning=False,
-            supported_languages=tuple(sorted(set(VOICE_PREFIX_TO_LANGUAGE.values()))),
+            supported_languages=SUPPORTED_LANGUAGES,
         )
 
     def load(self, model_path: str, device: str, **kwargs: Any) -> None:
