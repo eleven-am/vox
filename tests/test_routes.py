@@ -13,7 +13,9 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from vox.audio.codecs import encode_wav
 from vox.core.adapter import STTAdapter, TTSAdapter
+from vox.core.cloned_voices import create_stored_voice
 from vox.core.errors import ModelNotFoundError
 from vox.core.store import BlobStore, Manifest, ManifestLayer
 from vox.core.types import (
@@ -73,6 +75,9 @@ class FakeSTTAdapter(STTAdapter):
 
 
 class FakeTTSAdapter(TTSAdapter):
+    def __init__(self) -> None:
+        self.last_synthesize_kwargs: dict[str, Any] | None = None
+
     def info(self) -> AdapterInfo:
         return AdapterInfo(
             name="fake-tts",
@@ -99,9 +104,22 @@ class FakeTTSAdapter(TTSAdapter):
         ]
 
     async def synthesize(self, text, **kwargs):
+        self.last_synthesize_kwargs = kwargs
         audio = np.zeros(24000, dtype=np.float32)
         yield SynthesizeChunk(
             audio=audio.tobytes(), sample_rate=24000, is_final=True
+        )
+
+
+class FakeCloneableTTSAdapter(FakeTTSAdapter):
+    def info(self) -> AdapterInfo:
+        return AdapterInfo(
+            name="fake-tts-cloneable",
+            type=ModelType.TTS,
+            architectures=("fake",),
+            default_sample_rate=24000,
+            supported_formats=(ModelFormat.ONNX,),
+            supports_voice_cloning=True,
         )
 
 
@@ -716,6 +734,112 @@ class TestVoicesExtended:
 
         resp = client.get("/api/voices", params={"model": "no-such-model:latest"})
         assert resp.status_code == 404
+
+    def test_create_voice_v1_persists_reference_audio(self, tmp_path: Path):
+        store = BlobStore(root=tmp_path)
+        app = _build_app(store=store)
+        client = TestClient(app)
+
+        wav = encode_wav(np.zeros(16_000, dtype=np.float32), 16_000)
+        resp = client.post(
+            "/v1/audio/voices",
+            files={"audio_sample": ("sample.wav", io.BytesIO(wav), "audio/wav")},
+            data={"name": "Roy", "language": "en", "gender": "male", "reference_text": "hello there"},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["name"] == "Roy"
+        assert (store.voices_dir / body["id"] / "reference.wav").is_file()
+        assert (store.voices_dir / body["id"] / "metadata.json").is_file()
+
+    def test_voices_with_model_include_stored_clones(self, tmp_path: Path):
+        store = BlobStore(root=tmp_path)
+        create_stored_voice(
+            store,
+            voice_id="voice1234",
+            name="Roy",
+            audio_bytes=encode_wav(np.zeros(16_000, dtype=np.float32), 16_000),
+            content_type="audio/wav",
+            language="en",
+        )
+
+        scheduler = MockScheduler()
+        scheduler.register("test-tts:latest", FakeCloneableTTSAdapter())
+        app = _build_app(scheduler=scheduler, store=store)
+        client = TestClient(app)
+
+        resp = client.get("/api/voices", params={"model": "test-tts:latest"})
+        assert resp.status_code == 200
+        voices = resp.json()["voices"]
+        assert any(voice["id"] == "voice1234" and voice["is_cloned"] is True for voice in voices)
+
+    def test_delete_voice_v1_removes_stored_clone(self, tmp_path: Path):
+        store = BlobStore(root=tmp_path)
+        create_stored_voice(
+            store,
+            voice_id="voice1234",
+            name="Roy",
+            audio_bytes=encode_wav(np.zeros(16_000, dtype=np.float32), 16_000),
+            content_type="audio/wav",
+        )
+        app = _build_app(store=store)
+        client = TestClient(app)
+
+        resp = client.delete("/v1/audio/voices/voice1234")
+        assert resp.status_code == 200
+        assert resp.json() == {"id": "voice1234", "deleted": True}
+        assert not (store.voices_dir / "voice1234").exists()
+
+    def test_synthesize_uses_stored_cloned_voice(self, tmp_path: Path):
+        store = BlobStore(root=tmp_path)
+        create_stored_voice(
+            store,
+            voice_id="voice1234",
+            name="Roy",
+            audio_bytes=encode_wav(np.zeros(16_000, dtype=np.float32), 16_000),
+            content_type="audio/wav",
+            language="en",
+            reference_text="hello there",
+        )
+        adapter = FakeCloneableTTSAdapter()
+        scheduler = MockScheduler()
+        scheduler.register("test-tts:latest", adapter)
+        app = _build_app(scheduler=scheduler, store=store)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/synthesize",
+            json={"model": "test-tts:latest", "input": "hello", "voice": "voice1234"},
+        )
+
+        assert resp.status_code == 200
+        assert adapter.last_synthesize_kwargs is not None
+        assert adapter.last_synthesize_kwargs["voice"] is None
+        assert adapter.last_synthesize_kwargs["reference_audio"] is not None
+        assert adapter.last_synthesize_kwargs["reference_text"] == "hello there"
+
+    def test_synthesize_rejects_stored_cloned_voice_for_non_cloneable_model(self, tmp_path: Path):
+        store = BlobStore(root=tmp_path)
+        create_stored_voice(
+            store,
+            voice_id="voice1234",
+            name="Roy",
+            audio_bytes=encode_wav(np.zeros(16_000, dtype=np.float32), 16_000),
+            content_type="audio/wav",
+        )
+        scheduler = MockScheduler()
+        scheduler.register("test-tts:latest", FakeTTSAdapter())
+        app = _build_app(scheduler=scheduler, store=store)
+        client = TestClient(app)
+
+        resp = client.post(
+            "/api/synthesize",
+            json={"model": "test-tts:latest", "input": "hello", "voice": "voice1234"},
+        )
+
+        assert resp.status_code == 400
+        assert "does not support cloned voices" in resp.json()["detail"]
 
 
 # ---------------------------------------------------------------------------

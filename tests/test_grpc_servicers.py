@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
 
+from vox.audio.codecs import encode_wav
+from vox.core.adapter import TTSAdapter
+from vox.core.cloned_voices import create_stored_voice
 from vox.core.store import BlobStore
-from vox.core.types import LoadedModelInfo, ModelType
+from vox.core.types import AdapterInfo, LoadedModelInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
 from vox.grpc import vox_pb2
 
 
@@ -30,6 +34,52 @@ class FakeContext:
         self._code = code
         self._details = details
         raise Exception(f"gRPC abort: {code} {details}")
+
+
+class DummyScheduler:
+    def __init__(self, adapter: TTSAdapter, loaded_models: list[LoadedModelInfo] | None = None):
+        self._adapter = adapter
+        self._loaded_models = loaded_models or []
+
+    @asynccontextmanager
+    async def acquire(self, _model_name: str):
+        yield self._adapter
+
+    def list_loaded(self):
+        return self._loaded_models
+
+
+class FakeCloneableTTSAdapter(TTSAdapter):
+    def __init__(self) -> None:
+        self.last_synthesize_kwargs = None
+
+    def info(self) -> AdapterInfo:
+        return AdapterInfo(
+            name="fake-tts-cloneable",
+            type=ModelType.TTS,
+            architectures=("fake",),
+            default_sample_rate=24_000,
+            supported_formats=(ModelFormat.ONNX,),
+            supports_voice_cloning=True,
+        )
+
+    def load(self, model_path: str, device: str, **kwargs) -> None:
+        pass
+
+    def unload(self) -> None:
+        pass
+
+    @property
+    def is_loaded(self) -> bool:
+        return True
+
+    def list_voices(self):
+        return [VoiceInfo(id="default", name="Default", language="en")]
+
+    async def synthesize(self, text: str, **kwargs):
+        self.last_synthesize_kwargs = kwargs
+        yield SynthesizeChunk(audio=np.zeros(64, dtype=np.float32).tobytes(), sample_rate=24_000, is_final=False)
+        yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
 
 
 class TestHealthServicer:
@@ -225,6 +275,108 @@ class TestSynthesisServicer:
         resp = await servicer.ListVoices(vox_pb2.ListVoicesRequest(), FakeContext())
         assert len(resp.voices) == 0
 
+    @pytest.mark.asyncio
+    async def test_create_voice_persists_reference_audio(self, tmp_path):
+        from vox.grpc.synthesis_servicer import SynthesisServicer
+
+        store = _make_store(tmp_path)
+        servicer = SynthesisServicer(store, MagicMock(), MagicMock())
+
+        resp = await servicer.CreateVoice(
+            vox_pb2.CreateVoiceRequest(
+                name="Roy",
+                audio=encode_wav(np.zeros(16_000, dtype=np.float32), 16_000),
+                format_hint="wav",
+                language="en",
+                gender="male",
+                reference_text="hello there",
+            ),
+            FakeContext(),
+        )
+
+        assert resp.voice.name == "Roy"
+        assert resp.voice.is_cloned is True
+        assert (store.voices_dir / resp.voice.id / "reference.wav").is_file()
+
+    @pytest.mark.asyncio
+    async def test_delete_voice_removes_stored_clone(self, tmp_path):
+        from vox.grpc.synthesis_servicer import SynthesisServicer
+
+        store = _make_store(tmp_path)
+        create_stored_voice(
+            store,
+            voice_id="voice1234",
+            name="Roy",
+            audio_bytes=encode_wav(np.zeros(16_000, dtype=np.float32), 16_000),
+            content_type="audio/wav",
+        )
+        servicer = SynthesisServicer(store, MagicMock(), MagicMock())
+
+        resp = await servicer.DeleteVoice(
+            vox_pb2.DeleteVoiceRequest(id="voice1234"),
+            FakeContext(),
+        )
+
+        assert resp.id == "voice1234"
+        assert resp.deleted is True
+        assert not (store.voices_dir / "voice1234").exists()
+
+    @pytest.mark.asyncio
+    async def test_list_voices_includes_stored_clones(self, tmp_path):
+        from vox.grpc.synthesis_servicer import SynthesisServicer
+
+        store = _make_store(tmp_path)
+        create_stored_voice(
+            store,
+            voice_id="voice1234",
+            name="Roy",
+            audio_bytes=encode_wav(np.zeros(16_000, dtype=np.float32), 16_000),
+            content_type="audio/wav",
+        )
+        loaded = LoadedModelInfo(
+            name="test-tts",
+            tag="latest",
+            type=ModelType.TTS,
+            device="cpu",
+        )
+        scheduler = DummyScheduler(FakeCloneableTTSAdapter(), loaded_models=[loaded])
+
+        servicer = SynthesisServicer(store, MagicMock(), scheduler)
+        resp = await servicer.ListVoices(vox_pb2.ListVoicesRequest(), FakeContext())
+
+        assert any(voice.id == "voice1234" and voice.is_cloned for voice in resp.voices)
+
+    @pytest.mark.asyncio
+    async def test_synthesize_uses_stored_clone_reference_audio(self, tmp_path):
+        from vox.grpc.synthesis_servicer import SynthesisServicer
+
+        store = _make_store(tmp_path)
+        create_stored_voice(
+            store,
+            voice_id="voice1234",
+            name="Roy",
+            audio_bytes=encode_wav(np.zeros(16_000, dtype=np.float32), 16_000),
+            content_type="audio/wav",
+            reference_text="hello there",
+        )
+        adapter = FakeCloneableTTSAdapter()
+        scheduler = DummyScheduler(adapter)
+
+        servicer = SynthesisServicer(store, MagicMock(), scheduler)
+        chunks = [
+            chunk
+            async for chunk in servicer.Synthesize(
+                vox_pb2.SynthesizeRequest(model="test-tts:latest", input="hello", voice="voice1234"),
+                FakeContext(),
+            )
+        ]
+
+        assert len(chunks) == 2
+        assert adapter.last_synthesize_kwargs is not None
+        assert adapter.last_synthesize_kwargs["voice"] is None
+        assert adapter.last_synthesize_kwargs["reference_audio"] is not None
+        assert adapter.last_synthesize_kwargs["reference_text"] == "hello there"
+
 
 class TestProtoMessages:
     def test_pull_progress_fields(self):
@@ -270,3 +422,14 @@ class TestProtoMessages:
         )
         assert msg.id == "af_heart"
         assert msg.gender == "female"
+
+    def test_create_voice_request_fields(self):
+        msg = vox_pb2.CreateVoiceRequest(name="Roy", audio=b"123", format_hint="wav")
+        assert msg.name == "Roy"
+        assert msg.audio == b"123"
+        assert msg.format_hint == "wav"
+
+    def test_delete_voice_response_fields(self):
+        msg = vox_pb2.DeleteVoiceResponse(id="voice1234", deleted=True)
+        assert msg.id == "voice1234"
+        assert msg.deleted is True

@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from vox.grpc import vox_pb2 as vox__pb2
+from . import vox_pb2 as vox__pb2
 
 GRPC_GENERATED_VERSION = '1.80.0'
 GRPC_VERSION = grpc.__version__
@@ -432,6 +432,16 @@ class SynthesisServiceStub(object):
                 request_serializer=vox__pb2.ListVoicesRequest.SerializeToString,
                 response_deserializer=vox__pb2.ListVoicesResponse.FromString,
                 _registered_method=True)
+        self.CreateVoice = channel.unary_unary(
+                '/vox.SynthesisService/CreateVoice',
+                request_serializer=vox__pb2.CreateVoiceRequest.SerializeToString,
+                response_deserializer=vox__pb2.CreateVoiceResponse.FromString,
+                _registered_method=True)
+        self.DeleteVoice = channel.unary_unary(
+                '/vox.SynthesisService/DeleteVoice',
+                request_serializer=vox__pb2.DeleteVoiceRequest.SerializeToString,
+                response_deserializer=vox__pb2.DeleteVoiceResponse.FromString,
+                _registered_method=True)
 
 
 class SynthesisServiceServicer(object):
@@ -449,6 +459,18 @@ class SynthesisServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def CreateVoice(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def DeleteVoice(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_SynthesisServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -461,6 +483,16 @@ def add_SynthesisServiceServicer_to_server(servicer, server):
                     servicer.ListVoices,
                     request_deserializer=vox__pb2.ListVoicesRequest.FromString,
                     response_serializer=vox__pb2.ListVoicesResponse.SerializeToString,
+            ),
+            'CreateVoice': grpc.unary_unary_rpc_method_handler(
+                    servicer.CreateVoice,
+                    request_deserializer=vox__pb2.CreateVoiceRequest.FromString,
+                    response_serializer=vox__pb2.CreateVoiceResponse.SerializeToString,
+            ),
+            'DeleteVoice': grpc.unary_unary_rpc_method_handler(
+                    servicer.DeleteVoice,
+                    request_deserializer=vox__pb2.DeleteVoiceRequest.FromString,
+                    response_serializer=vox__pb2.DeleteVoiceResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -517,6 +549,60 @@ class SynthesisService(object):
             '/vox.SynthesisService/ListVoices',
             vox__pb2.ListVoicesRequest.SerializeToString,
             vox__pb2.ListVoicesResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def CreateVoice(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/vox.SynthesisService/CreateVoice',
+            vox__pb2.CreateVoiceRequest.SerializeToString,
+            vox__pb2.CreateVoiceResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def DeleteVoice(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/vox.SynthesisService/DeleteVoice',
+            vox__pb2.DeleteVoiceRequest.SerializeToString,
+            vox__pb2.DeleteVoiceResponse.FromString,
             options,
             channel_credentials,
             insecure,

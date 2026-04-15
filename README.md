@@ -2,7 +2,7 @@
 
 Vox is a local runtime for speech models.
 
-If Ollama made local LLMs feel operationally simple, Vox applies that same kind of ergonomics to speech: pull a model, serve one API, and run speech-to-text and text-to-speech workloads locally without hand-wiring every model family yourself. Vox is its own runtime, though, not an Ollama wrapper. It is built around speech-native concerns like streaming audio, voice selection, backend-specific adapters, and one consistent interface across STT and TTS models.
+It gives speech-to-text and text-to-speech models one operational surface: pull a model, serve one API, and run local speech workloads without hand-wiring each model family yourself. Vox is built around speech-native concerns like streaming audio, voice selection, backend-specific adapters, and one consistent interface across STT and TTS models.
 
 ## Why Vox
 
@@ -10,6 +10,7 @@ If Ollama made local LLMs feel operationally simple, Vox applies that same kind 
 - One CLI and one API surface across many model families
 - Pull-on-demand model and adapter installation
 - Multiple backends behind the same runtime: ONNX, Torch, NeMo, CTranslate2, and vLLM
+- Stored custom voices for clone-capable TTS models
 - REST, WebSocket, gRPC, and OpenAI-compatible endpoints
 - Local-first deployment with Docker images that start empty and install only what you use
 
@@ -31,6 +32,8 @@ curl -X POST http://localhost:11435/api/synthesize \
   -d '{"model":"kokoro-tts-onnx:v1.0","input":"Hello from Vox"}' \
   -o output.wav
 ```
+
+gRPC starts with `vox serve` too and listens on `:9090` by default.
 
 ## What it does
 
@@ -100,6 +103,31 @@ curl -X POST http://localhost:11435/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{"model":"kokoro-tts-onnx:v1.0","input":"Hello"}' \
   -o output.wav
+```
+
+### Create and use custom voices
+
+Vox can store cloned voices and reuse them across HTTP and gRPC. This is only available for TTS adapters that declare voice-cloning support. Preset-only models still list their built-in voices, but they will reject stored cloned voices at synthesis time.
+
+```bash
+# create a cloned voice from a reference sample
+curl -X POST http://localhost:11435/v1/audio/voices \
+  -F audio_sample=@sample.wav \
+  -F name="Roy" \
+  -F language=en \
+  -F reference_text="Hello there from my custom voice"
+
+# list voices, including cloned voices for clone-capable models
+curl "http://localhost:11435/api/voices?model=openvoice-tts-torch:v1"
+
+# synthesize with the stored voice id returned at creation time
+curl -X POST http://localhost:11435/api/synthesize \
+  -H "Content-Type: application/json" \
+  -d '{"model":"openvoice-tts-torch:v1","input":"Hello from Vox","voice":"voice1234"}' \
+  -o output.wav
+
+# delete a stored cloned voice
+curl -X DELETE http://localhost:11435/v1/audio/voices/voice1234
 ```
 
 ### Search available models
@@ -306,17 +334,44 @@ More models at [vox-registry](https://github.com/eleven-am/vox-registry). Add a 
 |----------|--------|---------|
 | `/api/transcribe` | POST | Audio to text |
 | `/api/synthesize` | POST | Text to audio |
+| `/api/voices` | POST | Create a stored cloned voice |
 | `/api/pull` | POST | Download a model |
 | `/api/list` | GET | List downloaded models |
 | `/api/show` | POST | Model details |
 | `/api/delete` | DELETE | Remove a model |
 | `/api/ps` | GET | Currently loaded models |
 | `/api/voices` | GET | List voices for a TTS model |
+| `/api/voices/{id}` | DELETE | Delete a stored cloned voice |
 | `/api/health` | GET | Health check |
 | `/v1/audio/transcriptions` | POST | OpenAI-compatible STT |
 | `/v1/audio/speech` | POST | OpenAI-compatible TTS |
+| `/v1/audio/voices` | GET | OpenAI-style voice listing |
+| `/v1/audio/voices` | POST | OpenAI-style cloned voice creation |
+| `/v1/audio/voices/{id}` | DELETE | OpenAI-style cloned voice deletion |
 | `/v1/audio/transcriptions/stream` | WS | Long-form streaming STT |
 | `/v1/audio/speech/stream` | WS | Long-form streaming TTS |
+
+## gRPC
+
+`vox serve` starts the gRPC server automatically unless you disable it with `--grpc-port 0`.
+
+- default gRPC port: `9090`
+- health and model lifecycle:
+  - `HealthService.Health`
+  - `HealthService.ListLoaded`
+  - `ModelService.Pull`
+  - `ModelService.List`
+  - `ModelService.Show`
+  - `ModelService.Delete`
+- speech:
+  - `TranscriptionService.Transcribe`
+  - `SynthesisService.Synthesize`
+  - `SynthesisService.ListVoices`
+  - `SynthesisService.CreateVoice`
+  - `SynthesisService.DeleteVoice`
+  - `StreamingService.StreamTranscribe`
+
+The gRPC voice APIs use the same stored voice data as HTTP. Creating or deleting a cloned voice over one transport is immediately visible through the other.
 
 ## Adding a model
 

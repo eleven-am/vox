@@ -3,9 +3,16 @@ from __future__ import annotations
 import logging
 
 import grpc
-import numpy as np
 
 from vox.core.adapter import TTSAdapter
+from vox.core.cloned_voices import (
+    create_stored_voice,
+    delete_stored_voice,
+    generate_voice_id,
+    get_stored_voice,
+    list_stored_voices,
+    load_reference_audio,
+)
 from vox.core.errors import ModelNotFoundError, VoxError
 from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
@@ -36,7 +43,10 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
     async def Synthesize(self, request, context):
         model = request.model or _get_default_tts(self._registry, self._store)
         if not model:
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "No model specified and no default TTS model available")
+            await context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                "No model specified and no default TTS model available",
+            )
 
         if not request.input or not request.input.strip():
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "No input text provided")
@@ -46,11 +56,19 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
                 if not isinstance(adapter, TTSAdapter):
                     await context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"Model '{model}' is not a TTS model")
 
+                voice, language, reference_audio, reference_text = _resolve_voice_request(
+                    adapter,
+                    self._store,
+                    request.voice or None,
+                    request.language or None,
+                )
                 async for chunk in adapter.synthesize(
                     request.input,
-                    voice=request.voice or None,
+                    voice=voice,
                     speed=request.speed if request.speed > 0 else 1.0,
-                    language=request.language or None,
+                    language=language,
+                    reference_audio=reference_audio,
+                    reference_text=reference_text,
                 ):
                     yield vox_pb2.AudioChunk(
                         audio=chunk.audio,
@@ -76,7 +94,7 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
                         full_name = f"{loaded.name}:{loaded.tag}"
                         async with scheduler.acquire(full_name) as adapter:
                             if isinstance(adapter, TTSAdapter):
-                                for v in adapter.list_voices():
+                                for v in _voices_for_adapter(adapter, self._store):
                                     all_voices.append(vox_pb2.VoiceInfo(
                                         id=v.id,
                                         name=v.name,
@@ -101,10 +119,87 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
                         description=v.description or "",
                         is_cloned=v.is_cloned,
                     )
-                    for v in adapter.list_voices()
+                    for v in _voices_for_adapter(adapter, self._store)
                 ]
                 return vox_pb2.ListVoicesResponse(voices=voices)
         except ModelNotFoundError as e:
             await context.abort(grpc.StatusCode.NOT_FOUND, str(e))
         except VoxError as e:
             await context.abort(grpc.StatusCode.INTERNAL, str(e))
+
+    async def CreateVoice(self, request, context):
+        if not request.name or not request.name.strip():
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Voice name is required")
+        if not request.audio:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Audio sample is required")
+
+        try:
+            voice = create_stored_voice(
+                self._store,
+                voice_id=generate_voice_id(self._store),
+                name=request.name,
+                audio_bytes=request.audio,
+                content_type=request.format_hint or None,
+                language=request.language or None,
+                gender=request.gender or None,
+                reference_text=request.reference_text or None,
+            )
+        except (TypeError, ValueError, RuntimeError) as e:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
+
+        return vox_pb2.CreateVoiceResponse(
+            voice=vox_pb2.VoiceInfo(
+                id=voice.id,
+                name=voice.name,
+                language=voice.language or "",
+                gender=voice.gender or "",
+                description=voice.description or "",
+                is_cloned=True,
+            ),
+            created_at=voice.created_at,
+        )
+
+    async def DeleteVoice(self, request, context):
+        if not request.id:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Voice ID is required")
+
+        deleted = delete_stored_voice(self._store, request.id)
+        if not deleted:
+            await context.abort(grpc.StatusCode.NOT_FOUND, f"Voice '{request.id}' not found")
+
+        return vox_pb2.DeleteVoiceResponse(id=request.id, deleted=True)
+
+
+def _voices_for_adapter(adapter: TTSAdapter, store: BlobStore):
+    voices = list(adapter.list_voices())
+    if adapter.info().supports_voice_cloning:
+        voices.extend(voice.to_voice_info() for voice in list_stored_voices(store))
+    return voices
+
+
+def _resolve_voice_request(
+    adapter: TTSAdapter,
+    store: BlobStore,
+    voice_id: str | None,
+    language: str | None,
+):
+    if not voice_id:
+        return None, language, None, None
+
+    stored_voice = get_stored_voice(store, voice_id)
+    if stored_voice is None:
+        return voice_id, language, None, None
+
+    if not adapter.info().supports_voice_cloning:
+        raise VoxError(f"Model '{adapter.info().name}' does not support cloned voices")
+
+    reference = load_reference_audio(
+        store,
+        stored_voice.id,
+        target_rate=adapter.info().default_sample_rate,
+    )
+    if reference is None:
+        raise VoxError(f"Voice '{stored_voice.id}' not found")
+
+    reference_audio, reference_text = reference
+    return None, language or stored_voice.language, reference_audio, reference_text

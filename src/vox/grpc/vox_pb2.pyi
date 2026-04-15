@@ -353,6 +353,44 @@ class ListVoicesResponse(_message.Message):
     voices: _containers.RepeatedCompositeFieldContainer[VoiceInfo]
     def __init__(self, voices: _Optional[_Iterable[_Union[VoiceInfo, _Mapping]]] = ...) -> None: ...
 
+class CreateVoiceRequest(_message.Message):
+    __slots__ = ("name", "audio", "language", "gender", "reference_text", "format_hint")
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    AUDIO_FIELD_NUMBER: _ClassVar[int]
+    LANGUAGE_FIELD_NUMBER: _ClassVar[int]
+    GENDER_FIELD_NUMBER: _ClassVar[int]
+    REFERENCE_TEXT_FIELD_NUMBER: _ClassVar[int]
+    FORMAT_HINT_FIELD_NUMBER: _ClassVar[int]
+    name: str
+    audio: bytes
+    language: str
+    gender: str
+    reference_text: str
+    format_hint: str
+    def __init__(self, name: _Optional[str] = ..., audio: _Optional[bytes] = ..., language: _Optional[str] = ..., gender: _Optional[str] = ..., reference_text: _Optional[str] = ..., format_hint: _Optional[str] = ...) -> None: ...
+
+class CreateVoiceResponse(_message.Message):
+    __slots__ = ("voice", "created_at")
+    VOICE_FIELD_NUMBER: _ClassVar[int]
+    CREATED_AT_FIELD_NUMBER: _ClassVar[int]
+    voice: VoiceInfo
+    created_at: int
+    def __init__(self, voice: _Optional[_Union[VoiceInfo, _Mapping]] = ..., created_at: _Optional[int] = ...) -> None: ...
+
+class DeleteVoiceRequest(_message.Message):
+    __slots__ = ("id",)
+    ID_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    def __init__(self, id: _Optional[str] = ...) -> None: ...
+
+class DeleteVoiceResponse(_message.Message):
+    __slots__ = ("id", "deleted")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    DELETED_FIELD_NUMBER: _ClassVar[int]
+    id: str
+    deleted: bool
+    def __init__(self, id: _Optional[str] = ..., deleted: bool = ...) -> None: ...
+
 class VoiceInfo(_message.Message):
     __slots__ = ("id", "name", "language", "gender", "description", "is_cloned", "model")
     ID_FIELD_NUMBER: _ClassVar[int]

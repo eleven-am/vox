@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from vox.audio.pipeline import get_content_type, prepare_for_output
 from vox.core.adapter import TTSAdapter
+from vox.core.cloned_voices import get_stored_voice, load_reference_audio
 from vox.core.errors import ModelNotFoundError, VoxError
 from vox.server.routes import get_default_model
 
@@ -38,33 +39,40 @@ class OpenAISpeechRequest(BaseModel):
 async def synthesize(req: SynthesizeRequest, request: Request):
     scheduler = request.app.state.scheduler
     registry = request.app.state.registry
+    store = request.app.state.store
 
     model = req.model or get_default_model("tts", registry, request.app.state.store)
 
     try:
         if req.stream:
-            return await _stream_synthesis(scheduler, model, req)
-        return await _full_synthesis(scheduler, model, req)
+            return await _stream_synthesis(scheduler, store, model, req)
+        return await _full_synthesis(scheduler, store, model, req)
     except HTTPException:
         raise
     except ModelNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except VoxError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as e:
         logger.exception(f"Synthesis failed for model {model}")
-        raise HTTPException(status_code=500, detail="Internal synthesis error")
+        raise HTTPException(status_code=500, detail="Internal synthesis error") from e
 
 
-async def _full_synthesis(scheduler, model: str, req: SynthesizeRequest):
+async def _full_synthesis(scheduler, store, model: str, req: SynthesizeRequest):
     """Collect all audio chunks and return as a single response."""
     async with scheduler.acquire(model) as adapter:
         if not isinstance(adapter, TTSAdapter):
             raise HTTPException(status_code=400, detail=f"Model '{model}' is not a TTS model")
+        voice, language, reference_audio, reference_text = _resolve_voice_request(adapter, store, req)
         chunks = []
         sample_rate = 0
         async for chunk in adapter.synthesize(
-            req.input, voice=req.voice, speed=req.speed, language=req.language,
+            req.input,
+            voice=voice,
+            speed=req.speed,
+            language=language,
+            reference_audio=reference_audio,
+            reference_text=reference_text,
         ):
             audio_data = np.frombuffer(chunk.audio, dtype=np.float32)
             if audio_data.size > 0:
@@ -86,7 +94,7 @@ async def _full_synthesis(scheduler, model: str, req: SynthesizeRequest):
         )
 
 
-async def _stream_synthesis(scheduler, model: str, req: SynthesizeRequest):
+async def _stream_synthesis(scheduler, store, model: str, req: SynthesizeRequest):
     """Stream audio chunks as they are generated.
 
     Single acquire is held for the entire stream duration to prevent
@@ -98,8 +106,14 @@ async def _stream_synthesis(scheduler, model: str, req: SynthesizeRequest):
         async with scheduler.acquire(model) as adapter:
             if not isinstance(adapter, TTSAdapter):
                 return
+            voice, language, reference_audio, reference_text = _resolve_voice_request(adapter, store, req)
             async for chunk in adapter.synthesize(
-                req.input, voice=req.voice, speed=req.speed, language=req.language,
+                req.input,
+                voice=voice,
+                speed=req.speed,
+                language=language,
+                reference_audio=reference_audio,
+                reference_text=reference_text,
             ):
                 audio_data = np.frombuffer(chunk.audio, dtype=np.float32)
                 if audio_data.size > 0:
@@ -121,3 +135,29 @@ async def openai_speech(req: OpenAISpeechRequest, request: Request):
         response_format=req.response_format,
     )
     return await synthesize(synth_req, request)
+
+
+def _resolve_voice_request(adapter: TTSAdapter, store, req: SynthesizeRequest):
+    if not req.voice:
+        return None, req.language, None, None
+
+    stored_voice = get_stored_voice(store, req.voice)
+    if stored_voice is None:
+        return req.voice, req.language, None, None
+
+    if not adapter.info().supports_voice_cloning:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model '{adapter.info().name}' does not support cloned voices",
+        )
+
+    reference = load_reference_audio(
+        store,
+        stored_voice.id,
+        target_rate=adapter.info().default_sample_rate,
+    )
+    if reference is None:
+        raise HTTPException(status_code=404, detail=f"Voice '{stored_voice.id}' not found")
+
+    reference_audio, reference_text = reference
+    return None, req.language or stored_voice.language, reference_audio, reference_text

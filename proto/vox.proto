@@ -20,6 +20,8 @@ service TranscriptionService {
 service SynthesisService {
   rpc Synthesize(SynthesizeRequest) returns (stream AudioChunk);
   rpc ListVoices(ListVoicesRequest) returns (ListVoicesResponse);
+  rpc CreateVoice(CreateVoiceRequest) returns (CreateVoiceResponse);
+  rpc DeleteVoice(DeleteVoiceRequest) returns (DeleteVoiceResponse);
 }
 
 message HealthRequest {}
@@ -225,6 +227,29 @@ message ListVoicesRequest {
 
 message ListVoicesResponse {
   repeated VoiceInfo voices = 1;
+}
+
+message CreateVoiceRequest {
+  string name = 1;
+  bytes audio = 2;
+  string language = 3;
+  string gender = 4;
+  string reference_text = 5;
+  string format_hint = 6;
+}
+
+message CreateVoiceResponse {
+  VoiceInfo voice = 1;
+  int64 created_at = 2;
+}
+
+message DeleteVoiceRequest {
+  string id = 1;
+}
+
+message DeleteVoiceResponse {
+  string id = 1;
+  bool deleted = 2;
 }
 
 message VoiceInfo {
