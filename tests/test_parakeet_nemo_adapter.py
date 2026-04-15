@@ -82,10 +82,10 @@ def _install_fake_torch(*, cuda_available: bool = True):
 
 
 def test_info_exposes_pytorch_and_nemo_adapter_name():
-    sys.modules.pop("vox_parakeet_nemo", None)
-    sys.modules.pop("vox_parakeet_nemo.adapter", None)
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
 
-    from vox_parakeet_nemo.adapter import ParakeetNemoAdapter
+    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
 
     info = ParakeetNemoAdapter().info()
     assert info.name == "parakeet-nemo"
@@ -98,10 +98,10 @@ def test_info_exposes_pytorch_and_nemo_adapter_name():
 def test_load_uses_pretrained_model_name_when_source_is_provided(monkeypatch: pytest.MonkeyPatch):
     fake_model_cls = _install_fake_nemo()
     _install_fake_torch(cuda_available=True)
-    sys.modules.pop("vox_parakeet_nemo", None)
-    sys.modules.pop("vox_parakeet_nemo.adapter", None)
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
 
-    from vox_parakeet_nemo.adapter import ParakeetNemoAdapter
+    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
 
     adapter = ParakeetNemoAdapter()
     adapter.load("ignored-local-path", "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")
@@ -114,15 +114,15 @@ def test_load_uses_pretrained_model_name_when_source_is_provided(monkeypatch: py
 def test_load_uses_restore_from_for_local_nemo_checkpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     fake_model_cls = _install_fake_nemo()
     _install_fake_torch(cuda_available=True)
-    sys.modules.pop("vox_parakeet_nemo", None)
-    sys.modules.pop("vox_parakeet_nemo.adapter", None)
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
 
     model_dir = tmp_path / "parakeet"
     model_dir.mkdir()
     checkpoint = model_dir / "parakeet-tdt-0.6b-v3.nemo"
     checkpoint.write_bytes(b"fake-nemo")
 
-    from vox_parakeet_nemo.adapter import ParakeetNemoAdapter
+    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
 
     adapter = ParakeetNemoAdapter()
     adapter.load(str(model_dir), "cuda")
@@ -135,10 +135,10 @@ def test_load_uses_restore_from_for_local_nemo_checkpoint(tmp_path: Path, monkey
 def test_load_rejects_non_cuda_device(monkeypatch: pytest.MonkeyPatch):
     _install_fake_nemo()
     _install_fake_torch(cuda_available=True)
-    sys.modules.pop("vox_parakeet_nemo", None)
-    sys.modules.pop("vox_parakeet_nemo.adapter", None)
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
 
-    from vox_parakeet_nemo.adapter import ParakeetNemoAdapter
+    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
 
     adapter = ParakeetNemoAdapter()
     with pytest.raises(RuntimeError, match="requires device='cuda' or 'auto'"):
@@ -148,10 +148,10 @@ def test_load_rejects_non_cuda_device(monkeypatch: pytest.MonkeyPatch):
 def test_load_rejects_missing_cuda(monkeypatch: pytest.MonkeyPatch):
     _install_fake_nemo()
     _install_fake_torch(cuda_available=False)
-    sys.modules.pop("vox_parakeet_nemo", None)
-    sys.modules.pop("vox_parakeet_nemo.adapter", None)
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
 
-    from vox_parakeet_nemo.adapter import ParakeetNemoAdapter
+    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
 
     adapter = ParakeetNemoAdapter()
     with pytest.raises(RuntimeError, match="requires CUDA"):
@@ -162,10 +162,10 @@ def test_transcribe_with_word_timestamps_builds_segment(monkeypatch: pytest.Monk
     fake_model = _FakeNemoModel(text="hello world")
     _install_fake_nemo(model=fake_model)
     _install_fake_torch(cuda_available=True)
-    sys.modules.pop("vox_parakeet_nemo", None)
-    sys.modules.pop("vox_parakeet_nemo.adapter", None)
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
 
-    from vox_parakeet_nemo.adapter import ParakeetNemoAdapter
+    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
 
     adapter = ParakeetNemoAdapter()
     adapter.load("ignored-local-path", "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")
@@ -186,10 +186,10 @@ def test_transcribe_without_word_timestamps_returns_text(monkeypatch: pytest.Mon
     fake_model = _FakeNemoModel(text="plain text")
     _install_fake_nemo(model=fake_model)
     _install_fake_torch(cuda_available=True)
-    sys.modules.pop("vox_parakeet_nemo", None)
-    sys.modules.pop("vox_parakeet_nemo.adapter", None)
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
 
-    from vox_parakeet_nemo.adapter import ParakeetNemoAdapter
+    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
 
     adapter = ParakeetNemoAdapter()
     adapter.load("ignored-local-path", "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")

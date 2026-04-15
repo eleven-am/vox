@@ -261,7 +261,7 @@ class TestAvailableModels:
     def test_parakeet_nemo_catalog_entry_is_explicit_and_pytorch(self):
         parakeet_nemo = CATALOG["parakeet"]["tdt-0.6b-v3-nemo"]
 
-        assert parakeet_nemo["adapter_package"] == "vox-parakeet-nemo"
+        assert parakeet_nemo["adapter_package"] == "vox-parakeet"
         assert parakeet_nemo["adapter"] == "parakeet-nemo"
         assert parakeet_nemo["format"] == "pytorch"
         assert parakeet_nemo["files"] == ["parakeet-tdt-0.6b-v3.nemo"]
@@ -270,7 +270,7 @@ class TestAvailableModels:
     def test_parakeet_cuda_alias_points_to_nemo_backend(self):
         parakeet_cuda = CATALOG["parakeet"]["tdt-0.6b-v3-cuda"]
 
-        assert parakeet_cuda["adapter_package"] == "vox-parakeet-nemo"
+        assert parakeet_cuda["adapter_package"] == "vox-parakeet"
         assert parakeet_cuda["adapter"] == "parakeet-nemo"
         assert parakeet_cuda["format"] == "pytorch"
         assert parakeet_cuda["files"] == ["parakeet-tdt-0.6b-v3.nemo"]

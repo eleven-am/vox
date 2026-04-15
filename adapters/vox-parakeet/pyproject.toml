@@ -1,7 +1,7 @@
 [project]
 name = "vox-parakeet"
-version = "0.1.0"
-description = "NVIDIA Parakeet STT adapter for Vox"
+version = "0.1.1"
+description = "NVIDIA Parakeet STT adapters for Vox"
 requires-python = ">=3.11"
 dependencies = [
     "vox>=0.1.0",
@@ -9,10 +9,13 @@ dependencies = [
     "onnx-asr[hub]>=0.10.0; platform_machine != 'x86_64'",
     "numpy>=1.26.0,<2.4",
     "soundfile>=0.13.1",
+    "torch>=2.1.0",
+    "nemo-toolkit[asr]>=2.7.0",
 ]
 
 [project.entry-points."vox.adapters"]
 parakeet = "vox_parakeet.adapter:ParakeetAdapter"
+parakeet-nemo = "vox_parakeet.nemo_adapter:ParakeetNemoAdapter"
 
 [build-system]
 requires = ["hatchling"]

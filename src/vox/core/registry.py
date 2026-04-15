@@ -55,7 +55,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "license": "CC-BY-4.0",
             "parameters": {"sample_rate": 16000},
             "files": ["parakeet-tdt-0.6b-v3.nemo"],
-            "adapter_package": "vox-parakeet-nemo",
+            "adapter_package": "vox-parakeet",
         },
         "tdt-0.6b-v3-cuda": {
             "source": "nvidia/parakeet-tdt-0.6b-v3",
@@ -67,7 +67,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "license": "CC-BY-4.0",
             "parameters": {"sample_rate": 16000},
             "files": ["parakeet-tdt-0.6b-v3.nemo"],
-            "adapter_package": "vox-parakeet-nemo",
+            "adapter_package": "vox-parakeet",
         },
     },
     "kokoro": {
