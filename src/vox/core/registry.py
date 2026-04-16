@@ -438,9 +438,113 @@ IMPLICIT_MODEL_ALIASES: dict[str, dict[str, tuple[str, str]]] = {
         "spark": ("parakeet-stt-nemo", "tdt-0.6b-v3"),
         "default": ("parakeet-stt-onnx", "tdt-0.6b-v3"),
     },
+    "parakeet-stt": {
+        "spark": ("parakeet-stt-nemo", "tdt-0.6b-v3"),
+        "default": ("parakeet-stt-onnx", "tdt-0.6b-v3"),
+    },
     "kokoro": {
         "spark": ("kokoro-tts-torch", "v1.0"),
         "default": ("kokoro-tts-onnx", "v1.0"),
+    },
+    "kokoro-tts": {
+        "spark": ("kokoro-tts-torch", "v1.0"),
+        "default": ("kokoro-tts-onnx", "v1.0"),
+    },
+    "whisper": {
+        "spark": ("whisper-stt-ct2", "large-v3"),
+        "default": ("whisper-stt-ct2", "large-v3"),
+    },
+    "whisper-stt": {
+        "spark": ("whisper-stt-ct2", "large-v3"),
+        "default": ("whisper-stt-ct2", "large-v3"),
+    },
+    "piper": {
+        "spark": ("piper-tts-onnx", "en-us-lessac-medium"),
+        "default": ("piper-tts-onnx", "en-us-lessac-medium"),
+    },
+    "piper-tts": {
+        "spark": ("piper-tts-onnx", "en-us-lessac-medium"),
+        "default": ("piper-tts-onnx", "en-us-lessac-medium"),
+    },
+    "openvoice": {
+        "spark": ("openvoice-tts-torch", "v1"),
+        "default": ("openvoice-tts-torch", "v1"),
+    },
+    "openvoice-tts": {
+        "spark": ("openvoice-tts-torch", "v1"),
+        "default": ("openvoice-tts-torch", "v1"),
+    },
+    "dia": {
+        "spark": ("dia-tts-torch", "1.6b"),
+        "default": ("dia-tts-torch", "1.6b"),
+    },
+    "dia-tts": {
+        "spark": ("dia-tts-torch", "1.6b"),
+        "default": ("dia-tts-torch", "1.6b"),
+    },
+    "sesame": {
+        "spark": ("sesame-tts-torch", "csm-1b"),
+        "default": ("sesame-tts-torch", "csm-1b"),
+    },
+    "sesame-tts": {
+        "spark": ("sesame-tts-torch", "csm-1b"),
+        "default": ("sesame-tts-torch", "csm-1b"),
+    },
+    "speecht5-stt": {
+        "spark": ("speecht5-stt-torch", "base"),
+        "default": ("speecht5-stt-torch", "base"),
+    },
+    "speecht5-tts": {
+        "spark": ("speecht5-tts-torch", "base"),
+        "default": ("speecht5-tts-torch", "base"),
+    },
+    "vibevoice": {
+        "spark": ("vibevoice-tts-torch", "realtime-0.5b"),
+        "default": ("vibevoice-tts-torch", "realtime-0.5b"),
+    },
+    "vibevoice-tts": {
+        "spark": ("vibevoice-tts-torch", "realtime-0.5b"),
+        "default": ("vibevoice-tts-torch", "realtime-0.5b"),
+    },
+    "qwen3-stt": {
+        "spark": ("qwen3-stt-torch", "0.6b"),
+        "default": ("qwen3-stt-torch", "0.6b"),
+    },
+    "qwen3-tts": {
+        "spark": ("qwen3-tts-torch", "0.6b"),
+        "default": ("qwen3-tts-torch", "0.6b"),
+    },
+    "xtts": {
+        "spark": ("xtts-tts-torch", "v2"),
+        "default": ("xtts-tts-torch", "v2"),
+    },
+    "xtts-tts": {
+        "spark": ("xtts-tts-torch", "v2"),
+        "default": ("xtts-tts-torch", "v2"),
+    },
+    "fish-speech": {
+        "spark": ("fish-speech-tts-torch", "v1.4"),
+        "default": ("fish-speech-tts-torch", "v1.4"),
+    },
+    "fish-speech-tts": {
+        "spark": ("fish-speech-tts-torch", "v1.4"),
+        "default": ("fish-speech-tts-torch", "v1.4"),
+    },
+    "orpheus": {
+        "spark": ("orpheus-tts-torch", "3b"),
+        "default": ("orpheus-tts-torch", "3b"),
+    },
+    "orpheus-tts": {
+        "spark": ("orpheus-tts-torch", "3b"),
+        "default": ("orpheus-tts-torch", "3b"),
+    },
+    "voxtral-stt": {
+        "spark": ("voxtral-stt-torch", "mini-3b"),
+        "default": ("voxtral-stt-torch", "mini-3b"),
+    },
+    "voxtral-tts": {
+        "spark": ("voxtral-tts-vllm", "4b"),
+        "default": ("voxtral-tts-vllm", "4b"),
     },
 }
 

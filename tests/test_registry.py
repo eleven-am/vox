@@ -120,6 +120,14 @@ class TestLookup:
         assert kokoro is not None
         assert kokoro is CATALOG["kokoro-tts-torch"]["v1.0"]
 
+        voxtral_tts = registry.lookup("voxtral-tts")
+        assert voxtral_tts is not None
+        assert voxtral_tts is CATALOG["voxtral-tts-vllm"]["4b"]
+
+        parakeet_stt = registry.lookup("parakeet-stt")
+        assert parakeet_stt is not None
+        assert parakeet_stt is CATALOG["parakeet-stt-nemo"]["tdt-0.6b-v3"]
+
     def test_lookup_bare_family_prefers_default_alias_off_spark(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         store = _make_store(tmp_path)
         registry = _make_registry(store)
@@ -133,6 +141,14 @@ class TestLookup:
         kokoro = registry.lookup("kokoro")
         assert kokoro is not None
         assert kokoro is CATALOG["kokoro-tts-onnx"]["v1.0"]
+
+        voxtral_tts = registry.lookup("voxtral-tts")
+        assert voxtral_tts is not None
+        assert voxtral_tts is CATALOG["voxtral-tts-vllm"]["4b"]
+
+        parakeet_stt = registry.lookup("parakeet-stt")
+        assert parakeet_stt is not None
+        assert parakeet_stt is CATALOG["parakeet-stt-onnx"]["tdt-0.6b-v3"]
 
     def test_lookup_explicit_latest_is_not_rewritten(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         store = _make_store(tmp_path)
@@ -343,7 +359,24 @@ class TestAvailableModels:
         monkeypatch.setattr("vox.core.registry.platform.machine", lambda: "arm64")
 
         assert registry.resolve_model_ref("parakeet") == ("parakeet-stt-nemo", "tdt-0.6b-v3")
+        assert registry.resolve_model_ref("parakeet-stt") == ("parakeet-stt-nemo", "tdt-0.6b-v3")
         assert registry.resolve_model_ref("kokoro") == ("kokoro-tts-torch", "v1.0")
+        assert registry.resolve_model_ref("kokoro-tts") == ("kokoro-tts-torch", "v1.0")
+        assert registry.resolve_model_ref("whisper") == ("whisper-stt-ct2", "large-v3")
+        assert registry.resolve_model_ref("piper") == ("piper-tts-onnx", "en-us-lessac-medium")
+        assert registry.resolve_model_ref("openvoice") == ("openvoice-tts-torch", "v1")
+        assert registry.resolve_model_ref("dia") == ("dia-tts-torch", "1.6b")
+        assert registry.resolve_model_ref("sesame") == ("sesame-tts-torch", "csm-1b")
+        assert registry.resolve_model_ref("speecht5-stt") == ("speecht5-stt-torch", "base")
+        assert registry.resolve_model_ref("speecht5-tts") == ("speecht5-tts-torch", "base")
+        assert registry.resolve_model_ref("vibevoice") == ("vibevoice-tts-torch", "realtime-0.5b")
+        assert registry.resolve_model_ref("qwen3-stt") == ("qwen3-stt-torch", "0.6b")
+        assert registry.resolve_model_ref("qwen3-tts") == ("qwen3-tts-torch", "0.6b")
+        assert registry.resolve_model_ref("xtts") == ("xtts-tts-torch", "v2")
+        assert registry.resolve_model_ref("fish-speech") == ("fish-speech-tts-torch", "v1.4")
+        assert registry.resolve_model_ref("orpheus") == ("orpheus-tts-torch", "3b")
+        assert registry.resolve_model_ref("voxtral-stt") == ("voxtral-stt-torch", "mini-3b")
+        assert registry.resolve_model_ref("voxtral-tts") == ("voxtral-tts-vllm", "4b")
 
     def test_resolve_model_ref_keeps_explicit_tags(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         store = _make_store(tmp_path)
