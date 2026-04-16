@@ -187,32 +187,6 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-piper",
         },
     },
-    "fish-speech-tts-torch": {
-        "v1.4": {
-            "source": "fishaudio/fish-speech-1.4",
-            "architecture": "fish-speech",
-            "type": "tts",
-            "adapter": "fish-speech-tts-torch",
-            "format": "pytorch",
-            "description": "Fish Speech 1.4 — high quality multilingual TTS with voice cloning",
-            "license": "CC-BY-NC-SA-4.0",
-            "parameters": {"sample_rate": 44100},
-            "adapter_package": "vox-fish-speech",
-        },
-    },
-    "orpheus-tts-torch": {
-        "3b": {
-            "source": "canopylabs/orpheus-3b-0.1-ft",
-            "architecture": "orpheus",
-            "type": "tts",
-            "adapter": "orpheus-tts-torch",
-            "format": "pytorch",
-            "description": "Orpheus 3B — LLM-based emotional TTS with inline emotion tags",
-            "license": "Apache-2.0",
-            "parameters": {"sample_rate": 24000},
-            "adapter_package": "vox-orpheus",
-        },
-    },
     "dia-tts-torch": {
         "1.6b": {
             "source": "nari-labs/Dia-1.6B",
@@ -451,12 +425,12 @@ IMPLICIT_MODEL_ALIASES: dict[str, dict[str, tuple[str, str]]] = {
         "default": ("kokoro-tts-onnx", "v1.0"),
     },
     "whisper": {
-        "spark": ("whisper-stt-ct2", "large-v3"),
-        "default": ("whisper-stt-ct2", "large-v3"),
+        "spark": ("whisper-stt-ct2", "base.en"),
+        "default": ("whisper-stt-ct2", "base.en"),
     },
     "whisper-stt": {
-        "spark": ("whisper-stt-ct2", "large-v3"),
-        "default": ("whisper-stt-ct2", "large-v3"),
+        "spark": ("whisper-stt-ct2", "base.en"),
+        "default": ("whisper-stt-ct2", "base.en"),
     },
     "piper": {
         "spark": ("piper-tts-onnx", "en-us-lessac-medium"),
@@ -522,22 +496,6 @@ IMPLICIT_MODEL_ALIASES: dict[str, dict[str, tuple[str, str]]] = {
         "spark": ("xtts-tts-torch", "v2"),
         "default": ("xtts-tts-torch", "v2"),
     },
-    "fish-speech": {
-        "spark": ("fish-speech-tts-torch", "v1.4"),
-        "default": ("fish-speech-tts-torch", "v1.4"),
-    },
-    "fish-speech-tts": {
-        "spark": ("fish-speech-tts-torch", "v1.4"),
-        "default": ("fish-speech-tts-torch", "v1.4"),
-    },
-    "orpheus": {
-        "spark": ("orpheus-tts-torch", "3b"),
-        "default": ("orpheus-tts-torch", "3b"),
-    },
-    "orpheus-tts": {
-        "spark": ("orpheus-tts-torch", "3b"),
-        "default": ("orpheus-tts-torch", "3b"),
-    },
     "voxtral-stt": {
         "spark": ("voxtral-stt-torch", "mini-3b"),
         "default": ("voxtral-stt-torch", "mini-3b"),
@@ -568,10 +526,8 @@ LEGACY_MODEL_REF_ALIASES: dict[tuple[str, str], tuple[str, str]] = {
 
 LEGACY_NAME_ALIASES: dict[str, str] = {
     "dia": "dia-tts-torch",
-    "fish-speech": "fish-speech-tts-torch",
     "kokoro-torch": "kokoro-tts-torch",
     "openvoice": "openvoice-tts-torch",
-    "orpheus": "orpheus-tts-torch",
     "parakeet-nemo": "parakeet-stt-nemo",
     "piper": "piper-tts-onnx",
     "qwen3-asr": "qwen3-stt-torch",
