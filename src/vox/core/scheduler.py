@@ -105,6 +105,7 @@ class Scheduler:
         cleanup_interval: int = 30,
     ) -> None:
         self._registry = registry
+        self._requested_device = default_device
         self._default_device = default_device if default_device != "auto" else _detect_device()
         self._max_loaded = max_loaded
         self._ttl_seconds = ttl_seconds
@@ -140,6 +141,12 @@ class Scheduler:
         """Select device for a model, considering free accelerator memory."""
         device = self._default_device
         if device == "cpu" or estimated_vram_bytes <= 0:
+            return device
+
+        # Respect an explicit device choice from CLI/env. The free-memory
+        # heuristic is only for auto-placement and can be wrong on platforms
+        # like GB10 where mem_get_info is not trustworthy.
+        if self._requested_device != "auto":
             return device
 
         free_bytes = _available_device_memory_bytes(device)

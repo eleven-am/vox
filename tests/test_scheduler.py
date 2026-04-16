@@ -380,7 +380,8 @@ async def test_select_device_uses_estimate_and_routes_to_cpu_when_cuda_is_tight(
         adapter_cls=EstimatedAdapter,
         parameters={"_source": "Qwen/Qwen3-ASR-1.7B"},
     )
-    sched = Scheduler(registry, default_device="cuda", max_loaded=3)
+    with patch("vox.core.scheduler._detect_device", return_value="cuda"):
+        sched = Scheduler(registry, default_device="auto", max_loaded=3)
     mock_torch = _make_mock_torch(free_bytes=3_500_000_000)
 
     with patch.dict("sys.modules", {"torch": mock_torch}):
@@ -433,7 +434,8 @@ async def test_select_device_keeps_cuda_when_estimate_fits():
             return 2_000_000_000
 
     registry = _make_registry_with_model(adapter_cls=EstimatedAdapter)
-    sched = Scheduler(registry, default_device="cuda", max_loaded=3)
+    with patch("vox.core.scheduler._detect_device", return_value="cuda"):
+        sched = Scheduler(registry, default_device="auto", max_loaded=3)
     mock_torch = _make_mock_torch(free_bytes=4_500_000_000)
 
     with patch.dict("sys.modules", {"torch": mock_torch}):
@@ -446,6 +448,28 @@ async def test_select_device_keeps_cuda_when_estimate_fits():
     loaded = sched.list_loaded()
     assert loaded[0].device == "cuda"
     assert loaded[0].vram_bytes == 2_000_000_000
+
+
+@pytest.mark.asyncio
+async def test_select_device_respects_explicit_cuda_even_when_estimate_exceeds_free_memory():
+    class EstimatedAdapter(FakeSTTAdapter):
+        def estimate_vram_bytes(self, **kwargs: Any) -> int:
+            return 16_000_000_000
+
+    registry = _make_registry_with_model(adapter_cls=EstimatedAdapter)
+    sched = Scheduler(registry, default_device="cuda", max_loaded=3)
+    mock_torch = _make_mock_torch(free_bytes=3_500_000_000, total_bytes=130_000_000_000)
+
+    with patch.dict("sys.modules", {"torch": mock_torch}):
+        async with sched.acquire("whisper:large-v3") as adapter:
+            assert isinstance(adapter, EstimatedAdapter)
+            assert adapter.load_calls == [
+                ("/fake/models/whisper/large-v3", "cuda"),
+            ]
+
+    loaded = sched.list_loaded()
+    assert loaded[0].device == "cuda"
+    assert loaded[0].vram_bytes == 16_000_000_000
 
 
 @pytest.mark.asyncio

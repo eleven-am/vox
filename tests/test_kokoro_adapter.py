@@ -262,7 +262,7 @@ def test_kokoro_rejects_cuda_when_no_gpu_provider_is_available(tmp_path: Path):
 
 
 def test_kokoro_torch_loads_native_runtime_and_streams_audio(tmp_path: Path):
-    _install_fake_native_modules()
+    fake_kokoro = _install_fake_native_modules()
     sys.modules.pop("vox_kokoro", None)
     sys.modules.pop("vox_kokoro.adapter", None)
     sys.modules.pop("vox_kokoro.torch_adapter", None)
@@ -274,13 +274,16 @@ def test_kokoro_torch_loads_native_runtime_and_streams_audio(tmp_path: Path):
     from vox_kokoro.torch_adapter import KokoroTorchAdapter
 
     adapter = KokoroTorchAdapter()
-    adapter.load(str(model_dir), "cpu")
+    with patch.object(KokoroTorchAdapter, "_import_runtime", return_value=fake_kokoro):
+        adapter.load(str(model_dir), "cpu")
 
     assert adapter.is_loaded is True
     assert _FakePipeline.inits == [
         {"lang_code": "a", "model": str(model_dir / "kokoro-v1_0.pth"), "device": "cpu"}
     ]
-    assert [voice.id for voice in adapter.list_voices()] == ["af_heart", "bf_emma"]
+    voice_ids = [voice.id for voice in adapter.list_voices()]
+    assert voice_ids[:4] == ["af_alloy", "af_aoede", "af_bella", "af_heart"]
+    assert "bf_emma" in voice_ids
 
     async def _collect():
         return [
@@ -288,7 +291,8 @@ def test_kokoro_torch_loads_native_runtime_and_streams_audio(tmp_path: Path):
             async for chunk in adapter.synthesize("Hello world", voice="bf_emma")
         ]
 
-    chunks = asyncio.run(_collect())
+    with patch.object(KokoroTorchAdapter, "_import_runtime", return_value=fake_kokoro):
+        chunks = asyncio.run(_collect())
 
     assert len(chunks) == 2
     assert chunks[0].sample_rate == 24000
@@ -310,7 +314,7 @@ def test_kokoro_torch_loads_native_runtime_and_streams_audio(tmp_path: Path):
 
 
 def test_kokoro_torch_honors_explicit_language_override(tmp_path: Path):
-    _install_fake_native_modules()
+    fake_kokoro = _install_fake_native_modules()
     sys.modules.pop("vox_kokoro", None)
     sys.modules.pop("vox_kokoro.adapter", None)
     sys.modules.pop("vox_kokoro.torch_adapter", None)
@@ -322,7 +326,8 @@ def test_kokoro_torch_honors_explicit_language_override(tmp_path: Path):
     from vox_kokoro.torch_adapter import KokoroTorchAdapter
 
     adapter = KokoroTorchAdapter()
-    adapter.load(str(model_dir), "cpu")
+    with patch.object(KokoroTorchAdapter, "_import_runtime", return_value=fake_kokoro):
+        adapter.load(str(model_dir), "cpu")
 
     async def _collect():
         return [
@@ -330,7 +335,8 @@ def test_kokoro_torch_honors_explicit_language_override(tmp_path: Path):
             async for chunk in adapter.synthesize("Hello world", voice="af_heart", language="en-gb")
         ]
 
-    chunks = asyncio.run(_collect())
+    with patch.object(KokoroTorchAdapter, "_import_runtime", return_value=fake_kokoro):
+        chunks = asyncio.run(_collect())
 
     assert len(chunks) == 2
     assert adapter._pipelines["b"].calls == [
@@ -341,6 +347,30 @@ def test_kokoro_torch_honors_explicit_language_override(tmp_path: Path):
             "split_pattern": r"\n+",
         }
     ]
+
+
+def test_kokoro_torch_list_voices_falls_back_to_official_presets(tmp_path: Path):
+    fake_kokoro = _install_fake_native_modules()
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    model_dir = tmp_path / "kokoro"
+    model_dir.mkdir(parents=True)
+    (model_dir / "model.pth").write_bytes(b"weights")
+
+    from vox_kokoro.torch_adapter import KokoroTorchAdapter
+
+    adapter = KokoroTorchAdapter()
+    with patch.object(KokoroTorchAdapter, "_import_runtime", return_value=fake_kokoro):
+        adapter.load(str(model_dir), "cpu")
+
+    adapter._pipelines["a"].get_voices = MagicMock(return_value=[])
+    adapter._pipelines["a"].voices = {}
+
+    voice_ids = [voice.id for voice in adapter.list_voices()]
+    assert voice_ids[:4] == ["af_alloy", "af_aoede", "af_bella", "af_heart"]
+    assert "zm_yunyang" in voice_ids
 
 
 def test_kokoro_torch_requires_runtime_package(tmp_path: Path):
@@ -365,3 +395,55 @@ def test_kokoro_torch_requires_runtime_package(tmp_path: Path):
         pytest.raises(RuntimeError, match="official 'kokoro' runtime package"),
     ):
         adapter.load(str(model_dir), "cpu")
+
+
+def test_kokoro_torch_clears_conflicting_hub_modules():
+    sys.modules["huggingface_hub"] = ModuleType("huggingface_hub")
+    sys.modules["huggingface_hub.file_download"] = ModuleType("huggingface_hub.file_download")
+    sys.modules["tokenizers"] = ModuleType("tokenizers")
+    sys.modules["safetensors"] = ModuleType("safetensors")
+    sys.modules["spacy"] = ModuleType("spacy")
+    sys.modules["spacy.cli"] = ModuleType("spacy.cli")
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    from vox_kokoro.torch_adapter import _clear_runtime_modules
+
+    _clear_runtime_modules()
+
+    assert "huggingface_hub" not in sys.modules
+    assert "huggingface_hub.file_download" not in sys.modules
+    assert "tokenizers" not in sys.modules
+    assert "safetensors" not in sys.modules
+    assert "spacy" not in sys.modules
+    assert "spacy.cli" not in sys.modules
+
+
+def test_kokoro_torch_runtime_bootstrap_installs_spacy_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("VOX_HOME", str(tmp_path / "vox-home"))
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    from vox_kokoro import torch_adapter as torch_adapter_module
+
+    calls: list[list[str]] = []
+
+    def _fake_run(cmd: list[str], **kwargs):
+        calls.append(cmd)
+        return MagicMock(returncode=0, stderr="")
+
+    spacy_model_checks = iter([False, True])
+    with (
+        patch("vox_kokoro.torch_adapter.subprocess.run", side_effect=_fake_run),
+        patch(
+            "vox_kokoro.torch_adapter._spacy_model_installed",
+            side_effect=lambda runtime_root: next(spacy_model_checks),
+        ),
+    ):
+        torch_adapter_module._install_runtime()
+
+    assert len(calls) == 2
+    assert "kokoro>=0.9.4,<1.0.0" in calls[0]
+    assert any("en_core_web_sm-3.8.0-py3-none-any.whl" in part for part in calls[1])

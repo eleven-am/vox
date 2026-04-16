@@ -595,6 +595,8 @@ def install_adapter_package(package_name: str, vox_home: Path) -> bool:
     for installer in installers:
         try:
             cmd = [*installer, "--target", str(target_dir), "--upgrade"]
+            if installer[:2] == ["uv", "pip"]:
+                cmd.extend(["--refresh-package", package_name])
             if install_no_deps:
                 cmd.append("--no-deps")
             cmd.append(package_spec)

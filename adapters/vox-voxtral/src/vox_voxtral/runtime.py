@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sysconfig
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -74,6 +75,10 @@ def _purelib(python_bin: Path) -> Path:
     return Path(result.stdout.strip())
 
 
+def _app_purelib() -> Path:
+    return Path(sysconfig.get_paths()["purelib"])
+
+
 def _build_env(python_bin: Path, *, extra_pythonpaths: list[str] | None = None) -> dict[str, str]:
     env = os.environ.copy()
 
@@ -86,6 +91,24 @@ def _build_env(python_bin: Path, *, extra_pythonpaths: list[str] | None = None) 
     if pythonpath_parts:
         env["PYTHONPATH"] = ":".join(part for part in pythonpath_parts if part)
     return env
+
+
+def _ensure_fallback_site_packages(python_bin: Path, *, fallback_paths: list[str] | None = None) -> None:
+    purelib = _purelib(python_bin)
+    fallback_file = purelib / "_vox_runtime_fallback_paths.pth"
+    requested = [path for path in (fallback_paths or []) if path]
+    requested.append(str(_app_purelib()))
+
+    existing: list[str] = []
+    if fallback_file.exists():
+        existing = [line.strip() for line in fallback_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+    merged: list[str] = []
+    for path in requested + existing:
+        if path and path not in merged:
+            merged.append(path)
+
+    fallback_file.write_text("".join(f"{path}\n" for path in merged), encoding="utf-8")
 
 
 def _has_gpu_torch(python_bin: Path) -> bool:
@@ -174,44 +197,78 @@ def _write_stage_config(python_bin: Path) -> Path:
     with source.open("r", encoding="utf-8") as handle:
         config = yaml.safe_load(handle)
 
-    target_utilization = os.environ.get("VOX_VOXTRAL_GPU_MEMORY_UTILIZATION", "0.1")
-    try:
-        target_value = float(target_utilization)
-    except ValueError:
-        target_value = 0.1
-    target_value = min(max(target_value, 0.05), 0.95)
-
     for stage in config.get("stage_args", []):
         engine_args = stage.get("engine_args", {})
-        current = engine_args.get("gpu_memory_utilization")
-        if current is None or float(current) > target_value:
-            engine_args["gpu_memory_utilization"] = target_value
         engine_args["max_num_seqs"] = 1
 
         model_stage = engine_args.get("model_stage")
         if model_stage == "audio_generation":
+            current = engine_args.get("gpu_memory_utilization")
+            target_value, explicit_target = _target_gpu_memory_utilization(current, model_stage=model_stage)
+            if explicit_target or current is None or float(current) > target_value:
+                engine_args["gpu_memory_utilization"] = target_value
             engine_args["enforce_eager"] = True
             if int(engine_args.get("max_model_len", 4096)) > 2048:
                 engine_args["max_model_len"] = 2048
         elif model_stage == "audio_tokenizer":
+            current = engine_args.get("gpu_memory_utilization")
+            target_value, explicit_target = _target_gpu_memory_utilization(current, model_stage=model_stage)
+            if explicit_target or current is None or float(current) > target_value:
+                engine_args["gpu_memory_utilization"] = target_value
             if int(engine_args.get("max_num_batched_tokens", 65536)) > 8192:
                 engine_args["max_num_batched_tokens"] = 8192
             if int(engine_args.get("max_model_len", 65536)) > 8192:
                 engine_args["max_model_len"] = 8192
 
     target = _runtime_root() / "voxtral-tts-stage-config.yaml"
+    target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(config, handle, sort_keys=False)
     return target
 
 
+def _parse_gpu_memory_utilization(raw_value: str | float | int | None, *, default: float) -> float:
+    if raw_value is None:
+        return default
+    try:
+        value = float(raw_value)
+    except (TypeError, ValueError):
+        value = default
+    return min(max(value, 0.05), 0.95)
+
+
+def _target_gpu_memory_utilization(
+    current_value: str | float | int | None,
+    *,
+    model_stage: str | None,
+) -> tuple[float, bool]:
+    global_raw = os.environ.get("VOX_VOXTRAL_GPU_MEMORY_UTILIZATION")
+    if model_stage == "audio_generation":
+        explicit_raw = os.environ.get("VOX_VOXTRAL_GENERATION_GPU_MEMORY_UTILIZATION")
+        raw_value = explicit_raw or os.environ.get(
+            "VOX_VOXTRAL_GENERATION_GPU_MEMORY_UTILIZATION",
+            global_raw if global_raw is not None else "0.4",
+        )
+        return _parse_gpu_memory_utilization(raw_value, default=0.4), bool(explicit_raw or global_raw)
+    if model_stage == "audio_tokenizer":
+        explicit_raw = os.environ.get("VOX_VOXTRAL_TOKENIZER_GPU_MEMORY_UTILIZATION")
+        raw_value = explicit_raw or os.environ.get(
+            "VOX_VOXTRAL_TOKENIZER_GPU_MEMORY_UTILIZATION",
+            global_raw if global_raw is not None else "0.1",
+        )
+        return _parse_gpu_memory_utilization(raw_value, default=0.1), bool(explicit_raw or global_raw)
+    return _parse_gpu_memory_utilization(global_raw or current_value, default=0.4), bool(global_raw)
+
+
 def ensure_voxtral_tts_runtime(*, extra_pythonpaths: list[str] | None = None) -> VoxtralRuntimeInfo:
     venv_dir = _runtime_venv()
     python_bin = _ensure_venv(venv_dir)
+    _ensure_fallback_site_packages(python_bin, fallback_paths=extra_pythonpaths)
 
     if not _has_gpu_torch(python_bin):
         shutil.rmtree(venv_dir, ignore_errors=True)
         python_bin = _ensure_venv(venv_dir)
+        _ensure_fallback_site_packages(python_bin, fallback_paths=extra_pythonpaths)
         _install_gpu_torch(python_bin)
 
     if not _has_vllm_omni_runtime(python_bin, extra_pythonpaths=extra_pythonpaths):

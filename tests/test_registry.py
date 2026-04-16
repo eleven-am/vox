@@ -449,6 +449,8 @@ class TestBundledAdapters:
                 "--target",
                 str(store.root / "adapters" / "vox-kokoro"),
                 "--upgrade",
+                "--refresh-package",
+                "vox-kokoro",
                 str(bundled_adapter),
             ]
         ]
@@ -484,6 +486,8 @@ class TestBundledAdapters:
                 "--target",
                 str(store.root / "adapters" / "vox-kokoro"),
                 "--upgrade",
+                "--refresh-package",
+                "vox-kokoro",
                 "--no-deps",
                 str(bundled_adapter),
             ]
@@ -515,6 +519,8 @@ class TestBundledAdapters:
                 "--target",
                 str(store.root / "adapters" / "vox-kokoro"),
                 "--upgrade",
+                "--refresh-package",
+                "vox-kokoro",
                 "--no-deps",
                 "vox-kokoro",
             ]
