@@ -31,16 +31,16 @@ from vox.core.types import ModelInfo
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Manifest dataclasses
-# ---------------------------------------------------------------------------
+
+
+
 
 @dataclass
 class ManifestLayer:
-    media_type: str       # e.g. "application/vox.model.onnx"
-    digest: str           # e.g. "sha256-abc123"
+    media_type: str
+    digest: str
     size: int
-    filename: str         # original filename
+    filename: str
 
     def __post_init__(self):
         if not self.digest.startswith("sha256-"):
@@ -56,9 +56,9 @@ class Manifest:
     config: dict[str, Any] = field(default_factory=dict)
 
 
-# ---------------------------------------------------------------------------
-# Serialisation helpers
-# ---------------------------------------------------------------------------
+
+
+
 
 def _manifest_to_dict(m: Manifest) -> dict[str, Any]:
     return {
@@ -76,11 +76,11 @@ def _manifest_from_dict(d: dict[str, Any]) -> Manifest:
     )
 
 
-# ---------------------------------------------------------------------------
-# BlobStore
-# ---------------------------------------------------------------------------
 
-_READ_CHUNK = 1 << 20  # 1 MiB
+
+
+
+_READ_CHUNK = 1 << 20
 
 
 class BlobStore:
@@ -89,7 +89,7 @@ class BlobStore:
     def __init__(self, root: Path | None = None) -> None:
         self._root = root or Path.home() / ".vox"
 
-    # -- directory properties ------------------------------------------------
+
 
     @property
     def root(self) -> Path:
@@ -107,7 +107,7 @@ class BlobStore:
     def voices_dir(self) -> Path:
         return self._root / "voices"
 
-    # -- blob operations -----------------------------------------------------
+
 
     def get_blob_path(self, digest: str) -> Path:
         """Return the filesystem path for a given digest string (``sha256-<hex>``)."""
@@ -125,7 +125,7 @@ class BlobStore:
         self.blobs_dir.mkdir(parents=True, exist_ok=True)
 
         h = hashlib.sha256()
-        # Write to a temp file in the blobs dir so rename is same-filesystem.
+
         fd = tempfile.NamedTemporaryFile(
             dir=self.blobs_dir, delete=False, suffix=".tmp",
         )
@@ -143,7 +143,7 @@ class BlobStore:
             final_path = self.get_blob_path(digest)
 
             if final_path.exists():
-                # Identical content already stored — discard temp file.
+
                 Path(fd.name).unlink(missing_ok=True)
             else:
                 Path(fd.name).rename(final_path)
@@ -153,7 +153,7 @@ class BlobStore:
             Path(fd.name).unlink(missing_ok=True)
             raise
 
-    # -- manifest operations -------------------------------------------------
+
 
     def _manifest_path(self, name: str, tag: str) -> Path:
         return self.manifests_dir / name / tag
@@ -210,7 +210,7 @@ class BlobStore:
         path = self._manifest_path(name, tag)
         path.unlink(missing_ok=True)
 
-        # Remove the parent directory if it is now empty.
+
         parent = path.parent
         if parent.is_dir() and not any(parent.iterdir()):
             parent.rmdir()
@@ -220,10 +220,10 @@ class BlobStore:
         if not self.blobs_dir.is_dir():
             return 0
 
-        # Collect every digest referenced by at least one manifest.
+
         referenced: set[str] = set()
         for model_info in self.list_models():
-            # Re-read the raw manifest to get layer digests.
+
             manifest = self.resolve_model(model_info.name, model_info.tag)
             if manifest is not None:
                 for layer in manifest.layers:
@@ -236,7 +236,7 @@ class BlobStore:
                 blob.unlink(missing_ok=True)
                 removed += 1
             elif blob.suffix == ".tmp":
-                # Clean up orphaned temp files older than 1 hour
+
                 try:
                     age = now - blob.stat().st_mtime
                     if age > 3600:

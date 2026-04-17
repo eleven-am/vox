@@ -7,6 +7,7 @@ from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.core.registry import ModelRegistry
 from vox.grpc import vox_pb2, vox_pb2_grpc
+from vox.streaming.annotation import enrich_transcript
 from vox.streaming.codecs import pcm16_to_float32, resample_audio
 from vox.streaming.opus import OPUS_SAMPLE_RATE, OpusStreamDecoder
 from vox.streaming.partials import PartialTranscriptService
@@ -22,6 +23,45 @@ from vox.streaming.types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _to_pb_entities(entities: list[dict]) -> list[vox_pb2.Entity]:
+    return [
+        vox_pb2.Entity(
+            type=str(e.get("type", "")),
+            text=str(e.get("text", "")),
+            start_char=int(e.get("start_char", 0)),
+            end_char=int(e.get("end_char", 0)),
+        )
+        for e in entities
+    ]
+
+
+def _to_pb_words(words: list[dict]) -> list[vox_pb2.WordTimestamp]:
+    pb_words: list[vox_pb2.WordTimestamp] = []
+    for w in words:
+        kwargs = {
+            "word": str(w.get("word", "")),
+            "start_ms": int(w.get("start_ms", 0)),
+            "end_ms": int(w.get("end_ms", 0)),
+        }
+        conf = w.get("confidence")
+        if conf is not None:
+            kwargs["confidence"] = float(conf)
+        pb_words.append(vox_pb2.WordTimestamp(**kwargs))
+    return pb_words
+
+
+def _to_pb_segments(segments: list[dict]) -> list[vox_pb2.TranscriptSegment]:
+    return [
+        vox_pb2.TranscriptSegment(
+            text=str(s.get("text", "")),
+            start_ms=int(s.get("start_ms", 0)),
+            end_ms=int(s.get("end_ms", 0)),
+            words=_to_pb_words(s.get("words") or []),
+        )
+        for s in segments
+    ]
 
 
 def _get_default_stt(registry: ModelRegistry, store: BlobStore) -> str:
@@ -59,6 +99,9 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
         session = SpeechSession()
         opus_decoder: OpusStreamDecoder | None = None
         partial_service: PartialTranscriptService | None = None
+
+        def _lang() -> str:
+            return session_config.language if session_config else "en"
 
         async for client_msg in request_iterator:
             if context.cancelled():
@@ -115,7 +158,7 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
 
                 session.append_audio(audio)
                 async for event in pipeline.process_audio(audio):
-                    yield self._map_event(event, session)
+                    yield self._map_event(event, session, _lang())
 
                 for msg in await self._handle_partials(session, partial_service, session_config):
                     yield msg
@@ -133,7 +176,7 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
 
                     session.append_audio(audio)
                     async for event in pipeline.process_audio(audio):
-                        yield self._map_event(event, session)
+                        yield self._map_event(event, session, _lang())
 
                     for msg in await self._handle_partials(session, partial_service, session_config):
                         yield msg
@@ -151,7 +194,7 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
 
                     session.append_audio(audio)
                     async for event in pipeline.process_audio(audio):
-                        yield self._map_event(event, session)
+                        yield self._map_event(event, session, _lang())
 
                     for msg in await self._handle_partials(session, partial_service, session_config):
                         yield msg
@@ -170,7 +213,7 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
                     if audio.size > 0:
                         audio = resample_audio(audio, OPUS_SAMPLE_RATE, TARGET_SAMPLE_RATE)
                         async for event in pipeline.process_audio(audio):
-                            yield self._map_event(event, session)
+                            yield self._map_event(event, session, _lang())
                 except Exception as e:
                     yield vox_pb2.StreamOutput(
                         error=vox_pb2.StreamErrorMessage(message=str(e))
@@ -183,6 +226,7 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
                     if duration_ms > 0:
                         transcript = await pipeline.transcribe_async(audio=remaining)
                         if transcript.text.strip():
+                            enrich_transcript(transcript, _lang())
                             yield self._map_transcript(transcript, is_partial=False)
                 except Exception as e:
                     yield vox_pb2.StreamOutput(
@@ -192,7 +236,7 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
             pipeline.reset()
             pipeline.shutdown()
 
-    def _map_event(self, event, session: SpeechSession) -> vox_pb2.StreamOutput:
+    def _map_event(self, event, session: SpeechSession, language: str) -> vox_pb2.StreamOutput:
         if isinstance(event, SpeechStarted):
             session.start_speech()
             return vox_pb2.StreamOutput(
@@ -204,6 +248,7 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
                 speech_stopped=vox_pb2.StreamSpeechStopped(timestamp_ms=event.timestamp_ms)
             )
         elif isinstance(event, StreamTranscript):
+            enrich_transcript(event, language)
             return self._map_transcript(event, is_partial=False)
         return vox_pb2.StreamOutput(
             error=vox_pb2.StreamErrorMessage(message="Unknown event")
@@ -222,9 +267,17 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
         if transcript.eou_probability is not None:
             kwargs["eou_probability"] = transcript.eou_probability
 
-        return vox_pb2.StreamOutput(
-            transcript=vox_pb2.StreamTranscriptResult(**kwargs)
-        )
+        pb = vox_pb2.StreamTranscriptResult(**kwargs)
+        if transcript.entities:
+            pb.entities.extend(_to_pb_entities(transcript.entities))
+        if transcript.topics:
+            pb.topics.extend(transcript.topics)
+        if transcript.words:
+            pb.words.extend(_to_pb_words(transcript.words))
+        if transcript.segments:
+            pb.segments.extend(_to_pb_segments(transcript.segments))
+
+        return vox_pb2.StreamOutput(transcript=pb)
 
     async def _handle_partials(
         self,

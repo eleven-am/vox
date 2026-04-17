@@ -13,7 +13,7 @@ SPARK_ORT_INDEX_URL ?=
 SPARK_ORT_EXTRA_INDEX_URL ?=
 SPARK_ORT_WHEEL ?= https://pypi.jetson-ai-lab.io/jp6/cu129/+f/2e3/a07114007df15/onnxruntime_gpu-1.23.0-cp312-cp312-linux_aarch64.whl
 
-.PHONY: build build-cpu build-spark build-local build-local-cpu build-local-spark push tag clean setup-buildx current-version bump-patch bump-minor bump-major test
+.PHONY: build build-cpu build-spark build-local build-local-cpu build-local-spark push tag clean setup-buildx current-version bump-patch bump-minor bump-major test proto
 
 build:
 	@test "$(patsubst v%,%,$(VERSION))" = "$(APP_VERSION)" || \
@@ -151,3 +151,12 @@ bump-major:
 
 test:
 	uv run python -m pytest tests/ -q
+
+proto:
+	uv run python -m grpc_tools.protoc \
+		-I proto \
+		--python_out=src/vox/grpc \
+		--grpc_python_out=src/vox/grpc \
+		proto/vox.proto
+	sed -i.bak 's/^import vox_pb2 as vox__pb2$$/from . import vox_pb2 as vox__pb2/' src/vox/grpc/vox_pb2_grpc.py
+	rm -f src/vox/grpc/vox_pb2_grpc.py.bak

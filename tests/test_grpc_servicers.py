@@ -285,7 +285,7 @@ class TestSynthesisServicer:
         resp = await servicer.CreateVoice(
             vox_pb2.CreateVoiceRequest(
                 name="Roy",
-                audio=encode_wav(np.zeros(16_000, dtype=np.float32), 16_000),
+                audio=encode_wav(np.full(16_000, 0.1, dtype=np.float32), 16_000),
                 format_hint="wav",
                 language="en",
                 gender="male",
@@ -307,7 +307,7 @@ class TestSynthesisServicer:
             store,
             voice_id="voice1234",
             name="Roy",
-            audio_bytes=encode_wav(np.zeros(16_000, dtype=np.float32), 16_000),
+            audio_bytes=encode_wav(np.full(16_000, 0.1, dtype=np.float32), 16_000),
             content_type="audio/wav",
         )
         servicer = SynthesisServicer(store, MagicMock(), MagicMock())
@@ -330,7 +330,7 @@ class TestSynthesisServicer:
             store,
             voice_id="voice1234",
             name="Roy",
-            audio_bytes=encode_wav(np.zeros(16_000, dtype=np.float32), 16_000),
+            audio_bytes=encode_wav(np.full(16_000, 0.1, dtype=np.float32), 16_000),
             content_type="audio/wav",
         )
         loaded = LoadedModelInfo(
@@ -355,7 +355,7 @@ class TestSynthesisServicer:
             store,
             voice_id="voice1234",
             name="Roy",
-            audio_bytes=encode_wav(np.zeros(16_000, dtype=np.float32), 16_000),
+            audio_bytes=encode_wav(np.full(16_000, 0.1, dtype=np.float32), 16_000),
             content_type="audio/wav",
             reference_text="hello there",
         )

@@ -18,18 +18,18 @@ from vox.cli import (
     cli,
 )
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
+
+
+
 
 @pytest.fixture
 def runner():
     return CliRunner()
 
 
-# ---------------------------------------------------------------------------
-# _format_size
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestFormatSize:
     def test_zero(self):
@@ -51,9 +51,9 @@ class TestFormatSize:
         assert _format_size(2 * 1024 ** 4) == "2.0 TB"
 
 
-# ---------------------------------------------------------------------------
-# _handle_request_error
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestHandleRequestError:
     def test_connect_error(self, capsys):
@@ -94,15 +94,15 @@ class TestHandleRequestError:
         assert "boom" in err
 
 
-# ---------------------------------------------------------------------------
-# _check_response
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestCheckResponse:
     def test_ok_status(self):
         resp = Mock()
         resp.status_code = 200
-        _check_response(resp)  # should not exit
+        _check_response(resp)
 
     def test_error_status_with_json_detail(self, capsys):
         resp = Mock()
@@ -131,9 +131,9 @@ class TestCheckResponse:
         assert "bad gateway" in capsys.readouterr().err
 
 
-# ---------------------------------------------------------------------------
-# serve
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestServe:
     @patch("vox.cli.uvicorn", create=True)
@@ -143,7 +143,7 @@ class TestServe:
         mock_app = MagicMock()
         mock_create_app.return_value = mock_app
 
-        # We need to patch the imports inside the serve function
+
         with patch.dict("sys.modules", {"uvicorn": mock_uvicorn}):
             mock_uvicorn.run = MagicMock()
             runner.invoke(cli, ["serve", "--port", "9999", "--host", "127.0.0.1"])
@@ -169,9 +169,9 @@ class TestServe:
         assert mock_create_app.call_args.kwargs["default_device"] == "cuda"
 
 
-# ---------------------------------------------------------------------------
-# pull
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestPull:
     @patch("httpx.stream")
@@ -213,9 +213,9 @@ class TestPull:
         assert "cannot connect" in result.output or "cannot connect" in (result.output + (result.output or ""))
 
 
-# ---------------------------------------------------------------------------
-# list
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestList:
     @patch("httpx.get")
@@ -258,63 +258,63 @@ class TestList:
         assert result.exit_code != 0
 
 
-# ---------------------------------------------------------------------------
-# show
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestShow:
-    @patch("httpx.post")
-    def test_show_success(self, mock_post, runner):
+    @patch("httpx.get")
+    def test_show_success(self, mock_get, runner):
         resp = Mock()
         resp.status_code = 200
         resp.json.return_value = {"name": "whisper:large-v3", "type": "stt", "parameters": {}}
-        mock_post.return_value = resp
+        mock_get.return_value = resp
 
         result = runner.invoke(cli, ["show", "whisper:large-v3"])
         assert result.exit_code == 0
         assert "whisper:large-v3" in result.output
 
-    @patch("httpx.post")
-    def test_show_404(self, mock_post, runner):
+    @patch("httpx.get")
+    def test_show_404(self, mock_get, runner):
         resp = Mock()
         resp.status_code = 404
         resp.json.return_value = {"detail": "model not found"}
-        mock_post.return_value = resp
+        mock_get.return_value = resp
 
         result = runner.invoke(cli, ["show", "nonexistent"])
         assert result.exit_code != 0
 
 
-# ---------------------------------------------------------------------------
-# rm
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestRm:
-    @patch("httpx.request")
-    def test_rm_success(self, mock_request, runner):
+    @patch("httpx.delete")
+    def test_rm_success(self, mock_delete, runner):
         resp = Mock()
         resp.status_code = 200
         resp.json.return_value = {}
-        mock_request.return_value = resp
+        mock_delete.return_value = resp
 
         result = runner.invoke(cli, ["rm", "whisper:large-v3"])
         assert result.exit_code == 0
         assert "Deleted whisper:large-v3" in result.output
 
-    @patch("httpx.request")
-    def test_rm_404(self, mock_request, runner):
+    @patch("httpx.delete")
+    def test_rm_404(self, mock_delete, runner):
         resp = Mock()
         resp.status_code = 404
         resp.json.return_value = {"detail": "model not found"}
-        mock_request.return_value = resp
+        mock_delete.return_value = resp
 
         result = runner.invoke(cli, ["rm", "nonexistent"])
         assert result.exit_code != 0
 
 
-# ---------------------------------------------------------------------------
-# ps
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestPs:
     @patch("httpx.get")
@@ -357,9 +357,9 @@ class TestPs:
         assert result.exit_code != 0
 
 
-# ---------------------------------------------------------------------------
-# run — STT (file input)
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestRunSTT:
     @patch("httpx.post")
@@ -390,9 +390,9 @@ class TestRunSTT:
         assert result.exit_code != 0
 
 
-# ---------------------------------------------------------------------------
-# run — TTS (text input)
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestRunTTS:
     @patch("httpx.post")
@@ -438,7 +438,7 @@ class TestRunTTS:
             cli, ["run", "kokoro:v1.0", "Hi", "--voice", "af_heart"]
         )
         assert result.exit_code == 0
-        # Verify the voice was passed in the request body
+
         call_kwargs = mock_post.call_args
         body = call_kwargs[1].get("json") or call_kwargs.kwargs.get("json")
         assert body["voice"] == "af_heart"
@@ -450,9 +450,9 @@ class TestRunTTS:
         assert result.exit_code != 0
 
 
-# ---------------------------------------------------------------------------
-# voices
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestVoices:
     @patch("httpx.get")
@@ -506,9 +506,9 @@ class TestVoices:
         assert result.exit_code != 0
 
 
-# ---------------------------------------------------------------------------
-# --host option / env var
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestHostOption:
     @patch("httpx.get")
@@ -536,9 +536,9 @@ class TestHostOption:
         assert not url.startswith("http://myserver:8080//")
 
 
-# ---------------------------------------------------------------------------
-# Timeout error path
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestTimeoutPath:
     @patch("httpx.get")
@@ -554,9 +554,9 @@ class TestTimeoutPath:
         assert result.exit_code != 0
 
 
-# ---------------------------------------------------------------------------
-# WebSocket helpers
-# ---------------------------------------------------------------------------
+
+
+
 
 
 class FakeWebSocket:

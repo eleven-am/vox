@@ -17,9 +17,9 @@ from vox.audio.codecs import (
     to_mono,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+
+
+
 
 SAMPLE_RATE = 44100
 
@@ -30,9 +30,9 @@ def _sine_wave(freq: float = 440.0, duration: float = 0.1, sr: int = SAMPLE_RATE
     return np.sin(2 * np.pi * freq * t).astype(np.float32)
 
 
-# ---------------------------------------------------------------------------
-# WAV roundtrip
-# ---------------------------------------------------------------------------
+
+
+
 
 
 def test_encode_wav_decode_roundtrip():
@@ -55,25 +55,25 @@ def test_decode_wav_with_format_hint_uses_container_detection():
     np.testing.assert_allclose(decoded, audio, atol=1e-6)
 
 
-# ---------------------------------------------------------------------------
-# FLAC roundtrip (lossy due to float32 -> int16 -> float32)
-# ---------------------------------------------------------------------------
+
+
+
 
 
 def test_encode_flac_decode_roundtrip():
-    audio = _sine_wave() * 0.5  # keep away from clipping edges
+    audio = _sine_wave() * 0.5
     flac_bytes = encode_flac(audio, SAMPLE_RATE)
     decoded, sr = decode_audio(flac_bytes)
 
     assert sr == SAMPLE_RATE
     assert decoded.shape == audio.shape
-    # FLAC round-trips through int16 so tolerance is wider
+
     np.testing.assert_allclose(decoded, audio, atol=2.0 / 32768)
 
 
-# ---------------------------------------------------------------------------
-# PCM encode / decode roundtrip
-# ---------------------------------------------------------------------------
+
+
+
 
 
 def test_encode_pcm_pcm16_to_float32_roundtrip():
@@ -82,13 +82,13 @@ def test_encode_pcm_pcm16_to_float32_roundtrip():
     recovered = pcm16_to_float32(pcm_bytes)
 
     assert recovered.shape == audio.shape
-    # int16 quantisation gives ~1/32768 error
+
     np.testing.assert_allclose(recovered, audio, atol=2.0 / 32768)
 
 
-# ---------------------------------------------------------------------------
-# to_mono
-# ---------------------------------------------------------------------------
+
+
+
 
 
 def test_to_mono_passthrough_for_1d():
@@ -101,7 +101,7 @@ def test_to_mono_passthrough_for_1d():
 def test_to_mono_averages_stereo():
     left = _sine_wave(440.0)
     right = _sine_wave(880.0)
-    stereo = np.stack([left, right], axis=1)  # shape (N, 2)
+    stereo = np.stack([left, right], axis=1)
 
     mono = to_mono(stereo)
     expected = (left + right) / 2.0
@@ -111,9 +111,9 @@ def test_to_mono_averages_stereo():
     np.testing.assert_allclose(mono, expected, atol=1e-6)
 
 
-# ---------------------------------------------------------------------------
-# Decode failure
-# ---------------------------------------------------------------------------
+
+
+
 
 
 def test_decode_audio_invalid_bytes_raises():
@@ -121,9 +121,9 @@ def test_decode_audio_invalid_bytes_raises():
         decode_audio(b"this is not audio data at all")
 
 
-# ---------------------------------------------------------------------------
-# Pydub fallback path
-# ---------------------------------------------------------------------------
+
+
+
 
 
 def _mock_pydub_module():
@@ -177,7 +177,7 @@ def test_decode_audio_pydub_fallback_stereo():
         audio, sr = decode_audio(b"\x00" * 10)
 
     assert sr == 44100
-    assert audio.shape == (2, 2)  # 2 frames, 2 channels
+    assert audio.shape == (2, 2)
 
 
 def test_decode_audio_both_fail_raises_runtime_error():

@@ -9,9 +9,8 @@ from vox.core.cloned_voices import (
     create_stored_voice,
     delete_stored_voice,
     generate_voice_id,
-    get_stored_voice,
     list_stored_voices,
-    load_reference_audio,
+    resolve_voice_request,
 )
 from vox.core.errors import ModelNotFoundError, VoxError
 from vox.core.registry import ModelRegistry
@@ -183,23 +182,4 @@ def _resolve_voice_request(
     voice_id: str | None,
     language: str | None,
 ):
-    if not voice_id:
-        return None, language, None, None
-
-    stored_voice = get_stored_voice(store, voice_id)
-    if stored_voice is None:
-        return voice_id, language, None, None
-
-    if not adapter.info().supports_voice_cloning:
-        raise VoxError(f"Model '{adapter.info().name}' does not support cloned voices")
-
-    reference = load_reference_audio(
-        store,
-        stored_voice.id,
-        target_rate=adapter.info().default_sample_rate,
-    )
-    if reference is None:
-        raise VoxError(f"Voice '{stored_voice.id}' not found")
-
-    reference_audio, reference_text = reference
-    return None, language or stored_voice.language, reference_audio, reference_text
+    return resolve_voice_request(adapter, store, voice_id, language)

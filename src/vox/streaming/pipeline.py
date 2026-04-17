@@ -12,7 +12,8 @@ from numpy.typing import NDArray
 
 from vox.core.adapter import STTAdapter
 from vox.core.scheduler import Scheduler
-from vox.streaming.eou import ConversationTurn, EOUConfig, EOUModel, MAX_HISTORY_TURNS
+from vox.core.types import TranscribeResult
+from vox.streaming.eou import ConversationTurn, EOUConfig, EOUModel
 from vox.streaming.types import (
     SpeechStarted,
     SpeechStopped,
@@ -21,6 +22,33 @@ from vox.streaming.types import (
     StreamTranscript,
 )
 from vox.streaming.vad import SpeechSegment, VADConfig, VADProcessor
+
+
+def _segments_and_words(result: TranscribeResult) -> tuple[list[dict] | None, list[dict] | None]:
+    if not result.segments:
+        return None, None
+    segments: list[dict] = []
+    all_words: list[dict] = []
+    for s in result.segments:
+        seg_words: list[dict] = [
+            {
+                "word": w.word,
+                "start_ms": int(w.start_ms),
+                "end_ms": int(w.end_ms),
+                "confidence": w.confidence,
+            }
+            for w in s.words
+        ]
+        segments.append({
+            "text": s.text,
+            "start_ms": int(s.start_ms),
+            "end_ms": int(s.end_ms),
+            "words": seg_words,
+            "language": s.language,
+            "confidence": s.confidence,
+        })
+        all_words.extend(seg_words)
+    return segments, (all_words or None)
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +84,15 @@ class StreamPipeline:
         self._pending_user_text = ""
         self._low_eou_streak = 0
 
+    def _history_limit(self) -> int:
+        return max(1, int(self._config.eou_config.max_context_turns))
+
     def add_assistant_turn(self, text: str) -> None:
         if text.strip():
             self._conversation_history.append(ConversationTurn(role="assistant", content=text.strip()))
-            if len(self._conversation_history) > MAX_HISTORY_TURNS * 2:
-                self._conversation_history = self._conversation_history[-MAX_HISTORY_TURNS * 2:]
+            history_limit = self._history_limit() * 2
+            if len(self._conversation_history) > history_limit:
+                self._conversation_history = self._conversation_history[-history_limit:]
 
     def reset(self) -> None:
         self._vad.reset()
@@ -111,6 +143,7 @@ class StreamPipeline:
                 ),
             )
         processing_ms = int((time.perf_counter() - start) * 1000)
+        segments, words = _segments_and_words(result)
 
         return StreamTranscript(
             text=result.text,
@@ -119,6 +152,8 @@ class StreamPipeline:
             audio_duration_ms=result.duration_ms,
             processing_duration_ms=processing_ms,
             model=model,
+            segments=segments,
+            words=words,
         )
 
     async def transcribe_async(
@@ -147,12 +182,15 @@ class StreamPipeline:
                 ),
             )
         processing_ms = int((time.perf_counter() - start) * 1000)
+        segments, words = _segments_and_words(result)
 
         return StreamTranscript(
             text=result.text,
             audio_duration_ms=result.duration_ms,
             processing_duration_ms=processing_ms,
             model=model,
+            segments=segments,
+            words=words,
         )
 
     def _add_eou_probability(self, transcript: StreamTranscript) -> StreamTranscript:
@@ -161,14 +199,24 @@ class StreamPipeline:
         history_with_current = self._conversation_history.copy()
         history_with_current.append(ConversationTurn(role="user", content=self._pending_user_text))
 
-        eou_probability = self._eou_model.predict(history_with_current)
+        eou_probability = self._eou_model.predict(
+            history_with_current,
+            max_context_turns=self._history_limit(),
+        )
         transcript.eou_probability = eou_probability
 
         if eou_probability >= self._config.eou_config.threshold:
             self._flush_pending_user_text()
         else:
             self._low_eou_streak += 1
-            if self._low_eou_streak >= 3 or len(self._pending_user_text) >= 200:
+
+
+
+            pending_tokens = self._eou_model.token_count(self._pending_user_text)
+            if (
+                self._low_eou_streak >= 3
+                or pending_tokens >= self._config.eou_config.max_pending_tokens
+            ):
                 self._flush_pending_user_text()
 
         return transcript
@@ -181,8 +229,9 @@ class StreamPipeline:
         self._conversation_history.append(
             ConversationTurn(role="user", content=self._pending_user_text)
         )
-        if len(self._conversation_history) > MAX_HISTORY_TURNS * 2:
-            self._conversation_history = self._conversation_history[-MAX_HISTORY_TURNS * 2:]
+        history_limit = self._history_limit() * 2
+        if len(self._conversation_history) > history_limit:
+            self._conversation_history = self._conversation_history[-history_limit:]
 
         self._pending_user_text = ""
         self._low_eou_streak = 0

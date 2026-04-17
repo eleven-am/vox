@@ -6,6 +6,7 @@ from contextlib import suppress
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from vox.streaming.annotation import enrich_transcript
 from vox.streaming.codecs import pcm16_to_float32, resample_audio
 from vox.streaming.partials import PartialTranscriptService
 from vox.streaming.pipeline import StreamPipeline
@@ -112,7 +113,7 @@ async def audio_stream(websocket: WebSocket):
 
                 session.append_audio(audio)
                 async for event in pipeline.process_audio(audio):
-                    await _send_event(websocket, event, session)
+                    await _send_event(websocket, event, session, session_config.language)
 
                 if session.is_active() and session_config.partials:
                     try:
@@ -135,8 +136,18 @@ async def audio_stream(websocket: WebSocket):
             remaining = partial_service.flush_remaining_audio(session)
             if remaining is not None and len(remaining) > 0:
                 try:
-                    transcript = await pipeline.transcribe_async(audio=remaining)
+                    transcript = await pipeline.transcribe_async(
+                        audio=remaining,
+                        language=session_config.language if session_config is not None else None,
+                        word_timestamps=(
+                            session_config.include_word_timestamps
+                            if session_config is not None
+                            else False
+                        ),
+                    )
                     if transcript.text.strip():
+                        if session_config is not None:
+                            enrich_transcript(transcript, session_config.language)
                         await _send_transcript(websocket, transcript)
                 except Exception:
                     pass
@@ -149,7 +160,7 @@ async def audio_stream(websocket: WebSocket):
             await websocket.close()
 
 
-async def _send_event(websocket: WebSocket, event, session: SpeechSession) -> None:
+async def _send_event(websocket: WebSocket, event, session: SpeechSession, language: str) -> None:
     if isinstance(event, SpeechStarted):
         session.start_speech()
         await websocket.send_json({
@@ -163,6 +174,7 @@ async def _send_event(websocket: WebSocket, event, session: SpeechSession) -> No
             "timestamp_ms": event.timestamp_ms,
         })
     elif isinstance(event, StreamTranscript):
+        enrich_transcript(event, language)
         await _send_transcript(websocket, event)
 
 
@@ -179,4 +191,12 @@ async def _send_transcript(websocket: WebSocket, transcript: StreamTranscript) -
     }
     if transcript.eou_probability is not None:
         msg["eou_probability"] = transcript.eou_probability
+    if transcript.entities:
+        msg["entities"] = transcript.entities
+    if transcript.topics:
+        msg["topics"] = transcript.topics
+    if transcript.words:
+        msg["words"] = transcript.words
+    if transcript.segments:
+        msg["segments"] = transcript.segments
     await websocket.send_json(msg)

@@ -68,7 +68,7 @@ def parse_speechfile(content: str) -> Speechfile:
         if not line or line.startswith("#"):
             continue
 
-        # Split into directive + rest
+
         parts = line.split(None, 1)
         directive = parts[0].upper()
         rest = parts[1].strip() if len(parts) > 1 else ""
@@ -97,7 +97,7 @@ def parse_speechfile(content: str) -> Speechfile:
                     f"line {lineno}: PARAMETER requires a key and value"
                 )
             key, raw_val = key_value
-            # Try to coerce numeric values.
+
             val: object
             try:
                 val = int(raw_val)
@@ -109,7 +109,7 @@ def parse_speechfile(content: str) -> Speechfile:
             parameters[key] = val
 
         elif directive == "VOICE":
-            # VOICE id "display name"
+
             try:
                 tokens = shlex.split(rest)
             except ValueError:
@@ -129,7 +129,7 @@ def parse_speechfile(content: str) -> Speechfile:
         elif directive == "FILES":
             files = [f.strip() for f in rest.split(",") if f.strip()]
 
-        # Unknown directives are silently ignored.
+
 
     if source is None:
         raise SpeechfileParseError("Speechfile is missing a required FROM directive")

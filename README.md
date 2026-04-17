@@ -27,7 +27,7 @@ vox serve
 Then hit the local API:
 
 ```bash
-curl -X POST http://localhost:11435/api/synthesize \
+curl -X POST http://localhost:11435/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{"model":"kokoro-tts-onnx:v1.0","input":"Hello from Vox"}' \
   -o output.wav
@@ -78,11 +78,12 @@ vox list
 vox run parakeet-stt-onnx:tdt-0.6b-v3 recording.wav
 vox stream-transcribe parakeet-stt-onnx:tdt-0.6b-v3 meeting.mp3
 
-# API
-curl -F file=@recording.wav http://localhost:11435/api/transcribe
-
-# OpenAI-compatible
+# OpenAI-compatible: thin response (just {"text": ...})
 curl -F file=@recording.wav http://localhost:11435/v1/audio/transcriptions
+
+# Rich response with segments, word timestamps, entities, topics
+curl -F file=@recording.wav -F response_format=verbose_json \
+  http://localhost:11435/v1/audio/transcriptions
 ```
 
 ### Synthesize (TTS)
@@ -91,12 +92,6 @@ curl -F file=@recording.wav http://localhost:11435/v1/audio/transcriptions
 # CLI
 vox run kokoro-tts-onnx:v1.0 "Hello, how are you?" -o output.wav
 vox stream-synthesize kokoro-tts-onnx:v1.0 "Hello, how are you?" -o output.wav
-
-# API
-curl -X POST http://localhost:11435/api/synthesize \
-  -H "Content-Type: application/json" \
-  -d '{"model":"kokoro-tts-onnx:v1.0","input":"Hello, how are you?"}' \
-  -o output.wav
 
 # OpenAI-compatible
 curl -X POST http://localhost:11435/v1/audio/speech \
@@ -118,10 +113,13 @@ curl -X POST http://localhost:11435/v1/audio/voices \
   -F reference_text="Hello there from my custom voice"
 
 # list voices, including cloned voices for clone-capable models
-curl "http://localhost:11435/api/voices?model=openvoice-tts-torch:v1"
+curl "http://localhost:11435/v1/audio/voices?model=openvoice-tts-torch:v1"
+
+# download the stored reference audio
+curl -o reference.wav http://localhost:11435/v1/audio/voices/voice1234/reference
 
 # synthesize with the stored voice id returned at creation time
-curl -X POST http://localhost:11435/api/synthesize \
+curl -X POST http://localhost:11435/v1/audio/speech \
   -H "Content-Type: application/json" \
   -d '{"model":"openvoice-tts-torch:v1","input":"Hello from Vox","voice":"voice1234"}' \
   -o output.wav
@@ -330,24 +328,22 @@ More models at [vox-registry](https://github.com/eleven-am/vox-registry). Add a 
 
 ## API
 
+All HTTP endpoints live under `/v1/`. STT/TTS endpoints are OpenAI-compatible by default; pass `response_format=verbose_json` on `/v1/audio/transcriptions` for the rich payload (segments, word timestamps, entities, topics).
+
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/api/transcribe` | POST | Audio to text |
-| `/api/synthesize` | POST | Text to audio |
-| `/api/voices` | POST | Create a stored cloned voice |
-| `/api/pull` | POST | Download a model |
-| `/api/list` | GET | List downloaded models |
-| `/api/show` | POST | Model details |
-| `/api/delete` | DELETE | Remove a model |
-| `/api/ps` | GET | Currently loaded models |
-| `/api/voices` | GET | List voices for a TTS model |
-| `/api/voices/{id}` | DELETE | Delete a stored cloned voice |
-| `/api/health` | GET | Health check |
-| `/v1/audio/transcriptions` | POST | OpenAI-compatible STT |
-| `/v1/audio/speech` | POST | OpenAI-compatible TTS |
-| `/v1/audio/voices` | GET | OpenAI-style voice listing |
-| `/v1/audio/voices` | POST | OpenAI-style cloned voice creation |
-| `/v1/audio/voices/{id}` | DELETE | OpenAI-style cloned voice deletion |
+| `/v1/health` | GET | Health check |
+| `/v1/models` | GET | List downloaded models |
+| `/v1/models/{name}` | GET | Model details |
+| `/v1/models/{name}` | DELETE | Remove a model |
+| `/v1/models/pull` | POST | Download a model |
+| `/v1/models/loaded` | GET | Currently loaded models |
+| `/v1/audio/transcriptions` | POST | Transcribe audio (OpenAI-compatible; `verbose_json` for rich payload) |
+| `/v1/audio/speech` | POST | Synthesize speech (OpenAI-compatible; supports `stream`) |
+| `/v1/audio/voices` | GET | List voices for a TTS model |
+| `/v1/audio/voices` | POST | Create a stored cloned voice |
+| `/v1/audio/voices/{id}` | DELETE | Delete a stored cloned voice |
+| `/v1/audio/voices/{id}/reference` | GET | Download the stored reference audio |
 | `/v1/audio/transcriptions/stream` | WS | Long-form streaming STT |
 | `/v1/audio/speech/stream` | WS | Long-form streaming TTS |
 

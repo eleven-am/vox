@@ -23,7 +23,7 @@ from vox_kokoro.common import SAMPLE_RATE, SUPPORTED_LANGUAGES, voice_info, voic
 
 logger = logging.getLogger(__name__)
 
-def _get_onnx_providers(device: str) -> list[tuple[str, dict]]:
+def _get_onnx_providers(device: str) -> tuple[list[tuple[str, dict]], str]:
     """Choose ONNX execution providers based on *device* and platform."""
     available = get_available_providers()
     system = platform.system()
@@ -32,17 +32,22 @@ def _get_onnx_providers(device: str) -> list[tuple[str, dict]]:
     logger.info("Available ONNX providers: %s", available)
 
     if device == "cpu":
-        return [("CPUExecutionProvider", {})]
+        return [("CPUExecutionProvider", {})], "cpu"
 
     providers: list[tuple[str, dict]] = []
+    resolved_device = "cpu"
 
     if system == "Darwin" and machine == "arm64" and "CoreMLExecutionProvider" in available:
         providers.append(("CoreMLExecutionProvider", {}))
+        resolved_device = "coreml"
 
     if "CUDAExecutionProvider" in available:
         providers.append(("CUDAExecutionProvider", {}))
+        resolved_device = "cuda"
 
     if not providers:
+        if device == "auto":
+            return [("CPUExecutionProvider", {})], "cpu"
         raise RuntimeError(
             "Kokoro requires a GPU-capable ONNX Runtime provider for non-CPU devices; "
             "CPU fallback is disabled"
@@ -51,7 +56,7 @@ def _get_onnx_providers(device: str) -> list[tuple[str, dict]]:
     providers.append(("CPUExecutionProvider", {}))
 
     logger.info("Using ONNX providers: %s", providers)
-    return providers
+    return providers, resolved_device
 
 
 def _voice_lang(voice_id: str) -> str:
@@ -71,9 +76,9 @@ class KokoroAdapter(TTSAdapter):
         self._kokoro: Kokoro | None = None
         self._device: str = "cpu"
 
-    # ------------------------------------------------------------------
-    # TTSAdapter interface
-    # ------------------------------------------------------------------
+
+
+
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
@@ -111,10 +116,10 @@ class KokoroAdapter(TTSAdapter):
         if not voices_file.exists() and not voices_dir.is_dir():
             raise FileNotFoundError(f"No Kokoro voices found in {model_dir}")
 
-        self._device = device
-        providers = _get_onnx_providers(device)
+        providers, resolved_device = _get_onnx_providers(device)
+        self._device = resolved_device
 
-        logger.info("Loading Kokoro model from %s (device=%s)", model_dir, device)
+        logger.info("Loading Kokoro model from %s (device=%s)", model_dir, self._device)
         session = InferenceSession(str(model_file), providers=providers)
         if voices_file.exists():
             self._kokoro = Kokoro.from_session(session, str(voices_file))
@@ -200,7 +205,7 @@ class KokoroAdapter(TTSAdapter):
                 is_final=False,
             )
 
-        # Send a final empty chunk to signal completion.
+
         yield SynthesizeChunk(
             audio=b"",
             sample_rate=SAMPLE_RATE,
@@ -213,7 +218,7 @@ class KokoroAdapter(TTSAdapter):
         return [_voice_info(v) for v in self._kokoro.get_voices()]
 
     def estimate_vram_bytes(self, **kwargs: Any) -> int:
-        # Kokoro-82M ONNX is ~330 MB in memory.
+
         return 330 * 1024 * 1024
 
 

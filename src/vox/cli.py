@@ -331,7 +331,19 @@ def cli(ctx, host: str):
 @click.option("--device", default="auto", envvar="VOX_DEVICE", help="Device: auto, cuda, cpu, mps")
 @click.option("--max-loaded", default=3, help="Max models loaded simultaneously")
 @click.option("--ttl", default=300, help="Idle model TTL in seconds")
-def serve(port: int, grpc_port: int, bind_host: str, device: str, max_loaded: int, ttl: int):
+@click.option(
+    "--preload", "preload_models", multiple=True,
+    help="Model ref to warm at startup (repeatable). Env: VOX_PRELOAD=ref1,ref2",
+)
+@click.option(
+    "--preload-vad", is_flag=True, envvar="VOX_PRELOAD_VAD",
+    help="Warm the Silero VAD model at startup",
+)
+def serve(
+    port: int, grpc_port: int, bind_host: str, device: str,
+    max_loaded: int, ttl: int,
+    preload_models: tuple[str, ...], preload_vad: bool,
+):
     """Start the Vox server."""
     import uvicorn
 
@@ -342,6 +354,8 @@ def serve(port: int, grpc_port: int, bind_host: str, device: str, max_loaded: in
         max_loaded=max_loaded,
         ttl_seconds=ttl,
         grpc_port=grpc_port if grpc_port > 0 else None,
+        preload_models=list(preload_models),
+        preload_vad=preload_vad,
     )
     uvicorn.run(app, host=bind_host, port=port, log_level="info")
 
@@ -354,7 +368,7 @@ def pull(ctx, model: str):
     host = ctx.obj["host"]
     had_error = False
     try:
-        with httpx.stream("POST", f"{host}/api/pull", json={"name": model}, timeout=None) as resp:
+        with httpx.stream("POST", f"{host}/v1/models/pull", json={"name": model}, timeout=None) as resp:
             for line in resp.iter_lines():
                 if line:
                     data = json.loads(line)
@@ -379,7 +393,7 @@ def list_models(ctx):
     """List downloaded models."""
     host = ctx.obj["host"]
     try:
-        resp = httpx.get(f"{host}/api/list", timeout=10)
+        resp = httpx.get(f"{host}/v1/models", timeout=10)
         _check_response(resp)
         models = resp.json().get("models", [])
         if not models:
@@ -403,7 +417,7 @@ def show(ctx, model: str):
     """Show model details."""
     host = ctx.obj["host"]
     try:
-        resp = httpx.post(f"{host}/api/show", json={"name": model}, timeout=10)
+        resp = httpx.get(f"{host}/v1/models/{model}", timeout=10)
         _check_response(resp)
         click.echo(json.dumps(resp.json(), indent=2))
     except (httpx.HTTPError, json.JSONDecodeError) as e:
@@ -417,7 +431,7 @@ def rm(ctx, model: str):
     """Remove a downloaded model."""
     host = ctx.obj["host"]
     try:
-        resp = httpx.request("DELETE", f"{host}/api/delete", json={"name": model}, timeout=10)
+        resp = httpx.delete(f"{host}/v1/models/{model}", timeout=10)
         _check_response(resp)
         click.echo(f"Deleted {model}")
     except (httpx.HTTPError, json.JSONDecodeError) as e:
@@ -430,7 +444,7 @@ def ps(ctx):
     """List currently loaded/running models."""
     host = ctx.obj["host"]
     try:
-        resp = httpx.get(f"{host}/api/ps", timeout=10)
+        resp = httpx.get(f"{host}/v1/models/loaded", timeout=10)
         _check_response(resp)
         models = resp.json().get("models", [])
         if not models:
@@ -464,7 +478,7 @@ def run(ctx, model: str, input_arg: str, output: str | None, language: str | Non
         if input_path.is_file():
             with open(input_path, "rb") as f:
                 resp = httpx.post(
-                    f"{host}/api/transcribe",
+                    f"{host}/v1/audio/transcriptions",
                     files={"file": (input_path.name, f)},
                     data={"model": model, "language": language or ""},
                     timeout=None,
@@ -473,7 +487,7 @@ def run(ctx, model: str, input_arg: str, output: str | None, language: str | Non
             click.echo(resp.json().get("text", ""))
         else:
             resp = httpx.post(
-                f"{host}/api/synthesize",
+                f"{host}/v1/audio/speech",
                 json={"model": model, "input": input_arg, "voice": voice, "response_format": "wav"},
                 timeout=None,
             )
@@ -640,7 +654,7 @@ def voices(ctx, model: str):
     """List voices for a TTS model."""
     host = ctx.obj["host"]
     try:
-        resp = httpx.get(f"{host}/api/voices", params={"model": model}, timeout=10)
+        resp = httpx.get(f"{host}/v1/audio/voices", params={"model": model}, timeout=10)
         _check_response(resp)
         voices_list = resp.json().get("voices", [])
         if not voices_list:

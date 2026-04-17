@@ -9,6 +9,19 @@ import numpy as np
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def _restore_torch_and_nemo_modules():
+    poisoned_keys = ("torch", "nemo", "nemo.collections", "nemo.collections.asr",
+                     "vox_parakeet", "vox_parakeet.nemo_adapter")
+    saved = {k: sys.modules.get(k) for k in poisoned_keys}
+    yield
+    for k, v in saved.items():
+        if v is None:
+            sys.modules.pop(k, None)
+        else:
+            sys.modules[k] = v
+
+
 class _FakeNemoModel:
     def __init__(self, *, text: str = "hello world", with_timestamps: bool = False) -> None:
         self.text = text

@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from vox.core.hf_runtime import configure_hf_runtime
 from vox.core.store import Manifest, ManifestLayer
 from vox.core.types import parse_model_name
 
@@ -21,15 +22,7 @@ class PullRequest(BaseModel):
     name: str
 
 
-class ShowRequest(BaseModel):
-    name: str
-
-
-class DeleteRequest(BaseModel):
-    name: str
-
-
-@router.post("/api/pull")
+@router.post("/v1/models/pull")
 async def pull_model(req: PullRequest, request: Request):
     store = request.app.state.store
     registry = request.app.state.registry
@@ -44,7 +37,7 @@ async def pull_model(req: PullRequest, request: Request):
     async def stream_progress():
         yield json.dumps({"status": f"pulling {req.name}"}) + "\n"
 
-        # Auto-install adapter if needed
+
         adapter_name = catalog_entry.get("adapter", "")
         adapter_package = catalog_entry.get("adapter_package", "")
         if adapter_package:
@@ -61,10 +54,11 @@ async def pull_model(req: PullRequest, request: Request):
         specific_files = catalog_entry.get("files")
 
         try:
+            configure_hf_runtime()
             from huggingface_hub import HfApi, hf_hub_download
             api = HfApi()
 
-            # List files to download
+
             if specific_files:
                 files_to_download = specific_files
             else:
@@ -84,7 +78,7 @@ async def pull_model(req: PullRequest, request: Request):
                     "total": total_files,
                 }) + "\n"
 
-                # Download file
+
                 local_path = await asyncio.to_thread(
                     hf_hub_download,
                     repo_id=source,
@@ -92,12 +86,12 @@ async def pull_model(req: PullRequest, request: Request):
                     cache_dir=None,
                 )
 
-                # Store as blob (computes SHA256 internally)
+
                 file_size = os.path.getsize(local_path)
                 with open(local_path, "rb") as f:
                     digest = store.write_blob(f)
 
-                # Determine media type from extension
+
                 ext = filename.rsplit(".", 1)[-1] if "." in filename else "bin"
                 media_type = f"application/vox.model.{ext}"
 
@@ -108,7 +102,7 @@ async def pull_model(req: PullRequest, request: Request):
                     "filename": filename,
                 })
 
-            # Build and save manifest
+
             manifest = Manifest(
                 layers=[ManifestLayer(**layer_dict) for layer_dict in layers],
                 config={
@@ -117,6 +111,7 @@ async def pull_model(req: PullRequest, request: Request):
                     "adapter": catalog_entry["adapter"],
                     "format": catalog_entry["format"],
                     "source": source,
+                    "runtime_source": catalog_entry.get("runtime_source", ""),
                     "parameters": catalog_entry.get("parameters", {}),
                     "description": catalog_entry.get("description", ""),
                     "license": catalog_entry.get("license", ""),
@@ -134,7 +129,7 @@ async def pull_model(req: PullRequest, request: Request):
     return StreamingResponse(stream_progress(), media_type="application/x-ndjson")
 
 
-@router.get("/api/list")
+@router.get("/v1/models")
 async def list_models(request: Request):
     store = request.app.state.store
     models = store.list_models()
@@ -153,18 +148,19 @@ async def list_models(request: Request):
     }
 
 
-@router.post("/api/show")
-async def show_model(req: ShowRequest, request: Request):
+async def _show_by_name(name: str, request: Request) -> dict:
     store = request.app.state.store
     registry = request.app.state.registry
-    explicit_tag = ":" in req.name
-    name, tag = parse_model_name(req.name)
-    resolved_name, resolved_tag = registry.resolve_model_ref(name, tag, explicit_tag=explicit_tag)
+    explicit_tag = ":" in name
+    parsed_name, parsed_tag = parse_model_name(name)
+    resolved_name, resolved_tag = registry.resolve_model_ref(
+        parsed_name, parsed_tag, explicit_tag=explicit_tag,
+    )
     manifest = store.resolve_model(resolved_name, resolved_tag)
     if not manifest:
-        raise HTTPException(status_code=404, detail=f"Model '{req.name}' not found")
+        raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
     return {
-        "name": req.name,
+        "name": name,
         "config": manifest.config,
         "layers": [
             {
@@ -178,24 +174,34 @@ async def show_model(req: ShowRequest, request: Request):
     }
 
 
-@router.delete("/api/delete")
-async def delete_model(req: DeleteRequest, request: Request):
+async def _delete_by_name(name: str, request: Request) -> dict:
     store = request.app.state.store
     scheduler = request.app.state.scheduler
     registry = request.app.state.registry
-    explicit_tag = ":" in req.name
-    name, tag = parse_model_name(req.name)
-    resolved_name, resolved_tag = registry.resolve_model_ref(name, tag, explicit_tag=explicit_tag)
+    explicit_tag = ":" in name
+    parsed_name, parsed_tag = parse_model_name(name)
+    resolved_name, resolved_tag = registry.resolve_model_ref(
+        parsed_name, parsed_tag, explicit_tag=explicit_tag,
+    )
 
-    # Unload if loaded
     unloaded = await scheduler.unload(f"{resolved_name}:{resolved_tag}")
     if not unloaded:
-        raise HTTPException(status_code=409, detail=f"Model '{req.name}' is currently in use")
+        raise HTTPException(status_code=409, detail=f"Model '{name}' is currently in use")
 
     manifest = store.resolve_model(resolved_name, resolved_tag)
     if not manifest:
-        raise HTTPException(status_code=404, detail=f"Model '{req.name}' not found")
+        raise HTTPException(status_code=404, detail=f"Model '{name}' not found")
 
     store.delete_model(resolved_name, resolved_tag)
     store.gc_blobs()
     return {"status": "success"}
+
+
+@router.get("/v1/models/{name:path}")
+async def show_model_v1(name: str, request: Request):
+    return await _show_by_name(name, request)
+
+
+@router.delete("/v1/models/{name:path}")
+async def delete_model_v1(name: str, request: Request):
+    return await _delete_by_name(name, request)

@@ -14,6 +14,7 @@ import pytest
 
 from vox.core.adapter import STTAdapter, TTSAdapter
 from vox.core.errors import ModelLoadError
+from vox.core.runtime import RuntimeCapabilities
 from vox.core.scheduler import Scheduler, _detect_device, _is_oom_error
 from vox.core.types import (
     AdapterInfo,
@@ -26,9 +27,9 @@ from vox.core.types import (
     parse_model_name,
 )
 
-# ---------------------------------------------------------------------------
-# Fake adapters
-# ---------------------------------------------------------------------------
+
+
+
 
 class FakeSTTAdapter(STTAdapter):
     """Minimal STT adapter for testing."""
@@ -117,9 +118,9 @@ class FakeTTSAdapter(TTSAdapter):
         yield SynthesizeChunk(audio=b"\x00" * 4, sample_rate=24000, is_final=True)
 
 
-# ---------------------------------------------------------------------------
-# Fake registry
-# ---------------------------------------------------------------------------
+
+
+
 
 class FakeRegistry:
     """Implements RegistryProtocol for testing."""
@@ -163,9 +164,9 @@ class FakeRegistry:
         return self._adapter_classes[adapter_name]
 
 
-# ---------------------------------------------------------------------------
-# Helpers / fixtures
-# ---------------------------------------------------------------------------
+
+
+
 
 def _make_registry_with_model(
     name: str = "whisper",
@@ -189,16 +190,16 @@ def scheduler(registry: FakeRegistry) -> Scheduler:
     return Scheduler(registry, default_device="cpu", max_loaded=3)
 
 
-# Patch _clear_gpu_cache to be a no-op in tests (avoids importing torch)
+
 @pytest.fixture(autouse=True)
 def _patch_gpu_cache():
     with patch("vox.core.scheduler._clear_gpu_cache"):
         yield
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
+
+
+
 
 
 @pytest.mark.asyncio
@@ -220,7 +221,7 @@ async def test_acquire_reuses_already_loaded_model(scheduler: Scheduler):
         second_id = id(adapter_second)
 
     assert first_id == second_id
-    # load should have been called exactly once
+
     assert len(adapter_second.load_calls) == 1
 
 
@@ -258,17 +259,17 @@ async def test_evict_lru_removes_least_recently_used():
 
     sched = Scheduler(registry, default_device="cpu", max_loaded=2)
 
-    # Load m1 then m2 -- both fill the 2 slots
+
     async with sched.acquire("m1:latest"):
         pass
     async with sched.acquire("m2:latest"):
         pass
 
-    # Touch m1 again so its last_used > m2's last_used
+
     async with sched.acquire("m1:latest"):
         pass
 
-    # Now load m3 -- should evict m2 (least recently used)
+
     async with sched.acquire("m3:latest"):
         loaded_names = {f"{m.name}:{m.tag}" for m in sched.list_loaded()}
         assert "m1:latest" in loaded_names
@@ -291,7 +292,7 @@ async def test_evict_lru_skips_models_with_active_refs():
     async with sched.acquire("m2:latest"):
         pass
 
-    # Hold m1 while requesting m3 -- m1 has a ref so m2 should be evicted
+
     async with sched.acquire("m1:latest"), sched.acquire("m3:latest"):
         loaded_names = {f"{m.name}:{m.tag}" for m in sched.list_loaded()}
         assert "m1:latest" in loaded_names
@@ -318,7 +319,7 @@ async def test_max_loaded_raises_when_all_in_use():
 @pytest.mark.asyncio
 async def test_load_falls_back_to_cpu_on_oom():
     """If load raises OOM on GPU, scheduler should retry on CPU."""
-    # Create adapter class that fails on cuda but succeeds on cpu
+
     class OOMAdapter(FakeSTTAdapter):
         def __init__(self):
             super().__init__(oom_on_device="cuda")
@@ -328,7 +329,7 @@ async def test_load_falls_back_to_cpu_on_oom():
 
     async with sched.acquire("whisper:large-v3") as adapter:
         assert isinstance(adapter, OOMAdapter)
-        # First call was on cuda (failed), second on cpu (succeeded)
+
         assert adapter.load_calls == [
             ("/fake/models/whisper/large-v3", "cuda"),
             ("/fake/models/whisper/large-v3", "cpu"),
@@ -380,11 +381,22 @@ async def test_select_device_uses_estimate_and_routes_to_cpu_when_cuda_is_tight(
         adapter_cls=EstimatedAdapter,
         parameters={"_source": "Qwen/Qwen3-ASR-1.7B"},
     )
-    with patch("vox.core.scheduler._detect_device", return_value="cuda"):
-        sched = Scheduler(registry, default_device="auto", max_loaded=3)
+    sched = Scheduler(registry, default_device="auto", max_loaded=3)
     mock_torch = _make_mock_torch(free_bytes=3_500_000_000)
+    capabilities = RuntimeCapabilities(
+        system="linux",
+        machine="x86_64",
+        torch_cuda=True,
+        onnx_cuda=True,
+        onnx_coreml=False,
+        mps=False,
+        nvidia_device=True,
+    )
 
-    with patch.dict("sys.modules", {"torch": mock_torch}):
+    with (
+        patch.dict("sys.modules", {"torch": mock_torch}),
+        patch("vox.core.scheduler.detect_runtime_capabilities", return_value=capabilities),
+    ):
         async with sched.acquire("whisper:large-v3") as adapter:
             assert isinstance(adapter, EstimatedAdapter)
             assert adapter.load_calls == [
@@ -434,15 +446,26 @@ async def test_select_device_keeps_cuda_when_estimate_fits():
             return 2_000_000_000
 
     registry = _make_registry_with_model(adapter_cls=EstimatedAdapter)
-    with patch("vox.core.scheduler._detect_device", return_value="cuda"):
-        sched = Scheduler(registry, default_device="auto", max_loaded=3)
+    sched = Scheduler(registry, default_device="auto", max_loaded=3)
     mock_torch = _make_mock_torch(free_bytes=4_500_000_000)
+    capabilities = RuntimeCapabilities(
+        system="linux",
+        machine="x86_64",
+        torch_cuda=True,
+        onnx_cuda=True,
+        onnx_coreml=False,
+        mps=False,
+        nvidia_device=True,
+    )
 
-    with patch.dict("sys.modules", {"torch": mock_torch}):
+    with (
+        patch.dict("sys.modules", {"torch": mock_torch}),
+        patch("vox.core.scheduler.detect_runtime_capabilities", return_value=capabilities),
+    ):
         async with sched.acquire("whisper:large-v3") as adapter:
             assert isinstance(adapter, EstimatedAdapter)
             assert adapter.load_calls == [
-                ("/fake/models/whisper/large-v3", "cuda"),
+                ("/fake/models/whisper/large-v3", "auto"),
             ]
 
     loaded = sched.list_loaded()
@@ -495,7 +518,7 @@ async def test_unload_returns_false_when_refs_active(scheduler: Scheduler):
         result = await scheduler.unload("whisper:large-v3")
         assert result is False
 
-    # After exiting the context, ref_count is 0, so unload should succeed
+
     result = await scheduler.unload("whisper:large-v3")
     assert result is True
 
@@ -565,9 +588,9 @@ async def test_list_loaded(scheduler: Scheduler, registry: FakeRegistry):
         assert info.ref_count == 0
 
 
-# ---------------------------------------------------------------------------
-# parse_model_name (pure-function tests, not async)
-# ---------------------------------------------------------------------------
+
+
+
 
 def test_parse_model_name_with_tag():
     name, tag = parse_model_name("whisper:large-v3")
@@ -581,47 +604,44 @@ def test_parse_model_name_without_tag():
     assert tag == "latest"
 
 
-# ---------------------------------------------------------------------------
-# _detect_device
-# ---------------------------------------------------------------------------
+
+
+
 
 
 def test_detect_device_returns_cpu_when_no_torch():
     """When torch is not importable, _detect_device should return 'cpu'."""
-    import builtins
-    real_import = builtins.__import__
-
-    def _mock_import(name, *args, **kwargs):
-        if name == "torch":
-            raise ImportError("no torch")
-        return real_import(name, *args, **kwargs)
-
-    with patch("builtins.__import__", side_effect=_mock_import):
+    capabilities = RuntimeCapabilities(
+        system="linux",
+        machine="x86_64",
+        torch_cuda=False,
+        onnx_cuda=False,
+        onnx_coreml=False,
+        mps=False,
+        nvidia_device=False,
+    )
+    with patch("vox.core.scheduler.detect_runtime_capabilities", return_value=capabilities):
         assert _detect_device() == "cpu"
 
 
 def test_detect_device_returns_cuda_when_available():
     """When torch.cuda.is_available() returns True, device should be 'cuda'."""
-    mock_torch = type("MockTorch", (), {
-        "cuda": type("cuda", (), {"is_available": staticmethod(lambda: True)})(),
-        "backends": type("backends", (), {})(),
-    })()
-
-    import builtins
-    real_import = builtins.__import__
-
-    def _mock_import(name, *args, **kwargs):
-        if name == "torch":
-            return mock_torch
-        return real_import(name, *args, **kwargs)
-
-    with patch("builtins.__import__", side_effect=_mock_import):
+    capabilities = RuntimeCapabilities(
+        system="linux",
+        machine="x86_64",
+        torch_cuda=True,
+        onnx_cuda=False,
+        onnx_coreml=False,
+        mps=False,
+        nvidia_device=True,
+    )
+    with patch("vox.core.scheduler.detect_runtime_capabilities", return_value=capabilities):
         assert _detect_device() == "cuda"
 
 
-# ---------------------------------------------------------------------------
-# _is_oom_error
-# ---------------------------------------------------------------------------
+
+
+
 
 
 def test_is_oom_error_matches_keywords():
@@ -637,9 +657,9 @@ def test_is_oom_error_no_match():
     assert _is_oom_error(ValueError("invalid shape")) is False
 
 
-# ---------------------------------------------------------------------------
-# start / stop lifecycle
-# ---------------------------------------------------------------------------
+
+
+
 
 
 @pytest.mark.asyncio
@@ -657,9 +677,9 @@ async def test_start_and_stop_lifecycle(scheduler: Scheduler):
     assert len(scheduler.list_loaded()) == 0
 
 
-# ---------------------------------------------------------------------------
-# TTL cleanup eviction
-# ---------------------------------------------------------------------------
+
+
+
 
 
 @pytest.mark.asyncio
@@ -670,28 +690,28 @@ async def test_ttl_cleanup_evicts_idle_models():
         registry,
         default_device="cpu",
         max_loaded=3,
-        ttl_seconds=0,          # expire immediately
-        cleanup_interval=0,     # run cleanup ASAP
+        ttl_seconds=0,
+        cleanup_interval=0,
     )
 
     await sched.preload("whisper:large-v3")
     assert len(sched.list_loaded()) == 1
 
-    # Force last_used into the past so TTL check passes
+
     for m in sched._models.values():
         m.last_used = time.time() - 10
 
     await sched.start()
-    # Give the cleanup loop time to run once
+
     await asyncio.sleep(0.05)
     await sched.stop()
 
     assert len(sched.list_loaded()) == 0
 
 
-# ---------------------------------------------------------------------------
-# unload handles adapter.unload() exception
-# ---------------------------------------------------------------------------
+
+
+
 
 
 @pytest.mark.asyncio
@@ -708,15 +728,15 @@ async def test_unload_handles_adapter_unload_exception():
     await sched.preload("whisper:large-v3")
     assert len(sched.list_loaded()) == 1
 
-    # Should not raise despite adapter.unload() exploding
+
     result = await sched.unload("whisper:large-v3")
     assert result is True
     assert len(sched.list_loaded()) == 0
 
 
-# ---------------------------------------------------------------------------
-# CPU fallback also fails
-# ---------------------------------------------------------------------------
+
+
+
 
 
 @pytest.mark.asyncio

@@ -27,10 +27,10 @@ logger = logging.getLogger(__name__)
 PARAKEET_SAMPLE_RATE = 16_000
 DEFAULT_MODEL_ID = "nemo-parakeet-tdt-0.6b-v3"
 
-# Rough VRAM estimates by model size token in the model ID.
+
 _VRAM_ESTIMATES: dict[str, int] = {
-    "0.6b": 1_300_000_000,   # ~1.3 GB
-    "1.1b": 2_500_000_000,   # ~2.5 GB
+    "0.6b": 1_300_000_000,
+    "1.1b": 2_500_000_000,
 }
 
 
@@ -43,30 +43,32 @@ def _normalize_model_id(model_id: str) -> str:
     returned unchanged.
     """
     if "/" in model_id:
-        # Take the repo name after the slash and add the nemo- prefix.
+
         _, repo_name = model_id.split("/", 1)
         return f"nemo-{repo_name}"
     return model_id
 
 
-def _resolve_model_id(model_path: str, source: str | None) -> str:
-    """Resolve the ONNX-ASR model identifier for a local path or catalog source."""
-    if source:
-        return _normalize_model_id(source)
-
+def _resolve_model_spec(model_path: str, source: str | None) -> tuple[str, str | None]:
+    """Resolve the ONNX-ASR model identifier and optional local model directory."""
     path = Path(model_path)
-    if path.exists():
-        return str(path)
+    local_dir = str(path) if path.exists() else None
 
-    return _normalize_model_id(model_path)
+    if source:
+        return _normalize_model_id(source), local_dir
+
+    if local_dir is not None:
+        return DEFAULT_MODEL_ID, local_dir
+
+    return _normalize_model_id(model_path), None
 
 
-def _get_providers(device: str) -> list[str]:
-    """Return ONNX Runtime execution providers for *device*."""
+def _get_providers(device: str) -> tuple[list[str], str]:
+    """Return ONNX Runtime execution providers and the resolved device."""
     if device == "cpu":
-        return ["CPUExecutionProvider"]
+        return ["CPUExecutionProvider"], "cpu"
 
-    if device == "cuda":
+    if device in {"cuda", "auto"}:
         try:
             import onnxruntime as ort
 
@@ -75,14 +77,17 @@ def _get_providers(device: str) -> list[str]:
             raise RuntimeError("Parakeet requires onnxruntime to be installed") from None
 
         if "CUDAExecutionProvider" in available:
-            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            return ["CUDAExecutionProvider", "CPUExecutionProvider"], "cuda"
+
+        if device == "auto":
+            return ["CPUExecutionProvider"], "cpu"
 
         raise RuntimeError(
             "Parakeet requires CUDAExecutionProvider for non-CPU devices; "
             "CPU fallback is disabled"
         )
 
-    return ["CPUExecutionProvider"]
+    return ["CPUExecutionProvider"], "cpu"
 
 
 @dataclass
@@ -141,7 +146,7 @@ def _estimate_vram(model_id: str) -> int:
     for size_key, vram in _VRAM_ESTIMATES.items():
         if size_key in lower:
             return vram
-    # Conservative fallback for unknown sizes.
+
     return _VRAM_ESTIMATES["0.6b"]
 
 
@@ -155,9 +160,9 @@ class ParakeetAdapter(STTAdapter):
         self._model_id: str = DEFAULT_MODEL_ID
         self._device: str = "cpu"
 
-    # ------------------------------------------------------------------
-    # STTAdapter interface
-    # ------------------------------------------------------------------
+
+
+
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
@@ -176,17 +181,19 @@ class ParakeetAdapter(STTAdapter):
         if self._loaded:
             return
 
-        self._device = device
-        # Prefer the catalog source (HuggingFace repo ID) passed via _source;
-        # fall back to model_path for backward compatibility.
+        providers, resolved_device = _get_providers(device)
+        self._device = resolved_device
         source = kwargs.pop("_source", None)
-        self._model_id = _resolve_model_id(model_path, source)
+        self._model_id, local_dir = _resolve_model_spec(model_path, source)
 
         logger.info("Loading Parakeet ONNX model: %s", self._model_id)
         start = time.perf_counter()
 
-        providers = _get_providers(device)
-        self._model = onnx_asr.load_model(self._model_id, providers=providers)
+        load_kwargs: dict[str, Any] = {"providers": providers}
+        if local_dir is not None:
+            load_kwargs["path"] = local_dir
+
+        self._model = onnx_asr.load_model(self._model_id, **load_kwargs)
         self._model_with_ts = self._model.with_timestamps()
 
         elapsed = time.perf_counter() - start
@@ -224,7 +231,7 @@ class ParakeetAdapter(STTAdapter):
 
         audio_duration_ms = int(len(audio) / PARAKEET_SAMPLE_RATE * 1000)
 
-        # onnx-asr requires a file path — write audio to a temporary WAV.
+
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             sf.write(tmp.name, audio, PARAKEET_SAMPLE_RATE)
             temp_path = Path(tmp.name)

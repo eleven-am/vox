@@ -131,6 +131,52 @@ def _normalize_supported_speakers(speakers: Any) -> list[str]:
     return normalized
 
 
+def _detect_mode(model_id: str, *, override: str | None = None) -> str:
+    if override:
+        normalized = override.strip().lower()
+        if normalized in ("clone", "custom"):
+            return normalized
+        raise ValueError(f"Unknown qwen3-tts mode {override!r}; expected 'clone' or 'custom'")
+    lower = model_id.lower()
+    if "customvoice" in lower:
+        return "custom"
+    if "-base" in lower:
+        return "clone"
+    return "custom"
+
+
+async def _stream_model_output(output: Any, default_sample_rate: int) -> AsyncIterator[SynthesizeChunk]:
+    if not (isinstance(output, tuple) and len(output) == 2):
+        raise RuntimeError("Unexpected Qwen3-TTS output shape")
+
+    wavs, sample_rate = output
+    if sample_rate is None or int(sample_rate) <= 0:
+        sample_rate = default_sample_rate
+    sample_rate = int(sample_rate)
+    if not wavs:
+        raise RuntimeError("Qwen3-TTS produced no audio")
+
+    if not isinstance(wavs, (list, tuple)):
+        wavs = [wavs]
+
+    for wav in wavs:
+        audio = np.asarray(wav, dtype=np.float32)
+        if audio.ndim > 1:
+            audio = audio.squeeze()
+        if audio.size == 0:
+            continue
+        chunk_size = sample_rate * 2
+        for i in range(0, len(audio), chunk_size):
+            chunk = audio[i:i + chunk_size]
+            yield SynthesizeChunk(
+                audio=chunk.tobytes(),
+                sample_rate=sample_rate,
+                is_final=False,
+            )
+
+    yield SynthesizeChunk(audio=b"", sample_rate=sample_rate, is_final=True)
+
+
 def _load_qwen_tts_model() -> Any:
     ensure_runtime(
         "qwen-tts",
@@ -157,7 +203,7 @@ class Qwen3TTSAdapter(TTSAdapter):
         self._device: str = "cpu"
         self._default_voice: str | None = None
         self._supported_speakers: list[str] = []
-        self._is_custom_voice_checkpoint = False
+        self._mode: str = "custom"
         self._subprocess_only = False
 
     def info(self) -> AdapterInfo:
@@ -168,7 +214,7 @@ class Qwen3TTSAdapter(TTSAdapter):
             default_sample_rate=QWEN_TTS_SAMPLE_RATE,
             supported_formats=(ModelFormat.PYTORCH,),
             supports_streaming=True,
-            supports_voice_cloning=False,
+            supports_voice_cloning=True,
             supported_languages=SUPPORTED_LANGUAGES,
         )
 
@@ -178,15 +224,9 @@ class Qwen3TTSAdapter(TTSAdapter):
 
         source = kwargs.pop("_source", None)
         self._default_voice = kwargs.pop("default_voice", None)
+        mode_override = kwargs.pop("mode", None)
         self._model_id = source if source else model_path
-        self._is_custom_voice_checkpoint = "customvoice" in self._model_id.lower()
-
-        if not self._is_custom_voice_checkpoint:
-            raise ValueError(
-                "Qwen3-TTS in Vox only exposes CustomVoice checkpoints; "
-                "base voice-clone checkpoints require reference_audio/reference_text, "
-                "which the Vox API does not provide"
-            )
+        self._mode = _detect_mode(self._model_id, override=mode_override)
 
         self._device = _select_device(device)
         try:
@@ -258,12 +298,23 @@ class Qwen3TTSAdapter(TTSAdapter):
             return
 
         qwen_language = _normalize_language(language) or "English"
-        output: Any
+
+        if self._mode == "clone":
+            async for chunk in self._synthesize_clone(
+                text=text,
+                language=qwen_language,
+                reference_audio=reference_audio,
+                reference_text=reference_text,
+            ):
+                yield chunk
+            return
+
 
         if reference_audio is not None:
             raise ValueError(
-                "Qwen3-TTS CustomVoice checkpoints do not use reference_audio/reference_text; "
-                "use the voice speaker parameter instead"
+                "Qwen3-TTS CustomVoice checkpoints do not use reference_audio; "
+                "load a Base checkpoint (e.g. 'qwen3-tts:0.6b-clone') for zero-shot cloning, "
+                "or pass a speaker name via the `voice` parameter"
             )
 
         speaker = voice or self._default_voice
@@ -280,61 +331,100 @@ class Qwen3TTSAdapter(TTSAdapter):
                 f"Unknown Qwen3-TTS speaker '{speaker}'. Available speakers: {available}"
             )
         if self._subprocess_only or self._model is None:
-            audio, sample_rate = await self._synthesize_via_subprocess(
+            async for chunk in self._stream_subprocess(
+                mode="custom",
                 text=text,
-                speaker=speaker,
                 language=qwen_language,
+                speaker=speaker,
                 reference_text=reference_text,
-            )
-            chunk_size = sample_rate * 2 * 4
-            for i in range(0, len(audio), chunk_size):
-                chunk = audio[i:i + chunk_size]
-                yield SynthesizeChunk(
-                    audio=chunk,
-                    sample_rate=sample_rate,
-                    is_final=False,
-                )
-        else:
-            output = self._model.generate_custom_voice(
-                text=text,
-                language=qwen_language,
-                speaker=speaker,
-                instruct=reference_text,
-            )
+            ):
+                yield chunk
+            return
 
-            if not (isinstance(output, tuple) and len(output) == 2):
-                raise RuntimeError("Unexpected Qwen3-TTS output shape")
-
-            wavs, sample_rate = output
-            if not wavs:
-                raise RuntimeError("Qwen3-TTS produced no audio")
-
-            for wav in wavs:
-                audio = np.asarray(wav, dtype=np.float32)
-                if audio.size == 0:
-                    continue
-                chunk_size = sample_rate * 2
-                for i in range(0, len(audio), chunk_size):
-                    chunk = audio[i:i + chunk_size]
-                    yield SynthesizeChunk(
-                        audio=chunk.tobytes(),
-                        sample_rate=sample_rate,
-                        is_final=False,
-                    )
-
-        yield SynthesizeChunk(
-            audio=b"",
-            sample_rate=sample_rate,
-            is_final=True,
+        output = self._model.generate_custom_voice(
+            text=text,
+            language=qwen_language,
+            speaker=speaker,
+            instruct=reference_text,
         )
+        async for chunk in _stream_model_output(output, QWEN_TTS_SAMPLE_RATE):
+            yield chunk
+
+    async def _synthesize_clone(
+        self,
+        *,
+        text: str,
+        language: str,
+        reference_audio: NDArray[np.float32] | None,
+        reference_text: str | None,
+    ) -> AsyncIterator[SynthesizeChunk]:
+        if reference_audio is None or reference_audio.size == 0:
+            raise ValueError(
+                "Qwen3-TTS Base (clone) checkpoints require reference_audio; "
+                "upload a reference sample via POST /v1/audio/voices and pass its voice id, "
+                "or load a CustomVoice checkpoint (e.g. 'qwen3-tts:0.6b') for speaker-based synthesis"
+            )
+
+        if self._subprocess_only or self._model is None:
+            async for chunk in self._stream_subprocess(
+                mode="clone",
+                text=text,
+                language=language,
+                reference_audio=reference_audio,
+                reference_text=reference_text,
+            ):
+                yield chunk
+            return
+
+        output = self._model.generate_voice_clone(
+            text=text,
+            language=language,
+            ref_audio=(np.asarray(reference_audio, dtype=np.float32), QWEN_TTS_SAMPLE_RATE),
+            ref_text=reference_text,
+        )
+        async for chunk in _stream_model_output(output, QWEN_TTS_SAMPLE_RATE):
+            yield chunk
+
+    async def _stream_subprocess(
+        self,
+        *,
+        mode: str,
+        text: str,
+        language: str,
+        speaker: str | None = None,
+        reference_audio: NDArray[np.float32] | None = None,
+        reference_text: str | None = None,
+    ) -> AsyncIterator[SynthesizeChunk]:
+        audio, sample_rate = await self._synthesize_via_subprocess(
+            mode=mode,
+            text=text,
+            language=language,
+            speaker=speaker,
+            reference_audio=reference_audio,
+            reference_text=reference_text,
+        )
+        chunk_size = sample_rate * 2 * 4
+        if not audio:
+            yield SynthesizeChunk(audio=b"", sample_rate=sample_rate, is_final=True)
+            return
+        for i in range(0, len(audio), chunk_size):
+            chunk = audio[i:i + chunk_size]
+            yield SynthesizeChunk(
+                audio=chunk,
+                sample_rate=sample_rate,
+                is_final=False,
+            )
+        yield SynthesizeChunk(audio=b"", sample_rate=sample_rate, is_final=True)
 
     async def _synthesize_via_subprocess(
         self,
         *,
+        mode: str,
         text: str,
-        speaker: str,
         language: str,
-        reference_text: str | None,
+        speaker: str | None = None,
+        reference_audio: NDArray[np.float32] | None = None,
+        reference_text: str | None = None,
     ) -> tuple[bytes, int]:
         runtime_dir = Path(os.environ.get("VOX_HOME", str(Path.home() / ".vox"))) / "runtime" / "qwen-tts"
         worker = Path(__file__).with_name("qwen_tts_worker.py")
@@ -347,24 +437,56 @@ class Qwen3TTSAdapter(TTSAdapter):
             self._model_id,
             "--device",
             self._device,
+            "--mode",
+            mode,
             "--text",
             text,
-            "--speaker",
-            speaker,
             "--language",
             language,
         ]
-        if reference_text:
-            cmd.extend(["--instruct", reference_text])
 
-        result = await asyncio.to_thread(
-            subprocess.run,
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=1800,
-            check=False,
-        )
+        ref_tmp: Path | None = None
+        try:
+            if mode == "clone":
+                if reference_audio is None:
+                    raise ValueError("Clone mode requires reference_audio")
+                import soundfile as sf
+                import tempfile
+
+                fd = tempfile.NamedTemporaryFile(
+                    prefix="qwen3-ref-", suffix=".wav", delete=False,
+                )
+                fd.close()
+                ref_tmp = Path(fd.name)
+                sf.write(
+                    str(ref_tmp),
+                    np.asarray(reference_audio, dtype=np.float32),
+                    QWEN_TTS_SAMPLE_RATE,
+                )
+                cmd.extend(["--ref-audio-path", str(ref_tmp)])
+                if reference_text:
+                    cmd.extend(["--ref-text", reference_text])
+            else:
+                if speaker:
+                    cmd.extend(["--speaker", speaker])
+                if reference_text:
+                    cmd.extend(["--instruct", reference_text])
+
+            result = await asyncio.to_thread(
+                subprocess.run,
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=1800,
+                check=False,
+            )
+        finally:
+            if ref_tmp is not None:
+                try:
+                    ref_tmp.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("Failed to remove temporary reference audio %s", ref_tmp)
+
         if result.returncode != 0:
             detail = result.stderr.strip() or result.stdout.strip()
             raise RuntimeError(f"Qwen3-TTS subprocess failed: {detail}")

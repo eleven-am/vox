@@ -61,30 +61,30 @@ OFFICIAL_VOICE_IDS: tuple[str, ...] = (
     "zm_yunyang",
 )
 
-# Maps the first 3 characters of a Kokoro voice ID (e.g. "af_") to the
-# language tag expected by the adapter metadata.
+
+
 VOICE_PREFIX_TO_LANGUAGE: dict[str, str] = {
-    "af_": "en-us",  # American English female
-    "am_": "en-us",  # American English male
-    "bf_": "en-gb",  # British English female
-    "bm_": "en-gb",  # British English male
-    "jf_": "ja",  # Japanese female
-    "jm_": "ja",  # Japanese male
-    "zf_": "zh",  # Chinese female
-    "zm_": "zh",  # Chinese male
-    "ef_": "es",  # Spanish female
-    "em_": "es",  # Spanish male
-    "ff_": "fr",  # French female
-    "fm_": "fr",  # French male
-    "hf_": "hi",  # Hindi female
-    "hm_": "hi",  # Hindi male
-    "if_": "it",  # Italian female
-    "im_": "it",  # Italian male
-    "pf_": "pt",  # Portuguese female
-    "pm_": "pt",  # Portuguese male
+    "af_": "en-us",
+    "am_": "en-us",
+    "bf_": "en-gb",
+    "bm_": "en-gb",
+    "jf_": "ja",
+    "jm_": "ja",
+    "zf_": "zh",
+    "zm_": "zh",
+    "ef_": "es",
+    "em_": "es",
+    "ff_": "fr",
+    "fm_": "fr",
+    "hf_": "hi",
+    "hm_": "hi",
+    "if_": "it",
+    "im_": "it",
+    "pf_": "pt",
+    "pm_": "pt",
 }
 
-# Kokoro's native runtime uses single-letter language codes.
+
 VOICE_PREFIX_TO_PIPELINE_LANG: dict[str, str] = {
     "af_": "a",
     "am_": "a",

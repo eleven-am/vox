@@ -183,7 +183,7 @@ class KokoroTorchAdapter(TTSAdapter):
         self._device = self._normalize_device(device)
         self._pipelines.clear()
 
-        # Validate the runtime eagerly so missing Kokoro installs fail at load time.
+
         self._get_pipeline("a")
         logger.info("Kokoro Torch model loaded from %s (device=%s)", model_file, self._device)
 
@@ -275,8 +275,8 @@ class KokoroTorchAdapter(TTSAdapter):
 
     def _import_runtime(self):
         _ensure_runtime_path()
-        # The main server process may already have incompatible app-level modules
-        # imported. Clear them before importing the isolated Kokoro runtime.
+
+
         _clear_runtime_modules()
         _patch_numpy_core()
         try:

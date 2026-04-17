@@ -28,6 +28,11 @@ class EOUConfig:
     max_context_turns: int = MAX_HISTORY_TURNS
 
 
+
+
+    max_pending_tokens: int = 60
+
+
 class EOUModel:
     _instance: EOUModel | None = None
     _session = None
@@ -67,13 +72,38 @@ class EOUModel:
                 elapsed = time.perf_counter() - start
                 logger.info("EOUModel loaded in %.2fs", elapsed)
 
-    def predict(self, turns: list[ConversationTurn]) -> float:
+    def token_count(self, text: str) -> int:
+        """Return the number of tokens in `text` using the EOU tokenizer.
+
+        Language-neutral because the tokenizer is the same one used for turn detection,
+        trained on multilingual chat text. Returns a char-based fallback if the
+        tokenizer isn't loaded yet.
+        """
+        if not text:
+            return 0
+        self._ensure_loaded()
+        if EOUModel._tokenizer is None:
+
+            return max(len(text) // 4, 1)
+        try:
+            return len(EOUModel._tokenizer.encode(text, add_special_tokens=False))
+        except Exception:
+            logger.exception("EOU tokenizer failed; falling back to char estimate")
+            return max(len(text) // 4, 1)
+
+    def predict(
+        self,
+        turns: list[ConversationTurn],
+        *,
+        max_context_turns: int = MAX_HISTORY_TURNS,
+    ) -> float:
         self._ensure_loaded()
 
         if not turns:
             return 0.0
 
-        messages = [{"role": t.role, "content": t.content} for t in turns[-MAX_HISTORY_TURNS:]]
+        history_limit = max(1, int(max_context_turns or MAX_HISTORY_TURNS))
+        messages = [{"role": t.role, "content": t.content} for t in turns[-history_limit:]]
         text = EOUModel._tokenizer.apply_chat_template(
             messages, tokenize=False, add_special_tokens=False
         )

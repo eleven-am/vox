@@ -156,20 +156,52 @@ class TranscribeRequest(_message.Message):
     def __init__(self, audio: _Optional[bytes] = ..., model: _Optional[str] = ..., language: _Optional[str] = ..., word_timestamps: bool = ..., temperature: _Optional[float] = ..., response_format: _Optional[str] = ..., format_hint: _Optional[str] = ...) -> None: ...
 
 class TranscribeResponse(_message.Message):
-    __slots__ = ("model", "text", "language", "duration_ms", "processing_ms", "segments")
+    __slots__ = ("model", "text", "language", "duration_ms", "processing_ms", "segments", "entities", "topics")
     MODEL_FIELD_NUMBER: _ClassVar[int]
     TEXT_FIELD_NUMBER: _ClassVar[int]
     LANGUAGE_FIELD_NUMBER: _ClassVar[int]
     DURATION_MS_FIELD_NUMBER: _ClassVar[int]
     PROCESSING_MS_FIELD_NUMBER: _ClassVar[int]
     SEGMENTS_FIELD_NUMBER: _ClassVar[int]
+    ENTITIES_FIELD_NUMBER: _ClassVar[int]
+    TOPICS_FIELD_NUMBER: _ClassVar[int]
     model: str
     text: str
     language: str
     duration_ms: int
     processing_ms: int
     segments: _containers.RepeatedCompositeFieldContainer[TranscriptSegment]
-    def __init__(self, model: _Optional[str] = ..., text: _Optional[str] = ..., language: _Optional[str] = ..., duration_ms: _Optional[int] = ..., processing_ms: _Optional[int] = ..., segments: _Optional[_Iterable[_Union[TranscriptSegment, _Mapping]]] = ...) -> None: ...
+    entities: _containers.RepeatedCompositeFieldContainer[Entity]
+    topics: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, model: _Optional[str] = ..., text: _Optional[str] = ..., language: _Optional[str] = ..., duration_ms: _Optional[int] = ..., processing_ms: _Optional[int] = ..., segments: _Optional[_Iterable[_Union[TranscriptSegment, _Mapping]]] = ..., entities: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ..., topics: _Optional[_Iterable[str]] = ...) -> None: ...
+
+class Entity(_message.Message):
+    __slots__ = ("type", "text", "start_char", "end_char")
+    TYPE_FIELD_NUMBER: _ClassVar[int]
+    TEXT_FIELD_NUMBER: _ClassVar[int]
+    START_CHAR_FIELD_NUMBER: _ClassVar[int]
+    END_CHAR_FIELD_NUMBER: _ClassVar[int]
+    type: str
+    text: str
+    start_char: int
+    end_char: int
+    def __init__(self, type: _Optional[str] = ..., text: _Optional[str] = ..., start_char: _Optional[int] = ..., end_char: _Optional[int] = ...) -> None: ...
+
+class AnnotateRequest(_message.Message):
+    __slots__ = ("text", "language")
+    TEXT_FIELD_NUMBER: _ClassVar[int]
+    LANGUAGE_FIELD_NUMBER: _ClassVar[int]
+    text: str
+    language: str
+    def __init__(self, text: _Optional[str] = ..., language: _Optional[str] = ...) -> None: ...
+
+class AnnotateResponse(_message.Message):
+    __slots__ = ("entities", "topics")
+    ENTITIES_FIELD_NUMBER: _ClassVar[int]
+    TOPICS_FIELD_NUMBER: _ClassVar[int]
+    entities: _containers.RepeatedCompositeFieldContainer[Entity]
+    topics: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, entities: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ..., topics: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class TranscriptSegment(_message.Message):
     __slots__ = ("text", "start_ms", "end_ms", "words")
@@ -316,7 +348,7 @@ class StreamSpeechStopped(_message.Message):
     def __init__(self, timestamp_ms: _Optional[int] = ...) -> None: ...
 
 class StreamTranscriptResult(_message.Message):
-    __slots__ = ("text", "is_partial", "start_ms", "end_ms", "audio_duration_ms", "processing_duration_ms", "model", "eou_probability")
+    __slots__ = ("text", "is_partial", "start_ms", "end_ms", "audio_duration_ms", "processing_duration_ms", "model", "eou_probability", "entities", "topics", "words", "segments")
     TEXT_FIELD_NUMBER: _ClassVar[int]
     IS_PARTIAL_FIELD_NUMBER: _ClassVar[int]
     START_MS_FIELD_NUMBER: _ClassVar[int]
@@ -325,6 +357,10 @@ class StreamTranscriptResult(_message.Message):
     PROCESSING_DURATION_MS_FIELD_NUMBER: _ClassVar[int]
     MODEL_FIELD_NUMBER: _ClassVar[int]
     EOU_PROBABILITY_FIELD_NUMBER: _ClassVar[int]
+    ENTITIES_FIELD_NUMBER: _ClassVar[int]
+    TOPICS_FIELD_NUMBER: _ClassVar[int]
+    WORDS_FIELD_NUMBER: _ClassVar[int]
+    SEGMENTS_FIELD_NUMBER: _ClassVar[int]
     text: str
     is_partial: bool
     start_ms: int
@@ -333,7 +369,11 @@ class StreamTranscriptResult(_message.Message):
     processing_duration_ms: int
     model: str
     eou_probability: float
-    def __init__(self, text: _Optional[str] = ..., is_partial: bool = ..., start_ms: _Optional[int] = ..., end_ms: _Optional[int] = ..., audio_duration_ms: _Optional[int] = ..., processing_duration_ms: _Optional[int] = ..., model: _Optional[str] = ..., eou_probability: _Optional[float] = ...) -> None: ...
+    entities: _containers.RepeatedCompositeFieldContainer[Entity]
+    topics: _containers.RepeatedScalarFieldContainer[str]
+    words: _containers.RepeatedCompositeFieldContainer[WordTimestamp]
+    segments: _containers.RepeatedCompositeFieldContainer[TranscriptSegment]
+    def __init__(self, text: _Optional[str] = ..., is_partial: bool = ..., start_ms: _Optional[int] = ..., end_ms: _Optional[int] = ..., audio_duration_ms: _Optional[int] = ..., processing_duration_ms: _Optional[int] = ..., model: _Optional[str] = ..., eou_probability: _Optional[float] = ..., entities: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ..., topics: _Optional[_Iterable[str]] = ..., words: _Optional[_Iterable[_Union[WordTimestamp, _Mapping]]] = ..., segments: _Optional[_Iterable[_Union[TranscriptSegment, _Mapping]]] = ...) -> None: ...
 
 class StreamErrorMessage(_message.Message):
     __slots__ = ("message",)
@@ -408,3 +448,173 @@ class VoiceInfo(_message.Message):
     is_cloned: bool
     model: str
     def __init__(self, id: _Optional[str] = ..., name: _Optional[str] = ..., language: _Optional[str] = ..., gender: _Optional[str] = ..., description: _Optional[str] = ..., is_cloned: bool = ..., model: _Optional[str] = ...) -> None: ...
+
+class ConverseClientMessage(_message.Message):
+    __slots__ = ("session_update", "audio_append", "response_cancel", "response_start", "response_delta", "response_commit")
+    SESSION_UPDATE_FIELD_NUMBER: _ClassVar[int]
+    AUDIO_APPEND_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_CANCEL_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_START_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_DELTA_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_COMMIT_FIELD_NUMBER: _ClassVar[int]
+    session_update: ConversationSessionUpdate
+    audio_append: ConversationAudioAppend
+    response_cancel: ConversationResponseCancel
+    response_start: ConversationResponseStart
+    response_delta: ConversationResponseDelta
+    response_commit: ConversationResponseCommit
+    def __init__(self, session_update: _Optional[_Union[ConversationSessionUpdate, _Mapping]] = ..., audio_append: _Optional[_Union[ConversationAudioAppend, _Mapping]] = ..., response_cancel: _Optional[_Union[ConversationResponseCancel, _Mapping]] = ..., response_start: _Optional[_Union[ConversationResponseStart, _Mapping]] = ..., response_delta: _Optional[_Union[ConversationResponseDelta, _Mapping]] = ..., response_commit: _Optional[_Union[ConversationResponseCommit, _Mapping]] = ...) -> None: ...
+
+class ConverseServerMessage(_message.Message):
+    __slots__ = ("session_created", "speech_started", "speech_stopped", "transcript_done", "response_created", "audio_delta", "response_done", "response_cancelled", "state_changed", "error", "response_committed")
+    SESSION_CREATED_FIELD_NUMBER: _ClassVar[int]
+    SPEECH_STARTED_FIELD_NUMBER: _ClassVar[int]
+    SPEECH_STOPPED_FIELD_NUMBER: _ClassVar[int]
+    TRANSCRIPT_DONE_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_CREATED_FIELD_NUMBER: _ClassVar[int]
+    AUDIO_DELTA_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_DONE_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_CANCELLED_FIELD_NUMBER: _ClassVar[int]
+    STATE_CHANGED_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_COMMITTED_FIELD_NUMBER: _ClassVar[int]
+    session_created: ConversationSessionCreated
+    speech_started: ConversationSpeechStarted
+    speech_stopped: ConversationSpeechStopped
+    transcript_done: ConversationTranscriptDone
+    response_created: ConversationResponseCreated
+    audio_delta: ConversationAudioDelta
+    response_done: ConversationResponseDone
+    response_cancelled: ConversationResponseCancelled
+    state_changed: ConversationStateChanged
+    error: ConversationError
+    response_committed: ConversationResponseCommitted
+    def __init__(self, session_created: _Optional[_Union[ConversationSessionCreated, _Mapping]] = ..., speech_started: _Optional[_Union[ConversationSpeechStarted, _Mapping]] = ..., speech_stopped: _Optional[_Union[ConversationSpeechStopped, _Mapping]] = ..., transcript_done: _Optional[_Union[ConversationTranscriptDone, _Mapping]] = ..., response_created: _Optional[_Union[ConversationResponseCreated, _Mapping]] = ..., audio_delta: _Optional[_Union[ConversationAudioDelta, _Mapping]] = ..., response_done: _Optional[_Union[ConversationResponseDone, _Mapping]] = ..., response_cancelled: _Optional[_Union[ConversationResponseCancelled, _Mapping]] = ..., state_changed: _Optional[_Union[ConversationStateChanged, _Mapping]] = ..., error: _Optional[_Union[ConversationError, _Mapping]] = ..., response_committed: _Optional[_Union[ConversationResponseCommitted, _Mapping]] = ...) -> None: ...
+
+class ConversationResponseCommitted(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class ConversationTurnPolicy(_message.Message):
+    __slots__ = ("allow_interrupt_while_speaking", "min_interrupt_duration_ms", "max_endpointing_delay_ms", "stable_speaking_min_ms")
+    ALLOW_INTERRUPT_WHILE_SPEAKING_FIELD_NUMBER: _ClassVar[int]
+    MIN_INTERRUPT_DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    MAX_ENDPOINTING_DELAY_MS_FIELD_NUMBER: _ClassVar[int]
+    STABLE_SPEAKING_MIN_MS_FIELD_NUMBER: _ClassVar[int]
+    allow_interrupt_while_speaking: bool
+    min_interrupt_duration_ms: int
+    max_endpointing_delay_ms: int
+    stable_speaking_min_ms: int
+    def __init__(self, allow_interrupt_while_speaking: bool = ..., min_interrupt_duration_ms: _Optional[int] = ..., max_endpointing_delay_ms: _Optional[int] = ..., stable_speaking_min_ms: _Optional[int] = ...) -> None: ...
+
+class ConversationSessionUpdate(_message.Message):
+    __slots__ = ("stt_model", "tts_model", "voice", "language", "sample_rate", "policy")
+    STT_MODEL_FIELD_NUMBER: _ClassVar[int]
+    TTS_MODEL_FIELD_NUMBER: _ClassVar[int]
+    VOICE_FIELD_NUMBER: _ClassVar[int]
+    LANGUAGE_FIELD_NUMBER: _ClassVar[int]
+    SAMPLE_RATE_FIELD_NUMBER: _ClassVar[int]
+    POLICY_FIELD_NUMBER: _ClassVar[int]
+    stt_model: str
+    tts_model: str
+    voice: str
+    language: str
+    sample_rate: int
+    policy: ConversationTurnPolicy
+    def __init__(self, stt_model: _Optional[str] = ..., tts_model: _Optional[str] = ..., voice: _Optional[str] = ..., language: _Optional[str] = ..., sample_rate: _Optional[int] = ..., policy: _Optional[_Union[ConversationTurnPolicy, _Mapping]] = ...) -> None: ...
+
+class ConversationAudioAppend(_message.Message):
+    __slots__ = ("pcm16", "sample_rate")
+    PCM16_FIELD_NUMBER: _ClassVar[int]
+    SAMPLE_RATE_FIELD_NUMBER: _ClassVar[int]
+    pcm16: bytes
+    sample_rate: int
+    def __init__(self, pcm16: _Optional[bytes] = ..., sample_rate: _Optional[int] = ...) -> None: ...
+
+class ConversationResponseStart(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class ConversationResponseDelta(_message.Message):
+    __slots__ = ("delta",)
+    DELTA_FIELD_NUMBER: _ClassVar[int]
+    delta: str
+    def __init__(self, delta: _Optional[str] = ...) -> None: ...
+
+class ConversationResponseCommit(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class ConversationResponseCancel(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class ConversationSessionCreated(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class ConversationSpeechStarted(_message.Message):
+    __slots__ = ("timestamp_ms",)
+    TIMESTAMP_MS_FIELD_NUMBER: _ClassVar[int]
+    timestamp_ms: int
+    def __init__(self, timestamp_ms: _Optional[int] = ...) -> None: ...
+
+class ConversationSpeechStopped(_message.Message):
+    __slots__ = ("timestamp_ms",)
+    TIMESTAMP_MS_FIELD_NUMBER: _ClassVar[int]
+    timestamp_ms: int
+    def __init__(self, timestamp_ms: _Optional[int] = ...) -> None: ...
+
+class ConversationTranscriptDone(_message.Message):
+    __slots__ = ("transcript", "language", "start_ms", "end_ms", "eou_probability", "entities", "topics", "words")
+    TRANSCRIPT_FIELD_NUMBER: _ClassVar[int]
+    LANGUAGE_FIELD_NUMBER: _ClassVar[int]
+    START_MS_FIELD_NUMBER: _ClassVar[int]
+    END_MS_FIELD_NUMBER: _ClassVar[int]
+    EOU_PROBABILITY_FIELD_NUMBER: _ClassVar[int]
+    ENTITIES_FIELD_NUMBER: _ClassVar[int]
+    TOPICS_FIELD_NUMBER: _ClassVar[int]
+    WORDS_FIELD_NUMBER: _ClassVar[int]
+    transcript: str
+    language: str
+    start_ms: int
+    end_ms: int
+    eou_probability: float
+    entities: _containers.RepeatedCompositeFieldContainer[Entity]
+    topics: _containers.RepeatedScalarFieldContainer[str]
+    words: _containers.RepeatedCompositeFieldContainer[WordTimestamp]
+    def __init__(self, transcript: _Optional[str] = ..., language: _Optional[str] = ..., start_ms: _Optional[int] = ..., end_ms: _Optional[int] = ..., eou_probability: _Optional[float] = ..., entities: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ..., topics: _Optional[_Iterable[str]] = ..., words: _Optional[_Iterable[_Union[WordTimestamp, _Mapping]]] = ...) -> None: ...
+
+class ConversationResponseCreated(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class ConversationAudioDelta(_message.Message):
+    __slots__ = ("audio", "sample_rate")
+    AUDIO_FIELD_NUMBER: _ClassVar[int]
+    SAMPLE_RATE_FIELD_NUMBER: _ClassVar[int]
+    audio: bytes
+    sample_rate: int
+    def __init__(self, audio: _Optional[bytes] = ..., sample_rate: _Optional[int] = ...) -> None: ...
+
+class ConversationResponseDone(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class ConversationResponseCancelled(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class ConversationStateChanged(_message.Message):
+    __slots__ = ("state", "previous_state")
+    STATE_FIELD_NUMBER: _ClassVar[int]
+    PREVIOUS_STATE_FIELD_NUMBER: _ClassVar[int]
+    state: str
+    previous_state: str
+    def __init__(self, state: _Optional[str] = ..., previous_state: _Optional[str] = ...) -> None: ...
+
+class ConversationError(_message.Message):
+    __slots__ = ("message",)
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    message: str
+    def __init__(self, message: _Optional[str] = ...) -> None: ...

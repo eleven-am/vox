@@ -8,9 +8,9 @@ import pytest
 from vox.audio.codecs import decode_audio, encode_wav
 from vox.audio.pipeline import get_content_type, prepare_for_output, prepare_for_stt
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+
+
+
 
 SOURCE_RATE = 44100
 TARGET_STT_RATE = 16000
@@ -30,9 +30,9 @@ def _sine_wav_bytes(
     return encode_wav(audio, sr)
 
 
-# ---------------------------------------------------------------------------
-# prepare_for_stt
-# ---------------------------------------------------------------------------
+
+
+
 
 
 class TestPrepareForSTT:
@@ -41,7 +41,7 @@ class TestPrepareForSTT:
         result = prepare_for_stt(wav, target_rate=TARGET_STT_RATE)
 
         expected_len = int(0.5 * TARGET_STT_RATE)
-        # Allow small tolerance for resampler edge effects
+
         assert abs(result.shape[0] - expected_len) <= 2
 
     def test_prepare_for_stt_converts_to_mono(self):
@@ -56,7 +56,7 @@ class TestPrepareForSTT:
         assert peak == pytest.approx(1.0, abs=1e-5)
 
     def test_prepare_for_stt_silent_audio_no_crash(self):
-        # All-zero audio should not divide-by-zero
+
         silence = np.zeros(4410, dtype=np.float32)
         wav = encode_wav(silence, SOURCE_RATE)
         result = prepare_for_stt(wav, target_rate=TARGET_STT_RATE)
@@ -65,9 +65,9 @@ class TestPrepareForSTT:
         assert np.max(np.abs(result)) == pytest.approx(0.0, abs=1e-7)
 
 
-# ---------------------------------------------------------------------------
-# prepare_for_output
-# ---------------------------------------------------------------------------
+
+
+
 
 
 class TestPrepareForOutput:
@@ -79,7 +79,7 @@ class TestPrepareForOutput:
         data, mime = prepare_for_output(self._audio, 24000, "wav")
         assert mime == "audio/wav"
         assert len(data) > 0
-        # Verify it decodes back
+
         decoded, sr = decode_audio(data)
         assert sr == 24000
 
@@ -93,21 +93,29 @@ class TestPrepareForOutput:
     def test_prepare_for_output_pcm(self):
         data, mime = prepare_for_output(self._audio, 24000, "pcm")
         assert mime == "audio/L16"
-        # PCM is raw int16 — 2 bytes per sample
+
         assert len(data) == self._audio.shape[0] * 2
 
-    def test_prepare_for_output_mp3_raises(self):
-        with pytest.raises(NotImplementedError):
-            prepare_for_output(self._audio, 24000, "mp3")
+    def test_prepare_for_output_mp3_returns_mp3_bytes(self):
+        data, mime = prepare_for_output(self._audio, 24000, "mp3")
+        assert mime == "audio/mpeg"
+        assert len(data) > 500
+        assert data[0] == 0xFF
+        assert data[1] & 0xE0 == 0xE0
+
+    def test_prepare_for_output_opus_returns_ogg_opus(self):
+        data, mime = prepare_for_output(self._audio, 24000, "opus")
+        assert mime == "audio/opus"
+        assert data[:4] == b"OggS"
 
     def test_prepare_for_output_unknown_raises(self):
         with pytest.raises(ValueError, match="Unsupported output format"):
             prepare_for_output(self._audio, 24000, "aac")
 
 
-# ---------------------------------------------------------------------------
-# get_content_type
-# ---------------------------------------------------------------------------
+
+
+
 
 
 class TestGetContentType:

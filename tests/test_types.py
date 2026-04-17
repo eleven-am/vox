@@ -16,9 +16,9 @@ from vox.core.types import (
 )
 
 
-# ---------------------------------------------------------------------------
-# ModelRef
-# ---------------------------------------------------------------------------
+
+
+
 
 
 class TestModelRef:
@@ -37,7 +37,7 @@ class TestModelRef:
         ref = ModelRef.parse(original)
         assert str(ref) == original
 
-        # Also check the default-tag case
+
         ref2 = ModelRef.parse("whisper")
         assert str(ref2) == "whisper:latest"
 
@@ -52,9 +52,9 @@ def test_parse_model_name_delegates_to_model_ref():
     assert tag2 == "latest"
 
 
-# ---------------------------------------------------------------------------
-# SynthesizeChunk validation
-# ---------------------------------------------------------------------------
+
+
+
 
 
 class TestSynthesizeChunk:
@@ -73,9 +73,9 @@ class TestSynthesizeChunk:
         assert chunk.is_final is False
 
 
-# ---------------------------------------------------------------------------
-# ModelInfo validation
-# ---------------------------------------------------------------------------
+
+
+
 
 
 class TestModelInfo:
@@ -136,9 +136,9 @@ class TestModelInfo:
             ModelInfo.from_manifest_config("whisper", "v1", config)
 
 
-# ---------------------------------------------------------------------------
-# Frozen dataclasses are immutable
-# ---------------------------------------------------------------------------
+
+
+
 
 
 def test_frozen_dataclasses_are_immutable():

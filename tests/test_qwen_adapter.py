@@ -260,20 +260,25 @@ class TestQwen3TTSAdapterInfo:
             assert info.default_sample_rate == 24000
             assert ModelFormat.PYTORCH in info.supported_formats
             assert info.supports_streaming is True
-            assert info.supports_voice_cloning is False
+            assert info.supports_voice_cloning is True
             assert "ru" in info.supported_languages
 
-    def test_load_rejects_base_voice_clone_checkpoints(self):
+    def test_load_base_checkpoint_sets_clone_mode(self):
         torch_mock = _mock_torch()
-        qwen_tts_module, _ = _mock_qwen_tts_module()
+        qwen_tts_module, model_cls = _mock_qwen_tts_module()
+        model_instance = MagicMock()
+        model_instance.processor = MagicMock()
+        model_instance.get_supported_speakers.return_value = []
+        model_cls.from_pretrained.return_value = model_instance
 
         with patch.dict("sys.modules", {"torch": torch_mock, "qwen_asr": MagicMock(), "qwen_tts": qwen_tts_module}):
             from vox_qwen.tts_adapter import Qwen3TTSAdapter
 
             adapter = Qwen3TTSAdapter()
+            adapter.load("local-path", "cuda", _source="Qwen/Qwen3-TTS-12Hz-0.6B-Base")
 
-            with pytest.raises(ValueError, match="CustomVoice checkpoints"):
-                adapter.load("local-path", "cuda", _source="Qwen/Qwen3-TTS-12Hz-0.6B-Base")
+            assert adapter._mode == "clone"
+            assert adapter.is_loaded is True
 
     def test_load_uses_official_qwen_runtime(self):
         torch_mock = _mock_torch()
@@ -393,7 +398,7 @@ class TestQwen3TTSAdapterInfo:
             kwargs = model_instance.generate_custom_voice.call_args.kwargs
             assert kwargs["language"] == "Russian"
 
-    def test_load_rejects_base_model_without_reference_audio(self):
+    def test_synthesize_clone_requires_reference_audio(self):
         torch_mock = _mock_torch()
         qwen_tts_module, model_cls = _mock_qwen_tts_module()
         model_instance = MagicMock()
@@ -405,8 +410,143 @@ class TestQwen3TTSAdapterInfo:
             from vox_qwen.tts_adapter import Qwen3TTSAdapter
 
             adapter = Qwen3TTSAdapter()
-            with pytest.raises(ValueError, match="CustomVoice checkpoints"):
-                adapter.load("local-path", "cuda", _source="Qwen/Qwen3-TTS-12Hz-0.6B-Base")
+            adapter.load("local-path", "cuda", _source="Qwen/Qwen3-TTS-12Hz-0.6B-Base")
+
+            async def run():
+                async for _ in adapter.synthesize("Hello", language="en"):
+                    pass
+
+            with pytest.raises(ValueError, match="reference_audio"):
+                asyncio.run(run())
+
+    def test_synthesize_clone_calls_generate_voice_clone(self):
+        torch_mock = _mock_torch()
+        qwen_tts_module, model_cls = _mock_qwen_tts_module()
+        model_instance = MagicMock()
+        model_instance.processor = MagicMock()
+        model_instance.get_supported_speakers.return_value = []
+        model_instance.generate_voice_clone.return_value = (
+            [np.array([0.0, 0.1, 0.2, 0.3], dtype=np.float32)],
+            24000,
+        )
+        model_cls.from_pretrained.return_value = model_instance
+
+        with patch.dict("sys.modules", {"torch": torch_mock, "qwen_asr": MagicMock(), "qwen_tts": qwen_tts_module}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            adapter.load("local-path", "cuda", _source="Qwen/Qwen3-TTS-12Hz-0.6B-Base")
+
+            ref = np.linspace(0.0, 0.5, num=24_000, dtype=np.float32)
+
+            async def run():
+                out = []
+                async for chunk in adapter.synthesize(
+                    "Hello",
+                    language="en",
+                    reference_audio=ref,
+                    reference_text="quick brown fox",
+                ):
+                    out.append(chunk)
+                return out
+
+            chunks = asyncio.run(run())
+
+            model_instance.generate_voice_clone.assert_called_once()
+            kwargs = model_instance.generate_voice_clone.call_args.kwargs
+            assert kwargs["language"] == "English"
+            assert kwargs["ref_text"] == "quick brown fox"
+            ref_audio_tuple = kwargs["ref_audio"]
+            assert isinstance(ref_audio_tuple, tuple)
+            np.testing.assert_array_equal(ref_audio_tuple[0], ref)
+            assert ref_audio_tuple[1] == 24000
+            assert chunks[-1].is_final is True
+            assert any(c.audio for c in chunks[:-1])
+
+    def test_synthesize_custom_rejects_reference_audio(self):
+        torch_mock = _mock_torch()
+        qwen_tts_module, model_cls = _mock_qwen_tts_module()
+        model_instance = MagicMock()
+        model_instance.processor = MagicMock()
+        model_instance.get_supported_speakers.return_value = ["Ryan"]
+        model_cls.from_pretrained.return_value = model_instance
+
+        with patch.dict("sys.modules", {"torch": torch_mock, "qwen_asr": MagicMock(), "qwen_tts": qwen_tts_module}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            adapter.load(
+                "local-path", "cuda",
+                _source="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+                default_voice="Ryan",
+            )
+
+            ref = np.zeros(1000, dtype=np.float32)
+
+            async def run():
+                async for _ in adapter.synthesize("hi", reference_audio=ref):
+                    pass
+
+            with pytest.raises(ValueError, match="CustomVoice checkpoints do not use reference_audio"):
+                asyncio.run(run())
+
+    def test_load_mode_override_forces_clone(self):
+        torch_mock = _mock_torch()
+        qwen_tts_module, model_cls = _mock_qwen_tts_module()
+        model_instance = MagicMock()
+        model_instance.processor = MagicMock()
+        model_instance.get_supported_speakers.return_value = []
+        model_cls.from_pretrained.return_value = model_instance
+
+        with patch.dict("sys.modules", {"torch": torch_mock, "qwen_asr": MagicMock(), "qwen_tts": qwen_tts_module}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+
+            adapter.load("local-path", "cuda", _source="unrelated/some-ckpt", mode="clone")
+            assert adapter._mode == "clone"
+
+    def test_synthesize_clone_subprocess_writes_reference_wav(self):
+        with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            adapter._loaded = True
+            adapter._subprocess_only = True
+            adapter._mode = "clone"
+            adapter._model_id = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+            adapter._device = "cpu"
+
+            audio_bytes = np.zeros(2400, dtype=np.float32).tobytes()
+            payload = json.dumps({
+                "sample_rate": 24000,
+                "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
+            })
+
+            ref_paths_seen = []
+
+            def fake_run(cmd, **_):
+                args = dict(zip(cmd[::2], cmd[1::2]))
+                ref_paths_seen.append(args.get("--ref-audio-path"))
+                assert "--mode" in cmd
+                assert cmd[cmd.index("--mode") + 1] == "clone"
+                return subprocess.CompletedProcess(cmd, 0, payload, "")
+
+            async def collect():
+                out = []
+                async for chunk in adapter.synthesize(
+                    "hi",
+                    reference_audio=np.zeros(24000, dtype=np.float32),
+                    reference_text="hi",
+                ):
+                    out.append(chunk)
+                return out
+
+            with patch("vox_qwen.tts_adapter.subprocess.run", side_effect=fake_run):
+                chunks = asyncio.run(collect())
+
+            assert chunks[-1].is_final is True
+            assert ref_paths_seen and ref_paths_seen[0] is not None
 
     def test_list_voices_returns_supported_speakers(self):
         torch_mock = _mock_torch()

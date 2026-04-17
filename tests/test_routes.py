@@ -32,9 +32,9 @@ from vox.core.types import (
 from vox.server.routes import get_default_model
 from vox.server.routes.transcribe import _mime_to_format
 
-# ---------------------------------------------------------------------------
-# Fake adapters
-# ---------------------------------------------------------------------------
+
+
+
 
 class FakeSTTAdapter(STTAdapter):
     def info(self) -> AdapterInfo:
@@ -123,9 +123,9 @@ class FakeCloneableTTSAdapter(FakeTTSAdapter):
         )
 
 
-# ---------------------------------------------------------------------------
-# Mock scheduler
-# ---------------------------------------------------------------------------
+
+
+
 
 class MockScheduler:
     """Minimal scheduler mock that returns fake adapters via acquire()."""
@@ -140,7 +140,7 @@ class MockScheduler:
 
     @asynccontextmanager
     async def acquire(self, model_name: str):
-        # Normalise "name:tag" -> lookup
+
         adapter = self._adapters.get(model_name)
         if adapter is None:
             raise ModelNotFoundError(model_name)
@@ -166,9 +166,9 @@ class MockScheduler:
         pass
 
 
-# ---------------------------------------------------------------------------
-# App fixture
-# ---------------------------------------------------------------------------
+
+
+
 
 def _build_app(
     scheduler: MockScheduler | None = None,
@@ -208,30 +208,30 @@ def client():
     return TestClient(app)
 
 
-# ---------------------------------------------------------------------------
-# Health & PS
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestHealth:
     def test_health_endpoint(self, client: TestClient):
-        resp = client.get("/api/health")
+        resp = client.get("/v1/health")
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
 
     def test_ps_no_models_loaded(self, client: TestClient):
-        resp = client.get("/api/ps")
+        resp = client.get("/v1/models/loaded")
         assert resp.status_code == 200
         data = resp.json()
         assert data["models"] == []
 
 
-# ---------------------------------------------------------------------------
-# Models list
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestListModels:
     def test_list_models_empty(self, client: TestClient):
-        resp = client.get("/api/list")
+        resp = client.get("/v1/models")
         assert resp.status_code == 200
         assert resp.json()["models"] == []
 
@@ -264,7 +264,7 @@ class TestPullModels:
                 siblings=[MagicMock(rfilename="model.bin")]
             )
 
-            resp = client.post("/api/pull", json={"name": "qwen3-tts:0.6b"})
+            resp = client.post("/v1/models/pull", json={"name": "qwen3-tts:0.6b"})
 
         assert resp.status_code == 200
         assert '"status": "success"' in resp.text
@@ -273,10 +273,42 @@ class TestPullModels:
         assert manifest is not None
         assert manifest.config["source"] == "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
 
+    def test_pull_persists_runtime_source_in_manifest(self, tmp_path: Path):
+        store = BlobStore(root=tmp_path)
+        registry = MagicMock()
+        registry.lookup.return_value = {
+            "architecture": "parakeet",
+            "type": "stt",
+            "adapter": "parakeet-stt-onnx",
+            "format": "onnx",
+            "source": "istupakov/parakeet-tdt-0.6b-v3-onnx",
+            "runtime_source": "nvidia/parakeet-tdt-0.6b-v3",
+            "parameters": {"sample_rate": 16000},
+            "files": ["config.json"],
+            "adapter_package": "vox-parakeet",
+        }
+        registry.resolve_model_ref.return_value = ("parakeet-stt-onnx", "tdt-0.6b-v3")
+        app = _build_app(registry=registry, store=store)
+        client = TestClient(app)
 
-# ---------------------------------------------------------------------------
-# Transcribe
-# ---------------------------------------------------------------------------
+        downloaded = tmp_path / "config.json"
+        downloaded.write_text("{}")
+
+        with patch("huggingface_hub.hf_hub_download", return_value=str(downloaded)):
+            resp = client.post("/v1/models/pull", json={"name": "parakeet"})
+
+        assert resp.status_code == 200
+        assert '"status": "success"' in resp.text
+
+        manifest = store.resolve_model("parakeet-stt-onnx", "tdt-0.6b-v3")
+        assert manifest is not None
+        assert manifest.config["source"] == "istupakov/parakeet-tdt-0.6b-v3-onnx"
+        assert manifest.config["runtime_source"] == "nvidia/parakeet-tdt-0.6b-v3"
+
+
+
+
+
 
 class TestTranscribe:
     def _make_client_with_stt(self) -> TestClient:
@@ -287,12 +319,28 @@ class TestTranscribe:
 
     @patch("vox.server.routes.transcribe.prepare_for_stt", return_value=np.zeros(16000, dtype=np.float32))
     def test_transcribe_returns_json(self, _mock_prep):
+
+
         client = self._make_client_with_stt()
         audio_bytes = b"\x00" * 1000
         resp = client.post(
-            "/api/transcribe",
+            "/v1/audio/transcriptions",
             files={"file": ("audio.wav", io.BytesIO(audio_bytes), "audio/wav")},
             data={"model": "test-stt:latest", "response_format": "json"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["text"] == "hello world"
+        assert set(body.keys()) == {"text"}
+
+    @patch("vox.server.routes.transcribe.prepare_for_stt", return_value=np.zeros(16000, dtype=np.float32))
+    def test_transcribe_verbose_json_returns_rich_payload(self, _mock_prep):
+        client = self._make_client_with_stt()
+        audio_bytes = b"\x00" * 1000
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("audio.wav", io.BytesIO(audio_bytes), "audio/wav")},
+            data={"model": "test-stt:latest", "response_format": "verbose_json"},
         )
         assert resp.status_code == 200
         body = resp.json()
@@ -300,13 +348,14 @@ class TestTranscribe:
         assert body["language"] == "en"
         assert body["duration_ms"] == 1000
         assert "processing_ms" in body
+        assert "segments" in body
 
     @patch("vox.server.routes.transcribe.prepare_for_stt", return_value=np.zeros(16000, dtype=np.float32))
     def test_transcribe_text_format(self, _mock_prep):
         client = self._make_client_with_stt()
         audio_bytes = b"\x00" * 1000
         resp = client.post(
-            "/api/transcribe",
+            "/v1/audio/transcriptions",
             files={"file": ("audio.wav", io.BytesIO(audio_bytes), "audio/wav")},
             data={"model": "test-stt:latest", "response_format": "text"},
         )
@@ -319,16 +368,16 @@ class TestTranscribe:
         client = self._make_client_with_stt()
         audio_bytes = b"\x00" * 1000
         resp = client.post(
-            "/api/transcribe",
+            "/v1/audio/transcriptions",
             files={"file": ("audio.wav", io.BytesIO(audio_bytes), "audio/wav")},
             data={"model": "no-such-model:latest"},
         )
         assert resp.status_code == 404
 
 
-# ---------------------------------------------------------------------------
-# Synthesize
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestSynthesize:
     def _make_client_with_tts(self) -> TestClient:
@@ -340,7 +389,7 @@ class TestSynthesize:
     def test_synthesize_returns_wav(self):
         client = self._make_client_with_tts()
         resp = client.post(
-            "/api/synthesize",
+            "/v1/audio/speech",
             json={
                 "model": "test-tts:latest",
                 "input": "hello",
@@ -349,13 +398,13 @@ class TestSynthesize:
         )
         assert resp.status_code == 200
         assert "audio/wav" in resp.headers["content-type"]
-        # WAV files start with RIFF header
+
         assert resp.content[:4] == b"RIFF"
 
     def test_synthesize_model_not_found_404(self):
         client = self._make_client_with_tts()
         resp = client.post(
-            "/api/synthesize",
+            "/v1/audio/speech",
             json={
                 "model": "no-such-model:latest",
                 "input": "hello",
@@ -364,20 +413,20 @@ class TestSynthesize:
         assert resp.status_code == 404
 
 
-# ---------------------------------------------------------------------------
-# Voices
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestVoices:
     def test_voices_empty(self, client: TestClient):
-        resp = client.get("/api/voices")
+        resp = client.get("/v1/audio/voices")
         assert resp.status_code == 200
         assert resp.json()["voices"] == []
 
 
-# ---------------------------------------------------------------------------
-# get_default_model
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestGetDefaultModel:
     def test_get_default_model_prefers_pulled(self):
@@ -427,9 +476,9 @@ class TestGetDefaultModel:
         assert exc_info.value.status_code == 400
 
 
-# ---------------------------------------------------------------------------
-# _mime_to_format
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestMimeToFormat:
     def test_mime_to_format_conversions(self):
@@ -444,9 +493,9 @@ class TestMimeToFormat:
         assert _mime_to_format("") is None
 
 
-# ---------------------------------------------------------------------------
-# Helpers for new tests
-# ---------------------------------------------------------------------------
+
+
+
 
 def _make_manifest():
     """Create a minimal Manifest for testing."""
@@ -479,9 +528,9 @@ def _make_store_mock(**overrides):
     return store
 
 
-# ---------------------------------------------------------------------------
-# Show model
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestShowModel:
     def test_show_model_returns_details(self):
@@ -490,7 +539,7 @@ class TestShowModel:
         app = _build_app(store=store)
         client = TestClient(app)
 
-        resp = client.post("/api/show", json={"name": "whisper:large-v3"})
+        resp = client.get("/v1/models/whisper:large-v3")
         assert resp.status_code == 200
         body = resp.json()
         assert body["name"] == "whisper:large-v3"
@@ -504,14 +553,14 @@ class TestShowModel:
         app = _build_app(store=store)
         client = TestClient(app)
 
-        resp = client.post("/api/show", json={"name": "no-such-model:latest"})
+        resp = client.get("/v1/models/no-such-model:latest")
         assert resp.status_code == 404
         assert "not found" in resp.json()["detail"].lower()
 
 
-# ---------------------------------------------------------------------------
-# Delete model
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestDeleteModel:
     def test_delete_model_success(self):
@@ -522,7 +571,7 @@ class TestDeleteModel:
         app = _build_app(scheduler=scheduler, store=store)
         client = TestClient(app)
 
-        resp = client.request("DELETE", "/api/delete", json={"name": "whisper:large-v3"})
+        resp = client.delete("/v1/models/whisper:large-v3")
         assert resp.status_code == 200
         assert resp.json()["status"] == "success"
         store.delete_model.assert_called_once_with("whisper", "large-v3")
@@ -535,7 +584,7 @@ class TestDeleteModel:
         app = _build_app(scheduler=scheduler, store=store)
         client = TestClient(app)
 
-        resp = client.request("DELETE", "/api/delete", json={"name": "whisper:large-v3"})
+        resp = client.delete("/v1/models/whisper:large-v3")
         assert resp.status_code == 409
         assert "in use" in resp.json()["detail"].lower()
 
@@ -546,13 +595,13 @@ class TestDeleteModel:
         app = _build_app(scheduler=scheduler, store=store)
         client = TestClient(app)
 
-        resp = client.request("DELETE", "/api/delete", json={"name": "no-such-model:latest"})
+        resp = client.delete("/v1/models/no-such-model:latest")
         assert resp.status_code == 404
 
 
-# ---------------------------------------------------------------------------
-# Transcribe - verbose_json, OpenAI endpoint, wrong model type
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestTranscribeExtended:
     def _make_client_with_stt(self) -> TestClient:
@@ -566,7 +615,7 @@ class TestTranscribeExtended:
         client = self._make_client_with_stt()
         audio_bytes = b"\x00" * 1000
         resp = client.post(
-            "/api/transcribe",
+            "/v1/audio/transcriptions",
             files={"file": ("audio.wav", io.BytesIO(audio_bytes), "audio/wav")},
             data={"model": "test-stt:latest", "response_format": "verbose_json"},
         )
@@ -611,7 +660,7 @@ class TestTranscribeExtended:
 
     @patch("vox.server.routes.transcribe.prepare_for_stt", return_value=np.zeros(16000, dtype=np.float32))
     def test_transcribe_wrong_model_type_400(self, _mock_prep):
-        """Sending a TTS model name to /api/transcribe should return 400."""
+        """Sending a TTS model name to /v1/audio/transcriptions should return 400."""
         scheduler = MockScheduler()
         scheduler.register("test-tts:latest", FakeTTSAdapter())
         app = _build_app(scheduler=scheduler)
@@ -619,7 +668,7 @@ class TestTranscribeExtended:
 
         audio_bytes = b"\x00" * 1000
         resp = client.post(
-            "/api/transcribe",
+            "/v1/audio/transcriptions",
             files={"file": ("audio.wav", io.BytesIO(audio_bytes), "audio/wav")},
             data={"model": "test-tts:latest"},
         )
@@ -627,9 +676,9 @@ class TestTranscribeExtended:
         assert "not an STT model" in resp.json()["detail"]
 
 
-# ---------------------------------------------------------------------------
-# Synthesize - OpenAI endpoint, streaming, wrong model type
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestSynthesizeExtended:
     def _make_client_with_tts(self) -> TestClient:
@@ -656,7 +705,7 @@ class TestSynthesizeExtended:
     def test_synthesize_streaming(self):
         client = self._make_client_with_tts()
         resp = client.post(
-            "/api/synthesize",
+            "/v1/audio/speech",
             json={
                 "model": "test-tts:latest",
                 "input": "hello",
@@ -665,18 +714,18 @@ class TestSynthesizeExtended:
             },
         )
         assert resp.status_code == 200
-        # Streaming should still return audio content
+
         assert len(resp.content) > 0
 
     def test_synthesize_wrong_model_type_400(self):
-        """Sending an STT model name to /api/synthesize should return 400."""
+        """Sending an STT model name to /v1/audio/speech should return 400."""
         scheduler = MockScheduler()
         scheduler.register("test-stt:latest", FakeSTTAdapter())
         app = _build_app(scheduler=scheduler)
         client = TestClient(app)
 
         resp = client.post(
-            "/api/synthesize",
+            "/v1/audio/speech",
             json={
                 "model": "test-stt:latest",
                 "input": "hello",
@@ -686,9 +735,9 @@ class TestSynthesizeExtended:
         assert "not a TTS model" in resp.json()["detail"]
 
 
-# ---------------------------------------------------------------------------
-# Voices - with model query
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestVoicesExtended:
     def test_voices_with_model(self):
@@ -698,7 +747,7 @@ class TestVoicesExtended:
         app = _build_app(scheduler=scheduler)
         client = TestClient(app)
 
-        resp = client.get("/api/voices", params={"model": "test-tts:latest"})
+        resp = client.get("/v1/audio/voices", params={"model": "test-tts:latest"})
         assert resp.status_code == 200
         voices = resp.json()["voices"]
         assert len(voices) == 2
@@ -711,7 +760,7 @@ class TestVoicesExtended:
         """When no model is specified, list voices from all loaded TTS models."""
         scheduler = MockScheduler()
         scheduler.register("test-tts:latest", FakeTTSAdapter())
-        # Simulate list_loaded returning a model info object
+
         loaded_info = MagicMock()
         loaded_info.type.value = "tts"
         loaded_info.name = "test-tts"
@@ -720,11 +769,11 @@ class TestVoicesExtended:
         app = _build_app(scheduler=scheduler)
         client = TestClient(app)
 
-        resp = client.get("/api/voices")
+        resp = client.get("/v1/audio/voices")
         assert resp.status_code == 200
         voices = resp.json()["voices"]
         assert len(voices) == 2
-        # Each voice should include the model name
+
         assert voices[0]["model"] == "test-tts:latest"
 
     def test_voices_model_not_found(self):
@@ -732,7 +781,7 @@ class TestVoicesExtended:
         app = _build_app()
         client = TestClient(app)
 
-        resp = client.get("/api/voices", params={"model": "no-such-model:latest"})
+        resp = client.get("/v1/audio/voices", params={"model": "no-such-model:latest"})
         assert resp.status_code == 404
 
     def test_create_voice_v1_persists_reference_audio(self, tmp_path: Path):
@@ -740,7 +789,7 @@ class TestVoicesExtended:
         app = _build_app(store=store)
         client = TestClient(app)
 
-        wav = encode_wav(np.zeros(16_000, dtype=np.float32), 16_000)
+        wav = encode_wav(np.full(16_000, 0.1, dtype=np.float32), 16_000)
         resp = client.post(
             "/v1/audio/voices",
             files={"audio_sample": ("sample.wav", io.BytesIO(wav), "audio/wav")},
@@ -759,7 +808,7 @@ class TestVoicesExtended:
             store,
             voice_id="voice1234",
             name="Roy",
-            audio_bytes=encode_wav(np.zeros(16_000, dtype=np.float32), 16_000),
+            audio_bytes=encode_wav(np.full(16_000, 0.1, dtype=np.float32), 16_000),
             content_type="audio/wav",
             language="en",
         )
@@ -769,7 +818,7 @@ class TestVoicesExtended:
         app = _build_app(scheduler=scheduler, store=store)
         client = TestClient(app)
 
-        resp = client.get("/api/voices", params={"model": "test-tts:latest"})
+        resp = client.get("/v1/audio/voices", params={"model": "test-tts:latest"})
         assert resp.status_code == 200
         voices = resp.json()["voices"]
         assert any(voice["id"] == "voice1234" and voice["is_cloned"] is True for voice in voices)
@@ -780,7 +829,7 @@ class TestVoicesExtended:
             store,
             voice_id="voice1234",
             name="Roy",
-            audio_bytes=encode_wav(np.zeros(16_000, dtype=np.float32), 16_000),
+            audio_bytes=encode_wav(np.full(16_000, 0.1, dtype=np.float32), 16_000),
             content_type="audio/wav",
         )
         app = _build_app(store=store)
@@ -797,7 +846,7 @@ class TestVoicesExtended:
             store,
             voice_id="voice1234",
             name="Roy",
-            audio_bytes=encode_wav(np.zeros(16_000, dtype=np.float32), 16_000),
+            audio_bytes=encode_wav(np.full(16_000, 0.1, dtype=np.float32), 16_000),
             content_type="audio/wav",
             language="en",
             reference_text="hello there",
@@ -809,7 +858,7 @@ class TestVoicesExtended:
         client = TestClient(app)
 
         resp = client.post(
-            "/api/synthesize",
+            "/v1/audio/speech",
             json={"model": "test-tts:latest", "input": "hello", "voice": "voice1234"},
         )
 
@@ -825,7 +874,7 @@ class TestVoicesExtended:
             store,
             voice_id="voice1234",
             name="Roy",
-            audio_bytes=encode_wav(np.zeros(16_000, dtype=np.float32), 16_000),
+            audio_bytes=encode_wav(np.full(16_000, 0.1, dtype=np.float32), 16_000),
             content_type="audio/wav",
         )
         scheduler = MockScheduler()
@@ -834,7 +883,7 @@ class TestVoicesExtended:
         client = TestClient(app)
 
         resp = client.post(
-            "/api/synthesize",
+            "/v1/audio/speech",
             json={"model": "test-tts:latest", "input": "hello", "voice": "voice1234"},
         )
 
@@ -842,9 +891,9 @@ class TestVoicesExtended:
         assert "does not support cloned voices" in resp.json()["detail"]
 
 
-# ---------------------------------------------------------------------------
-# App factory
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestCreateApp:
     def test_create_app_returns_fastapi_instance(self, tmp_path):

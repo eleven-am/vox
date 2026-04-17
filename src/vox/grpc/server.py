@@ -9,11 +9,12 @@ from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.grpc import vox_pb2, vox_pb2_grpc
+from vox.grpc.conversation_servicer import ConversationServicer
 from vox.grpc.health_servicer import HealthServicer
 from vox.grpc.model_servicer import ModelServicer
-from vox.grpc.transcription_servicer import TranscriptionServicer
-from vox.grpc.synthesis_servicer import SynthesisServicer
 from vox.grpc.streaming_servicer import StreamingServiceServicer
+from vox.grpc.synthesis_servicer import SynthesisServicer
+from vox.grpc.transcription_servicer import TranscriptionServicer
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,9 @@ async def start_grpc_server(
     vox_pb2_grpc.add_StreamingServiceServicer_to_server(
         StreamingServiceServicer(store, registry, scheduler), server,
     )
+    vox_pb2_grpc.add_ConversationServiceServicer_to_server(
+        ConversationServicer(store, registry, scheduler), server,
+    )
 
     service_names = (
         vox_pb2.DESCRIPTOR.services_by_name["HealthService"].full_name,
@@ -48,6 +52,7 @@ async def start_grpc_server(
         vox_pb2.DESCRIPTOR.services_by_name["TranscriptionService"].full_name,
         vox_pb2.DESCRIPTOR.services_by_name["SynthesisService"].full_name,
         vox_pb2.DESCRIPTOR.services_by_name["StreamingService"].full_name,
+        vox_pb2.DESCRIPTOR.services_by_name["ConversationService"].full_name,
         reflection.SERVICE_NAME,
     )
     reflection.enable_server_reflection(service_names, server)

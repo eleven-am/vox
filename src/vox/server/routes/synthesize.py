@@ -9,8 +9,13 @@ from pydantic import BaseModel
 
 from vox.audio.pipeline import get_content_type, prepare_for_output
 from vox.core.adapter import TTSAdapter
-from vox.core.cloned_voices import get_stored_voice, load_reference_audio
-from vox.core.errors import ModelNotFoundError, VoxError
+from vox.core.cloned_voices import resolve_voice_request
+from vox.core.errors import (
+    ModelNotFoundError,
+    VoiceCloningUnsupportedError,
+    VoiceNotFoundError,
+    VoxError,
+)
 from vox.server.routes import get_default_model
 
 logger = logging.getLogger(__name__)
@@ -33,9 +38,10 @@ class OpenAISpeechRequest(BaseModel):
     voice: str = "default"
     speed: float = 1.0
     response_format: str = "wav"
+    language: str | None = None
+    stream: bool = False
 
 
-@router.post("/api/synthesize")
 async def synthesize(req: SynthesizeRequest, request: Request):
     scheduler = request.app.state.scheduler
     registry = request.app.state.registry
@@ -123,41 +129,25 @@ async def _stream_synthesis(scheduler, store, model: str, req: SynthesizeRequest
     return StreamingResponse(audio_stream(), media_type=content_type)
 
 
-# OpenAI-compatible endpoint
+
 @router.post("/v1/audio/speech")
 async def openai_speech(req: OpenAISpeechRequest, request: Request):
-    """OpenAI-compatible speech synthesis endpoint."""
     synth_req = SynthesizeRequest(
         model=req.model,
         input=req.input,
         voice=req.voice,
         speed=req.speed,
+        language=req.language,
         response_format=req.response_format,
+        stream=req.stream,
     )
     return await synthesize(synth_req, request)
 
 
 def _resolve_voice_request(adapter: TTSAdapter, store, req: SynthesizeRequest):
-    if not req.voice:
-        return None, req.language, None, None
-
-    stored_voice = get_stored_voice(store, req.voice)
-    if stored_voice is None:
-        return req.voice, req.language, None, None
-
-    if not adapter.info().supports_voice_cloning:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Model '{adapter.info().name}' does not support cloned voices",
-        )
-
-    reference = load_reference_audio(
-        store,
-        stored_voice.id,
-        target_rate=adapter.info().default_sample_rate,
-    )
-    if reference is None:
-        raise HTTPException(status_code=404, detail=f"Voice '{stored_voice.id}' not found")
-
-    reference_audio, reference_text = reference
-    return None, req.language or stored_voice.language, reference_audio, reference_text
+    try:
+        return resolve_voice_request(adapter, store, req.voice, req.language)
+    except VoiceCloningUnsupportedError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except VoiceNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

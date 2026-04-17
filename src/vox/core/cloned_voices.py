@@ -6,6 +6,7 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import numpy as np
@@ -13,8 +14,19 @@ from numpy.typing import NDArray
 
 from vox.audio.codecs import decode_audio, encode_wav, to_mono
 from vox.audio.resampler import resample
+from vox.core.errors import (
+    ReferenceAudioInvalidError,
+    VoiceCloningUnsupportedError,
+    VoiceNotFoundError,
+)
 from vox.core.store import BlobStore
 from vox.core.types import VoiceInfo
+
+REFERENCE_MIN_SECONDS = 1.0
+REFERENCE_MAX_SECONDS = 30.0
+REFERENCE_CLIP_THRESHOLD = 0.99
+REFERENCE_CLIP_FRACTION_MAX = 0.01
+REFERENCE_RMS_MIN = 1e-3
 
 
 @dataclass(frozen=True)
@@ -124,6 +136,47 @@ def get_stored_voice(store: BlobStore, voice_id: str, *, required: bool = False)
     )
 
 
+def validate_reference_audio(
+    audio: NDArray[np.float32],
+    sample_rate: int,
+    *,
+    min_seconds: float = REFERENCE_MIN_SECONDS,
+    max_seconds: float = REFERENCE_MAX_SECONDS,
+) -> None:
+    if sample_rate <= 0:
+        raise ReferenceAudioInvalidError(f"Invalid sample rate: {sample_rate}")
+
+    samples = np.asarray(audio, dtype=np.float32)
+    if samples.ndim > 1:
+        samples = samples.reshape(-1) if samples.shape[0] == 1 else samples.mean(axis=-1 if samples.shape[-1] <= 2 else 0)
+
+    if samples.size == 0:
+        raise ReferenceAudioInvalidError("Reference audio is empty")
+
+    duration = samples.size / float(sample_rate)
+    if duration < min_seconds:
+        raise ReferenceAudioInvalidError(
+            f"Reference audio too short ({duration:.2f}s); minimum is {min_seconds:.1f}s"
+        )
+    if duration > max_seconds:
+        raise ReferenceAudioInvalidError(
+            f"Reference audio too long ({duration:.2f}s); maximum is {max_seconds:.1f}s"
+        )
+
+    rms = float(np.sqrt(np.mean(samples * samples))) if samples.size else 0.0
+    if rms < REFERENCE_RMS_MIN:
+        raise ReferenceAudioInvalidError(
+            f"Reference audio is effectively silent (RMS {rms:.2e}); upload a clearer sample"
+        )
+
+    clipped = float(np.mean(np.abs(samples) >= REFERENCE_CLIP_THRESHOLD))
+    if clipped > REFERENCE_CLIP_FRACTION_MAX:
+        raise ReferenceAudioInvalidError(
+            f"Reference audio is heavily clipped ({clipped * 100:.1f}% of samples at full scale); "
+            "re-record at a lower input level"
+        )
+
+
 def create_stored_voice(
     store: BlobStore,
     *,
@@ -134,11 +187,14 @@ def create_stored_voice(
     language: str | None = None,
     gender: str | None = None,
     reference_text: str | None = None,
+    validate: bool = True,
 ) -> StoredVoice:
     if not name.strip():
         raise ValueError("Voice name is required")
 
     audio, sample_rate = decode_audio(audio_bytes, format_hint=_format_hint(content_type))
+    if validate:
+        validate_reference_audio(np.asarray(audio, dtype=np.float32), sample_rate)
     voice = StoredVoice(
         id=voice_id,
         name=name.strip(),
@@ -175,6 +231,44 @@ def delete_stored_voice(store: BlobStore, voice_id: str) -> bool:
         return False
     shutil.rmtree(target_dir)
     return True
+
+
+def reference_audio_bytes(store: BlobStore, voice_id: str) -> bytes | None:
+    path = _audio_path(store, voice_id)
+    if not path.is_file():
+        return None
+    return path.read_bytes()
+
+
+def resolve_voice_request(
+    adapter: Any,
+    store: BlobStore,
+    voice_id: str | None,
+    language: str | None,
+) -> tuple[str | None, str | None, NDArray[np.float32] | None, str | None]:
+    """Resolve a voice reference into synthesis kwargs.
+
+    Returns (voice_to_pass, language, reference_audio, reference_text).
+    - If voice_id is empty or no stored voice exists, the voice is passed through unchanged.
+    - If a stored voice exists and the adapter doesn't support cloning, raises.
+    """
+    if not voice_id:
+        return None, language, None, None
+
+    stored = get_stored_voice(store, voice_id)
+    if stored is None:
+        return voice_id, language, None, None
+
+    info = adapter.info()
+    if not info.supports_voice_cloning:
+        raise VoiceCloningUnsupportedError(info.name)
+
+    reference = load_reference_audio(store, stored.id, target_rate=info.default_sample_rate)
+    if reference is None:
+        raise VoiceNotFoundError(voice_id)
+
+    reference_audio, reference_text = reference
+    return None, language or stored.language, reference_audio, reference_text
 
 
 def load_reference_audio(

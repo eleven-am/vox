@@ -72,11 +72,39 @@ def test_load_keeps_local_model_path_unmodified(tmp_path: Path):
     adapter.load(str(local_model_dir), "cpu")
 
     fake_asr.load_model.assert_called_once_with(
-        str(local_model_dir),
+        "nemo-parakeet-tdt-0.6b-v3",
+        path=str(local_model_dir),
         providers=["CPUExecutionProvider"],
     )
     assert adapter.is_loaded is True
-    assert adapter._model_id == str(local_model_dir)
+    assert adapter._model_id == "nemo-parakeet-tdt-0.6b-v3"
+
+
+def test_load_uses_source_repo_id_with_local_model_path(tmp_path: Path):
+    fake_asr, _fake_ort = _install_fake_modules(
+        providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+    )
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.adapter", None)
+
+    local_model_dir = tmp_path / "parakeet"
+    local_model_dir.mkdir()
+
+    from vox_parakeet.adapter import ParakeetAdapter
+
+    adapter = ParakeetAdapter()
+    adapter.load(
+        str(local_model_dir),
+        "cuda",
+        _source="nvidia/parakeet-tdt-0.6b-v3",
+    )
+
+    fake_asr.load_model.assert_called_once_with(
+        "nemo-parakeet-tdt-0.6b-v3",
+        path=str(local_model_dir),
+        providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+    )
+    assert adapter._model_id == "nemo-parakeet-tdt-0.6b-v3"
 
 
 def test_load_rejects_cuda_without_provider():
@@ -92,3 +120,20 @@ def test_load_rejects_cuda_without_provider():
         adapter.load("ignored-local-path", "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")
 
     fake_asr.load_model.assert_not_called()
+
+
+def test_load_auto_falls_back_to_cpu_when_cuda_provider_is_missing():
+    fake_asr, _fake_ort = _install_fake_modules(providers=["CPUExecutionProvider"])
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.adapter", None)
+
+    from vox_parakeet.adapter import ParakeetAdapter
+
+    adapter = ParakeetAdapter()
+    adapter.load("ignored-local-path", "auto", _source="nvidia/parakeet-tdt-0.6b-v3")
+
+    fake_asr.load_model.assert_called_once_with(
+        "nemo-parakeet-tdt-0.6b-v3",
+        providers=["CPUExecutionProvider"],
+    )
+    assert adapter._device == "cpu"

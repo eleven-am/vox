@@ -93,7 +93,9 @@ class TestVoxtralSTTAdapterInfo:
             assert "voxtral" in info.architectures
             assert info.default_sample_rate == 16000
             assert ModelFormat.PYTORCH in info.supported_formats
-            assert info.supports_language_detection is True
+
+
+            assert info.supports_language_detection is False
 
     def test_is_loaded_initially_false(self):
         with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):

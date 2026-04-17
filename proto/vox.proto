@@ -15,6 +15,7 @@ service ModelService {
 
 service TranscriptionService {
   rpc Transcribe(TranscribeRequest) returns (TranscribeResponse);
+  rpc Annotate(AnnotateRequest) returns (AnnotateResponse);
 }
 
 service SynthesisService {
@@ -112,6 +113,25 @@ message TranscribeResponse {
   int32 duration_ms = 4;
   int32 processing_ms = 5;
   repeated TranscriptSegment segments = 6;
+  repeated Entity entities = 7;
+  repeated string topics = 8;
+}
+
+message Entity {
+  string type = 1;
+  string text = 2;
+  uint32 start_char = 3;
+  uint32 end_char = 4;
+}
+
+message AnnotateRequest {
+  string text = 1;
+  string language = 2;
+}
+
+message AnnotateResponse {
+  repeated Entity entities = 1;
+  repeated string topics = 2;
 }
 
 message TranscriptSegment {
@@ -215,6 +235,10 @@ message StreamTranscriptResult {
   uint32 processing_duration_ms = 6;
   string model = 7;
   optional float eou_probability = 8;
+  repeated Entity entities = 9;
+  repeated string topics = 10;
+  repeated WordTimestamp words = 11;
+  repeated TranscriptSegment segments = 12;
 }
 
 message StreamErrorMessage {
@@ -260,4 +284,119 @@ message VoiceInfo {
   string description = 5;
   bool is_cloned = 6;
   string model = 7;
+}
+
+// ---------------------------------------------------------------------------
+// ConversationService: bidi streaming for agent-facing voice orchestration.
+// The agent (any language) terminates WebRTC/SIP/etc. on its own and streams
+// PCM into Vox; Vox runs VAD+STT+EOU+state-machine+TTS and streams back
+// transcripts, state changes, and synthesized audio.
+// ---------------------------------------------------------------------------
+
+service ConversationService {
+  rpc Converse(stream ConverseClientMessage) returns (stream ConverseServerMessage);
+}
+
+message ConverseClientMessage {
+  oneof msg {
+    ConversationSessionUpdate session_update = 1;
+    ConversationAudioAppend audio_append = 2;
+    // field 3 reserved (was ConversationResponseCreate — superseded by start/delta/commit)
+    ConversationResponseCancel response_cancel = 4;
+    ConversationResponseStart response_start = 5;
+    ConversationResponseDelta response_delta = 6;
+    ConversationResponseCommit response_commit = 7;
+  }
+  reserved 3;
+  reserved "response_create";
+}
+
+message ConverseServerMessage {
+  oneof msg {
+    ConversationSessionCreated session_created = 1;
+    ConversationSpeechStarted speech_started = 2;
+    ConversationSpeechStopped speech_stopped = 3;
+    ConversationTranscriptDone transcript_done = 4;
+    ConversationResponseCreated response_created = 5;
+    ConversationAudioDelta audio_delta = 6;
+    ConversationResponseDone response_done = 7;
+    ConversationResponseCancelled response_cancelled = 8;
+    ConversationStateChanged state_changed = 9;
+    ConversationError error = 10;
+    ConversationResponseCommitted response_committed = 11;
+  }
+}
+
+message ConversationResponseCommitted {}
+
+message ConversationTurnPolicy {
+  bool allow_interrupt_while_speaking = 1;
+  uint32 min_interrupt_duration_ms = 2;
+  uint32 max_endpointing_delay_ms = 3;
+  uint32 stable_speaking_min_ms = 4;
+}
+
+message ConversationSessionUpdate {
+  string stt_model = 1;
+  string tts_model = 2;
+  string voice = 3;
+  string language = 4;
+  uint32 sample_rate = 5;
+  ConversationTurnPolicy policy = 6;
+}
+
+message ConversationAudioAppend {
+  bytes pcm16 = 1;
+  uint32 sample_rate = 2;
+}
+
+message ConversationResponseStart {}
+
+message ConversationResponseDelta {
+  string delta = 1;
+}
+
+message ConversationResponseCommit {}
+
+message ConversationResponseCancel {}
+
+message ConversationSessionCreated {}
+
+message ConversationSpeechStarted {
+  uint32 timestamp_ms = 1;
+}
+
+message ConversationSpeechStopped {
+  uint32 timestamp_ms = 1;
+}
+
+message ConversationTranscriptDone {
+  string transcript = 1;
+  string language = 2;
+  uint32 start_ms = 3;
+  uint32 end_ms = 4;
+  optional float eou_probability = 5;
+  repeated Entity entities = 6;
+  repeated string topics = 7;
+  repeated WordTimestamp words = 8;
+}
+
+message ConversationResponseCreated {}
+
+message ConversationAudioDelta {
+  bytes audio = 1;
+  uint32 sample_rate = 2;
+}
+
+message ConversationResponseDone {}
+
+message ConversationResponseCancelled {}
+
+message ConversationStateChanged {
+  string state = 1;
+  string previous_state = 2;
+}
+
+message ConversationError {
+  string message = 1;
 }

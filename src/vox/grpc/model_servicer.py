@@ -6,6 +6,7 @@ import os
 
 import grpc
 
+from vox.core.hf_runtime import configure_hf_runtime
 from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore, Manifest, ManifestLayer
@@ -49,6 +50,7 @@ class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
         specific_files = catalog_entry.get("files")
 
         try:
+            configure_hf_runtime()
             from huggingface_hub import HfApi, hf_hub_download
             api = HfApi()
 

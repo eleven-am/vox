@@ -64,7 +64,7 @@ class TranscribeResult:
 @dataclass(frozen=True)
 class SynthesizeChunk:
     """A chunk of synthesized audio."""
-    audio: bytes  # raw float32 PCM bytes
+    audio: bytes
     sample_rate: int
     is_final: bool = False
 
@@ -84,10 +84,10 @@ class VoiceInfo:
 @dataclass(frozen=True)
 class AdapterInfo:
     """Metadata an adapter provides about itself."""
-    name: str                                # e.g. "whisper"
+    name: str
     type: ModelType
-    architectures: tuple[str, ...]           # e.g. ("whisper", "distil-whisper")
-    default_sample_rate: int                 # e.g. 16000 for STT, 24000 for TTS
+    architectures: tuple[str, ...]
+    default_sample_rate: int
     supported_formats: tuple[ModelFormat, ...]
     supports_streaming: bool = False
     supports_word_timestamps: bool = False
@@ -95,15 +95,19 @@ class AdapterInfo:
     supports_voice_cloning: bool = False
     supported_languages: tuple[str, ...] = ()
 
+
+
+    max_input_chars: int = 0
+
 @dataclass(frozen=True)
 class ModelInfo:
     """Info about a locally stored model."""
-    name: str           # e.g. "whisper"
-    tag: str            # e.g. "large-v3"
+    name: str
+    tag: str
     type: ModelType
     format: ModelFormat
     architecture: str
-    adapter: str        # entry point name
+    adapter: str
     size_bytes: int = 0
     description: str = ""
     license: str = ""
@@ -142,16 +146,16 @@ class ModelInfo:
 @dataclass(frozen=True)
 class Speechfile:
     """Parsed Speechfile — declarative model specification."""
-    source: str                          # FROM line (HF repo, URL, or local path)
-    architecture: str                    # whisper, parakeet, kokoro, piper, etc.
+    source: str
+    architecture: str
     type: ModelType
-    adapter: str                         # entry point name to resolve
+    adapter: str
     format: ModelFormat
     parameters: dict[str, Any] = field(default_factory=dict)
     voices: tuple[VoiceInfo, ...] = ()
     license: str = ""
     description: str = ""
-    files: tuple[str, ...] = ()          # specific files to download from source
+    files: tuple[str, ...] = ()
 
 @dataclass(frozen=True)
 class PullProgress:

@@ -1,6 +1,6 @@
 [project]
 name = "vox-parakeet"
-version = "0.2.1"
+version = "0.2.2"
 description = "NVIDIA Parakeet STT adapters for Vox"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
@@ -10,8 +10,6 @@ dependencies = [
     "onnx-asr[hub]>=0.10.0; platform_machine != 'x86_64'",
     "numpy>=1.26.0,<2.4",
     "soundfile>=0.13.1",
-    "torch>=2.1.0",
-    "nemo-toolkit[asr]>=2.7.0",
 ]
 
 [project.entry-points."vox.adapters"]

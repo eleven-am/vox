@@ -261,6 +261,27 @@ def test_kokoro_rejects_cuda_when_no_gpu_provider_is_available(tmp_path: Path):
     fake_ort.InferenceSession.assert_not_called()
 
 
+def test_kokoro_auto_falls_back_to_cpu_when_no_gpu_provider_is_available(tmp_path: Path):
+    fake_ort = _install_fake_modules(providers=["CPUExecutionProvider"])
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    model_dir = tmp_path / "kokoro"
+    (model_dir / "onnx").mkdir(parents=True)
+    (model_dir / "voices").mkdir(parents=True)
+    (model_dir / "onnx" / "model.onnx").write_bytes(b"onnx")
+    np.arange(512, dtype=np.float32).tofile(model_dir / "voices" / "af_heart.bin")
+
+    from vox_kokoro.adapter import KokoroAdapter
+
+    adapter = KokoroAdapter()
+    adapter.load(str(model_dir), "auto")
+
+    fake_ort.InferenceSession.assert_called_once()
+    assert adapter._device == "cpu"
+
+
 def test_kokoro_torch_loads_native_runtime_and_streams_audio(tmp_path: Path):
     fake_kokoro = _install_fake_native_modules()
     sys.modules.pop("vox_kokoro", None)

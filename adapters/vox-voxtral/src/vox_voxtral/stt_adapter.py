@@ -127,9 +127,9 @@ class VoxtralSTTAdapter(STTAdapter):
             raise RuntimeError("Voxtral STT model is not loaded — call load() first")
 
         if language is None:
-            # The current Transformers Voxtral processor requires an explicit language for
-            # transcription requests, even though the underlying Mistral request schema treats it
-            # as optional. Default to English instead of crashing on a missing value.
+
+
+
             language = "en"
             logger.warning(
                 "No language provided for Voxtral STT; defaulting to 'en' because the "

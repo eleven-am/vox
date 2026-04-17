@@ -11,7 +11,8 @@ from typing import Protocol
 
 from vox.core.adapter import STTAdapter, TTSAdapter
 from vox.core.errors import ModelLoadError
-from vox.core.types import LoadedModelInfo, ModelInfo, parse_model_name
+from vox.core.runtime import detect_runtime_capabilities
+from vox.core.types import LoadedModelInfo, ModelFormat, ModelInfo, parse_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -21,17 +22,13 @@ DEVICE_MEMORY_HEADROOM_BYTES = 512 * 1024 * 1024
 
 def _detect_device() -> str:
     """Auto-detect best available device."""
-    device = "cpu"
-    try:
-        import torch
-        if torch.cuda.is_available():
-            device = "cuda"
-        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-            device = "mps"
-    except ImportError:
-        pass
-    except RuntimeError as e:
-        logger.warning(f"Error during device detection, falling back to CPU: {e}")
+    capabilities = detect_runtime_capabilities()
+    if capabilities.torch_cuda or capabilities.onnx_cuda or capabilities.nvidia_device:
+        device = "cuda"
+    elif capabilities.mps:
+        device = "mps"
+    else:
+        device = "cpu"
     logger.info(f"Auto-detected device: {device}")
     return device
 
@@ -106,13 +103,43 @@ class Scheduler:
     ) -> None:
         self._registry = registry
         self._requested_device = default_device
-        self._default_device = default_device if default_device != "auto" else _detect_device()
+        self._default_device = default_device
         self._max_loaded = max_loaded
         self._ttl_seconds = ttl_seconds
         self._cleanup_interval = cleanup_interval
         self._models: dict[str, _LoadedModel] = {}
         self._lock = asyncio.Lock()
         self._cleanup_task: asyncio.Task | None = None
+
+    def _auto_device_for_model(self, info: ModelInfo) -> str:
+        """Choose the best candidate device for *info* in auto mode."""
+        capabilities = detect_runtime_capabilities()
+
+        if info.format == ModelFormat.ONNX:
+            if capabilities.onnx_cuda:
+                return "cuda"
+            return "auto" if capabilities.onnx_coreml else "cpu"
+
+        if info.format in {ModelFormat.PYTORCH, ModelFormat.CT2}:
+            if capabilities.torch_cuda:
+                return "cuda"
+            if capabilities.mps:
+                return "mps"
+            return "cpu"
+
+        return "cpu"
+
+    def _infer_loaded_device(self, adapter: Adapter, info: ModelInfo, requested_device: str) -> str:
+        """Report the actual device used by an adapter after load."""
+        actual_device = getattr(adapter, "_device", None)
+        if isinstance(actual_device, str) and actual_device and actual_device != "auto":
+            return actual_device
+
+        if requested_device == "auto":
+            candidate = self._auto_device_for_model(info)
+            return candidate if candidate != "auto" else "cpu"
+
+        return requested_device
 
     async def start(self) -> None:
         """Start the background TTL cleanup loop."""
@@ -139,23 +166,24 @@ class Scheduler:
 
     def _select_device(self, adapter: Adapter, info: ModelInfo, estimated_vram_bytes: int) -> str:
         """Select device for a model, considering free accelerator memory."""
-        device = self._default_device
-        if device == "cpu" or estimated_vram_bytes <= 0:
-            return device
-
-        # Respect an explicit device choice from CLI/env. The free-memory
-        # heuristic is only for auto-placement and can be wrong on platforms
-        # like GB10 where mem_get_info is not trustworthy.
         if self._requested_device != "auto":
+            return self._default_device
+
+        candidate_device = self._auto_device_for_model(info)
+        if candidate_device != "cuda" or estimated_vram_bytes <= 0:
+            return "auto"
+
+        device = candidate_device
+        if estimated_vram_bytes <= 0:
             return device
 
         free_bytes = _available_device_memory_bytes(device)
         if free_bytes is None:
-            return device
+            return "auto"
 
         required_bytes = estimated_vram_bytes + DEVICE_MEMORY_HEADROOM_BYTES
         if required_bytes <= free_bytes:
-            return device
+            return "auto"
 
         logger.info(
             "Routing %s to CPU: estimated %d bytes plus headroom exceeds free %s memory (%d bytes)",
@@ -170,16 +198,16 @@ class Scheduler:
         """Load a model by name. Handles eviction and OOM fallback."""
         name, tag = parse_model_name(full_name)
 
-        # Resolve model info and path
+
         info, model_path = self._registry.resolve(name, tag)
         adapter_cls = self._registry.get_adapter_class(info.adapter)
 
-        # Instantiate adapter
+
         adapter = adapter_cls()
         estimated_vram_bytes = self._estimate_model_memory_bytes(adapter, info, model_path)
         device = self._select_device(adapter, info, estimated_vram_bytes)
 
-        # Evict LRU if at capacity
+
         if len(self._models) >= self._max_loaded:
             self._evict_lru()
             if len(self._models) >= self._max_loaded:
@@ -188,7 +216,7 @@ class Scheduler:
                     "Wait for an active request to finish or increase --max-loaded."
                 )
 
-        # Try loading on preferred device, fallback to CPU on OOM
+
         load_kwargs = {**info.parameters}
         try:
             logger.info(f"Loading {full_name} on {device}")
@@ -208,12 +236,13 @@ class Scheduler:
             else:
                 raise ModelLoadError(f"Failed to load {full_name}: {e}") from e
 
+        actual_device = self._infer_loaded_device(adapter, info, device)
         loaded = _LoadedModel(
             full_name=full_name,
             info=info,
             adapter=adapter,
-            device=device,
-            vram_bytes=estimated_vram_bytes if device != "cpu" else 0,
+            device=actual_device,
+            vram_bytes=estimated_vram_bytes if actual_device != "cpu" else 0,
         )
         self._models[full_name] = loaded
         return loaded
@@ -226,7 +255,7 @@ class Scheduler:
         if not candidates:
             logger.warning("Cannot evict: all loaded models are in use")
             return
-        # Sort by last_used ascending
+
         candidates.sort(key=lambda x: x[1].last_used)
         lru_name, lru_model = candidates[0]
         logger.info(f"Evicting {lru_name} (idle since {time.time() - lru_model.last_used:.0f}s ago)")

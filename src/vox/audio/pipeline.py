@@ -8,6 +8,8 @@ from numpy.typing import NDArray
 from vox.audio.codecs import (
     decode_audio,
     encode_flac,
+    encode_mp3,
+    encode_opus,
     encode_pcm,
     encode_wav,
     to_mono,
@@ -52,7 +54,7 @@ def prepare_for_output(
     """Encode float32 audio to the requested format.
 
     Returns (encoded_bytes, mime_content_type).
-    Supported formats: wav, flac, pcm. MP3 raises NotImplementedError.
+    Supported formats: wav, flac, pcm, mp3, opus.
     """
     fmt = output_format.lower()
 
@@ -66,10 +68,10 @@ def prepare_for_output(
         return encode_pcm(audio), get_content_type(fmt)
 
     if fmt == "mp3":
-        raise NotImplementedError(
-            "MP3 encoding requires an optional dependency (e.g. lameenc). "
-            "Install it separately and use a streaming MP3 encoder."
-        )
+        return encode_mp3(audio, sample_rate), get_content_type(fmt)
+
+    if fmt == "opus":
+        return encode_opus(audio, sample_rate), get_content_type(fmt)
 
     raise ValueError(f"Unsupported output format: {fmt!r}")
 

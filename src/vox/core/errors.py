@@ -27,3 +27,16 @@ class OOMError(ModelLoadError):
 
 class PullError(VoxError):
     """Raised when model download fails."""
+
+class VoiceNotFoundError(VoxError):
+    def __init__(self, voice_id: str):
+        self.voice_id = voice_id
+        super().__init__(f"voice '{voice_id}' not found")
+
+class VoiceCloningUnsupportedError(VoxError):
+    def __init__(self, adapter_name: str):
+        self.adapter_name = adapter_name
+        super().__init__(f"model '{adapter_name}' does not support cloned voices")
+
+class ReferenceAudioInvalidError(VoxError):
+    """Raised when a reference-audio upload fails validation."""

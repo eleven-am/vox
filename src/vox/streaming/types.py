@@ -45,6 +45,8 @@ class StreamTranscript:
     eou_probability: float | None = None
     segments: list[dict] | None = None
     words: list[dict] | None = None
+    entities: list[dict] | None = None
+    topics: list[str] | None = None
 
 
 @dataclass

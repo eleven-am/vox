@@ -3,22 +3,24 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import Response
 
 from vox.core.adapter import TTSAdapter
 from vox.core.cloned_voices import (
     create_stored_voice,
     delete_stored_voice,
     generate_voice_id,
+    get_stored_voice,
     list_stored_voices,
+    reference_audio_bytes,
 )
-from vox.core.errors import ModelNotFoundError, VoxError
+from vox.core.errors import ModelNotFoundError, ReferenceAudioInvalidError, VoxError
 from vox.core.types import VoiceInfo
 
 router = APIRouter()
 AUDIO_SAMPLE_FILE = File(...)
 
 
-@router.get("/api/voices")
 @router.get("/v1/audio/voices")
 async def list_voices(request: Request, model: str = ""):
     scheduler = request.app.state.scheduler
@@ -47,7 +49,6 @@ async def list_voices(request: Request, model: str = ""):
         raise HTTPException(status_code=500, detail=str(e)) from e
 
 
-@router.post("/api/voices")
 @router.post("/v1/audio/voices")
 async def create_voice(
     request: Request,
@@ -77,6 +78,8 @@ async def create_voice(
             gender=gender,
             reference_text=reference_text,
         )
+    except ReferenceAudioInvalidError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except RuntimeError as e:
@@ -91,7 +94,24 @@ async def create_voice(
     }
 
 
-@router.delete("/api/voices/{voice_id}")
+@router.get("/v1/audio/voices/{voice_id}/reference")
+async def get_voice_reference(request: Request, voice_id: str):
+    store = request.app.state.store
+    stored = get_stored_voice(store, voice_id)
+    if stored is None:
+        raise HTTPException(status_code=404, detail=f"Voice '{voice_id}' not found")
+
+    data = reference_audio_bytes(store, voice_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Reference audio for voice '{voice_id}' not found")
+
+    return Response(
+        content=data,
+        media_type="audio/wav",
+        headers={"Content-Disposition": f'attachment; filename="{voice_id}.wav"'},
+    )
+
+
 @router.delete("/v1/audio/voices/{voice_id}")
 async def delete_voice(request: Request, voice_id: str):
     store = request.app.state.store

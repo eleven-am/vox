@@ -9,6 +9,7 @@ from dataclasses import replace
 from vox.audio.pipeline import prepare_for_stt
 from vox.core.adapter import STTAdapter
 from vox.core.errors import ModelNotFoundError, VoxError
+from vox.core.ner import annotate
 from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
@@ -89,6 +90,9 @@ class TranscriptionServicer(vox_pb2_grpc.TranscriptionServiceServicer):
                 words=words,
             ))
 
+        lang = request.language or result.language or "en"
+        entities, topics = annotate(result.text, lang) if result.text else ([], [])
+
         return vox_pb2.TranscribeResponse(
             model=result.model,
             text=result.text,
@@ -96,4 +100,31 @@ class TranscriptionServicer(vox_pb2_grpc.TranscriptionServiceServicer):
             duration_ms=result.duration_ms,
             processing_ms=processing_ms,
             segments=segments,
+            entities=[
+                vox_pb2.Entity(
+                    type=e.type,
+                    text=e.text,
+                    start_char=e.start_char,
+                    end_char=e.end_char,
+                )
+                for e in entities
+            ],
+            topics=topics,
+        )
+
+    async def Annotate(self, request, context):
+        text = request.text or ""
+        language = request.language or "en"
+        entities, topics = annotate(text, language)
+        return vox_pb2.AnnotateResponse(
+            entities=[
+                vox_pb2.Entity(
+                    type=e.type,
+                    text=e.text,
+                    start_char=e.start_char,
+                    end_char=e.end_char,
+                )
+                for e in entities
+            ],
+            topics=topics,
         )

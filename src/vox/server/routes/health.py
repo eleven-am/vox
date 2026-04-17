@@ -3,12 +3,17 @@ from fastapi import APIRouter, Request
 router = APIRouter()
 
 
-@router.get("/api/health")
+@router.get("/v1/health")
 async def health():
     return {"status": "ok"}
 
 
-@router.get("/api/ps")
+@router.get("/api/health", include_in_schema=False)
+async def legacy_health():
+    return await health()
+
+
+@router.get("/v1/models/loaded")
 async def list_running(request: Request):
     scheduler = request.app.state.scheduler
     loaded = scheduler.list_loaded()

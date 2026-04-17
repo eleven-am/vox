@@ -22,9 +22,9 @@ from vox.core.registry import (
 )
 from vox.core.store import BlobStore, Manifest, ManifestLayer
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+
+
+
 
 def _make_store(tmp_path: Path) -> BlobStore:
     """Create a BlobStore rooted at tmp_path."""
@@ -44,7 +44,7 @@ def _write_manifest(
 ) -> Manifest:
     """Create a manifest on disk and return it."""
     if layers is None:
-        # Create a default layer with a real blob file
+
         digest = "sha256-" + "ab" * 32
         blob_path = store.blobs_dir / digest
         blob_path.parent.mkdir(parents=True, exist_ok=True)
@@ -79,9 +79,9 @@ def _make_registry(store: BlobStore, adapters: dict | None = None) -> ModelRegis
         return ModelRegistry(store)
 
 
-# ---------------------------------------------------------------------------
-# Catalog lookup tests
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestLookup:
     def test_lookup_existing_model(self, tmp_path: Path):
@@ -159,10 +159,23 @@ class TestLookup:
         assert registry.lookup("parakeet", "latest", explicit_tag=True) is None
         assert registry.resolve_model_ref("parakeet", "latest", explicit_tag=True) == ("parakeet", "latest")
 
+    def test_lookup_bare_family_infers_spark_profile_without_explicit_flag(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        store = _make_store(tmp_path)
+        registry = _make_registry(store)
+        monkeypatch.setenv("VOX_DEVICE", "auto")
+        monkeypatch.setattr("vox.core.registry.platform.machine", lambda: "arm64")
+        with patch("vox.core.registry.infer_runtime_profile", return_value="spark"):
+            entry = registry.lookup("parakeet")
+            assert entry is CATALOG["parakeet-stt-nemo"]["tdt-0.6b-v3"]
 
-# ---------------------------------------------------------------------------
-# Adapter tests
-# ---------------------------------------------------------------------------
+
+
+
+
 
 class TestGetAdapterClass:
     def test_get_adapter_class_raises_when_missing(self, tmp_path: Path):
@@ -182,9 +195,9 @@ class TestGetAdapterClass:
         assert registry.get_adapter_class("fake") is FakeAdapter
 
 
-# ---------------------------------------------------------------------------
-# Resolve tests
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestResolve:
     def test_resolve_raises_model_not_found_when_no_manifest(self, tmp_path: Path):
@@ -246,20 +259,20 @@ class TestResolve:
         _write_manifest(store, "mymodel", "v1")
         registry = _make_registry(store)
 
-        # Pre-create a stale symlink at the expected location
+
         model_dir = store.root / "models" / "links" / "mymodel" / "v1"
         model_dir.mkdir(parents=True, exist_ok=True)
         stale_link = model_dir / "model.onnx"
         stale_link.symlink_to("/nonexistent/path/that/does/not/exist")
         assert stale_link.is_symlink()
-        assert not stale_link.exists()  # stale — target missing
+        assert not stale_link.exists()
 
-        # resolve() should remove the stale symlink and recreate it
+
         info, resolved_dir = registry.resolve("mymodel", "v1")
 
         link = resolved_dir / "model.onnx"
         assert link.is_symlink()
-        assert link.exists()  # points to a real blob now
+        assert link.exists()
 
     def test_resolve_injects_source_into_parameters(self, tmp_path: Path):
         store = _make_store(tmp_path)
@@ -273,16 +286,16 @@ class TestResolve:
 
     def test_resolve_no_source_means_no_injection(self, tmp_path: Path):
         store = _make_store(tmp_path)
-        _write_manifest(store, "mymodel", "v1")  # no source
+        _write_manifest(store, "mymodel", "v1")
         registry = _make_registry(store)
 
         info, _ = registry.resolve("mymodel", "v1")
         assert "_source" not in info.parameters
 
 
-# ---------------------------------------------------------------------------
-# Available models
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestAvailableModels:
     def test_available_models_returns_catalog(self, tmp_path: Path):
@@ -320,6 +333,20 @@ class TestAvailableModels:
         assert parakeet_nemo["format"] == "pytorch"
         assert parakeet_nemo["files"] == ["parakeet-tdt-0.6b-v3.nemo"]
         assert parakeet_nemo["parameters"]["sample_rate"] == 16_000
+
+    def test_parakeet_onnx_catalog_entry_uses_onnx_repo_and_runtime_source(self):
+        parakeet_onnx = CATALOG["parakeet-stt-onnx"]["tdt-0.6b-v3"]
+
+        assert parakeet_onnx["source"] == "istupakov/parakeet-tdt-0.6b-v3-onnx"
+        assert parakeet_onnx["runtime_source"] == "nvidia/parakeet-tdt-0.6b-v3"
+        assert parakeet_onnx["files"] == [
+            "config.json",
+            "decoder_joint-model.onnx",
+            "encoder-model.onnx",
+            "encoder-model.onnx.data",
+            "nemo128.onnx",
+            "vocab.txt",
+        ]
 
     def test_parakeet_cuda_alias_points_to_nemo_backend(self):
         registry_entry = CATALOG["parakeet-stt-nemo"]["tdt-0.6b-v3"]
@@ -386,6 +413,20 @@ class TestAvailableModels:
         assert registry.resolve_model_ref("parakeet", "latest", explicit_tag=True) == ("parakeet", "latest")
         assert registry.resolve_model_ref("kokoro", "v1.0", explicit_tag=True) == ("kokoro-tts-onnx", "v1.0")
 
+    def test_resolve_model_ref_uses_inferred_spark_profile_without_flag(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        store = _make_store(tmp_path)
+        registry = _make_registry(store)
+        monkeypatch.setenv("VOX_DEVICE", "auto")
+        monkeypatch.setattr("vox.core.registry.platform.machine", lambda: "arm64")
+
+        with patch("vox.core.registry.infer_runtime_profile", return_value="spark"):
+            assert registry.resolve_model_ref("parakeet") == ("parakeet-stt-nemo", "tdt-0.6b-v3")
+            assert registry.resolve_model_ref("kokoro") == ("kokoro-tts-torch", "v1.0")
+
     def test_openvoice_catalog_entry_has_checkpoint_files(self):
         openvoice = CATALOG["openvoice-tts-torch"]["v1"]
 
@@ -409,9 +450,9 @@ class TestAvailableModels:
         assert registry.resolve_model_ref("voxtral", "tts-4b", explicit_tag=True) == ("voxtral-tts-vllm", "4b")
 
 
-# ---------------------------------------------------------------------------
-# Adapter discovery
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestDiscoverAdapters:
     def test_discover_adapters_skips_broken_plugins(self):

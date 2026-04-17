@@ -12,9 +12,20 @@ import numpy as np
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
 from vox.audio.pipeline import prepare_for_stt
+from vox.conversation.text_buffer import (
+    split_by_chars,
+    split_by_words,
+    split_clauses,
+    split_for_tts,
+    split_long_sentence,
+    split_sentences,
+)
 from vox.core.adapter import STTAdapter, TTSAdapter
+from vox.core.cloned_voices import resolve_voice_request
+from vox.core.errors import VoiceCloningUnsupportedError, VoiceNotFoundError
 from vox.server.routes import get_default_model
 from vox.streaming.codecs import float32_to_pcm16, pcm16_to_float32, resample_audio
+from vox.streaming.mp3 import Mp3StreamEncoder
 from vox.streaming.opus import OpusStreamEncoder
 from vox.streaming.types import TARGET_SAMPLE_RATE, samples_to_ms
 
@@ -26,8 +37,7 @@ DEFAULT_LONGFORM_CHUNK_MS = 30_000
 DEFAULT_LONGFORM_OVERLAP_MS = 1_000
 MAX_LONGFORM_CHUNK_MS = 120_000
 MAX_LONGFORM_OVERLAP_MS = 10_000
-DEFAULT_TTS_CHUNK_CHARS = 250
-SUPPORTED_TTS_STREAM_FORMATS = {"pcm16", "opus"}
+SUPPORTED_TTS_STREAM_FORMATS = {"pcm16", "opus", "mp3"}
 SUPPORTED_STT_INPUT_FORMATS = {"pcm16", "wav", "flac", "mp3", "ogg", "webm"}
 
 
@@ -140,16 +150,34 @@ async def speech_stream(websocket: WebSocket):
             return
 
         scheduler = websocket.app.state.scheduler
+        store = websocket.app.state.store
         async with scheduler.acquire(config["model"]) as adapter:
             if not isinstance(adapter, TTSAdapter):
                 await _send_error(websocket, f"Model '{config['model']}' is not a TTS model")
                 return
+
+            try:
+                voice_arg, language_arg, reference_audio, reference_text = resolve_voice_request(
+                    adapter, store, config["voice"], config["language"],
+                )
+            except VoiceCloningUnsupportedError as exc:
+                await _send_error(websocket, str(exc))
+                return
+            except VoiceNotFoundError as exc:
+                await _send_error(websocket, str(exc))
+                return
+
+
+            override = config.get("chunk_chars")
+            adapter_cap = int(getattr(adapter.info(), "max_input_chars", 0) or 0)
+            effective_cap = override if override is not None else adapter_cap
 
             await websocket.send_json({
                 "type": "ready",
                 "model": config["model"],
                 "voice": config["voice"],
                 "response_format": config["response_format"],
+                "chunk_chars": effective_cap,
             })
 
             text_parts: list[str] = []
@@ -182,7 +210,7 @@ async def speech_stream(websocket: WebSocket):
                 await _send_error(websocket, "No input text provided")
                 return
 
-            text_chunks = _chunk_text(full_text, DEFAULT_TTS_CHUNK_CHARS)
+            text_chunks = [full_text] if effective_cap <= 0 else split_for_tts(full_text, max_chars=effective_cap)
             total_chars = sum(len(chunk) for chunk in text_chunks)
             completed_chars = 0
             completed_chunks = 0
@@ -190,15 +218,18 @@ async def speech_stream(websocket: WebSocket):
             total_processing_ms = 0
             audio_meta_sent = False
             opus_encoder: OpusStreamEncoder | None = None
+            mp3_encoder: Mp3StreamEncoder | None = None
             output_sample_rate = 0
 
             for text_chunk in text_chunks:
                 chunk_start = time.perf_counter()
                 async for chunk in adapter.synthesize(
                     text_chunk,
-                    voice=config["voice"],
+                    voice=voice_arg,
                     speed=config["speed"],
-                    language=config["language"],
+                    language=language_arg,
+                    reference_audio=reference_audio,
+                    reference_text=reference_text,
                 ):
                     audio = np.frombuffer(chunk.audio, dtype=np.float32)
                     if audio.size == 0:
@@ -214,14 +245,22 @@ async def speech_stream(websocket: WebSocket):
                         })
                         audio_meta_sent = True
 
-                    if config["response_format"] == "pcm16":
+                    fmt = config["response_format"]
+                    if fmt == "pcm16":
                         await websocket.send_bytes(float32_to_pcm16(audio))
-                    else:
+                    elif fmt == "opus":
                         pcm16 = float32_to_pcm16(audio)
                         if opus_encoder is None:
                             opus_encoder = OpusStreamEncoder(source_rate=chunk.sample_rate)
                         for opus_frame in opus_encoder.encode(pcm16):
                             await websocket.send_bytes(opus_frame)
+                    elif fmt == "mp3":
+                        pcm16 = float32_to_pcm16(audio)
+                        if mp3_encoder is None:
+                            mp3_encoder = Mp3StreamEncoder(source_rate=chunk.sample_rate)
+                        mp3_bytes = mp3_encoder.encode(pcm16)
+                        if mp3_bytes:
+                            await websocket.send_bytes(mp3_bytes)
 
                 total_processing_ms += int((time.perf_counter() - chunk_start) * 1000)
                 completed_chunks += 1
@@ -238,12 +277,18 @@ async def speech_stream(websocket: WebSocket):
                 for opus_frame in opus_encoder.flush():
                     await websocket.send_bytes(opus_frame)
 
+            if mp3_encoder is not None:
+                tail = mp3_encoder.flush()
+                if tail:
+                    await websocket.send_bytes(tail)
+
+            default_done_rate = 48_000 if config["response_format"] == "opus" else 24_000
             await websocket.send_json({
                 "type": "done",
                 "response_format": config["response_format"],
                 "audio_duration_ms": samples_to_ms(
                     total_audio_samples,
-                    output_sample_rate or (48_000 if config["response_format"] == "opus" else 24_000),
+                    output_sample_rate or default_done_rate,
                 ),
                 "processing_ms": total_processing_ms,
                 "text_length": total_chars,
@@ -347,12 +392,24 @@ async def _receive_tts_config(websocket: WebSocket) -> dict[str, object] | None:
             )
             return None
 
+        chunk_chars_raw = data.get("chunk_chars")
+        chunk_chars: int | None
+        if chunk_chars_raw is None:
+            chunk_chars = None
+        else:
+            try:
+                chunk_chars = max(0, int(chunk_chars_raw))
+            except (TypeError, ValueError):
+                await _send_error(websocket, "chunk_chars must be a non-negative integer")
+                return None
+
         return {
             "model": model,
             "voice": data.get("voice"),
             "speed": float(data.get("speed", 1.0)),
             "language": data.get("language"),
             "response_format": response_format,
+            "chunk_chars": chunk_chars,
         }
 
 
@@ -475,73 +532,20 @@ async def _send_transcribe_done(
     })
 
 
-def _chunk_text(text: str, max_chars: int) -> list[str]:
-    sentences = [
-        part.strip()
-        for part in re.split(r"(?<=[.!?])\s+", text.strip())
-        if part.strip()
-    ]
-    if not sentences:
-        return [text.strip()] if text.strip() else []
-
-    chunks: list[str] = []
-    current = ""
-    for sentence in sentences:
-        candidate = sentence if not current else f"{current} {sentence}"
-        if len(candidate) <= max_chars:
-            current = candidate
-            continue
-
-        if current:
-            chunks.append(current)
-            current = ""
-
-        if len(sentence) <= max_chars:
-            current = sentence
-            continue
-
-        chunks.extend(_split_long_sentence(sentence, max_chars))
-
-    if current:
-        chunks.append(current)
-    return chunks
 
 
-def _split_long_sentence(sentence: str, max_chars: int) -> list[str]:
-    pieces = [piece.strip() for piece in re.split(r"(?<=[,;:])\s+", sentence) if piece.strip()]
-    if len(pieces) == 1:
-        words = sentence.split()
-        chunks: list[str] = []
-        current = ""
-        for word in words:
-            candidate = word if not current else f"{current} {word}"
-            if len(candidate) <= max_chars:
-                current = candidate
-            else:
-                if current:
-                    chunks.append(current)
-                current = word
-        if current:
-            chunks.append(current)
-        return chunks
 
-    chunks: list[str] = []
-    current = ""
-    for piece in pieces:
-        candidate = piece if not current else f"{current} {piece}"
-        if len(candidate) <= max_chars:
-            current = candidate
-        else:
-            if current:
-                chunks.append(current)
-            if len(piece) <= max_chars:
-                current = piece
-            else:
-                chunks.extend(_split_long_sentence(piece, max_chars))
-                current = ""
-    if current:
-        chunks.append(current)
-    return chunks
+
+
+_SENTENCE_TERMINATORS = frozenset(".!?。！？．।؟")
+_CLAUSE_TERMINATORS = frozenset(",;:，、；：")
+
+_split_sentences = split_sentences
+_split_clauses = split_clauses
+_chunk_text = split_for_tts
+_split_long_sentence = split_long_sentence
+_split_by_words = split_by_words
+_split_by_chars = split_by_chars
 
 
 def _clamp_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -558,9 +562,9 @@ def _decode_stt_chunk(chunk: bytes, config: LongFormTranscribeConfig) -> np.ndar
             audio = resample_audio(audio, config.sample_rate, TARGET_SAMPLE_RATE)
         return audio
 
-    # Encoded input frames must be self-contained decodable chunks, such as
-    # MediaRecorder blobs or other containerized slices, not arbitrary byte
-    # ranges from a larger compressed file.
+
+
+
     return prepare_for_stt(chunk, format_hint=config.input_format)
 
 

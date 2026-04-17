@@ -14,19 +14,21 @@ from pathlib import Path
 from typing import Any
 
 from vox.core.errors import AdapterNotFoundError, ModelLoadError, ModelNotFoundError
+from vox.core.runtime import infer_runtime_profile
 from vox.core.store import BlobStore
 from vox.core.types import ModelInfo
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# A. Built-in model catalog
-# ---------------------------------------------------------------------------
+
+
+
 
 CATALOG: dict[str, dict[str, dict[str, Any]]] = {
     "parakeet-stt-onnx": {
         "tdt-0.6b": {
-            "source": "nvidia/parakeet-tdt-0.6b-v2",
+            "source": "istupakov/parakeet-tdt-0.6b-v2-onnx",
+            "runtime_source": "nvidia/parakeet-tdt-0.6b-v2",
             "architecture": "parakeet",
             "type": "stt",
             "adapter": "parakeet-stt-onnx",
@@ -34,10 +36,19 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "description": "NVIDIA Parakeet TDT 0.6B — top Open ASR Leaderboard model",
             "license": "CC-BY-4.0",
             "parameters": {"sample_rate": 16000},
+            "files": [
+                "config.json",
+                "decoder_joint-model.onnx",
+                "encoder-model.onnx",
+                "encoder-model.onnx.data",
+                "nemo128.onnx",
+                "vocab.txt",
+            ],
             "adapter_package": "vox-parakeet",
         },
         "tdt-0.6b-v3": {
-            "source": "nvidia/parakeet-tdt-0.6b-v3",
+            "source": "istupakov/parakeet-tdt-0.6b-v3-onnx",
+            "runtime_source": "nvidia/parakeet-tdt-0.6b-v3",
             "architecture": "parakeet",
             "type": "stt",
             "adapter": "parakeet-stt-onnx",
@@ -45,6 +56,14 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "description": "NVIDIA Parakeet TDT 0.6B v3 — 25 languages, streaming support",
             "license": "CC-BY-4.0",
             "parameters": {"sample_rate": 16000},
+            "files": [
+                "config.json",
+                "decoder_joint-model.onnx",
+                "encoder-model.onnx",
+                "encoder-model.onnx.data",
+                "nemo128.onnx",
+                "vocab.txt",
+            ],
             "adapter_package": "vox-parakeet",
         },
     },
@@ -393,15 +412,37 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "parameters": {"sample_rate": 24000, "default_voice": "Ryan"},
             "adapter_package": "vox-qwen",
         },
+        "1.7b-clone": {
+            "source": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+            "architecture": "qwen3-tts",
+            "type": "tts",
+            "adapter": "qwen3-tts-torch",
+            "format": "pytorch",
+            "description": "Alibaba Qwen3-TTS 1.7B Base — zero-shot voice cloning from reference audio",
+            "license": "Apache-2.0",
+            "parameters": {"sample_rate": 24000, "mode": "clone"},
+            "adapter_package": "vox-qwen",
+        },
+        "0.6b-clone": {
+            "source": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+            "architecture": "qwen3-tts",
+            "type": "tts",
+            "adapter": "qwen3-tts-torch",
+            "format": "pytorch",
+            "description": "Alibaba Qwen3-TTS 0.6B Base — lightweight zero-shot voice cloning from reference audio",
+            "license": "Apache-2.0",
+            "parameters": {"sample_rate": 24000, "mode": "clone"},
+            "adapter_package": "vox-qwen",
+        },
     },
 }
 
 
-# ---------------------------------------------------------------------------
-# B. Adapter discovery via entry points
-# ---------------------------------------------------------------------------
 
-ADAPTERS_DIR = "adapters"  # relative to vox home
+
+
+
+ADAPTERS_DIR = "adapters"
 REGISTRY_BASE_URL = "https://raw.githubusercontent.com/eleven-am/vox-registry/main"
 BUNDLED_ADAPTERS_ENV = "VOX_BUNDLED_ADAPTERS"
 BUNDLED_ADAPTERS_NO_DEPS_ENV = "VOX_BUNDLED_ADAPTERS_NO_DEPS"
@@ -550,7 +591,7 @@ def _runtime_profile() -> str:
     machine = platform.machine().strip().lower()
     if device == "cuda" and machine in {"arm64", "aarch64"}:
         return "spark"
-    return "default"
+    return infer_runtime_profile(device_hint=device)
 
 
 def resolve_family_alias(name: str, tag: str = "latest", *, explicit_tag: bool = False) -> tuple[str, str]:
@@ -706,9 +747,9 @@ def discover_adapters() -> dict[str, type]:
     return adapters
 
 
-# ---------------------------------------------------------------------------
-# C. Registry class
-# ---------------------------------------------------------------------------
+
+
+
 
 class ModelRegistry:
     """Ties the built-in catalog, blob store, and adapter discovery together."""
@@ -718,7 +759,7 @@ class ModelRegistry:
         _ensure_adapters_on_path(self._store.root)
         self._adapters = discover_adapters()
 
-    # -- catalog helpers -----------------------------------------------------
+
 
     def resolve_model_ref(self, name: str, tag: str = "latest", *, explicit_tag: bool = False) -> tuple[str, str]:
         """Resolve a possibly-bare model reference to a concrete catalog tag."""
@@ -733,10 +774,10 @@ class ModelRegistry:
             if entry is not None:
                 return entry
 
-        # Try remote registry
+
         entry = fetch_from_registry(name, tag)
         if entry is not None:
-            # Cache locally for this session
+
             if name not in CATALOG:
                 CATALOG[name] = {}
             CATALOG[name][tag] = entry
@@ -757,7 +798,7 @@ class ModelRegistry:
                     CATALOG[name][tag] = entry
         return CATALOG
 
-    # -- adapter helpers -----------------------------------------------------
+
 
     def ensure_adapter(self, adapter_name: str, package_name: str) -> bool:
         """Ensure an adapter is installed. Auto-installs if needed."""
@@ -768,7 +809,7 @@ class ModelRegistry:
         if not install_adapter_package(package_name, self._store.root):
             return False
 
-        # Re-discover after install
+
         _ensure_adapters_on_path(self._store.root)
         self._adapters = discover_adapters()
         return adapter_name in self._adapters
@@ -783,7 +824,7 @@ class ModelRegistry:
             raise AdapterNotFoundError(adapter_name)
         return cls
 
-    # -- resolution ----------------------------------------------------------
+
 
     def resolve(self, name: str, tag: str = "latest", *, explicit_tag: bool = False) -> tuple[ModelInfo, Path]:
         """Resolve a model to its :class:`ModelInfo` and a model directory path.
@@ -805,9 +846,11 @@ class ModelRegistry:
 
         info = ModelInfo.from_manifest_config(name, tag, cfg, size_bytes=size)
 
-        # Inject the catalog source (e.g. HuggingFace repo ID) so adapters
-        # that need a model ID rather than a local path can retrieve it.
-        source = cfg.get("source")
+
+
+
+
+        source = cfg.get("runtime_source") or cfg.get("source")
         if source:
             updated_params = {**info.parameters, "_source": source}
             info = replace(info, parameters=updated_params)
@@ -815,7 +858,7 @@ class ModelRegistry:
         if not manifest.layers:
             raise ModelNotFoundError(f"{name}:{tag} (manifest has no layers)")
 
-        # Build a model directory with symlinks to blobs using original filenames.
+
         model_dir = self._store.root / "models" / "links" / name / tag
         model_dir.mkdir(parents=True, exist_ok=True)
 
@@ -823,7 +866,7 @@ class ModelRegistry:
             link_path = model_dir / layer.filename
             blob_path = self._store.get_blob_path(layer.digest)
             link_path.parent.mkdir(parents=True, exist_ok=True)
-            # Remove stale/broken symlinks before recreating
+
             if link_path.is_symlink() and not link_path.exists():
                 link_path.unlink()
             if not link_path.exists():

@@ -24,21 +24,21 @@ def decode_audio(
     Tries soundfile first for lossless/WAV/FLAC, falls back to pydub
     (which uses ffmpeg) for MP3, OGG, and other formats.
     """
-    # Try soundfile first (fast, no subprocess)
+
     try:
         soundfile_kwargs: dict[str, str] = {"dtype": "float32"}
-        # libsndfile rejects explicit format hints for existing non-RAW files.
-        # Keep the hint only for true raw input and let the parser inspect
-        # containerized formats like WAV/FLAC/OGG on its own.
+
+
+
         if format_hint and format_hint.lower() == "raw":
             soundfile_kwargs["format"] = format_hint
         audio, sample_rate = sf.read(io.BytesIO(data), **soundfile_kwargs)
         return audio.astype(np.float32), sample_rate
     except (sf.SoundFileError, sf.SoundFileRuntimeError) as sf_err:
         logger.warning("soundfile failed: %s — falling back to pydub", sf_err)
-        _sf_error = sf_err  # save before Python deletes sf_err at block exit
+        _sf_error = sf_err
 
-    # Fall back to pydub (uses ffmpeg under the hood)
+
     from pydub import AudioSegment
 
     buffer = io.BytesIO(data)
@@ -53,7 +53,7 @@ def decode_audio(
     channels = segment.channels
     samples = np.array(segment.get_array_of_samples(), dtype=np.int16)
 
-    # pydub interleaves channels; reshape if stereo+
+
     if channels > 1:
         samples = samples.reshape(-1, channels)
 
@@ -71,7 +71,7 @@ def encode_wav(audio: NDArray[np.float32], sample_rate: int) -> bytes:
 def encode_flac(audio: NDArray[np.float32], sample_rate: int) -> bytes:
     """Encode float32 audio to FLAC bytes."""
     buf = io.BytesIO()
-    # FLAC requires integer samples; convert to 16-bit
+
     pcm16 = (audio * 32767.0).clip(-32768, 32767).astype(np.int16)
     sf.write(buf, pcm16, samplerate=sample_rate, format="FLAC", subtype="PCM_16")
     return buf.getvalue()
@@ -81,6 +81,43 @@ def encode_pcm(audio: NDArray[np.float32]) -> bytes:
     """Convert float32 audio to int16 little-endian PCM bytes."""
     pcm16 = (audio * 32767.0).clip(-32768, 32767).astype(np.int16)
     return pcm16.tobytes()
+
+
+def encode_mp3(
+    audio: NDArray[np.float32],
+    sample_rate: int,
+    *,
+    bitrate: int = 128,
+    channels: int = 1,
+) -> bytes:
+    """Encode float32 audio to MP3 bytes (constant bitrate, via lameenc)."""
+    import lameenc
+
+    encoder = lameenc.Encoder()
+    encoder.set_bit_rate(bitrate)
+    encoder.set_in_sample_rate(sample_rate)
+    encoder.set_channels(channels)
+    encoder.set_quality(2)
+
+    pcm16 = (audio * 32767.0).clip(-32768, 32767).astype(np.int16).tobytes()
+    body = encoder.encode(pcm16)
+    tail = encoder.flush()
+    return body + tail
+
+
+def encode_opus(
+    audio: NDArray[np.float32],
+    sample_rate: int,
+    *,
+    channels: int = 1,
+) -> bytes:
+    """Encode float32 audio to an Ogg-Opus container (via soundfile)."""
+    buf = io.BytesIO()
+    pcm16 = (audio * 32767.0).clip(-32768, 32767).astype(np.int16)
+    if channels > 1 and pcm16.ndim == 1:
+        pcm16 = pcm16.reshape(-1, channels)
+    sf.write(buf, pcm16, samplerate=sample_rate, format="OGG", subtype="OPUS")
+    return buf.getvalue()
 
 
 def pcm16_to_float32(data: bytes) -> NDArray[np.float32]:

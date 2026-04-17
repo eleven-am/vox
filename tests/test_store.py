@@ -16,9 +16,9 @@ import pytest
 from vox.core.store import BlobStore, Manifest, ManifestLayer, _manifest_to_dict
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+
+
+
 
 def _make_store(tmp_path: Path) -> BlobStore:
     """Create a BlobStore rooted at a temp directory."""
@@ -39,9 +39,9 @@ def _save_minimal_manifest(store: BlobStore, name: str, tag: str, digest: str, s
     return manifest
 
 
-# ---------------------------------------------------------------------------
-# Blob tests
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestWriteBlob:
     def test_write_blob_computes_correct_sha256(self, tmp_path: Path):
@@ -57,7 +57,7 @@ class TestWriteBlob:
         d1 = store.write_blob(io.BytesIO(data))
         d2 = store.write_blob(io.BytesIO(data))
         assert d1 == d2
-        # Only one blob file should exist (no duplicates / leftover temps).
+
         blob_files = list(store.blobs_dir.iterdir())
         assert len(blob_files) == 1
 
@@ -78,14 +78,14 @@ class TestWriteBlob:
         with pytest.raises(OSError, match="disk on fire"):
             store.write_blob(ExplodingIO())
 
-        # No temp files should remain.
+
         remaining = list(store.blobs_dir.iterdir())
         assert remaining == []
 
 
-# ---------------------------------------------------------------------------
-# Manifest round-trip tests
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestManifestOperations:
     def test_save_manifest_and_resolve_roundtrip(self, tmp_path: Path):
@@ -123,14 +123,14 @@ class TestManifestOperations:
 
     def test_list_models_empty_when_no_dir(self, tmp_path: Path):
         store = _make_store(tmp_path)
-        # manifests_dir does not exist yet
+
         assert store.list_models() == []
 
     def test_list_models_skips_corrupted_manifests_with_warning(self, tmp_path: Path, caplog):
         store = _make_store(tmp_path)
-        # Create one valid manifest.
+
         _save_minimal_manifest(store, "whisper", "good", "sha256-aaa", 100)
-        # Create a corrupted manifest (invalid JSON).
+
         bad_dir = store.manifests_dir / "whisper"
         bad_dir.mkdir(parents=True, exist_ok=True)
         (bad_dir / "bad").write_text("{not json!!!")
@@ -143,9 +143,9 @@ class TestManifestOperations:
         assert any("Skipping corrupted manifest" in msg for msg in caplog.messages)
 
 
-# ---------------------------------------------------------------------------
-# Delete tests
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestDeleteModel:
     def test_delete_model_removes_manifest(self, tmp_path: Path):
@@ -166,18 +166,18 @@ class TestDeleteModel:
         assert not parent.exists(), "Empty parent directory should be removed"
 
 
-# ---------------------------------------------------------------------------
-# Garbage collection tests
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestGcBlobs:
     def test_gc_blobs_removes_unreferenced(self, tmp_path: Path):
         store = _make_store(tmp_path)
-        # Write two blobs.
+
         d1 = store.write_blob(io.BytesIO(b"referenced"))
         d2 = store.write_blob(io.BytesIO(b"orphan"))
 
-        # Create a manifest referencing only d1.
+
         _save_minimal_manifest(store, "whisper", "latest", d1, 10)
 
         removed = store.gc_blobs()
@@ -200,7 +200,7 @@ class TestGcBlobs:
 
         old_tmp = store.blobs_dir / "something.tmp"
         old_tmp.write_bytes(b"stale")
-        # Backdate the modification time by 2 hours.
+
         old_mtime = time.time() - 7200
         os.utime(old_tmp, (old_mtime, old_mtime))
 
@@ -214,16 +214,16 @@ class TestGcBlobs:
 
         recent_tmp = store.blobs_dir / "inprogress.tmp"
         recent_tmp.write_bytes(b"still writing")
-        # mtime is "now" by default, well within the 1-hour window.
+
 
         removed = store.gc_blobs()
         assert removed == 0
         assert recent_tmp.exists()
 
 
-# ---------------------------------------------------------------------------
-# ManifestLayer validation
-# ---------------------------------------------------------------------------
+
+
+
 
 class TestManifestLayerValidation:
     def test_manifest_layer_rejects_invalid_digest(self):
