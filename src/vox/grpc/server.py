@@ -11,6 +11,7 @@ from vox.core.store import BlobStore
 from vox.grpc import vox_pb2, vox_pb2_grpc
 from vox.grpc.conversation_servicer import ConversationServicer
 from vox.grpc.health_servicer import HealthServicer
+from vox.grpc.interceptor import RequestIdInterceptor
 from vox.grpc.model_servicer import ModelServicer
 from vox.grpc.streaming_servicer import StreamingServiceServicer
 from vox.grpc.synthesis_servicer import SynthesisServicer
@@ -25,7 +26,7 @@ async def start_grpc_server(
     scheduler: Scheduler,
     port: int = 9090,
 ) -> grpc.aio.Server:
-    server = grpc.aio.server()
+    server = grpc.aio.server(interceptors=(RequestIdInterceptor(),))
 
     vox_pb2_grpc.add_HealthServiceServicer_to_server(
         HealthServicer(scheduler), server,

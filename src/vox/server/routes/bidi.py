@@ -23,6 +23,7 @@ from vox.conversation.text_buffer import (
 from vox.core.adapter import STTAdapter, TTSAdapter
 from vox.core.cloned_voices import resolve_voice_request
 from vox.core.errors import VoiceCloningUnsupportedError, VoiceNotFoundError
+from vox.logging_context import new_request_id, request_id_var
 from vox.server.routes import get_default_model
 from vox.streaming.codecs import float32_to_pcm16, pcm16_to_float32, resample_audio
 from vox.streaming.mp3 import Mp3StreamEncoder
@@ -77,6 +78,10 @@ class LongFormTranscribeState:
 @router.websocket("/v1/audio/transcriptions/stream")
 async def transcriptions_stream(websocket: WebSocket):
     await websocket.accept()
+    incoming = websocket.headers.get("x-request-id")
+    rid = incoming.strip() if incoming and incoming.strip() else new_request_id()
+    token = request_id_var.set(rid)
+    logger.info("long-form STT ws connected")
     config: LongFormTranscribeConfig | None = None
 
     try:
@@ -138,11 +143,17 @@ async def transcriptions_stream(websocket: WebSocket):
         await _safe_send_error(websocket, str(exc))
     finally:
         await _safe_close(websocket)
+        logger.info("long-form STT ws closed")
+        request_id_var.reset(token)
 
 
 @router.websocket("/v1/audio/speech/stream")
 async def speech_stream(websocket: WebSocket):
     await websocket.accept()
+    incoming = websocket.headers.get("x-request-id")
+    rid = incoming.strip() if incoming and incoming.strip() else new_request_id()
+    token = request_id_var.set(rid)
+    logger.info("long-form TTS ws connected")
 
     try:
         config = await _receive_tts_config(websocket)
@@ -300,6 +311,8 @@ async def speech_stream(websocket: WebSocket):
         await _safe_send_error(websocket, str(exc))
     finally:
         await _safe_close(websocket)
+        logger.info("long-form TTS ws closed")
+        request_id_var.reset(token)
 
 
 async def _receive_stt_config(websocket: WebSocket) -> LongFormTranscribeConfig | None:

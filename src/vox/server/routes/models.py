@@ -34,6 +34,12 @@ async def pull_model(req: PullRequest, request: Request):
     if not catalog_entry:
         raise HTTPException(status_code=404, detail=f"Model '{req.name}' not found in catalog")
 
+    logger.info(
+        "pull requested: %s -> %s:%s (adapter=%s, source=%s)",
+        req.name, resolved_name, resolved_tag,
+        catalog_entry.get("adapter", "?"), catalog_entry.get("source", "?"),
+    )
+
     async def stream_progress():
         yield json.dumps({"status": f"pulling {req.name}"}) + "\n"
 
@@ -120,10 +126,15 @@ async def pull_model(req: PullRequest, request: Request):
             )
             store.save_manifest(resolved_name, resolved_tag, manifest)
 
+            total_bytes = sum(layer["size"] for layer in layers)
+            logger.info(
+                "pull complete: %s:%s (%d layers, %.1f MiB)",
+                resolved_name, resolved_tag, len(layers), total_bytes / (1024 * 1024),
+            )
             yield json.dumps({"status": "success"}) + "\n"
 
         except Exception as e:
-            logger.exception(f"Failed to pull {req.name}")
+            logger.exception("pull failed: %s", req.name)
             yield json.dumps({"status": "error", "error": str(e)}) + "\n"
 
     return StreamingResponse(stream_progress(), media_type="application/x-ndjson")
@@ -194,6 +205,7 @@ async def _delete_by_name(name: str, request: Request) -> dict:
 
     store.delete_model(resolved_name, resolved_tag)
     store.gc_blobs()
+    logger.info("model deleted: %s:%s", resolved_name, resolved_tag)
     return {"status": "success"}
 
 

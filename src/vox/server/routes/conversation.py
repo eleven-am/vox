@@ -19,6 +19,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from vox.conversation import TurnPolicy
 from vox.conversation.session import ConversationConfig, ConversationSession
+from vox.logging_context import new_request_id, request_id_var
 from vox.streaming.types import TARGET_SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,12 @@ router = APIRouter()
 async def conversation_ws(websocket: WebSocket) -> None:
     await websocket.accept()
     scheduler = websocket.app.state.scheduler
+
+    incoming = websocket.headers.get("x-request-id")
+    rid = incoming.strip() if incoming and incoming.strip() else new_request_id()
+    token = request_id_var.set(rid)
+
+    logger.info("conversation ws connected")
 
     session: ConversationSession | None = None
 
@@ -124,6 +131,8 @@ async def conversation_ws(websocket: WebSocket) -> None:
             await session.close()
         with suppress(Exception):
             await websocket.close()
+        logger.info("conversation ws closed")
+        request_id_var.reset(token)
 
 
 def _parse_session_update(msg: dict) -> ConversationConfig:

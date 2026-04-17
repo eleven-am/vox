@@ -11,6 +11,8 @@ from vox.core.hf_runtime import configure_hf_runtime
 from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
+from vox.logging_config import configure_logging
+from vox.server.middleware import RequestIdMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -99,8 +101,10 @@ def create_app(
     preload_models: list[str] | None = None,
     preload_vad: bool = False,
 ) -> FastAPI:
+    configure_logging()
     configure_hf_runtime()
     app = FastAPI(title="Vox", version="0.1.0", lifespan=lifespan)
+    app.add_middleware(RequestIdMiddleware)
 
     if vox_home is None:
         env_home = os.environ.get("VOX_HOME")

@@ -67,6 +67,10 @@ async def _run_transcribe(
 
     processing_ms = int((time.perf_counter() - start_time) * 1000)
     result = replace(result, model=model)
+    logger.info(
+        "transcribe %s audio_ms=%d processing_ms=%d chars=%d",
+        model, result.duration_ms, processing_ms, len(result.text or ""),
+    )
     return result, processing_ms
 
 

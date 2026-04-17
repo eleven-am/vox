@@ -6,6 +6,7 @@ from contextlib import suppress
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from vox.logging_context import new_request_id, request_id_var
 from vox.streaming.annotation import enrich_transcript
 from vox.streaming.codecs import pcm16_to_float32, resample_audio
 from vox.streaming.partials import PartialTranscriptService
@@ -38,6 +39,10 @@ def _get_default_stt(registry, store) -> str:
 @router.websocket("/v1/audio/stream")
 async def audio_stream(websocket: WebSocket):
     await websocket.accept()
+    incoming = websocket.headers.get("x-request-id")
+    rid = incoming.strip() if incoming and incoming.strip() else new_request_id()
+    token = request_id_var.set(rid)
+    logger.info("realtime STT ws connected")
 
     scheduler = websocket.app.state.scheduler
     registry = websocket.app.state.registry
@@ -158,6 +163,8 @@ async def audio_stream(websocket: WebSocket):
 
         with suppress(Exception):
             await websocket.close()
+        logger.info("realtime STT ws closed")
+        request_id_var.reset(token)
 
 
 async def _send_event(websocket: WebSocket, event, session: SpeechSession, language: str) -> None:

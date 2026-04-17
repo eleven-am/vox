@@ -347,7 +347,10 @@ def serve(
     """Start the Vox server."""
     import uvicorn
 
+    from vox.logging_config import configure_logging
     from vox.server.app import create_app
+
+    configure_logging()
 
     app = create_app(
         default_device=device,
@@ -357,7 +360,7 @@ def serve(
         preload_models=list(preload_models),
         preload_vad=preload_vad,
     )
-    uvicorn.run(app, host=bind_host, port=port, log_level="info")
+    uvicorn.run(app, host=bind_host, port=port, log_config=None)
 
 
 @cli.command()

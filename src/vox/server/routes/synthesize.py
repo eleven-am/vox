@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 import numpy as np
 from fastapi import APIRouter, HTTPException, Request
@@ -66,6 +67,7 @@ async def synthesize(req: SynthesizeRequest, request: Request):
 
 async def _full_synthesis(scheduler, store, model: str, req: SynthesizeRequest):
     """Collect all audio chunks and return as a single response."""
+    start_time = time.perf_counter()
     async with scheduler.acquire(model) as adapter:
         if not isinstance(adapter, TTSAdapter):
             raise HTTPException(status_code=400, detail=f"Model '{model}' is not a TTS model")
@@ -93,6 +95,12 @@ async def _full_synthesis(scheduler, store, model: str, req: SynthesizeRequest):
             raise HTTPException(status_code=500, detail="No audio generated")
 
         encoded, content_type = prepare_for_output(audio, sample_rate, req.response_format)
+        processing_ms = int((time.perf_counter() - start_time) * 1000)
+        audio_ms = int(1000 * audio.size / max(sample_rate, 1))
+        logger.info(
+            "synthesize %s chars=%d audio_ms=%d processing_ms=%d format=%s",
+            model, len(req.input or ""), audio_ms, processing_ms, req.response_format,
+        )
         return StreamingResponse(
             iter([encoded]),
             media_type=content_type,
