@@ -15,7 +15,7 @@ import pytest
 from vox.core.adapter import STTAdapter, TTSAdapter
 from vox.core.errors import ModelLoadError
 from vox.core.runtime import RuntimeCapabilities
-from vox.core.scheduler import Scheduler, _detect_device, _is_oom_error
+from vox.core.scheduler import Scheduler, _detect_device, _is_oom_error, _LoadedModel
 from vox.core.types import (
     AdapterInfo,
     LoadedModelInfo,
@@ -26,9 +26,6 @@ from vox.core.types import (
     TranscribeResult,
     parse_model_name,
 )
-
-
-
 
 
 class FakeSTTAdapter(STTAdapter):
@@ -128,6 +125,7 @@ class FakeRegistry:
     def __init__(self):
         self._models: dict[str, tuple[ModelInfo, Path]] = {}
         self._adapter_classes: dict[str, type] = {}
+        self._aliases: dict[str, tuple[str, str]] = {}
 
     def add_model(
         self,
@@ -152,11 +150,21 @@ class FakeRegistry:
         if adapter_cls is not None:
             self._adapter_classes[adapter_name] = adapter_cls
 
+    def add_alias(self, alias: str, resolved_name: str, resolved_tag: str) -> None:
+        self._aliases[alias] = (resolved_name, resolved_tag)
+
     def resolve(self, name: str, tag: str) -> tuple[ModelInfo, Path]:
         key = f"{name}:{tag}"
         if key not in self._models:
             raise KeyError(f"Model {key} not registered in fake registry")
         return self._models[key]
+
+    def resolve_model_ref(
+        self, name: str, tag: str = "latest", *, explicit_tag: bool = False
+    ) -> tuple[str, str]:
+        if not explicit_tag and name in self._aliases:
+            return self._aliases[name]
+        return name, tag
 
     def get_adapter_class(self, adapter_name: str) -> type:
         if adapter_name not in self._adapter_classes:
@@ -413,6 +421,60 @@ async def test_select_device_uses_estimate_and_routes_to_cpu_when_cuda_is_tight(
 
 
 @pytest.mark.asyncio
+async def test_select_device_evicts_idle_cuda_model_before_falling_back_to_cpu():
+    class ExistingAdapter(FakeSTTAdapter):
+        def estimate_vram_bytes(self, **kwargs: Any) -> int:
+            return 2_000_000_000
+
+    class EstimatedAdapter(FakeSTTAdapter):
+        def estimate_vram_bytes(self, **kwargs: Any) -> int:
+            return 4_000_000_000
+
+    registry = FakeRegistry()
+    registry.add_model("existing", "latest", adapter_cls=ExistingAdapter)
+    registry.add_model("candidate", "latest", adapter_cls=EstimatedAdapter)
+    sched = Scheduler(registry, default_device="auto", max_loaded=3)
+    mock_torch = _make_mock_torch(free_bytes=3_500_000_000)
+    capabilities = RuntimeCapabilities(
+        system="linux",
+        machine="x86_64",
+        torch_cuda=True,
+        onnx_cuda=True,
+        onnx_coreml=False,
+        mps=False,
+        nvidia_device=True,
+    )
+
+    existing_info, _ = registry.resolve("existing", "latest")
+    existing_adapter = ExistingAdapter()
+    existing_adapter._loaded = True
+    existing_adapter._device = "cuda"
+    sched._models["existing:latest"] = _LoadedModel(
+        full_name="existing:latest",
+        info=existing_info,
+        adapter=existing_adapter,
+        device="cuda",
+        loaded_at=time.time() - 120,
+        last_used=time.time() - 120,
+    )
+
+    free_bytes = iter([3_500_000_000, 3_500_000_000, 5_500_000_000])
+
+    with (
+        patch.dict("sys.modules", {"torch": mock_torch}),
+        patch("vox.core.scheduler.detect_runtime_capabilities", return_value=capabilities),
+        patch("vox.core.scheduler._available_device_memory_bytes", side_effect=lambda device: next(free_bytes)),
+    ):
+        async with sched.acquire("candidate:latest") as adapter:
+            assert isinstance(adapter, EstimatedAdapter)
+            assert adapter.load_calls == [
+                ("/fake/models/candidate/latest", "auto"),
+            ]
+
+    assert existing_adapter.unload_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_scheduler_passes_source_hint_to_adapter_load():
     class SourceAwareAdapter(FakeSTTAdapter):
         load_kwargs: dict[str, Any] | None = None
@@ -567,6 +629,26 @@ async def test_preload(scheduler: Scheduler):
     assert loaded[0].name == "whisper"
     assert loaded[0].tag == "large-v3"
     assert loaded[0].ref_count == 0
+
+
+@pytest.mark.asyncio
+async def test_alias_acquire_reuses_preloaded_canonical_model():
+    registry = FakeRegistry()
+    registry.add_model("canonical-model", "v1", adapter_cls=FakeSTTAdapter)
+    registry.add_alias("friendly-model", "canonical-model", "v1")
+    sched = Scheduler(registry, default_device="cpu", max_loaded=3)
+
+    await sched.preload("friendly-model")
+
+    assert set(sched._models) == {"canonical-model:v1"}
+    preloaded = sched._models["canonical-model:v1"].adapter
+    assert isinstance(preloaded, FakeSTTAdapter)
+    assert len(preloaded.load_calls) == 1
+
+    async with sched.acquire("friendly-model") as adapter:
+        assert adapter is preloaded
+
+    assert len(preloaded.load_calls) == 1
 
 
 @pytest.mark.asyncio

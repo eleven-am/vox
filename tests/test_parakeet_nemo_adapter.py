@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -169,6 +170,155 @@ def test_load_rejects_missing_cuda(monkeypatch: pytest.MonkeyPatch):
     adapter = ParakeetNemoAdapter()
     with pytest.raises(RuntimeError, match="requires CUDA"):
         adapter.load("ignored-local-path", "cuda")
+
+
+def test_load_asr_model_class_bootstraps_missing_nemo_runtime(monkeypatch: pytest.MonkeyPatch):
+    _install_fake_torch(cuda_available=True)
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+
+    import vox_parakeet.nemo_adapter as module
+
+    fake_model_cls = _install_fake_nemo()
+    sys.modules.pop("nemo", None)
+    sys.modules.pop("nemo.collections", None)
+    sys.modules.pop("nemo.collections.asr", None)
+
+    imported_once = False
+    real_import_module = importlib.import_module
+
+    def fake_import_module(name: str):
+        nonlocal imported_once
+        if name == "nemo.collections.asr":
+            if not imported_once:
+                imported_once = True
+                raise ImportError("missing nemo")
+            return sys.modules[name]
+        return real_import_module(name)
+
+    install_mock = MagicMock(side_effect=lambda: _install_fake_nemo())
+    monkeypatch.setattr(module.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(module, "_install_nemo_runtime", install_mock)
+    monkeypatch.setattr(module, "_clear_nemo_modules", lambda: None)
+
+    loaded_model_cls = module._load_asr_model_class()
+    assert loaded_model_cls.__name__ == fake_model_cls.__name__
+    assert hasattr(loaded_model_cls, "from_pretrained")
+    install_mock.assert_called_once()
+
+
+def test_load_asr_model_class_prefers_global_nemo_before_local_runtime(monkeypatch: pytest.MonkeyPatch):
+    _install_fake_torch(cuda_available=True)
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+
+    import vox_parakeet.nemo_adapter as module
+
+    fake_model_cls = _install_fake_nemo()
+    ensure_path = MagicMock()
+    install_mock = MagicMock()
+
+    monkeypatch.setattr(module, "_ensure_runtime_target_on_path", ensure_path)
+    monkeypatch.setattr(module, "_install_nemo_runtime", install_mock)
+
+    loaded_model_cls = module._load_asr_model_class()
+
+    assert loaded_model_cls.__name__ == fake_model_cls.__name__
+    ensure_path.assert_not_called()
+    install_mock.assert_not_called()
+
+
+def test_prime_lightning_imports_attaches_utilities_modules(monkeypatch: pytest.MonkeyPatch):
+    _install_fake_torch(cuda_available=True)
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+
+    import vox_parakeet.nemo_adapter as module
+
+    lightning_pytorch = ModuleType("lightning.pytorch")
+    lightning_utilities = ModuleType("lightning.pytorch.utilities")
+    lightning_imports = ModuleType("lightning.pytorch.utilities.imports")
+
+    def fake_import_module(name: str):
+        if name == "lightning.pytorch":
+            return lightning_pytorch
+        if name == "lightning.pytorch.utilities":
+            return lightning_utilities
+        if name == "lightning.pytorch.utilities.imports":
+            return lightning_imports
+        raise AssertionError(f"unexpected import: {name}")
+
+    monkeypatch.setattr(module.importlib, "import_module", fake_import_module)
+
+    module._prime_lightning_imports()
+
+    assert lightning_pytorch.utilities is lightning_utilities
+    assert lightning_utilities.imports is lightning_imports
+
+
+def test_install_nemo_runtime_bootstraps_pip_when_uv_install_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+
+    import vox_parakeet.nemo_adapter as module
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        mock = MagicMock()
+        mock.stderr = ""
+        mock.stdout = ""
+        calls.append(cmd)
+        if cmd[0] == "/usr/bin/uv":
+            mock.returncode = 1
+            mock.stderr = "uv failed"
+        else:
+            mock.returncode = 0
+        return mock
+
+    monkeypatch.setattr(module, "_runtime_target_dir", lambda: tmp_path / "runtime")
+    monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/bin/uv")
+    monkeypatch.setattr(module.importlib.util, "find_spec", lambda name: None if name == "pip" else object())
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    module._install_nemo_runtime()
+
+    assert calls[0][:5] == ["/usr/bin/uv", "pip", "install", "--python", sys.executable]
+    assert "--target" in calls[0]
+    assert "nemo-toolkit[asr]" in calls[0]
+    assert calls[1][:3] == [sys.executable, "-m", "ensurepip"]
+    assert calls[2][:4] == [sys.executable, "-m", "pip", "install"]
+    assert "--target" in calls[2]
+    assert (tmp_path / "runtime" / ".vox-parakeet-nemo-runtime-ready").is_file()
+
+
+def test_install_nemo_runtime_uses_pip_when_uv_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+
+    import vox_parakeet.nemo_adapter as module
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        mock = MagicMock()
+        mock.stderr = ""
+        mock.stdout = ""
+        calls.append(cmd)
+        mock.returncode = 0
+        return mock
+
+    monkeypatch.setattr(module, "_runtime_target_dir", lambda: tmp_path / "runtime")
+    monkeypatch.setattr(module.shutil, "which", lambda name: None)
+    monkeypatch.setattr(module.importlib.util, "find_spec", lambda name: object())
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    module._install_nemo_runtime()
+
+    assert calls == [
+        [sys.executable, "-m", "pip", "install", "--target", str(tmp_path / "runtime"), "nemo-toolkit[asr]"]
+    ]
+    assert (tmp_path / "runtime" / ".vox-parakeet-nemo-runtime-ready").is_file()
 
 
 def test_transcribe_with_word_timestamps_builds_segment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

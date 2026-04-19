@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -141,6 +143,31 @@ class TestXTTSAdapter:
 
         adapter = XTTSAdapter()
         assert adapter.estimate_vram_bytes() == 4_000_000_000
+
+    def test_install_runtime_bootstraps_pip_before_retry(self):
+        import vox_xtts.adapter as module
+
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            if cmd[:3] == [sys.executable, "-m", "ensurepip"]:
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+            if cmd[:2] == ["uv", "pip"]:
+                return subprocess.CompletedProcess(cmd, 1, "", "uv failed")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with (
+            patch("vox_xtts.adapter._runtime_root", return_value=Path("/tmp/vox-xtts-test")),
+            patch(
+                "vox_xtts.adapter.importlib.util.find_spec",
+                side_effect=lambda name: None if name == "pip" else MagicMock(),
+            ),
+            patch("vox_xtts.adapter.subprocess.run", side_effect=fake_run),
+        ):
+            module._install_xtts_runtime()
+
+        assert any(cmd[:3] == [sys.executable, "-m", "ensurepip"] for cmd in calls)
 
     @staticmethod
     async def _collect(aiter):

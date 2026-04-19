@@ -97,6 +97,32 @@ class TestWhisperAdapterInfo:
             subprocess_run.assert_called_once()
             assert adapter.is_loaded is True
 
+    def test_bootstrap_uses_private_runtime_dir(self, tmp_path: Path):
+        fw_module, model_cls = _mock_faster_whisper_module()
+        model_cls.return_value = MagicMock()
+        ct2_module = _mock_ctranslate2(cuda_count=1)
+
+        def _install_side_effect(*_args, **_kwargs):
+            sys.modules["faster_whisper"] = fw_module
+            sys.modules["ctranslate2"] = ct2_module
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch.dict("sys.modules", {"torch": _mock_torch()}),
+            patch.dict(os.environ, {"VOX_HOME": str(tmp_path)}),
+            patch("vox_whisper.adapter.importlib.util.find_spec", return_value=None),
+            patch("vox_whisper.adapter.subprocess.run", side_effect=_install_side_effect) as subprocess_run,
+        ):
+            from vox_whisper.adapter import WhisperAdapter
+
+            adapter = WhisperAdapter()
+            adapter.load("local-model", "cuda", _source="Systran/faster-whisper-large-v3")
+
+            target_dir = tmp_path / "runtime" / "whisper"
+            install_cmd = subprocess_run.call_args.args[0]
+            assert str(target_dir) in install_cmd
+            assert sys.path[0] == str(target_dir)
+
     def test_load_uses_cpu_int8_when_cuda_missing(self):
         torch_mock = _mock_torch(cuda_available=False)
         fw_module, model_cls = _mock_faster_whisper_module()
@@ -109,6 +135,28 @@ class TestWhisperAdapterInfo:
             adapter.load("local-model", "cuda", _source="Systran/faster-whisper-base.en")
 
             model_cls.assert_called_once_with("Systran/faster-whisper-base.en", device="cpu", compute_type="int8")
+
+    def test_load_falls_back_to_cpu_when_ct2_cuda_runtime_is_missing(self):
+        torch_mock = _mock_torch(cuda_available=True)
+        fw_module, model_cls = _mock_faster_whisper_module()
+        model_cls.side_effect = [
+            RuntimeError("This CTranslate2 package was not compiled with CUDA support"),
+            MagicMock(),
+        ]
+
+        with patch.dict("sys.modules", {"torch": torch_mock, "faster_whisper": fw_module}):
+            from vox_whisper.adapter import WhisperAdapter
+
+            adapter = WhisperAdapter()
+            adapter.load("local-model", "cuda", _source="Systran/faster-whisper-base.en")
+
+            assert model_cls.call_count == 2
+            first_call = model_cls.call_args_list[0]
+            second_call = model_cls.call_args_list[1]
+            assert first_call.args == ("Systran/faster-whisper-base.en",)
+            assert first_call.kwargs == {"device": "cuda", "compute_type": "float16"}
+            assert second_call.args == ("Systran/faster-whisper-base.en",)
+            assert second_call.kwargs == {"device": "cpu", "compute_type": "int8"}
 
     def test_transcribe_builds_segments_and_words(self):
         torch_mock = _mock_torch()

@@ -56,6 +56,16 @@ def _select_compute_type(device: str, requested: str | None = None) -> str:
     return "int8"
 
 
+def _should_fallback_to_cpu(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "not compiled with cuda support" in message
+        or "cuda support" in message
+        or "cuda unavailable" in message
+        or "no cuda-capable device is detected" in message
+    )
+
+
 def _load_whisper_model_class() -> Any:
     try:
         from faster_whisper import WhisperModel
@@ -73,7 +83,17 @@ def _adapter_root() -> Path:
 def _runtime_target_dir() -> Path:
     env_home = os.environ.get(_VOX_HOME_ENV)
     vox_home = Path(env_home) if env_home else Path.home() / ".vox"
-    return vox_home / "adapters"
+    return vox_home / "runtime" / "whisper"
+
+
+def _activate_runtime_path() -> None:
+    runtime_dir = _runtime_target_dir()
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    runtime_path = str(runtime_dir)
+    if runtime_path in sys.path:
+        sys.path.remove(runtime_path)
+    sys.path.insert(0, runtime_path)
+    importlib.invalidate_caches()
 
 
 def _runtime_module_available(name: str) -> bool:
@@ -86,6 +106,7 @@ def _runtime_module_available(name: str) -> bool:
 
 
 def _ensure_runtime_dependencies() -> None:
+    _activate_runtime_path()
     if _runtime_module_available("faster_whisper") and _runtime_module_available("ctranslate2"):
         return
 
@@ -144,7 +165,8 @@ class WhisperAdapter(STTAdapter):
         source = kwargs.pop("_source", None)
         self._model_id = str(source or model_path)
         self._device = _select_device(device)
-        self._compute_type = _select_compute_type(self._device, kwargs.pop("compute_type", None))
+        requested_compute_type = kwargs.pop("compute_type", None)
+        self._compute_type = _select_compute_type(self._device, requested_compute_type)
         self._beam_size = int(kwargs.pop("beam_size", 5))
 
         model_ref = str(Path(model_path)) if Path(model_path).exists() else self._model_id
@@ -158,11 +180,27 @@ class WhisperAdapter(STTAdapter):
         start = time.perf_counter()
 
         WhisperModel = _load_whisper_model_class()
-        self._model = WhisperModel(
-            model_ref,
-            device=self._device,
-            compute_type=self._compute_type,
-        )
+        try:
+            self._model = WhisperModel(
+                model_ref,
+                device=self._device,
+                compute_type=self._compute_type,
+            )
+        except Exception as exc:
+            if self._device != "cuda" or not _should_fallback_to_cpu(exc):
+                raise
+            logger.warning(
+                "Whisper CUDA runtime unavailable for %s; falling back to CPU: %s",
+                model_ref,
+                exc,
+            )
+            self._device = "cpu"
+            self._compute_type = _select_compute_type("cpu", requested_compute_type)
+            self._model = WhisperModel(
+                model_ref,
+                device=self._device,
+                compute_type=self._compute_type,
+            )
 
         elapsed = time.perf_counter() - start
         logger.info("Whisper model loaded in %.2fs", elapsed)

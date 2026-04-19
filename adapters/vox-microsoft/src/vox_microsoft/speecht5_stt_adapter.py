@@ -1,12 +1,20 @@
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import logging
 import time
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
 from numpy.typing import NDArray
+
+from vox_microsoft._hf_compat import ensure_huggingface_hub_compat
+
+ensure_huggingface_hub_compat()
+
 from transformers import SpeechT5ForSpeechToText, SpeechT5Processor
 
 from vox.core.adapter import STTAdapter
@@ -62,12 +70,13 @@ class SpeechT5STTAdapter(STTAdapter):
         source = kwargs.pop("_source", None)
         self._model_id = source if source else model_path
         self._device = _select_device(device)
+        model_ref = str(Path(model_path)) if Path(model_path).exists() else self._model_id
 
-        logger.info("Loading SpeechT5 ASR model: %s (device=%s)", self._model_id, self._device)
+        logger.info("Loading SpeechT5 ASR model: %s (device=%s)", model_ref, self._device)
         start = time.perf_counter()
 
-        self._processor = SpeechT5Processor.from_pretrained(self._model_id)
-        self._model = SpeechT5ForSpeechToText.from_pretrained(self._model_id).to(self._device)
+        self._processor = SpeechT5Processor.from_pretrained(model_ref)
+        self._model = SpeechT5ForSpeechToText.from_pretrained(model_ref).to(self._device)
         self._model.eval()
 
         elapsed = time.perf_counter() - start

@@ -59,9 +59,24 @@ def _runtime_root() -> Path:
     return vox_home / "runtime" / "kokoro"
 
 
+def _prune_other_runtime_paths(runtime_path: str) -> None:
+    runtime_root = str(_runtime_root().parent)
+    pruned_paths: list[str] = []
+    for path in sys.path:
+        if path == runtime_path:
+            continue
+        if path.startswith(runtime_root):
+            continue
+        pruned_paths.append(path)
+    sys.path[:] = pruned_paths
+
+
 def _ensure_runtime_path() -> str:
     runtime_path = str(_runtime_root())
     _runtime_root().mkdir(parents=True, exist_ok=True)
+    _prune_other_runtime_paths(runtime_path)
+    if runtime_path in sys.path:
+        sys.path.remove(runtime_path)
     if runtime_path not in sys.path:
         sys.path.insert(0, runtime_path)
     return runtime_path
@@ -87,19 +102,64 @@ def _patch_numpy_core() -> None:
 
 def _install_runtime() -> None:
     runtime_path = _ensure_runtime_path()
-    runtime_requirements = [
+    runtime_root = Path(runtime_path)
+    core_runtime_requirements = [
         "kokoro>=0.9.4,<1.0.0",
         "soundfile",
-        "accelerate>=1.10.0,<2.0.0",
         "misaki[en]>=0.9.4",
+        "addict",
+        "regex",
+        "num2words",
+        "loguru",
     ]
-    if not _install_runtime_requirements(runtime_path, runtime_requirements):
+    support_runtime_requirements = [
+        "espeakng-loader",
+        "phonemizer-fork",
+        "spacy>=3.8.0,<3.9.0",
+    ]
+    curated_runtime_requirements = [
+        "spacy-curated-transformers>=0.3.0,<0.4.0",
+        "curated-transformers>=0.1.0,<0.2.0",
+        "curated-tokenizers>=0.0.9,<0.1.0",
+        "fsspec>=2023.5.0",
+    ]
+    transformers_runtime_requirements = [
+        "transformers>=4.57.6,<4.58",
+        "accelerate>=1.10.0,<2.0.0",
+        "huggingface-hub>=0.34,<1.0",
+        "tokenizers>=0.22,<0.24",
+        "safetensors>=0.5,<1.0",
+    ]
+    if not _install_runtime_requirements(runtime_path, core_runtime_requirements, no_deps=True):
         raise RuntimeError(
             "Kokoro Torch backend requires the official 'kokoro' runtime package"
         )
+    if not _install_runtime_requirements(runtime_path, support_runtime_requirements, no_deps=False):
+        raise RuntimeError(
+            "Kokoro Torch backend requires phonemizer and spaCy runtime dependencies"
+        )
+    if not _install_runtime_requirements(runtime_path, curated_runtime_requirements, no_deps=True):
+        raise RuntimeError(
+            "Kokoro Torch backend requires curated transformer runtime dependencies"
+        )
+    if not _install_runtime_requirements(
+        runtime_path,
+        transformers_runtime_requirements,
+        no_deps=True,
+        expected_paths=(
+            runtime_root / "transformers",
+            runtime_root / "accelerate",
+            runtime_root / "huggingface_hub",
+            runtime_root / "tokenizers",
+            runtime_root / "safetensors",
+        ),
+    ):
+        raise RuntimeError(
+            "Kokoro Torch backend requires Hugging Face transformer runtime dependencies"
+        )
 
     if not _spacy_model_installed(Path(runtime_path)) and not _install_runtime_requirements(
-        runtime_path, [_EN_CORE_WEB_SM_WHEEL]
+        runtime_path, [_EN_CORE_WEB_SM_WHEEL], no_deps=False
     ):
         raise RuntimeError(
             "Kokoro Torch backend requires the English spaCy runtime model"
@@ -111,8 +171,24 @@ def _install_runtime() -> None:
         )
 
 
-def _install_runtime_requirements(runtime_path: str, requirements: list[str]) -> bool:
+def _install_runtime_requirements(
+    runtime_path: str,
+    requirements: list[str],
+    *,
+    no_deps: bool,
+    expected_paths: tuple[Path, ...] = (),
+) -> bool:
     installers = [
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--target",
+            runtime_path,
+            "--upgrade",
+            *requirements,
+        ],
         [
             "uv",
             "pip",
@@ -121,18 +197,13 @@ def _install_runtime_requirements(runtime_path: str, requirements: list[str]) ->
             sys.executable,
             "--target",
             runtime_path,
-            *requirements,
-        ],
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--target",
-            runtime_path,
+            "--upgrade",
             *requirements,
         ],
     ]
+    if no_deps:
+        for installer in installers:
+            installer.insert(-len(requirements), "--no-deps")
     for installer in installers:
         try:
             result = subprocess.run(
@@ -144,6 +215,13 @@ def _install_runtime_requirements(runtime_path: str, requirements: list[str]) ->
         except (FileNotFoundError, subprocess.TimeoutExpired):
             continue
         if result.returncode == 0:
+            if expected_paths and not all(path.exists() for path in expected_paths):
+                logger.warning(
+                    "Installer reported success but runtime packages were not placed into %s: %s",
+                    runtime_path,
+                    requirements,
+                )
+                continue
             logger.info("Installed Kokoro runtime requirements into %s: %s", runtime_path, requirements)
             return True
         logger.warning("%s failed: %s", " ".join(installer), result.stderr)
@@ -275,9 +353,6 @@ class KokoroTorchAdapter(TTSAdapter):
 
     def _import_runtime(self):
         _ensure_runtime_path()
-
-
-        _clear_runtime_modules()
         _patch_numpy_core()
         try:
             return importlib.import_module("kokoro")

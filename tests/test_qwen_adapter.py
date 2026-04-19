@@ -6,7 +6,8 @@ import importlib
 import json
 import subprocess
 import sys
-from types import SimpleNamespace
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -88,6 +89,27 @@ class TestQwen3ASRAdapterInfo:
             assert adapter._model is model_instance
             assert adapter._processor is model_instance.processor
             assert forced_aligner_cls.from_pretrained.call_count == 0
+            assert adapter._model_ref == "Qwen/Qwen3-ASR-0.6B"
+
+    def test_load_prefers_local_model_path_when_present(self, tmp_path: Path):
+        torch_mock = _mock_torch()
+        qwen_asr_module, model_cls, _ = _mock_qwen_asr_module()
+        model_instance = MagicMock()
+        model_instance.processor = MagicMock()
+        model_cls.from_pretrained.return_value = model_instance
+        model_dir = tmp_path / "qwen-asr"
+        model_dir.mkdir()
+
+        with patch.dict("sys.modules", {"torch": torch_mock, "qwen_asr": qwen_asr_module, "qwen_tts": MagicMock()}):
+            from vox_qwen.asr_adapter import Qwen3ASRAdapter
+
+            adapter = Qwen3ASRAdapter()
+            adapter.load(str(model_dir), "cuda", _source="Qwen/Qwen3-ASR-0.6B")
+
+            model_cls.from_pretrained.assert_called_once()
+            assert model_cls.from_pretrained.call_args.args[0] == str(model_dir)
+            assert adapter._model_id == "Qwen/Qwen3-ASR-0.6B"
+            assert adapter._model_ref == str(model_dir)
 
     def test_load_skips_flash_attention_when_runtime_missing(self):
         torch_mock = _mock_torch()
@@ -309,6 +331,33 @@ class TestQwen3TTSAdapterInfo:
             assert adapter._tokenizer is model_instance.processor
             assert adapter._default_voice == "Ryan"
             assert adapter._supported_speakers == ["Ryan", "Aiden"]
+            assert adapter._model_ref == "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+
+    def test_tts_load_prefers_local_model_path_when_present(self, tmp_path: Path):
+        torch_mock = _mock_torch()
+        qwen_tts_module, model_cls = _mock_qwen_tts_module()
+        model_instance = MagicMock()
+        model_instance.processor = MagicMock()
+        model_instance.get_supported_speakers.return_value = ["Ryan"]
+        model_cls.from_pretrained.return_value = model_instance
+        model_dir = tmp_path / "qwen-tts"
+        model_dir.mkdir()
+
+        with patch.dict("sys.modules", {"torch": torch_mock, "qwen_asr": MagicMock(), "qwen_tts": qwen_tts_module}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            adapter.load(
+                str(model_dir),
+                "cuda",
+                _source="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+                default_voice="Ryan",
+            )
+
+            model_cls.from_pretrained.assert_called_once()
+            assert model_cls.from_pretrained.call_args.args[0] == str(model_dir)
+            assert adapter._model_id == "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+            assert adapter._model_ref == str(model_dir)
 
     def test_load_skips_flash_attention_when_runtime_missing(self):
         torch_mock = _mock_torch()
@@ -367,6 +416,35 @@ class TestQwen3TTSAdapterInfo:
             assert kwargs["instruct"] is None
             assert chunks[-1].is_final is True
             assert any(chunk.audio for chunk in chunks[:-1])
+
+    def test_synthesize_matches_supported_speaker_case_insensitively(self):
+        torch_mock = _mock_torch()
+        qwen_tts_module, model_cls = _mock_qwen_tts_module()
+        model_instance = MagicMock()
+        model_instance.processor = MagicMock()
+        model_instance.get_supported_speakers.return_value = ["ryan", "aiden"]
+        model_instance.generate_custom_voice.return_value = ([np.array([0.0, 0.25, 0.5], dtype=np.float32)], 24000)
+        model_cls.from_pretrained.return_value = model_instance
+
+        with patch.dict("sys.modules", {"torch": torch_mock, "qwen_asr": MagicMock(), "qwen_tts": qwen_tts_module}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            adapter.load(
+                "local-path",
+                "cuda",
+                _source="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+                default_voice="Ryan",
+            )
+
+            async def run():
+                async for _ in adapter.synthesize("Hello", voice="Ryan", language="en"):
+                    pass
+
+            asyncio.run(run())
+
+            kwargs = model_instance.generate_custom_voice.call_args.kwargs
+            assert kwargs["speaker"] == "ryan"
 
     def test_synthesize_normalizes_russian_language(self):
         torch_mock = _mock_torch()
@@ -526,7 +604,7 @@ class TestQwen3TTSAdapterInfo:
             ref_paths_seen = []
 
             def fake_run(cmd, **_):
-                args = dict(zip(cmd[::2], cmd[1::2]))
+                args = dict(zip(cmd[::2], cmd[1::2], strict=False))
                 ref_paths_seen.append(args.get("--ref-audio-path"))
                 assert "--mode" in cmd
                 assert cmd[cmd.index("--mode") + 1] == "clone"
@@ -589,6 +667,37 @@ class TestQwen3TTSAdapterInfo:
             assert adapter.is_loaded is True
             assert adapter._subprocess_only is True
             assert adapter._supported_speakers == ["Ryan"]
+
+    def test_subprocess_fallback_normalizes_default_voice_case(self):
+        with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            adapter._loaded = True
+            adapter._subprocess_only = True
+            adapter._model_id = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+            adapter._default_voice = "Ryan"
+            adapter._supported_speakers = ["ryan"]
+            adapter._device = "cpu"
+
+            audio = np.zeros(24_000, dtype=np.float32).tobytes()
+            payload = json.dumps({
+                "sample_rate": 24_000,
+                "audio_b64": base64.b64encode(audio).decode("ascii"),
+            })
+
+            async def collect():
+                chunks = []
+                async for chunk in adapter.synthesize("hello"):
+                    chunks.append(chunk)
+                return chunks
+
+            completed = subprocess.CompletedProcess([], 0, payload, "")
+            with patch("vox_qwen.tts_adapter.subprocess.run", return_value=completed):
+                chunks = asyncio.run(collect())
+
+            assert any(chunk.audio for chunk in chunks)
+            assert chunks[-1].is_final is True
 
     def test_synthesize_uses_subprocess_fallback(self):
         with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):
@@ -681,9 +790,11 @@ class TestQwenRuntimeBootstrap:
             patch.object(runtime, "_module_available", side_effect=[False, True]),
             patch("subprocess.run", side_effect=fake_run),
         ):
-            runtime.ensure_runtime("qwen-tts", "qwen-tts", "qwen_tts")
+            runtime.ensure_runtime("qwen-tts", "qwen-tts", "qwen_tts", no_deps=True)
 
         assert calls[0][0:2] == ["uv", "pip"]
+        assert "--upgrade" in calls[0]
+        assert "--no-deps" in calls[0]
 
     def test_qwen_tts_runtime_purges_accelerate(self):
         with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):
@@ -697,6 +808,11 @@ class TestQwenRuntimeBootstrap:
                 "transformers",
                 "tokenizers",
                 "qwen_tts",
+            )
+            assert ensure_runtime.call_args.kwargs["no_deps"] is False
+            assert ensure_runtime.call_args.kwargs["extra_packages"] == (
+                "sox",
+                "einops",
             )
 
     def test_qwen_asr_runtime_purges_accelerate(self):
@@ -712,3 +828,39 @@ class TestQwenRuntimeBootstrap:
                 "tokenizers",
                 "qwen_asr",
             )
+            assert ensure_runtime.call_args.kwargs["no_deps"] is False
+            assert ensure_runtime.call_args.kwargs["extra_packages"] == (
+                "qwen-omni-utils",
+                "nagisa==0.2.11",
+                "soynlp==0.0.493",
+                "librosa",
+                "soundfile",
+                "sox",
+            )
+
+    def test_qwen_asr_model_stub_avoids_forced_aligner_import_for_plain_transcription(self):
+        with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_tts": MagicMock()}, clear=False):
+            from vox_qwen import asr_adapter
+
+            qwen_asr_module = ModuleType("qwen_asr")
+            inference_module = ModuleType("qwen_asr.inference")
+            qwen3_asr_module = ModuleType("qwen_asr.inference.qwen3_asr")
+
+            model_cls = MagicMock()
+            qwen3_asr_module.Qwen3ASRModel = model_cls
+
+            with (
+                patch.object(asr_adapter, "ensure_runtime"),
+                patch.dict(
+                    "sys.modules",
+                    {
+                        "qwen_asr": qwen_asr_module,
+                        "qwen_asr.inference": inference_module,
+                        "qwen_asr.inference.qwen3_asr": qwen3_asr_module,
+                    },
+                    clear=False,
+                ),
+            ):
+                loaded = asr_adapter._load_qwen_asr_model()
+
+            assert loaded is model_cls

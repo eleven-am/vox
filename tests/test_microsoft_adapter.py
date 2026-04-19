@@ -3,7 +3,8 @@ from __future__ import annotations
 import importlib
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from types import ModuleType
+from unittest.mock import ANY, MagicMock, patch
 
 import numpy as np
 import pytest
@@ -12,6 +13,125 @@ from vox.core.types import ModelFormat, ModelType
 
 
 class TestSpeechT5STTAdapterInfo:
+    def test_module_shims_huggingface_hub_offline_mode_for_transformers_compat(self):
+        transformers = MagicMock()
+        torch = MagicMock()
+        huggingface_hub = ModuleType("huggingface_hub")
+        huggingface_hub_dataclasses = ModuleType("huggingface_hub.dataclasses")
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "transformers": transformers,
+                "torch": torch,
+                "huggingface_hub": huggingface_hub,
+                "huggingface_hub.dataclasses": huggingface_hub_dataclasses,
+            },
+        ):
+            sys.modules.pop("vox_microsoft.speecht5_stt_adapter", None)
+            importlib.import_module("vox_microsoft.speecht5_stt_adapter")
+
+            assert hasattr(huggingface_hub, "is_offline_mode")
+            assert huggingface_hub.is_offline_mode() is False
+            assert hasattr(huggingface_hub_dataclasses, "validate_typed_dict")
+            sentinel = object()
+            assert huggingface_hub_dataclasses.validate_typed_dict(sentinel) is sentinel
+
+    def test_module_shims_validate_typed_dict_even_if_offline_mode_already_exists(self):
+        transformers = MagicMock()
+        torch = MagicMock()
+        huggingface_hub = ModuleType("huggingface_hub")
+        huggingface_hub.is_offline_mode = lambda: True
+        huggingface_hub_dataclasses = ModuleType("huggingface_hub.dataclasses")
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "transformers": transformers,
+                "torch": torch,
+                "huggingface_hub": huggingface_hub,
+                "huggingface_hub.dataclasses": huggingface_hub_dataclasses,
+            },
+        ):
+            sys.modules.pop("vox_microsoft.speecht5_stt_adapter", None)
+            importlib.import_module("vox_microsoft.speecht5_stt_adapter")
+
+            assert huggingface_hub.is_offline_mode() is True
+            assert hasattr(huggingface_hub_dataclasses, "validate_typed_dict")
+            sentinel = object()
+            assert huggingface_hub_dataclasses.validate_typed_dict(sentinel) is sentinel
+
+    def test_module_shims_wrap_existing_typed_dict_validator_that_rejects_union_types(self):
+        transformers = MagicMock()
+        torch = MagicMock()
+        huggingface_hub = ModuleType("huggingface_hub")
+        huggingface_hub_dataclasses = ModuleType("huggingface_hub.dataclasses")
+
+        def _raising_validate_typed_dict(*args, **kwargs):
+            raise TypeError("Unsupported type for field 'transformers_version': str | None")
+
+        huggingface_hub_dataclasses.validate_typed_dict = _raising_validate_typed_dict
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "transformers": transformers,
+                "torch": torch,
+                "huggingface_hub": huggingface_hub,
+                "huggingface_hub.dataclasses": huggingface_hub_dataclasses,
+            },
+        ):
+            sys.modules.pop("vox_microsoft.speecht5_stt_adapter", None)
+            importlib.import_module("vox_microsoft.speecht5_stt_adapter")
+
+            sentinel = object()
+            assert huggingface_hub_dataclasses.validate_typed_dict(sentinel) is sentinel
+
+    def test_module_shims_wrap_hf_hub_download_without_tqdm_class_support(self):
+        transformers = MagicMock()
+        torch = MagicMock()
+        huggingface_hub = ModuleType("huggingface_hub")
+        huggingface_hub_dataclasses = ModuleType("huggingface_hub.dataclasses")
+        huggingface_hub_file_download = ModuleType("huggingface_hub.file_download")
+        calls: list[tuple[str, str, str | None]] = []
+
+        def _hf_hub_download(repo_id: str, filename: str, *, cache_dir: str | None = None):
+            calls.append((repo_id, filename, cache_dir))
+            return "ok"
+
+        huggingface_hub.hf_hub_download = _hf_hub_download
+        huggingface_hub_file_download.hf_hub_download = _hf_hub_download
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "transformers": transformers,
+                "torch": torch,
+                "huggingface_hub": huggingface_hub,
+                "huggingface_hub.dataclasses": huggingface_hub_dataclasses,
+                "huggingface_hub.file_download": huggingface_hub_file_download,
+            },
+        ):
+            sys.modules.pop("vox_microsoft.speecht5_stt_adapter", None)
+            importlib.import_module("vox_microsoft.speecht5_stt_adapter")
+
+            assert huggingface_hub.hf_hub_download(
+                "repo",
+                "weights.bin",
+                cache_dir="/tmp/cache",
+                tqdm_class=object,
+            ) == "ok"
+            assert huggingface_hub_file_download.hf_hub_download(
+                "repo",
+                "weights.bin",
+                cache_dir="/tmp/cache",
+                tqdm_class=object,
+            ) == "ok"
+            assert calls == [
+                ("repo", "weights.bin", "/tmp/cache"),
+                ("repo", "weights.bin", "/tmp/cache"),
+            ]
+
     def test_package_import_does_not_require_all_microsoft_variants(self):
         with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
             sys.modules.pop("vox_microsoft", None)
@@ -57,6 +177,26 @@ class TestSpeechT5STTAdapterInfo:
 
             model.to.assert_called_once_with("cpu")
             model.eval.assert_called_once()
+
+    def test_load_prefers_local_model_directory(self, tmp_path: Path):
+        transformers = MagicMock()
+        torch = MagicMock()
+        model_dir = tmp_path / "speecht5-asr"
+        model_dir.mkdir()
+        with patch.dict("sys.modules", {"transformers": transformers, "torch": torch}):
+            from vox_microsoft.speecht5_stt_adapter import SpeechT5STTAdapter
+
+            processor = MagicMock()
+            model = MagicMock()
+            model.to.return_value = model
+            transformers.SpeechT5Processor.from_pretrained.return_value = processor
+            transformers.SpeechT5ForSpeechToText.from_pretrained.return_value = model
+
+            adapter = SpeechT5STTAdapter()
+            adapter.load(str(model_dir), "cpu", _source="microsoft/speecht5_asr")
+
+            transformers.SpeechT5Processor.from_pretrained.assert_called_once_with(str(model_dir))
+            transformers.SpeechT5ForSpeechToText.from_pretrained.assert_called_once_with(str(model_dir))
 
     def test_transcribe_raises_when_not_loaded(self):
         with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
@@ -151,6 +291,31 @@ class TestSpeechT5TTSAdapterInfo:
             model.eval.assert_called_once()
             vocoder.eval.assert_called_once()
 
+    def test_load_prefers_local_model_directory(self, tmp_path: Path):
+        transformers = MagicMock()
+        torch = MagicMock()
+        datasets = MagicMock()
+        datasets.load_dataset.side_effect = Exception("no dataset")
+        model_dir = tmp_path / "speecht5-tts"
+        model_dir.mkdir()
+        with patch.dict("sys.modules", {"transformers": transformers, "torch": torch, "datasets": datasets}):
+            from vox_microsoft.speecht5_tts_adapter import SpeechT5TTSAdapter
+
+            processor = MagicMock()
+            model = MagicMock()
+            vocoder = MagicMock()
+            model.to.return_value = model
+            vocoder.to.return_value = vocoder
+            transformers.SpeechT5Processor.from_pretrained.return_value = processor
+            transformers.SpeechT5ForTextToSpeech.from_pretrained.return_value = model
+            transformers.SpeechT5HifiGan.from_pretrained.return_value = vocoder
+
+            adapter = SpeechT5TTSAdapter()
+            adapter.load(str(model_dir), "cpu", _source="microsoft/speecht5_tts")
+
+            transformers.SpeechT5Processor.from_pretrained.assert_called_once_with(str(model_dir))
+            transformers.SpeechT5ForTextToSpeech.from_pretrained.assert_called_once_with(str(model_dir))
+
     def test_list_voices_returns_presets(self):
         with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
             from vox_microsoft.speecht5_tts_adapter import SpeechT5TTSAdapter
@@ -217,19 +382,21 @@ class TestVibeVoiceTTSAdapterInfo:
             from vox_microsoft.vibevoice_tts_adapter import VibeVoiceTTSAdapter
 
             with patch(
-                "vox_microsoft.vibevoice_tts_adapter.find_spec",
+                "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
                 return_value=MagicMock(),
             ), patch(
-                "vox_microsoft.vibevoice_tts_adapter.metadata.version",
+                "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
                 side_effect=lambda name: {
-                    "vibevoice": "0.1.0",
+                    "vibevoice": "1.0.0",
                     "transformers": "4.50.0",
                     "accelerate": "1.6.0",
-                }[name],
+                    "huggingface_hub": "0.35.3",
+                    "tokenizers": "0.21.4",
+                }.get(name, "1.0.0"),
             ):
                 adapter = VibeVoiceTTSAdapter()
 
-                with pytest.raises(RuntimeError, match="transformers>=4.51.3 required"):
+                with pytest.raises(RuntimeError, match="transformers==4.51.3 required"):
                     adapter.load("microsoft/VibeVoice-Realtime-0.5B", "cpu")
 
     def test_load_primes_streaming_runtime_and_puts_model_in_eval_mode(self):
@@ -239,15 +406,17 @@ class TestVibeVoiceTTSAdapterInfo:
             from vox_microsoft.vibevoice_tts_adapter import VibeVoiceTTSAdapter
 
             with patch(
-                "vox_microsoft.vibevoice_tts_adapter.find_spec",
+                "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
                 return_value=MagicMock(),
             ), patch(
-                "vox_microsoft.vibevoice_tts_adapter.metadata.version",
+                "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
                 side_effect=lambda name: {
-                    "vibevoice": "0.1.0",
+                    "vibevoice": "1.0.0",
                     "transformers": "4.51.3",
                     "accelerate": "1.6.0",
-                }[name],
+                    "huggingface_hub": "0.35.3",
+                    "tokenizers": "0.21.4",
+                }.get(name, "1.0.0"),
             ):
                 tokenizer = MagicMock()
                 model = MagicMock()
@@ -287,15 +456,17 @@ class TestVibeVoiceTTSAdapterInfo:
             from vox_microsoft.vibevoice_tts_adapter import VibeVoiceTTSAdapter
 
             with patch(
-                "vox_microsoft.vibevoice_tts_adapter.find_spec",
+                "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
                 return_value=MagicMock(),
             ), patch(
-                "vox_microsoft.vibevoice_tts_adapter.metadata.version",
+                "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
                 side_effect=lambda name: {
-                    "vibevoice": "0.1.0",
+                    "vibevoice": "1.0.0",
                     "transformers": "4.51.3",
                     "accelerate": "1.6.0",
-                }[name],
+                    "huggingface_hub": "0.35.3",
+                    "tokenizers": "0.21.4",
+                }.get(name, "1.0.0"),
             ):
                 tokenizer = MagicMock()
                 model = MagicMock()
@@ -330,22 +501,22 @@ class TestVibeVoiceTTSAdapterInfo:
         with patch.dict("sys.modules", {"transformers": transformers, "torch": torch}):
             from vox_microsoft.vibevoice_tts_adapter import VibeVoiceTTSAdapter
 
+            transformers.AutoModel.register.side_effect = ValueError(
+                "<class 'vibevoice.modular.configuration_vibevoice."
+                "VibeVoiceAcousticTokenizerConfig'> is already used by a Transformers model."
+            )
             with patch(
-                "vox_microsoft.vibevoice_tts_adapter.find_spec",
+                "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
                 return_value=MagicMock(),
             ), patch(
-                "vox_microsoft.vibevoice_tts_adapter.metadata.version",
+                "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
                 side_effect=lambda name: {
-                    "vibevoice": "0.1.0",
+                    "vibevoice": "1.0.0",
                     "transformers": "4.51.3",
                     "accelerate": "1.6.0",
-                }[name],
-            ), patch(
-                "vox_microsoft.vibevoice_tts_adapter.AutoModel.register",
-                side_effect=ValueError(
-                    "<class 'vibevoice.modular.configuration_vibevoice."
-                    "VibeVoiceAcousticTokenizerConfig'> is already used by a Transformers model."
-                ),
+                    "huggingface_hub": "0.35.3",
+                    "tokenizers": "0.21.4",
+                }.get(name, "1.0.0"),
             ):
                 processor = MagicMock()
                 model = MagicMock()
@@ -378,29 +549,48 @@ class TestVibeVoiceTTSAdapterInfo:
             from vox_microsoft.vibevoice_tts_adapter import VibeVoiceTTSAdapter
 
             completed = MagicMock(returncode=0, stderr="")
+            installed = {
+                "vibevoice": False,
+                "diffusers": False,
+                "PIL": False,
+                "transformers": False,
+                "accelerate": False,
+                "huggingface_hub": False,
+                "tokenizers": False,
+            }
+            processor_module = MagicMock()
+            processor_module.VibeVoiceStreamingProcessor.from_pretrained.return_value = MagicMock()
+            model = MagicMock()
+            model_module = MagicMock()
+            model_module.VibeVoiceStreamingForConditionalGenerationInference.from_pretrained.return_value = model
             with patch(
-                "vox_microsoft.vibevoice_tts_adapter.find_spec",
-                return_value=None,
+                "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
+                side_effect=lambda name: installed.get(name, False),
             ), patch(
                 "vox_microsoft.vibevoice_tts_adapter.Path.home",
                 return_value=Path("/tmp/home"),
             ), patch(
                 "vox_microsoft.vibevoice_tts_adapter.subprocess.run",
-                return_value=completed,
+                side_effect=lambda *args, **kwargs: installed.update({key: True for key in installed}) or completed,
             ) as run, patch(
-                "vox_microsoft.vibevoice_tts_adapter.metadata.version",
+                "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
                 side_effect=lambda name: {
-                    "vibevoice": "0.1.0",
+                    "vibevoice": "1.0.0",
                     "transformers": "4.51.3",
                     "accelerate": "1.6.0",
-                }[name],
+                    "huggingface_hub": "0.35.3",
+                    "tokenizers": "0.21.4",
+                }.get(name, "1.0.0"),
             ), patch(
-                "vox_microsoft.vibevoice_tts_adapter.importlib.import_module"
+                "vox_microsoft.vibevoice_tts_adapter._prime_runtime"
+            ), patch(
+                "vox_microsoft.vibevoice_tts_adapter.importlib.import_module",
+                side_effect=[processor_module, model_module],
             ):
                 adapter = VibeVoiceTTSAdapter()
                 adapter.load("microsoft/VibeVoice-Realtime-0.5B", "cpu")
 
-                assert run.call_count == 2
+                assert run.call_count == 7
                 assert any(
                     call.args[0]
                     == [
@@ -431,13 +621,297 @@ class TestVibeVoiceTTSAdapterInfo:
                     ]
                     for call in run.call_args_list
                 )
+                assert any(
+                    call.args[0]
+                    == [
+                        "uv",
+                        "pip",
+                        "install",
+                        "--python",
+                        sys.executable,
+                        "--target",
+                        "/tmp/home/.vox/runtime/vibevoice",
+                        "--no-deps",
+                        "pillow",
+                    ]
+                    for call in run.call_args_list
+                )
+                assert any(
+                    call.args[0]
+                    == [
+                        "uv",
+                        "pip",
+                        "install",
+                        "--python",
+                        sys.executable,
+                        "--target",
+                        "/tmp/home/.vox/runtime/vibevoice",
+                        "--no-deps",
+                        "transformers==4.51.3",
+                    ]
+                    for call in run.call_args_list
+                )
+                assert any(
+                    call.args[0]
+                    == [
+                        "uv",
+                        "pip",
+                        "install",
+                        "--python",
+                        sys.executable,
+                        "--target",
+                        "/tmp/home/.vox/runtime/vibevoice",
+                        "--no-deps",
+                        "accelerate==1.6.0",
+                    ]
+                    for call in run.call_args_list
+                )
+                assert any(
+                    call.args[0]
+                    == [
+                        "uv",
+                        "pip",
+                        "install",
+                        "--python",
+                        sys.executable,
+                        "--target",
+                        "/tmp/home/.vox/runtime/vibevoice",
+                        "--no-deps",
+                        "huggingface-hub==0.35.3",
+                    ]
+                    for call in run.call_args_list
+                )
+                assert any(
+                    call.args[0]
+                    == [
+                        "uv",
+                        "pip",
+                        "install",
+                        "--python",
+                        sys.executable,
+                        "--target",
+                        "/tmp/home/.vox/runtime/vibevoice",
+                        "--no-deps",
+                        "tokenizers==0.21.4",
+                    ]
+                    for call in run.call_args_list
+                )
 
-    def test_list_voices_returns_empty(self):
+    def test_bootstrap_runtime_reinstalls_transformers_when_global_version_is_too_new(self):
+        transformers = MagicMock()
+        torch = MagicMock()
+        with patch.dict("sys.modules", {"transformers": transformers, "torch": torch}):
+            from vox_microsoft.vibevoice_tts_adapter import VibeVoiceTTSAdapter
+
+            completed = MagicMock(returncode=0, stderr="")
+            state = {"transformers": "4.57.6"}
+            installed = {
+                "vibevoice": True,
+                "diffusers": False,
+                "PIL": True,
+                "transformers": True,
+                "accelerate": True,
+                "huggingface_hub": True,
+                "tokenizers": True,
+            }
+            processor_module = MagicMock()
+            processor_module.VibeVoiceStreamingProcessor.from_pretrained.return_value = MagicMock()
+            model = MagicMock()
+            model_module = MagicMock()
+            model_module.VibeVoiceStreamingForConditionalGenerationInference.from_pretrained.return_value = model
+
+            def version_side_effect(name: str) -> str:
+                versions = {
+                    "vibevoice": "1.0.0",
+                    "transformers": state["transformers"],
+                    "accelerate": "1.6.0",
+                    "huggingface_hub": "0.35.3",
+                    "tokenizers": "0.21.4",
+                }
+                return versions.get(name, "1.0.0")
+
+            with patch(
+                "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
+                side_effect=lambda name: installed.get(name, False),
+            ), patch(
+                "vox_microsoft.vibevoice_tts_adapter.Path.home",
+                return_value=Path("/tmp/home"),
+            ), patch(
+                "vox_microsoft.vibevoice_tts_adapter.subprocess.run",
+                side_effect=lambda *args, **kwargs: (
+                    state.__setitem__("transformers", "4.51.3"),
+                    installed.update({"diffusers": True}),
+                    completed,
+                )[-1],
+            ) as run, patch(
+                "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
+                side_effect=version_side_effect,
+            ), patch(
+                "vox_microsoft.vibevoice_tts_adapter._prime_runtime"
+            ), patch(
+                "vox_microsoft.vibevoice_tts_adapter.importlib.import_module",
+                side_effect=[processor_module, model_module],
+            ):
+                adapter = VibeVoiceTTSAdapter()
+                adapter.load("microsoft/VibeVoice-Realtime-0.5B", "cpu")
+
+                assert any(
+                    call.args[0][-1] == "transformers==4.51.3"
+                    for call in run.call_args_list
+                )
+
+    def test_vibevoice_accepts_newer_runtime_package_version(self):
+        transformers = MagicMock()
+        torch = MagicMock()
+        with patch.dict("sys.modules", {"transformers": transformers, "torch": torch}):
+            from vox_microsoft.vibevoice_tts_adapter import VibeVoiceTTSAdapter
+
+            with patch(
+                "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
+                return_value=MagicMock(),
+            ), patch(
+                "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
+                side_effect=lambda name: {
+                    "vibevoice": "1.0.0",
+                    "transformers": "4.51.3",
+                    "accelerate": "1.6.0",
+                    "huggingface_hub": "0.35.3",
+                    "tokenizers": "0.21.4",
+                }.get(name, "1.0.0"),
+            ), patch(
+                "vox_microsoft.vibevoice_tts_adapter.importlib.import_module"
+            ):
+                adapter = VibeVoiceTTSAdapter()
+                adapter.load("microsoft/VibeVoice-Realtime-0.5B", "cpu")
+
+    def test_vibevoice_load_prefers_local_model_directory(self, tmp_path: Path):
+        transformers = MagicMock()
+        torch = MagicMock()
+        model_dir = tmp_path / "vibevoice"
+        model_dir.mkdir()
+        with patch.dict("sys.modules", {"transformers": transformers, "torch": torch}):
+            from vox_microsoft.vibevoice_tts_adapter import VibeVoiceTTSAdapter
+
+            with patch(
+                "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
+                return_value=MagicMock(),
+            ), patch(
+                "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
+                side_effect=lambda name: {
+                    "vibevoice": "1.0.0",
+                    "transformers": "4.51.3",
+                    "accelerate": "1.6.0",
+                    "huggingface_hub": "0.35.3",
+                    "tokenizers": "0.21.4",
+                }.get(name, "1.0.0"),
+            ), patch(
+                "vox_microsoft.vibevoice_tts_adapter.importlib.import_module"
+            ) as import_module:
+                processor = MagicMock()
+                model = MagicMock()
+                config_module = MagicMock()
+                config_module.VibeVoiceStreamingConfig = MagicMock(model_type="vibevoice_streaming")
+                runtime_model_module = MagicMock()
+                (
+                    runtime_model_module
+                    .VibeVoiceStreamingForConditionalGenerationInference
+                    .from_pretrained
+                    .return_value
+                ) = model
+                processor_module = MagicMock()
+                processor_class = MagicMock()
+                processor_class.from_pretrained.return_value = processor
+                processor_module.VibeVoiceStreamingProcessor = processor_class
+                import_module.side_effect = [
+                    config_module,
+                    runtime_model_module,
+                    processor_module,
+                    runtime_model_module,
+                ]
+
+                adapter = VibeVoiceTTSAdapter()
+                adapter.load(str(model_dir), "cpu", _source="microsoft/VibeVoice-Realtime-0.5B")
+
+                processor_class.from_pretrained.assert_called_once_with(str(model_dir))
+                runtime_model_module.VibeVoiceStreamingForConditionalGenerationInference.from_pretrained.assert_called_once_with(
+                    str(model_dir),
+                    torch_dtype=ANY,
+                    device_map="cpu",
+                    attn_implementation="sdpa",
+                )
+
+    def test_list_voices_includes_default_alias(self):
         with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
             from vox_microsoft.vibevoice_tts_adapter import VibeVoiceTTSAdapter
 
             adapter = VibeVoiceTTSAdapter()
-            assert adapter.list_voices() == []
+            voices = adapter.list_voices()
+            assert voices[0].id == "default"
+            assert voices[1].id == "en-Carter_man"
+
+    @pytest.mark.asyncio
+    async def test_synthesize_prefers_speech_outputs_over_generation_tokens(self):
+        with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
+            from vox_microsoft.vibevoice_tts_adapter import VibeVoiceTTSAdapter
+
+            adapter = VibeVoiceTTSAdapter()
+            adapter._loaded = True
+            adapter._device = "cpu"
+            adapter._model_id = "microsoft/VibeVoice-Realtime-0.5B"
+            adapter._processor = MagicMock()
+            adapter._processor.process_input_with_cached_prompt.return_value = {}
+            adapter._load_streaming_prompt = MagicMock(return_value={"cached": True})
+
+            token_ids = np.arange(12, dtype=np.int32)
+            speech = np.linspace(-0.25, 0.25, num=4096, dtype=np.float32)
+            adapter._model = MagicMock(
+                generate=MagicMock(
+                    return_value=type(
+                        "Output",
+                        (),
+                        {
+                            "speech_outputs": [speech],
+                            "__getitem__": lambda self, idx: token_ids,
+                        },
+                    )()
+                )
+            )
+
+            chunks = [chunk async for chunk in adapter.synthesize("hello world", voice="alloy")]
+
+            assert len(chunks) == 2
+            assert chunks[0].audio == speech.tobytes()
+            assert chunks[0].sample_rate == 24000
+            assert chunks[0].is_final is False
+            assert chunks[1].audio == b""
+            assert chunks[1].is_final is True
+
+    def test_coerce_audio_array_casts_torch_like_tensors_to_float32(self):
+        with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
+            from vox_microsoft.vibevoice_tts_adapter import VibeVoiceTTSAdapter
+
+            class FakeTensor:
+                def __init__(self, values):
+                    self._values = values
+
+                def float(self):
+                    return self
+
+                def detach(self):
+                    return self
+
+                def cpu(self):
+                    return self
+
+                def numpy(self):
+                    return self._values
+
+            audio = VibeVoiceTTSAdapter._coerce_audio_array(
+                type("Output", (), {"speech_outputs": [FakeTensor(np.array([1, 2, 3], dtype=np.float32))]})()
+            )
+
+            assert audio.dtype == np.float32
+            assert audio.tolist() == [1.0, 2.0, 3.0]
 
     def test_unload_resets_state(self):
         with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
@@ -469,22 +943,52 @@ class TestVibeVoiceTTSAdapterInfo:
                 "_streaming_prompt_dir",
                 return_value=tmp_path,
             ), patch(
-                "vox_microsoft.vibevoice_tts_adapter.urlretrieve"
-            ) as retrieve, patch(
+                "vox_microsoft.vibevoice_tts_adapter._download_streaming_prompt"
+            ) as download, patch(
                 "vox_microsoft.vibevoice_tts_adapter.torch.load",
                 return_value={"cached": "prompt"},
             ) as torch_load:
                 prompt = adapter._load_streaming_prompt(None)
                 cached = adapter._load_streaming_prompt(None)
 
-            retrieve.assert_called_once_with(
+            download.assert_called_once_with(
                 "https://raw.githubusercontent.com/microsoft/VibeVoice/main/"
                 "demo/voices/streaming_model/en-Carter_man.pt",
                 prompt_path,
+                accept=None,
             )
             torch_load.assert_called_once_with(prompt_path, map_location="cpu", weights_only=False)
             assert prompt == {"cached": "prompt"}
             assert cached == prompt
+
+    def test_load_streaming_prompt_maps_aliases_to_real_prompt(self, tmp_path):
+        with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
+            from vox_microsoft.vibevoice_tts_adapter import VibeVoiceTTSAdapter
+
+            adapter = VibeVoiceTTSAdapter()
+            adapter._device = "cpu"
+            prompt_path = tmp_path / "en-Carter_man.pt"
+
+            for alias in ("default", "alloy"):
+                with patch.object(
+                    VibeVoiceTTSAdapter,
+                    "_streaming_prompt_dir",
+                    return_value=tmp_path,
+                ), patch(
+                    "vox_microsoft.vibevoice_tts_adapter._download_streaming_prompt"
+                ) as download, patch(
+                    "vox_microsoft.vibevoice_tts_adapter.torch.load",
+                    return_value={"cached": "prompt"},
+                ):
+                    adapter._streaming_prompt_cache.clear()
+                    adapter._load_streaming_prompt(alias)
+
+                download.assert_called_once_with(
+                    "https://raw.githubusercontent.com/microsoft/VibeVoice/main/"
+                    "demo/voices/streaming_model/en-Carter_man.pt",
+                    prompt_path,
+                    accept=None,
+                )
 
     def test_estimate_vram_0_5b(self):
         with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):

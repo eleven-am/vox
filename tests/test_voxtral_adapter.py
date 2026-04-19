@@ -281,7 +281,16 @@ class TestVoxtralTTSAdapterInfo:
             from vox_voxtral.tts_adapter import VoxtralTTSAdapter
 
             adapter = VoxtralTTSAdapter()
-            assert adapter.estimate_vram_bytes() == 16_000_000_000
+            with patch("vox_voxtral.tts_adapter.recommended_voxtral_tts_vram_bytes", return_value=16_000_000_000):
+                assert adapter.estimate_vram_bytes() == 16_000_000_000
+
+    def test_estimate_vram_uses_small_gpu_profile_when_available(self):
+        with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
+            from vox_voxtral.tts_adapter import VoxtralTTSAdapter
+
+            adapter = VoxtralTTSAdapter()
+            with patch("vox_voxtral.tts_adapter.recommended_voxtral_tts_vram_bytes", return_value=12_000_000_000):
+                assert adapter.estimate_vram_bytes() == 12_000_000_000
 
     def test_load_raises_clear_error_when_vllm_omni_lacks_runtime(self):
         torch = MagicMock()

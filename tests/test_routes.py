@@ -6,7 +6,7 @@ import io
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
@@ -31,9 +31,6 @@ from vox.core.types import (
 )
 from vox.server.routes import get_default_model
 from vox.server.routes.transcribe import _mime_to_format
-
-
-
 
 
 class FakeSTTAdapter(STTAdapter):
@@ -134,6 +131,7 @@ class MockScheduler:
         self._adapters: dict[str, STTAdapter | TTSAdapter] = {}
         self._loaded_models: list = []
         self._unload_response: bool = True
+        self.preloaded_models: list[str] = []
 
     def register(self, model_name: str, adapter: STTAdapter | TTSAdapter) -> None:
         self._adapters[model_name] = adapter
@@ -158,6 +156,9 @@ class MockScheduler:
     async def unload(self, model_name: str) -> bool:
         """Return True if unloaded successfully, False if in use."""
         return self._unload_response
+
+    async def preload(self, model_name: str) -> None:
+        self.preloaded_models.append(model_name)
 
     async def start(self):
         pass
@@ -237,6 +238,81 @@ class TestListModels:
 
 
 class TestPullModels:
+    def test_pull_preloads_voxtral_before_reporting_success(self, tmp_path: Path):
+        store = BlobStore(root=tmp_path)
+        registry = MagicMock()
+        registry.lookup.return_value = {
+            "architecture": "voxtral-tts-vllm",
+            "type": "tts",
+            "adapter": "voxtral-tts-vllm",
+            "format": "pytorch",
+            "source": "mistralai/Voxtral-4B-TTS-2603",
+            "parameters": {"default_voice": "neutral_female"},
+            "adapter_package": "vox-voxtral",
+        }
+        registry.resolve_model_ref.return_value = ("voxtral-tts-vllm", "4b")
+        scheduler = MockScheduler()
+        app = _build_app(registry=registry, store=store, scheduler=scheduler)
+        client = TestClient(app)
+
+        downloaded = tmp_path / "model.bin"
+        downloaded.write_bytes(b"fake-voxtral-model")
+
+        with (
+            patch("huggingface_hub.HfApi") as mock_api_cls,
+            patch("huggingface_hub.hf_hub_download", return_value=str(downloaded)),
+        ):
+            mock_api = mock_api_cls.return_value
+            mock_api.repo_info.return_value = MagicMock(
+                siblings=[MagicMock(rfilename="model.bin")]
+            )
+
+            resp = client.post("/v1/models/pull", json={"name": "voxtral-tts"})
+
+        assert resp.status_code == 200
+        assert '"status": "preloading voxtral-tts-vllm:4b"' in resp.text
+        assert '"status": "voxtral-tts-vllm:4b ready"' in resp.text
+        assert '"status": "success"' in resp.text
+        assert scheduler.preloaded_models == ["voxtral-tts-vllm:4b"]
+
+    def test_pull_surfaces_voxtral_preload_failure(self, tmp_path: Path):
+        store = BlobStore(root=tmp_path)
+        registry = MagicMock()
+        registry.lookup.return_value = {
+            "architecture": "voxtral-tts-vllm",
+            "type": "tts",
+            "adapter": "voxtral-tts-vllm",
+            "format": "pytorch",
+            "source": "mistralai/Voxtral-4B-TTS-2603",
+            "parameters": {"default_voice": "neutral_female"},
+            "adapter_package": "vox-voxtral",
+        }
+        registry.resolve_model_ref.return_value = ("voxtral-tts-vllm", "4b")
+        scheduler = MockScheduler()
+        scheduler.preload = AsyncMock(side_effect=RuntimeError("worker bootstrap failed"))
+        app = _build_app(registry=registry, store=store, scheduler=scheduler)
+        client = TestClient(app)
+
+        downloaded = tmp_path / "model.bin"
+        downloaded.write_bytes(b"fake-voxtral-model")
+
+        with (
+            patch("huggingface_hub.HfApi") as mock_api_cls,
+            patch("huggingface_hub.hf_hub_download", return_value=str(downloaded)),
+        ):
+            mock_api = mock_api_cls.return_value
+            mock_api.repo_info.return_value = MagicMock(
+                siblings=[MagicMock(rfilename="model.bin")]
+            )
+
+            resp = client.post("/v1/models/pull", json={"name": "voxtral-tts"})
+
+        assert resp.status_code == 200
+        assert '"status": "preloading voxtral-tts-vllm:4b"' in resp.text
+        assert '"status": "error"' in resp.text
+        assert "worker bootstrap failed" in resp.text
+        assert '"status": "success"' not in resp.text
+
     def test_pull_persists_catalog_source_in_manifest(self, tmp_path: Path):
         store = BlobStore(root=tmp_path)
         registry = MagicMock()
@@ -695,6 +771,20 @@ class TestSynthesizeExtended:
                 "model": "test-tts:latest",
                 "input": "hello",
                 "voice": "default",
+                "response_format": "wav",
+            },
+        )
+        assert resp.status_code == 200
+        assert "audio/" in resp.headers["content-type"]
+        assert resp.content[:4] == b"RIFF"
+
+    def test_openai_speech_endpoint_allows_voice_to_be_omitted(self):
+        client = self._make_client_with_tts()
+        resp = client.post(
+            "/v1/audio/speech",
+            json={
+                "model": "test-tts:latest",
+                "input": "hello",
                 "response_format": "wav",
             },
         )

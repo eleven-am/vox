@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import sys
+from pathlib import Path
 from types import ModuleType
 from unittest.mock import ANY, MagicMock, patch
 
@@ -67,6 +68,7 @@ class TestDiaAdapterInfo:
     def test_load_bootstraps_transformers_when_dia_symbol_is_missing(self):
         torch = MagicMock()
         module = ModuleType("transformers")
+        module.__path__ = []  # type: ignore[attr-defined]
         processor_cls = MagicMock()
         processor = MagicMock()
         processor_cls.from_pretrained.return_value = processor
@@ -80,7 +82,15 @@ class TestDiaAdapterInfo:
 
         module.__getattr__ = module_getattr  # type: ignore[attr-defined]
 
-        with patch.dict("sys.modules", {"torch": torch, "transformers": module}):
+        with patch.dict(
+            "sys.modules",
+            {
+                "torch": torch,
+                "transformers": module,
+                "transformers.models": ModuleType("transformers.models"),
+                "transformers.models.dia": ModuleType("transformers.models.dia"),
+            },
+        ):
             from vox_dia.adapter import DiaAdapter
 
             model_cls = MagicMock()
@@ -91,11 +101,13 @@ class TestDiaAdapterInfo:
             def install_side_effect():
                 module._bootstrapped = True  # type: ignore[attr-defined]
                 module.DiaForConditionalGeneration = model_cls  # type: ignore[attr-defined]
+                module.AutoProcessor = processor_cls  # type: ignore[attr-defined]
                 sys.modules["transformers"] = module
 
             with (
                 patch("vox_dia.adapter._install_transformers_runtime", side_effect=install_side_effect),
                 patch("vox_dia.adapter._clear_transformers_modules"),
+                patch("vox_dia.adapter._runtime_has_dia_support", side_effect=[False, True]),
             ):
                 adapter = DiaAdapter()
                 adapter.load("nari-labs/Dia-1.6B", "cuda")
@@ -110,26 +122,52 @@ class TestDiaAdapterInfo:
         with patch.dict("sys.modules", {"torch": torch}):
             from vox_dia.adapter import DiaAdapter
 
+            processor_cls = MagicMock()
             processor = MagicMock()
+            processor_cls.from_pretrained.return_value = processor
             model = MagicMock()
             model.to.return_value = model
-            transformers = MagicMock()
-            transformers.AutoProcessor.from_pretrained.return_value = processor
-            transformers.DiaForConditionalGeneration.from_pretrained.return_value = model
+            model_cls = MagicMock()
+            model_cls.from_pretrained.return_value = model
 
             with patch(
                 "vox_dia.adapter._load_transformers_runtime",
-                return_value=(transformers.AutoProcessor, transformers.DiaForConditionalGeneration),
+                return_value=(processor_cls, model_cls),
             ):
                 adapter = DiaAdapter()
                 adapter.load("nari-labs/Dia-1.6B", "cuda")
 
-            transformers.AutoProcessor.from_pretrained.assert_called_once_with("nari-labs/Dia-1.6B")
-            transformers.DiaForConditionalGeneration.from_pretrained.assert_called_once_with(
-                "nari-labs/Dia-1.6B"
-            )
+            processor_cls.from_pretrained.assert_called_once_with("nari-labs/Dia-1.6B")
+            model_cls.from_pretrained.assert_called_once_with("nari-labs/Dia-1.6B")
             model.to.assert_called_once_with("cuda")
             model.eval.assert_called_once()
+
+    def test_load_prefers_local_model_path_when_present(self, tmp_path: Path):
+        torch = MagicMock()
+        with patch.dict("sys.modules", {"torch": torch}):
+            from vox_dia.adapter import DiaAdapter
+
+            processor_cls = MagicMock()
+            processor = MagicMock()
+            processor_cls.from_pretrained.return_value = processor
+            model = MagicMock()
+            model.to.return_value = model
+            model_cls = MagicMock()
+            model_cls.from_pretrained.return_value = model
+            model_dir = tmp_path / "dia"
+            model_dir.mkdir()
+
+            with patch(
+                "vox_dia.adapter._load_transformers_runtime",
+                return_value=(processor_cls, model_cls),
+            ):
+                adapter = DiaAdapter()
+                adapter.load(str(model_dir), "cuda", _source="nari-labs/Dia-1.6B")
+
+            processor_cls.from_pretrained.assert_called_once_with(str(model_dir))
+            model_cls.from_pretrained.assert_called_once_with(str(model_dir))
+            assert adapter._model_id == "nari-labs/Dia-1.6B"
+            assert adapter._model_ref == str(model_dir)
 
     def test_synthesize_raises_when_not_loaded(self):
         with patch.dict("sys.modules", {"torch": MagicMock()}):

@@ -7,11 +7,15 @@ APP_VERSION = $(shell sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' p
 
 GPU_BASE := nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 CPU_BASE := python:3.12-slim
-SPARK_BASE := nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
-SPARK_ORT_PACKAGE ?= onnxruntime-gpu
+SPARK_BASE := nvidia/cuda:12.9.1-cudnn-runtime-ubuntu24.04
+SPARK_ORT_PACKAGE ?= onnxruntime==1.23.0
 SPARK_ORT_INDEX_URL ?=
 SPARK_ORT_EXTRA_INDEX_URL ?=
-SPARK_ORT_WHEEL ?= https://pypi.jetson-ai-lab.io/jp6/cu129/+f/2e3/a07114007df15/onnxruntime_gpu-1.23.0-cp312-cp312-linux_aarch64.whl
+SPARK_ORT_WHEEL ?=
+SPARK_TORCH_WHEEL ?=
+SPARK_TORCHAUDIO_WHEEL ?=
+SPARK_TORCH_INDEX_URL ?= https://download.pytorch.org/whl/cu129
+SPARK_TORCH_EXTRA_INDEX_URL ?=
 
 .PHONY: build build-cpu build-spark build-local build-local-cpu build-local-spark push tag clean setup-buildx current-version bump-patch bump-minor bump-major test proto
 
@@ -21,6 +25,8 @@ build:
 	docker buildx build \
 		--platform $(PLATFORMS) \
 		--build-arg BASE_IMAGE=$(GPU_BASE) \
+		--build-arg VOX_ACCELERATOR=gpu \
+		--build-arg VOX_DEFAULT_DEVICE=auto \
 		--tag $(IMAGE):$(VERSION) \
 		--tag $(IMAGE):latest \
 		--push \
@@ -32,6 +38,8 @@ build-cpu:
 	docker buildx build \
 		--platform $(PLATFORMS) \
 		--build-arg BASE_IMAGE=$(CPU_BASE) \
+		--build-arg VOX_ACCELERATOR=cpu \
+		--build-arg VOX_DEFAULT_DEVICE=cpu \
 		--tag $(IMAGE):$(VERSION)-cpu \
 		--tag $(IMAGE):cpu \
 		--push \
@@ -48,16 +56,20 @@ build-spark:
 		--build-arg SPARK_ORT_INDEX_URL=$(SPARK_ORT_INDEX_URL) \
 		--build-arg SPARK_ORT_EXTRA_INDEX_URL=$(SPARK_ORT_EXTRA_INDEX_URL) \
 		--build-arg SPARK_ORT_WHEEL=$(SPARK_ORT_WHEEL) \
+		--build-arg SPARK_TORCH_WHEEL=$(SPARK_TORCH_WHEEL) \
+		--build-arg SPARK_TORCHAUDIO_WHEEL=$(SPARK_TORCHAUDIO_WHEEL) \
+		--build-arg SPARK_TORCH_INDEX_URL=$(SPARK_TORCH_INDEX_URL) \
+		--build-arg SPARK_TORCH_EXTRA_INDEX_URL=$(SPARK_TORCH_EXTRA_INDEX_URL) \
 		--tag $(IMAGE):$(VERSION)-spark \
 		--tag $(IMAGE):spark \
 		--push \
 		.
 
 build-local:
-	docker build --build-arg BASE_IMAGE=$(GPU_BASE) -t vox:local .
+	docker build --build-arg BASE_IMAGE=$(GPU_BASE) --build-arg VOX_ACCELERATOR=gpu --build-arg VOX_DEFAULT_DEVICE=auto -t vox:local .
 
 build-local-cpu:
-	docker build --build-arg BASE_IMAGE=$(CPU_BASE) -t vox:local-cpu .
+	docker build --build-arg BASE_IMAGE=$(CPU_BASE) --build-arg VOX_ACCELERATOR=cpu --build-arg VOX_DEFAULT_DEVICE=cpu -t vox:local-cpu .
 
 build-local-spark:
 	docker build \
@@ -68,6 +80,10 @@ build-local-spark:
 		--build-arg SPARK_ORT_INDEX_URL=$(SPARK_ORT_INDEX_URL) \
 		--build-arg SPARK_ORT_EXTRA_INDEX_URL=$(SPARK_ORT_EXTRA_INDEX_URL) \
 		--build-arg SPARK_ORT_WHEEL=$(SPARK_ORT_WHEEL) \
+		--build-arg SPARK_TORCH_WHEEL=$(SPARK_TORCH_WHEEL) \
+		--build-arg SPARK_TORCHAUDIO_WHEEL=$(SPARK_TORCHAUDIO_WHEEL) \
+		--build-arg SPARK_TORCH_INDEX_URL=$(SPARK_TORCH_INDEX_URL) \
+		--build-arg SPARK_TORCH_EXTRA_INDEX_URL=$(SPARK_TORCH_EXTRA_INDEX_URL) \
 		-t vox:spark-local \
 		.
 

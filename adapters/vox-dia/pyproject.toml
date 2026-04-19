@@ -1,6 +1,6 @@
 [project]
 name = "vox-dia"
-version = "0.2.1"
+version = "0.2.7"
 description = "Dia TTS adapter for Vox"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"

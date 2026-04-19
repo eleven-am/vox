@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -421,6 +421,7 @@ def test_kokoro_torch_requires_runtime_package(tmp_path: Path):
 def test_kokoro_torch_clears_conflicting_hub_modules():
     sys.modules["huggingface_hub"] = ModuleType("huggingface_hub")
     sys.modules["huggingface_hub.file_download"] = ModuleType("huggingface_hub.file_download")
+    sys.modules["transformers"] = ModuleType("transformers")
     sys.modules["tokenizers"] = ModuleType("tokenizers")
     sys.modules["safetensors"] = ModuleType("safetensors")
     sys.modules["spacy"] = ModuleType("spacy")
@@ -435,10 +436,57 @@ def test_kokoro_torch_clears_conflicting_hub_modules():
 
     assert "huggingface_hub" not in sys.modules
     assert "huggingface_hub.file_download" not in sys.modules
+    assert "transformers" not in sys.modules
     assert "tokenizers" not in sys.modules
     assert "safetensors" not in sys.modules
     assert "spacy" not in sys.modules
     assert "spacy.cli" not in sys.modules
+
+
+def test_kokoro_torch_runtime_install_verifies_target_population(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    from vox_kokoro.torch_adapter import _install_runtime_requirements
+
+    expected = tmp_path / "transformers"
+    calls = []
+
+    def fake_run(cmd, capture_output, text, timeout):
+        calls.append(cmd)
+        if len(calls) == 2:
+            expected.mkdir(parents=True, exist_ok=True)
+        return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+    monkeypatch.setattr("vox_kokoro.torch_adapter.subprocess.run", fake_run)
+
+    assert _install_runtime_requirements(
+        str(tmp_path),
+        ["transformers>=4.57.6,<4.58"],
+        no_deps=True,
+        expected_paths=(expected,),
+    )
+    assert len(calls) == 2
+
+
+def test_kokoro_torch_runtime_path_prunes_other_vox_runtime_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("VOX_HOME", str(tmp_path / "vox-home"))
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    from vox_kokoro.torch_adapter import _ensure_runtime_path
+
+    other_runtime = str(tmp_path / "vox-home" / "runtime" / "qwen-tts")
+    Path(other_runtime).mkdir(parents=True, exist_ok=True)
+    sys.path.insert(0, other_runtime)
+
+    runtime_path = _ensure_runtime_path()
+
+    assert runtime_path == str(tmp_path / "vox-home" / "runtime" / "kokoro")
+    assert sys.path[0] == runtime_path
+    assert other_runtime not in sys.path
 
 
 def test_kokoro_torch_runtime_bootstrap_installs_spacy_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -450,9 +498,13 @@ def test_kokoro_torch_runtime_bootstrap_installs_spacy_model(tmp_path: Path, mon
     from vox_kokoro import torch_adapter as torch_adapter_module
 
     calls: list[list[str]] = []
+    runtime_root = tmp_path / "vox-home" / "runtime" / "kokoro"
 
     def _fake_run(cmd: list[str], **kwargs):
         calls.append(cmd)
+        if "transformers>=4.57.6,<4.58" in cmd:
+            for package_name in ("transformers", "accelerate", "huggingface_hub", "tokenizers", "safetensors"):
+                (runtime_root / package_name).mkdir(parents=True, exist_ok=True)
         return MagicMock(returncode=0, stderr="")
 
     spacy_model_checks = iter([False, True])
@@ -465,6 +517,13 @@ def test_kokoro_torch_runtime_bootstrap_installs_spacy_model(tmp_path: Path, mon
     ):
         torch_adapter_module._install_runtime()
 
-    assert len(calls) == 2
+    assert len(calls) == 5
     assert "kokoro>=0.9.4,<1.0.0" in calls[0]
-    assert any("en_core_web_sm-3.8.0-py3-none-any.whl" in part for part in calls[1])
+    assert "--no-deps" in calls[0]
+    assert "spacy>=3.8.0,<3.9.0" in calls[1]
+    assert "--no-deps" not in calls[1]
+    assert "spacy-curated-transformers>=0.3.0,<0.4.0" in calls[2]
+    assert "--no-deps" in calls[2]
+    assert "transformers>=4.57.6,<4.58" in calls[3]
+    assert "--no-deps" in calls[3]
+    assert any("en_core_web_sm-3.8.0-py3-none-any.whl" in part for part in calls[4])

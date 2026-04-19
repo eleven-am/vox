@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import tempfile
 import time
+import types
 from contextlib import suppress
 from importlib.util import find_spec
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -73,6 +76,15 @@ _VRAM_ESTIMATES: dict[str, int] = {
     "0.6b": 1_500_000_000,
     "1.7b": 4_000_000_000,
 }
+QWEN_ASR_RUNTIME_PACKAGES = (
+    "qwen-omni-utils",
+    "nagisa==0.2.11",
+    "soynlp==0.0.493",
+    "librosa",
+    "soundfile",
+    "sox",
+)
+_QWEN_FORCE_ALIGNER_STUB_MODULE = "qwen_asr.inference.qwen3_forced_aligner"
 
 
 def _select_device(device: str) -> str:
@@ -139,9 +151,27 @@ def _load_qwen_asr_model() -> Any:
         "qwen-asr",
         "qwen_asr",
         purge_modules=("accelerate", "transformers", "tokenizers", "qwen_asr"),
+        no_deps=False,
+        extra_packages=QWEN_ASR_RUNTIME_PACKAGES,
     )
+    existing_module = sys.modules.get("qwen_asr")
+    existing_model = getattr(existing_module, "Qwen3ASRModel", None) if existing_module is not None else None
+    if existing_model is not None:
+        return existing_model
+
+    stub = types.ModuleType(_QWEN_FORCE_ALIGNER_STUB_MODULE)
+
+    class _MissingForcedAligner:
+        @classmethod
+        def from_pretrained(cls, *_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError(
+                "Qwen3-ASR word timestamps require the qwen-asr forced aligner runtime"
+            )
+
+    stub.Qwen3ForcedAligner = _MissingForcedAligner
+    sys.modules[_QWEN_FORCE_ALIGNER_STUB_MODULE] = stub
     try:
-        from qwen_asr import Qwen3ASRModel
+        from qwen_asr.inference.qwen3_asr import Qwen3ASRModel
         return Qwen3ASRModel
     except ImportError as exc:  # pragma: no cover - depends on runtime image
         raise RuntimeError(
@@ -155,9 +185,17 @@ def _load_qwen_forced_aligner() -> Any:
         "qwen-asr",
         "qwen_asr",
         purge_modules=("accelerate", "transformers", "tokenizers", "qwen_asr"),
+        no_deps=False,
+        extra_packages=QWEN_ASR_RUNTIME_PACKAGES,
     )
+    existing_module = sys.modules.get("qwen_asr")
+    existing_aligner = getattr(existing_module, "Qwen3ForcedAligner", None) if existing_module is not None else None
+    if existing_aligner is not None:
+        return existing_aligner
+
+    sys.modules.pop(_QWEN_FORCE_ALIGNER_STUB_MODULE, None)
     try:
-        from qwen_asr import Qwen3ForcedAligner
+        from qwen_asr.inference.qwen3_forced_aligner import Qwen3ForcedAligner
         return Qwen3ForcedAligner
     except ImportError as exc:  # pragma: no cover - depends on runtime image
         raise RuntimeError(
@@ -173,6 +211,7 @@ class Qwen3ASRAdapter(STTAdapter):
         self._aligner: Any = None
         self._loaded = False
         self._model_id: str = ""
+        self._model_ref: str = ""
         self._device: str = "cpu"
 
     def info(self) -> AdapterInfo:
@@ -194,11 +233,18 @@ class Qwen3ASRAdapter(STTAdapter):
 
         source = kwargs.pop("_source", None)
         self._model_id = source if source else model_path
+        path = Path(model_path)
+        self._model_ref = str(path) if path.exists() else self._model_id
         self._device = _select_device(device)
         dtype = _select_dtype(self._device)
         device_map = _select_device_map(self._device)
 
-        logger.info("Loading Qwen3-ASR model: %s (device=%s, dtype=%s)", self._model_id, self._device, dtype)
+        logger.info(
+            "Loading Qwen3-ASR model: %s (device=%s, dtype=%s)",
+            self._model_ref,
+            self._device,
+            dtype,
+        )
         start = time.perf_counter()
 
         Qwen3ASRModel = _load_qwen_asr_model()
@@ -209,7 +255,7 @@ class Qwen3ASRAdapter(STTAdapter):
         if self._device == "cuda" and _supports_flash_attention():
             model_kwargs["attn_implementation"] = "flash_attention_2"
 
-        self._model = Qwen3ASRModel.from_pretrained(self._model_id, **model_kwargs)
+        self._model = Qwen3ASRModel.from_pretrained(self._model_ref, **model_kwargs)
         self._processor = getattr(self._model, "processor", None)
 
         elapsed = time.perf_counter() - start
@@ -221,6 +267,7 @@ class Qwen3ASRAdapter(STTAdapter):
         self._processor = None
         self._aligner = None
         self._loaded = False
+        self._model_ref = ""
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         logger.info("Qwen3-ASR adapter unloaded")

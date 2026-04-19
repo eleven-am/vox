@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import logging
+import os
+import shutil
+import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -26,6 +31,9 @@ logger = logging.getLogger(__name__)
 PARAKEET_SAMPLE_RATE = 16_000
 DEFAULT_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 DEFAULT_VRAM_BYTES = 2_500_000_000
+_RUNTIME_SENTINEL = ".vox-parakeet-nemo-runtime-ready"
+_RUNTIME_DEPENDENCIES = ("nemo-toolkit[asr]",)
+_VOX_HOME_ENV = "VOX_HOME"
 
 
 def _select_device(device: str) -> str:
@@ -46,13 +54,127 @@ def _torch_module() -> Any:
         raise RuntimeError("Parakeet NeMo requires torch to be installed in the runtime image") from exc
 
 
-def _load_asr_model_class() -> Any:
+def _runtime_target_dir() -> Path:
+    env_home = os.environ.get(_VOX_HOME_ENV)
+    vox_home = Path(env_home) if env_home else Path.home() / ".vox"
+    return vox_home / "adapters" / "vox-parakeet" / "runtime"
+
+
+def _ensure_runtime_target_on_path() -> Path:
+    runtime_dir = _runtime_target_dir()
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    runtime_dir_str = str(runtime_dir)
+    if runtime_dir_str not in sys.path:
+        sys.path.insert(0, runtime_dir_str)
+    return runtime_dir
+
+
+def _runtime_module_available(name: str) -> bool:
+    if name in sys.modules:
+        return True
     try:
-        import nemo.collections.asr as nemo_asr
-    except ImportError as exc:  # pragma: no cover - runtime-image dependent
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _clear_nemo_modules() -> None:
+    for name in list(sys.modules):
+        if name == "nemo" or name.startswith("nemo."):
+            sys.modules.pop(name, None)
+    importlib.invalidate_caches()
+
+
+def _prime_lightning_imports() -> None:
+    """Preload Lightning utility modules so NeMo sees a fully populated package tree."""
+    try:
+        lightning_pytorch = importlib.import_module("lightning.pytorch")
+        utilities_module = importlib.import_module("lightning.pytorch.utilities")
+        lightning_pytorch.utilities = utilities_module
+
+        imports_module = importlib.import_module("lightning.pytorch.utilities.imports")
+        utilities_module.imports = imports_module
+    except Exception:
+        return
+
+
+def _ensure_pip_available() -> None:
+    if importlib.util.find_spec("pip") is not None:
+        return
+
+    result = subprocess.run(
+        [sys.executable, "-m", "ensurepip", "--default-pip"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if result.returncode != 0:
         raise RuntimeError(
-            "Parakeet NeMo requires nemo-toolkit[asr] to be installed in the runtime image"
-        ) from exc
+            "Failed to bootstrap pip for the Parakeet NeMo runtime install. "
+            f"stderr: {result.stderr.strip()}"
+        )
+
+
+def _install_nemo_runtime() -> None:
+    runtime_dir = _ensure_runtime_target_on_path()
+    sentinel = runtime_dir / _RUNTIME_SENTINEL
+    if sentinel.is_file() and _runtime_module_available("nemo.collections.asr"):
+        return
+
+    result = None
+    uv_executable = shutil.which("uv")
+    if uv_executable:
+        install_cmd = [
+            uv_executable,
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
+            "--target",
+            str(runtime_dir),
+            *_RUNTIME_DEPENDENCIES,
+        ]
+        result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=1800)
+
+    if result is None or result.returncode != 0:
+        _ensure_pip_available()
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "--target",
+                str(runtime_dir),
+                *_RUNTIME_DEPENDENCIES,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=1800,
+        )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Failed to install Parakeet NeMo runtime dependencies. "
+            f"stderr: {result.stderr.strip() or result.stdout.strip()}"
+        )
+    sentinel.touch()
+
+
+def _load_asr_model_class() -> Any:
+    _prime_lightning_imports()
+    try:
+        nemo_asr = importlib.import_module("nemo.collections.asr")
+    except ImportError:
+        _ensure_runtime_target_on_path()
+        _install_nemo_runtime()
+        _clear_nemo_modules()
+        _prime_lightning_imports()
+        try:
+            nemo_asr = importlib.import_module("nemo.collections.asr")
+        except ImportError as exc:  # pragma: no cover - runtime-image dependent
+            raise RuntimeError(
+                "Parakeet NeMo could not import nemo-toolkit[asr] after adapter-local bootstrap"
+            ) from exc
 
     try:
         return nemo_asr.models.ASRModel

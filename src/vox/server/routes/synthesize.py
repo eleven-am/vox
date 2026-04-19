@@ -36,7 +36,7 @@ class SynthesizeRequest(BaseModel):
 class OpenAISpeechRequest(BaseModel):
     model: str = ""
     input: str
-    voice: str = "default"
+    voice: str | None = None
     speed: float = 1.0
     response_format: str = "wav"
     language: str | None = None

@@ -24,7 +24,7 @@ from vox.core.types import (
     SynthesizeChunk,
     VoiceInfo,
 )
-from vox_voxtral.runtime import ensure_voxtral_tts_runtime
+from vox_voxtral.runtime import ensure_voxtral_tts_runtime, recommended_voxtral_tts_vram_bytes
 
 logger = logging.getLogger(__name__)
 
@@ -360,7 +360,8 @@ class VoxtralTTSAdapter(TTSAdapter):
         return list(PRESET_VOICES)
 
     def estimate_vram_bytes(self, **kwargs: Any) -> int:
-        return 16_000_000_000
+        del kwargs
+        return recommended_voxtral_tts_vram_bytes()
 
     def _start_worker(self, *, explicit_stage_configs_path: str | None) -> None:
         worker_script = str(Path(__file__).with_name("voxtral_tts_worker.py"))

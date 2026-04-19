@@ -5,6 +5,7 @@ import logging
 import os
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import time
 from collections.abc import AsyncIterator
@@ -38,15 +39,36 @@ def _clear_modules(prefixes: tuple[str, ...]) -> None:
 
 
 def _ensure_runtime_path() -> str:
-    runtime_path = str(_runtime_root())
-    _runtime_root().mkdir(parents=True, exist_ok=True)
+    runtime_root = _runtime_root()
+    runtime_path = str(runtime_root)
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    fallback_file = runtime_root / "_vox_runtime_fallback_paths.pth"
+    fallback_file.write_text(f"{sysconfig.get_paths()['purelib']}\n", encoding="utf-8")
     if runtime_path not in sys.path:
         sys.path.insert(0, runtime_path)
     return runtime_path
 
 
+def _ensure_pip_available() -> None:
+    if importlib.util.find_spec("pip") is not None:
+        return
+
+    result = subprocess.run(
+        [sys.executable, "-m", "ensurepip", "--default-pip"],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            "Failed to bootstrap pip for the XTTS runtime install. "
+            f"stderr: {result.stderr.strip()}"
+        )
+
+
 def _install_xtts_runtime() -> None:
     runtime_path = _ensure_runtime_path()
+    _ensure_pip_available()
     installers = [
         [
             "uv",
@@ -70,6 +92,7 @@ def _install_xtts_runtime() -> None:
             "accelerate>=1.10.0,<2.0.0",
         ],
     ]
+    last_error = ""
     for installer in installers:
         try:
             result = subprocess.run(
@@ -82,12 +105,15 @@ def _install_xtts_runtime() -> None:
             continue
         if result.returncode == 0:
             logger.info("Bootstrapped XTTS runtime into %s", runtime_path)
+            _clear_modules(("TTS", "coqpit", "trainer", "transformers", "tokenizers", "accelerate"))
             return
-        logger.warning("%s failed: %s", " ".join(installer), result.stderr)
+        last_error = result.stderr.strip() or result.stdout.strip()
+        logger.warning("%s failed: %s", " ".join(installer), last_error)
 
     raise RuntimeError(
         "XTTS-v2 requires the Coqui TTS runtime package. "
-        "Install `coqui-tts>=0.27.5` plus PyTorch in the image."
+        "Install `coqui-tts>=0.27.5` plus PyTorch in the image. "
+        f"Last runtime install error: {last_error}"
     )
 
 
@@ -140,7 +166,6 @@ def _load_tts_runtime() -> type[Any]:
         return TTS
     except ImportError:
         _install_xtts_runtime()
-        _clear_modules(("TTS", "transformers", "tokenizers", "huggingface_hub", "accelerate"))
         _patch_transformers_runtime()
         try:
             from TTS.api import TTS

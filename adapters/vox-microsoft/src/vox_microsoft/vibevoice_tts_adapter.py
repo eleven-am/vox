@@ -1,3 +1,5 @@
+# ruff: noqa: E402
+
 from __future__ import annotations
 
 import importlib
@@ -9,16 +11,17 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import contextmanager
 from copy import deepcopy
-from importlib import metadata
-from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
-from urllib.request import urlretrieve
+from urllib.request import Request, urlopen
 
 import numpy as np
 import torch
 from numpy.typing import NDArray
-from transformers import AutoConfig, AutoModel, AutoModelForCausalLM
+
+from vox_microsoft._hf_compat import ensure_huggingface_hub_compat
+
+ensure_huggingface_hub_compat()
 
 from vox.core.adapter import TTSAdapter
 from vox.core.types import (
@@ -36,20 +39,48 @@ VIBEVOICE_RUNTIME_PACKAGE = "vibevoice"
 VIBEVOICE_RUNTIME_SPEC = "vibevoice[streamingtts] @ git+https://github.com/microsoft/VibeVoice.git@main"
 VIBEVOICE_MIN_VERSIONS: dict[str, str] = {
     VIBEVOICE_RUNTIME_PACKAGE: "0.1.0",
+}
+VIBEVOICE_PINNED_VERSIONS: dict[str, str] = {
     "transformers": "4.51.3",
     "accelerate": "1.6.0",
+    "huggingface_hub": "0.35.3",
+    "tokenizers": "0.21.4",
 }
-VIBEVOICE_BOOTSTRAP_PACKAGES: tuple[str, ...] = ("vibevoice", "diffusers")
+VIBEVOICE_BOOTSTRAP_SPECS: dict[str, str] = {
+    VIBEVOICE_RUNTIME_PACKAGE: VIBEVOICE_RUNTIME_SPEC,
+    "diffusers": "diffusers",
+    "PIL": "pillow",
+    "transformers": "transformers==4.51.3",
+    "accelerate": "accelerate==1.6.0",
+    "huggingface_hub": "huggingface-hub==0.35.3",
+    "tokenizers": "tokenizers==0.21.4",
+}
 VIBEVOICE_STREAMING_DEFAULT_VOICE = "en-Carter_man"
 VIBEVOICE_STREAMING_VOICE_URL = (
     "https://raw.githubusercontent.com/microsoft/VibeVoice/main/"
     "demo/voices/streaming_model/{voice}.pt"
 )
+VIBEVOICE_STREAMING_VOICE_API_URL = (
+    "https://api.github.com/repos/microsoft/VibeVoice/contents/"
+    "demo/voices/streaming_model/{voice}.pt?ref=main"
+)
+VIBEVOICE_STREAMING_VOICE_ALIASES: dict[str, str] = {
+    "default": VIBEVOICE_STREAMING_DEFAULT_VOICE,
+    "alloy": VIBEVOICE_STREAMING_DEFAULT_VOICE,
+}
 
 _VRAM_ESTIMATES: dict[str, int] = {
     "0.5b": 2_000_000_000,
     "1.5b": 6_000_000_000,
 }
+VIBEVOICE_STREAMING_PRESET_VOICES: tuple[str, ...] = (
+    "en-Carter_man",
+    "en-Davis_man",
+    "en-Emma_woman",
+    "en-Frank_man",
+    "en-Grace_woman",
+    "en-Mike_man",
+)
 
 
 def _select_device(device: str) -> str:
@@ -76,6 +107,20 @@ def _estimate_vram(model_id: str) -> int:
     return _VRAM_ESTIMATES["0.5b"]
 
 
+def _normalize_streaming_voice_id(voice: str | None) -> str:
+    voice_key = (voice or VIBEVOICE_STREAMING_DEFAULT_VOICE).strip() or VIBEVOICE_STREAMING_DEFAULT_VOICE
+    return VIBEVOICE_STREAMING_VOICE_ALIASES.get(voice_key.lower(), voice_key)
+
+
+def _download_streaming_prompt(url: str, target: Path, *, accept: str | None = None) -> None:
+    headers = {"User-Agent": "vox-runtime/1.0"}
+    if accept:
+        headers["Accept"] = accept
+    request = Request(url, headers=headers)
+    with urlopen(request, timeout=120) as response:
+        target.write_bytes(response.read())
+
+
 def _version_tuple(version: str) -> tuple[int, ...]:
     parts: list[int] = []
     for token in version.split("."):
@@ -98,11 +143,53 @@ def _ensure_runtime_path() -> str:
     return runtime_path
 
 
+def _runtime_dist_version(dist_name: str) -> str | None:
+    normalized = dist_name.replace("-", "_")
+    candidates = sorted(_runtime_root().glob(f"{normalized}-*.dist-info"))
+    if not candidates:
+        return None
+    metadata_file = candidates[-1] / "METADATA"
+    if metadata_file.is_file():
+        for line in metadata_file.read_text(encoding="utf-8").splitlines():
+            if line.startswith("Version: "):
+                return line.split("Version: ", 1)[1].strip()
+    suffix = candidates[-1].name.removeprefix(f"{normalized}-").removesuffix(".dist-info")
+    return suffix or None
+
+
+def _runtime_has_package_path(package_name: str) -> bool:
+    runtime_root = _runtime_root()
+    package_paths = {
+        "vibevoice": [runtime_root / "vibevoice"],
+        "diffusers": [runtime_root / "diffusers"],
+        "PIL": [runtime_root / "PIL"],
+        "transformers": [runtime_root / "transformers"],
+        "accelerate": [runtime_root / "accelerate"],
+        "huggingface_hub": [runtime_root / "huggingface_hub"],
+        "tokenizers": [runtime_root / "tokenizers", runtime_root / "tokenizers.libs"],
+    }
+    return any(path.exists() for path in package_paths.get(package_name, [runtime_root / package_name]))
+
 def _clear_runtime_modules() -> None:
     for module_name in list(sys.modules):
         if module_name == "vibevoice" or module_name.startswith(
-            ("vibevoice.", "diffusers.")
-        ) or module_name == "diffusers":
+            (
+                "vibevoice.",
+                "diffusers.",
+                "PIL.",
+                "transformers.",
+                "huggingface_hub.",
+                "accelerate.",
+                "tokenizers.",
+            )
+        ) or module_name in {
+            "diffusers",
+            "PIL",
+            "transformers",
+            "huggingface_hub",
+            "accelerate",
+            "tokenizers",
+        }:
             sys.modules.pop(module_name, None)
     importlib.invalidate_caches()
 
@@ -110,22 +197,40 @@ def _clear_runtime_modules() -> None:
 def _require_runtime() -> None:
     _ensure_runtime_path()
     problems: list[str] = []
-    for package_name, required_version in VIBEVOICE_MIN_VERSIONS.items():
-        try:
-            installed_version = metadata.version(package_name)
-        except metadata.PackageNotFoundError:
+    for package_name, minimum_version in VIBEVOICE_MIN_VERSIONS.items():
+        installed_version = _runtime_dist_version(package_name)
+        if installed_version is None:
             problems.append(f"{package_name} is not installed")
             continue
-        if _version_tuple(installed_version) < _version_tuple(required_version):
+        if not _runtime_has_package_path(package_name):
+            problems.append(f"{package_name} runtime files are missing")
+            continue
+        if _version_tuple(installed_version) < _version_tuple(minimum_version):
             problems.append(
-                f"{package_name}>={required_version} required (found {installed_version})"
+                f"{package_name}>={minimum_version} required (found {installed_version})"
+            )
+    for package_name, required_version in VIBEVOICE_PINNED_VERSIONS.items():
+        installed_version = _runtime_dist_version(package_name)
+        if installed_version is None:
+            problems.append(f"{package_name} is not installed")
+            continue
+        if not _runtime_has_package_path(package_name):
+            problems.append(f"{package_name} runtime files are missing")
+            continue
+        if _version_tuple(installed_version) != _version_tuple(required_version):
+            problems.append(
+                f"{package_name}=={required_version} required (found {installed_version})"
             )
 
     if problems:
         details = "; ".join(problems)
+        required_versions = ", ".join(
+            [f"{name}>={version}" for name, version in VIBEVOICE_MIN_VERSIONS.items()]
+            + [f"{name}=={version}" for name, version in VIBEVOICE_PINNED_VERSIONS.items()]
+        )
         raise RuntimeError(
             "VibeVoice requires the community vibevoice runtime package and exact pinned dependencies "
-            f"({', '.join(f'{name}>={version}' for name, version in VIBEVOICE_MIN_VERSIONS.items())}). "
+            f"({required_versions}). "
             "Install the community VibeVoice codebase before pulling or serving this model. "
             f"Problems: {details}"
         )
@@ -133,14 +238,24 @@ def _require_runtime() -> None:
 
 def _bootstrap_runtime() -> None:
     runtime_path = _ensure_runtime_path()
-    package_specs = {
-        "vibevoice": VIBEVOICE_RUNTIME_SPEC,
-        "diffusers": "diffusers",
-    }
-    missing_packages = [
-        package_name for package_name in VIBEVOICE_BOOTSTRAP_PACKAGES if find_spec(package_name) is None
-    ]
-    if not missing_packages:
+    packages_to_install: list[str] = []
+    for package_name, _package_spec in VIBEVOICE_BOOTSTRAP_SPECS.items():
+        if not _runtime_has_package_path(package_name):
+            packages_to_install.append(package_name)
+            continue
+        minimum_version = VIBEVOICE_MIN_VERSIONS.get(package_name)
+        runtime_version = _runtime_dist_version(package_name)
+        if runtime_version is None:
+            packages_to_install.append(package_name)
+            continue
+        if minimum_version is not None and _version_tuple(runtime_version) < _version_tuple(minimum_version):
+            packages_to_install.append(package_name)
+            continue
+        required_version = VIBEVOICE_PINNED_VERSIONS.get(package_name)
+        if required_version is not None and _version_tuple(runtime_version) != _version_tuple(required_version):
+            packages_to_install.append(package_name)
+            continue
+    if not packages_to_install:
         return
 
     installers = [
@@ -164,8 +279,8 @@ def _bootstrap_runtime() -> None:
             "--no-deps",
         ],
     ]
-    for package_name in missing_packages:
-        package_spec = package_specs[package_name]
+    for package_name in packages_to_install:
+        package_spec = VIBEVOICE_BOOTSTRAP_SPECS[package_name]
         for installer in installers:
             cmd = [*installer, package_spec]
             try:
@@ -177,7 +292,7 @@ def _bootstrap_runtime() -> None:
                 )
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 continue
-            if result.returncode == 0:
+            if result.returncode == 0 and _runtime_has_package_path(package_name):
                 logger.info(
                     "Bootstrapped VibeVoice runtime package into %s: %s",
                     runtime_path,
@@ -196,6 +311,8 @@ def _bootstrap_runtime() -> None:
 
 
 def _prime_runtime(model_id: str) -> None:
+    from transformers import AutoConfig, AutoModel, AutoModelForCausalLM
+
     @contextmanager
     def ignore_duplicate_registrations() -> Any:
         original_config_register = AutoConfig.register
@@ -259,18 +376,35 @@ class VibeVoiceTTSAdapter(TTSAdapter):
         return vox_home / "runtime" / "vibevoice" / "voices" / "streaming_model"
 
     def _ensure_streaming_prompt_file(self, voice: str | None) -> Path:
-        voice_key = (voice or VIBEVOICE_STREAMING_DEFAULT_VOICE).strip() or VIBEVOICE_STREAMING_DEFAULT_VOICE
+        voice_key = _normalize_streaming_voice_id(voice)
         prompt_dir = self._streaming_prompt_dir()
         prompt_dir.mkdir(parents=True, exist_ok=True)
         prompt_path = prompt_dir / f"{voice_key}.pt"
         if not prompt_path.exists():
-            url = VIBEVOICE_STREAMING_VOICE_URL.format(voice=voice_key)
-            logger.info("Downloading VibeVoice streaming prompt %s from %s", voice_key, url)
-            urlretrieve(url, prompt_path)
+            errors: list[str] = []
+            for url, accept in (
+                (VIBEVOICE_STREAMING_VOICE_URL.format(voice=voice_key), None),
+                (
+                    VIBEVOICE_STREAMING_VOICE_API_URL.format(voice=voice_key),
+                    "application/vnd.github.raw",
+                ),
+            ):
+                logger.info("Downloading VibeVoice streaming prompt %s from %s", voice_key, url)
+                try:
+                    _download_streaming_prompt(url, prompt_path, accept=accept)
+                    break
+                except Exception as exc:
+                    prompt_path.unlink(missing_ok=True)
+                    errors.append(f"{url}: {exc}")
+            else:
+                raise RuntimeError(
+                    "Failed to download VibeVoice streaming prompt "
+                    f"{voice_key}: {'; '.join(errors)}"
+                )
         return prompt_path
 
     def _load_streaming_prompt(self, voice: str | None) -> Any:
-        voice_key = (voice or VIBEVOICE_STREAMING_DEFAULT_VOICE).strip() or VIBEVOICE_STREAMING_DEFAULT_VOICE
+        voice_key = _normalize_streaming_voice_id(voice)
         if voice_key not in self._streaming_prompt_cache:
             prompt_path = self._ensure_streaming_prompt_file(voice_key)
             target_device = self._device if self._device != "cpu" else "cpu"
@@ -301,6 +435,7 @@ class VibeVoiceTTSAdapter(TTSAdapter):
         source = kwargs.pop("_source", None)
         self._model_id = source if source else model_path
         self._device = _select_device(device)
+        model_ref = str(Path(model_path)) if Path(model_path).exists() else self._model_id
         dtype = _select_dtype(self._device)
         _bootstrap_runtime()
         _require_runtime()
@@ -332,13 +467,13 @@ class VibeVoiceTTSAdapter(TTSAdapter):
         attn_implementation = "flash_attention_2" if self._device == "cuda" else "sdpa"
         device_map: str | None = self._device if self._device in ("cuda", "cpu") else None
 
-        logger.info("Loading VibeVoice TTS model: %s (device=%s, dtype=%s)", self._model_id, self._device, dtype)
+        logger.info("Loading VibeVoice TTS model: %s (device=%s, dtype=%s)", model_ref, self._device, dtype)
         start = time.perf_counter()
 
-        self._processor = processor_class.from_pretrained(self._model_id)
+        self._processor = processor_class.from_pretrained(model_ref)
         try:
             self._model = model_class.from_pretrained(
-                self._model_id,
+                model_ref,
                 torch_dtype=dtype,
                 device_map=device_map,
                 attn_implementation=attn_implementation,
@@ -348,7 +483,7 @@ class VibeVoiceTTSAdapter(TTSAdapter):
                 raise
             logger.info("Falling back to SDPA for VibeVoice model load")
             self._model = model_class.from_pretrained(
-                self._model_id,
+                model_ref,
                 torch_dtype=dtype,
                 device_map=device_map,
                 attn_implementation="sdpa",
@@ -377,6 +512,40 @@ class VibeVoiceTTSAdapter(TTSAdapter):
     @property
     def is_loaded(self) -> bool:
         return self._loaded
+
+    @staticmethod
+    def _coerce_audio_array(output: Any) -> NDArray[np.float32]:
+        candidate = getattr(output, "speech_outputs", None)
+        if candidate is None:
+            candidate = getattr(output, "audio", None)
+        if candidate is None:
+            candidate = getattr(output, "waveform", None)
+        if candidate is None:
+            candidate = output[0] if isinstance(output, (list, tuple)) else output
+
+        if isinstance(candidate, (list, tuple)):
+            if not candidate:
+                return np.zeros(0, dtype=np.float32)
+            candidate = candidate[0]
+
+        if isinstance(candidate, (list, tuple)):
+            parts: list[NDArray[np.float32]] = []
+            for part in candidate:
+                if part is None:
+                    continue
+                if hasattr(part, "detach"):
+                    part = part.float().detach().cpu().numpy()
+                array = np.asarray(part, dtype=np.float32).reshape(-1)
+                if array.size:
+                    parts.append(array)
+            if not parts:
+                return np.zeros(0, dtype=np.float32)
+            return np.concatenate(parts).astype(np.float32, copy=False)
+
+        if hasattr(candidate, "detach"):
+            candidate = candidate.float().detach().cpu().numpy()
+
+        return np.asarray(candidate, dtype=np.float32).reshape(-1)
 
     async def synthesize(
         self,
@@ -436,12 +605,7 @@ class VibeVoiceTTSAdapter(TTSAdapter):
                 verbose=False,
             )
 
-        if hasattr(output, "audio"):
-            audio = output.audio[0].cpu().numpy().astype(np.float32)
-        elif hasattr(output, "waveform"):
-            audio = output.waveform[0].cpu().numpy().astype(np.float32)
-        else:
-            audio = output[0].cpu().numpy().astype(np.float32)
+        audio = self._coerce_audio_array(output)
 
         chunk_size = VIBEVOICE_SAMPLE_RATE * 2
         for i in range(0, len(audio), chunk_size):
@@ -459,7 +623,21 @@ class VibeVoiceTTSAdapter(TTSAdapter):
         )
 
     def list_voices(self) -> list[VoiceInfo]:
-        return []
+        return [
+            VoiceInfo(
+                id="default",
+                name="default",
+                description=f"Alias for {VIBEVOICE_STREAMING_DEFAULT_VOICE}",
+            ),
+            *[
+                VoiceInfo(
+                    id=voice_id,
+                    name=voice_id,
+                    description="Official VibeVoice streaming prompt",
+                )
+                for voice_id in VIBEVOICE_STREAMING_PRESET_VOICES
+            ],
+        ]
 
     def estimate_vram_bytes(self, **kwargs: Any) -> int:
         model_id = kwargs.get("_source") or kwargs.get("model_id") or self._model_id

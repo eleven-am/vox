@@ -298,8 +298,15 @@ make build-spark
 
 Notes:
 - `build-spark` is `linux/arm64` only.
-- By default, `Dockerfile.spark` uses the tested `cp312 linux_aarch64` NVIDIA Jetson AI Lab wheel:
-  - `onnxruntime_gpu-1.23.0-cp312-cp312-linux_aarch64.whl`
+- By default, `Dockerfile.spark` uses:
+  - `nvidia/cuda:13.0.0-cudnn-runtime-ubuntu24.04`
+  - `torch==2.9.0` / `torchaudio==2.9.0` from the NVIDIA Jetson AI Lab SBSA CUDA 13.0 index (`https://pypi.jetson-ai-lab.io/sbsa/cu130/+simple`)
+  - the tested `cp312 linux_aarch64` NVIDIA Jetson AI Lab ONNX Runtime wheel:
+    - `onnxruntime_gpu-1.23.0-cp312-cp312-linux_aarch64.whl`
+- `Dockerfile.spark` now refuses to publish if it would install a CPU-only `torch` build.
+  - Provide a CUDA-capable Torch source with either:
+    - `SPARK_TORCH_WHEEL` and `SPARK_TORCHAUDIO_WHEEL`
+    - or `SPARK_TORCH_INDEX_URL` / `SPARK_TORCH_EXTRA_INDEX_URL`
 - You can still override it with:
   - `SPARK_ORT_WHEEL=/path/or/url/to/wheel`
   - or `SPARK_ORT_INDEX_URL` / `SPARK_ORT_EXTRA_INDEX_URL`

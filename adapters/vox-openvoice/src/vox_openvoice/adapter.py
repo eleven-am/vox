@@ -40,6 +40,7 @@ OPENVOICE_RUNTIME_DEPS = (
     "proces==0.1.7",
     "jieba==0.42.1",
     "pydub==0.25.1",
+    "resampy==0.4.3",
     "wavmark==0.0.3",
     "langid==1.1.6",
 )
@@ -235,7 +236,8 @@ class OpenVoiceTTSAdapter(TTSAdapter):
             return
 
         self._device = _select_device(device)
-        self._model_root = Path(kwargs.pop("_source", None) or model_path)
+        kwargs.pop("_source", None)
+        self._model_root = Path(model_path)
         BaseSpeakerTTS, ToneColorConverter = _load_openvoice_api()
 
         converter_config = self._model_root / "checkpoints" / "converter" / "config.json"

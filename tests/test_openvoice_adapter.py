@@ -103,6 +103,49 @@ class TestOpenVoiceAdapterInfo:
             converter.load_ckpt.assert_called_once()
             assert adapter.is_loaded is True
 
+    def test_load_ignores_source_repo_when_resolving_local_files(self, tmp_path: Path):
+        torch = MagicMock()
+        torch.cuda.is_available.return_value = False
+        torch.backends.mps.is_available.return_value = False
+
+        api = ModuleType("openvoice.api")
+        base_cls = MagicMock()
+        converter_cls = MagicMock()
+        converter = MagicMock()
+        converter.load_ckpt.return_value = None
+        converter.hps.data.sampling_rate = 22_050
+        converter_cls.return_value = converter
+        api.BaseSpeakerTTS = base_cls
+        api.ToneColorConverter = converter_cls
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "torch": torch,
+                "librosa": MagicMock(),
+                "soundfile": MagicMock(),
+                "openvoice": ModuleType("openvoice"),
+                "openvoice.api": api,
+            },
+        ):
+            _clear_openvoice_modules()
+            sys.modules["openvoice"] = ModuleType("openvoice")
+            sys.modules["openvoice.api"] = api
+            from vox_openvoice.adapter import OpenVoiceTTSAdapter
+
+            adapter = OpenVoiceTTSAdapter()
+            model_root = tmp_path / "openvoice"
+            (model_root / "checkpoints" / "base_speakers" / "EN").mkdir(parents=True, exist_ok=True)
+            (model_root / "checkpoints" / "base_speakers" / "EN" / "config.json").write_text("{}", encoding="utf-8")
+            (model_root / "checkpoints" / "base_speakers" / "EN" / "checkpoint.pth").write_bytes(b"checkpoint")
+            (model_root / "checkpoints" / "converter").mkdir(parents=True, exist_ok=True)
+            (model_root / "checkpoints" / "converter" / "config.json").write_text("{}", encoding="utf-8")
+            (model_root / "checkpoints" / "converter" / "checkpoint.pth").write_bytes(b"checkpoint")
+
+            adapter.load(str(model_root), "cpu", _source="myshell-ai/OpenVoice")
+
+            assert adapter._model_root == model_root
+
     def test_load_raises_clear_error_when_runtime_missing(self, tmp_path: Path):
         torch = MagicMock()
         torch.cuda.is_available.return_value = False
@@ -151,6 +194,7 @@ class TestOpenVoiceAdapterInfo:
         assert calls[0][1:5] == ["pip", "install", "--python", sys.executable]
         assert "--no-build-isolation" in calls[0]
         assert "--no-deps" in calls[0]
+        assert "resampy==0.4.3" in calls[0]
 
 
 class TestOpenVoiceAdapterSynthesis:

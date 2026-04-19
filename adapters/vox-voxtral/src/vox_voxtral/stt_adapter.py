@@ -1,5 +1,8 @@
+# ruff: noqa: E402
+
 from __future__ import annotations
 
+import importlib
 import logging
 import time
 from typing import Any
@@ -7,7 +10,6 @@ from typing import Any
 import numpy as np
 import torch
 from numpy.typing import NDArray
-from transformers import AutoProcessor, VoxtralForConditionalGeneration
 
 from vox.core.adapter import STTAdapter
 from vox.core.types import (
@@ -17,6 +19,10 @@ from vox.core.types import (
     TranscribeResult,
     TranscriptSegment,
 )
+from vox_voxtral._hf_compat import ensure_huggingface_hub_compat
+from vox_voxtral.runtime import ensure_voxtral_stt_runtime
+
+ensure_huggingface_hub_compat()
 
 logger = logging.getLogger(__name__)
 
@@ -58,11 +64,26 @@ def _estimate_vram(model_id: str) -> int:
     return _VRAM_ESTIMATES["3b"]
 
 
+def _load_voxtral_stt_runtime() -> tuple[type[Any], type[Any]]:
+    ensure_voxtral_stt_runtime()
+
+    from vox_voxtral._hf_compat import ensure_huggingface_hub_compat
+
+    ensure_huggingface_hub_compat()
+
+    transformers = importlib.import_module("transformers")
+    model_cls = getattr(transformers, "VoxtralForConditionalGeneration", None)
+    if model_cls is None:
+        voxtral_module = importlib.import_module("transformers.models.voxtral")
+        model_cls = voxtral_module.VoxtralForConditionalGeneration
+    return transformers.AutoProcessor, model_cls
+
+
 class VoxtralSTTAdapter(STTAdapter):
 
     def __init__(self) -> None:
-        self._model: VoxtralForConditionalGeneration | None = None
-        self._processor: AutoProcessor | None = None
+        self._model: Any | None = None
+        self._processor: Any | None = None
         self._loaded = False
         self._model_id: str = ""
         self._device: str = "cpu"
@@ -88,12 +109,13 @@ class VoxtralSTTAdapter(STTAdapter):
         self._model_id = source if source else model_path
         self._device = _select_device(device)
         dtype = _select_dtype(self._device)
+        auto_processor_cls, voxtral_model_cls = _load_voxtral_stt_runtime()
 
         logger.info("Loading Voxtral STT model: %s (device=%s, dtype=%s)", self._model_id, self._device, dtype)
         start = time.perf_counter()
 
-        self._processor = AutoProcessor.from_pretrained(self._model_id)
-        self._model = VoxtralForConditionalGeneration.from_pretrained(
+        self._processor = auto_processor_cls.from_pretrained(self._model_id)
+        self._model = voxtral_model_cls.from_pretrained(
             self._model_id,
             torch_dtype=dtype,
             device_map=self._device if self._device != "cpu" else None,

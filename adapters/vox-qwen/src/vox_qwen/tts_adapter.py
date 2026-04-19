@@ -8,6 +8,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import AsyncIterator
 from importlib.util import find_spec
@@ -30,6 +31,10 @@ from vox_qwen.runtime import ensure_runtime
 logger = logging.getLogger(__name__)
 
 QWEN_TTS_SAMPLE_RATE = 24_000
+QWEN_TTS_RUNTIME_PACKAGES = (
+    "sox",
+    "einops",
+)
 
 SUPPORTED_LANGUAGES = (
     "zh", "en", "ja", "ko", "fr", "de", "ru", "es", "pt", "it",
@@ -131,6 +136,25 @@ def _normalize_supported_speakers(speakers: Any) -> list[str]:
     return normalized
 
 
+def _resolve_supported_speaker(speaker: str, supported_speakers: list[str]) -> str:
+    if not supported_speakers:
+        return speaker
+
+    requested = speaker.strip()
+    if requested in supported_speakers:
+        return requested
+
+    lowered = requested.casefold()
+    for candidate in supported_speakers:
+        if candidate.casefold() == lowered:
+            return candidate
+
+    available = ", ".join(supported_speakers)
+    raise ValueError(
+        f"Unknown Qwen3-TTS speaker '{speaker}'. Available speakers: {available}"
+    )
+
+
 def _detect_mode(model_id: str, *, override: str | None = None) -> str:
     if override:
         normalized = override.strip().lower()
@@ -183,6 +207,8 @@ def _load_qwen_tts_model() -> Any:
         "qwen-tts",
         "qwen_tts",
         purge_modules=("accelerate", "transformers", "tokenizers", "qwen_tts"),
+        no_deps=False,
+        extra_packages=QWEN_TTS_RUNTIME_PACKAGES,
     )
     try:
         from qwen_tts import Qwen3TTSModel
@@ -200,6 +226,7 @@ class Qwen3TTSAdapter(TTSAdapter):
         self._tokenizer: Any = None
         self._loaded = False
         self._model_id: str = ""
+        self._model_ref: str = ""
         self._device: str = "cpu"
         self._default_voice: str | None = None
         self._supported_speakers: list[str] = []
@@ -226,6 +253,8 @@ class Qwen3TTSAdapter(TTSAdapter):
         self._default_voice = kwargs.pop("default_voice", None)
         mode_override = kwargs.pop("mode", None)
         self._model_id = source if source else model_path
+        path = Path(model_path)
+        self._model_ref = str(path) if path.exists() else self._model_id
         self._mode = _detect_mode(self._model_id, override=mode_override)
 
         self._device = _select_device(device)
@@ -234,7 +263,12 @@ class Qwen3TTSAdapter(TTSAdapter):
             dtype = _select_dtype(self._device)
             device_map = _select_device_map(self._device)
 
-            logger.info("Loading Qwen3-TTS model: %s (device=%s, dtype=%s)", self._model_id, self._device, dtype)
+            logger.info(
+                "Loading Qwen3-TTS model: %s (device=%s, dtype=%s)",
+                self._model_ref,
+                self._device,
+                dtype,
+            )
             start = time.perf_counter()
             model_kwargs: dict[str, Any] = {
                 "device_map": device_map,
@@ -243,7 +277,7 @@ class Qwen3TTSAdapter(TTSAdapter):
             if self._device == "cuda" and _supports_flash_attention():
                 model_kwargs["attn_implementation"] = "flash_attention_2"
 
-            self._model = Qwen3TTSModel.from_pretrained(self._model_id, **model_kwargs)
+            self._model = Qwen3TTSModel.from_pretrained(self._model_ref, **model_kwargs)
             self._tokenizer = getattr(self._model, "processor", None)
             get_supported_speakers = getattr(self._model, "get_supported_speakers", None)
             if callable(get_supported_speakers):
@@ -258,7 +292,7 @@ class Qwen3TTSAdapter(TTSAdapter):
         except Exception as exc:
             logger.warning(
                 "Falling back to subprocess-isolated Qwen3-TTS runtime for %s: %s",
-                self._model_id,
+                self._model_ref,
                 exc,
             )
             self._model = None
@@ -272,6 +306,7 @@ class Qwen3TTSAdapter(TTSAdapter):
         self._tokenizer = None
         self._loaded = False
         self._subprocess_only = False
+        self._model_ref = ""
         torch = _torch()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -325,11 +360,8 @@ class Qwen3TTSAdapter(TTSAdapter):
                 "Qwen3-TTS CustomVoice checkpoints require a speaker; "
                 "provide voice or use a catalog entry with default_voice"
             )
-        if self._supported_speakers and speaker not in self._supported_speakers:
-            available = ", ".join(self._supported_speakers)
-            raise ValueError(
-                f"Unknown Qwen3-TTS speaker '{speaker}'. Available speakers: {available}"
-            )
+        if self._supported_speakers:
+            speaker = _resolve_supported_speaker(speaker, self._supported_speakers)
         if self._subprocess_only or self._model is None:
             async for chunk in self._stream_subprocess(
                 mode="custom",
@@ -434,7 +466,7 @@ class Qwen3TTSAdapter(TTSAdapter):
             "--runtime-dir",
             str(runtime_dir),
             "--model-id",
-            self._model_id,
+            self._model_ref or self._model_id,
             "--device",
             self._device,
             "--mode",
@@ -451,13 +483,11 @@ class Qwen3TTSAdapter(TTSAdapter):
                 if reference_audio is None:
                     raise ValueError("Clone mode requires reference_audio")
                 import soundfile as sf
-                import tempfile
 
-                fd = tempfile.NamedTemporaryFile(
+                with tempfile.NamedTemporaryFile(
                     prefix="qwen3-ref-", suffix=".wav", delete=False,
-                )
-                fd.close()
-                ref_tmp = Path(fd.name)
+                ) as fd:
+                    ref_tmp = Path(fd.name)
                 sf.write(
                     str(ref_tmp),
                     np.asarray(reference_audio, dtype=np.float32),

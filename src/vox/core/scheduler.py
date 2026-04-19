@@ -75,6 +75,9 @@ def _available_device_memory_bytes(device: str) -> int | None:
 
 class RegistryProtocol(Protocol):
     def resolve(self, name: str, tag: str) -> tuple[ModelInfo, Path]: ...
+    def resolve_model_ref(
+        self, name: str, tag: str = "latest", *, explicit_tag: bool = False
+    ) -> tuple[str, str]: ...
     def get_adapter_class(self, adapter_name: str) -> type: ...
 
 
@@ -110,6 +113,15 @@ class Scheduler:
         self._models: dict[str, _LoadedModel] = {}
         self._lock = asyncio.Lock()
         self._cleanup_task: asyncio.Task | None = None
+
+    def _normalize_model_ref(self, model_name: str) -> str:
+        """Resolve aliases so all cache keys use the canonical registry ref."""
+        explicit_tag = ":" in model_name
+        name, tag = parse_model_name(model_name)
+        resolved_name, resolved_tag = self._registry.resolve_model_ref(
+            name, tag, explicit_tag=explicit_tag
+        )
+        return f"{resolved_name}:{resolved_tag}"
 
     def _auto_device_for_model(self, info: ModelInfo) -> str:
         """Choose the best candidate device for *info* in auto mode."""
@@ -164,6 +176,41 @@ class Scheduler:
             estimate = adapter.estimate_vram_bytes()
         return max(int(estimate or 0), 0)
 
+    def _evict_idle_models_for_memory(self, device: str, required_bytes: int) -> bool:
+        """Evict idle models already occupying *device* until *required_bytes* is available."""
+        if device != "cuda":
+            return False
+
+        while True:
+            free_bytes = _available_device_memory_bytes(device)
+            if free_bytes is None:
+                return False
+            if required_bytes <= free_bytes:
+                return True
+
+            candidates = [
+                (name, model)
+                for name, model in self._models.items()
+                if model.ref_count == 0 and model.device == device
+            ]
+            if not candidates:
+                return False
+
+            candidates.sort(key=lambda item: item[1].last_used)
+            lru_name, lru_model = candidates[0]
+            logger.info(
+                "Evicting %s to free %s memory for a new load (idle for %.0fs)",
+                lru_name,
+                device,
+                time.time() - lru_model.last_used,
+            )
+            try:
+                lru_model.adapter.unload()
+            except Exception as error:
+                logger.error("Error unloading %s during memory eviction: %s", lru_name, error)
+            del self._models[lru_name]
+            _clear_gpu_cache()
+
     def _select_device(self, adapter: Adapter, info: ModelInfo, estimated_vram_bytes: int) -> str:
         """Select device for a model, considering free accelerator memory."""
         if self._requested_device != "auto":
@@ -182,6 +229,8 @@ class Scheduler:
             return "auto"
 
         required_bytes = estimated_vram_bytes + DEVICE_MEMORY_HEADROOM_BYTES
+        if required_bytes > free_bytes and self._evict_idle_models_for_memory(device, required_bytes):
+            return "auto"
         if required_bytes <= free_bytes:
             return "auto"
 
@@ -196,6 +245,7 @@ class Scheduler:
 
     async def _load_model(self, full_name: str) -> _LoadedModel:
         """Load a model by name. Handles eviction and OOM fallback."""
+        full_name = self._normalize_model_ref(full_name)
         name, tag = parse_model_name(full_name)
 
 
@@ -269,8 +319,7 @@ class Scheduler:
     @asynccontextmanager
     async def acquire(self, model_name: str):
         """Acquire a loaded model adapter. Loads on first use, ref-counted."""
-        name, tag = parse_model_name(model_name)
-        full_name = f"{name}:{tag}"
+        full_name = self._normalize_model_ref(model_name)
 
         async with self._lock:
             if full_name not in self._models:
@@ -288,16 +337,14 @@ class Scheduler:
 
     async def preload(self, model_name: str) -> None:
         """Pre-load a model into memory."""
-        name, tag = parse_model_name(model_name)
-        full_name = f"{name}:{tag}"
+        full_name = self._normalize_model_ref(model_name)
         async with self._lock:
             if full_name not in self._models:
                 await self._load_model(full_name)
 
     async def unload(self, model_name: str) -> bool:
         """Unload a specific model. Returns True if unloaded, False if skipped."""
-        name, tag = parse_model_name(model_name)
-        full_name = f"{name}:{tag}"
+        full_name = self._normalize_model_ref(model_name)
         async with self._lock:
             if full_name in self._models:
                 loaded = self._models[full_name]

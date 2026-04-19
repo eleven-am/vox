@@ -126,6 +126,12 @@ async def pull_model(req: PullRequest, request: Request):
             )
             store.save_manifest(resolved_name, resolved_tag, manifest)
 
+            if adapter_name == "voxtral-tts-vllm":
+                model_ref = f"{resolved_name}:{resolved_tag}"
+                yield json.dumps({"status": f"preloading {model_ref}"}) + "\n"
+                await request.app.state.scheduler.preload(model_ref)
+                yield json.dumps({"status": f"{model_ref} ready"}) + "\n"
+
             total_bytes = sum(layer["size"] for layer in layers)
             logger.info(
                 "pull complete: %s:%s (%d layers, %.1f MiB)",
