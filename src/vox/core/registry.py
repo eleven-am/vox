@@ -8,6 +8,7 @@ import os
 import platform
 import subprocess
 import sys
+import tomllib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -768,6 +769,40 @@ def _adapter_install_specs(vox_home: Path) -> dict[str, AdapterInstallSpec]:
     return specs
 
 
+def _installed_adapter_version(vox_home: Path, package_name: str) -> str | None:
+    """Return the installed adapter package version from its isolated dir."""
+    package_dir = _adapter_install_dir(vox_home, package_name)
+    if not package_dir.is_dir():
+        return None
+    normalized = package_name.replace("-", "_")
+    try:
+        for dist in distributions(path=[str(package_dir)]):
+            name = (dist.metadata.get("Name") or "").replace("-", "_")
+            if name == normalized:
+                return dist.version
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to inspect adapter version for '%s': %s", package_name, exc)
+    return None
+
+
+def _bundled_adapter_version(package_name: str) -> str | None:
+    """Return the bundled adapter version declared in pyproject.toml."""
+    bundled_source = _find_bundled_adapter_source(package_name)
+    if bundled_source is None:
+        return None
+    pyproject = bundled_source / "pyproject.toml"
+    if not pyproject.is_file():
+        return None
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:  # pragma: no cover - defensive
+        logger.warning("Failed to parse bundled adapter metadata for '%s': %s", package_name, exc)
+        return None
+    project = data.get("project", {})
+    version = project.get("version")
+    return version if isinstance(version, str) else None
+
+
 def _deactivate_installed_adapter_paths(vox_home: Path, *, keep: Path | None = None) -> None:
     """Remove isolated adapter install dirs from sys.path except *keep*."""
     adapters_root = _ensure_adapters_root(vox_home).resolve()
@@ -878,15 +913,31 @@ class ModelRegistry:
 
     def ensure_adapter(self, adapter_name: str, package_name: str) -> bool:
         """Ensure an adapter is installed. Auto-installs if needed."""
+        bundled_version = _bundled_adapter_version(package_name)
+        installed_version = _installed_adapter_version(self._store.root, package_name)
+        needs_refresh = bundled_version is not None and installed_version != bundled_version
         if adapter_name in self._adapters or adapter_name in self._installed_adapter_specs:
-            return True
+            if not needs_refresh:
+                return True
+            logger.info(
+                "Refreshing adapter '%s' from bundled source (%s -> %s)",
+                package_name,
+                installed_version or "missing",
+                bundled_version,
+            )
+            self._adapters.pop(adapter_name, None)
 
         _ensure_adapters_on_path(self._store.root)
         self._installed_adapter_specs = _adapter_install_specs(self._store.root)
+        installed_version = _installed_adapter_version(self._store.root, package_name)
+        needs_refresh = bundled_version is not None and installed_version != bundled_version
         if adapter_name in self._adapters or adapter_name in self._installed_adapter_specs:
-            return True
+            if not needs_refresh:
+                return True
+            self._adapters.pop(adapter_name, None)
 
-        logger.info(f"Adapter '{adapter_name}' not found, installing {package_name}...")
+        action = "refreshing" if needs_refresh else "installing"
+        logger.info("Adapter '%s' %s %s...", adapter_name, action, package_name)
         if not install_adapter_package(package_name, self._store.root):
             return False
 

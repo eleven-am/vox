@@ -244,6 +244,30 @@ class TestAdapterIsolation:
         rescan_mock.assert_called_once_with(store.root)
         install_mock.assert_not_called()
 
+    def test_ensure_adapter_refreshes_outdated_bundled_install(self, tmp_path: Path):
+        store = _make_store(tmp_path)
+        registry = _make_registry(store, adapters={})
+
+        package_dir = store.root / ADAPTERS_DIR / "vox-fake"
+        package_dir.mkdir(parents=True)
+        entry_point = MagicMock()
+        spec = AdapterInstallSpec(entry_point=entry_point, path=package_dir)
+        registry._installed_adapter_specs = {"fake": spec}
+
+        with (
+            patch("vox.core.registry._bundled_adapter_version", return_value="0.2.31"),
+            patch("vox.core.registry._installed_adapter_version", side_effect=["0.2.30", "0.2.30"]),
+            patch(
+                "vox.core.registry._adapter_install_specs",
+                side_effect=[{"fake": spec}, {"fake": spec}],
+            ) as rescan_mock,
+            patch("vox.core.registry.install_adapter_package", return_value=True) as install_mock,
+        ):
+            assert registry.ensure_adapter("fake", "vox-fake") is True
+
+        assert rescan_mock.call_count == 2
+        install_mock.assert_called_once_with("vox-fake", store.root)
+
 
 
 

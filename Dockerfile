@@ -134,6 +134,7 @@ WORKDIR $HOME/app
 
 COPY --from=uv /uv /bin/uv
 COPY --from=builder --chown=vox:vox /home/vox/app/.venv /home/vox/app/.venv
+COPY --chown=vox:vox adapters /home/vox/app/adapters
 COPY --chmod=755 docker/vox-entrypoint.sh /usr/local/bin/vox-entrypoint.sh
 
 RUN install -d -o vox -g vox \
@@ -147,7 +148,7 @@ RUN install -d -o vox -g vox \
 
 ENV PATH="$HOME/app/.venv/bin:$PATH" \
     VOX_HOME=$HOME/.vox \
-    VOX_DISABLE_BUNDLED_ADAPTERS=1 \
+    VOX_BUNDLED_ADAPTERS=$HOME/app/adapters \
     VOX_DEVICE=${VOX_DEFAULT_DEVICE} \
     UV_CACHE_DIR=/tmp/uvcache \
     UV_LINK_MODE=copy \
