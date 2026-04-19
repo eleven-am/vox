@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import importlib
 import logging
+import os
 import re
+import subprocess
+import sys
 import threading
 from collections import Counter
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -40,6 +45,20 @@ REGEX_ENTITIES: tuple[tuple[re.Pattern[str], str], ...] = (
 
 MAX_TOPICS = 10
 
+_EN_CORE_WEB_SM_WHEEL = (
+    "https://github.com/explosion/spacy-models/releases/download/"
+    "en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
+)
+_SPACY_MODEL_WHEELS: dict[str, str] = {
+    "en_core_web_sm": _EN_CORE_WEB_SM_WHEEL,
+}
+_SPACY_MODEL_MARKERS: dict[str, tuple[str, ...]] = {
+    "en_core_web_sm": (
+        "en_core_web_sm",
+        "en_core_web_sm-3.8.0.dist-info",
+    ),
+}
+
 
 
 
@@ -66,6 +85,98 @@ _spacy_unavailable: bool = False
 _lock = threading.Lock()
 
 
+def _runtime_root() -> Path:
+    vox_home = Path(os.environ.get("VOX_HOME", str(Path.home() / ".vox")))
+    return vox_home / "runtime" / "ner"
+
+
+def _ensure_runtime_path() -> str:
+    runtime_path = str(_runtime_root())
+    _runtime_root().mkdir(parents=True, exist_ok=True)
+    if runtime_path in sys.path:
+        sys.path.remove(runtime_path)
+    sys.path.insert(0, runtime_path)
+    importlib.invalidate_caches()
+    return runtime_path
+
+
+def _install_runtime_requirements(runtime_path: str, requirements: list[str], *, no_deps: bool) -> bool:
+    installers = [
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--target",
+            runtime_path,
+            "--upgrade",
+            *requirements,
+        ],
+        [
+            "uv",
+            "pip",
+            "install",
+            "--python",
+            sys.executable,
+            "--target",
+            runtime_path,
+            "--upgrade",
+            *requirements,
+        ],
+    ]
+    if no_deps:
+        for installer in installers:
+            installer.insert(-len(requirements), "--no-deps")
+
+    for installer in installers:
+        try:
+            result = subprocess.run(
+                installer,
+                capture_output=True,
+                text=True,
+                timeout=1800,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            logger.info("NER: installed runtime requirements into %s: %s", runtime_path, requirements)
+            return True
+        logger.warning("NER: %s failed: %s", " ".join(installer), result.stderr)
+    return False
+
+
+def _spacy_model_installed(runtime_root: Path, model_name: str) -> bool:
+    markers = _SPACY_MODEL_MARKERS.get(model_name, (model_name,))
+    return any((runtime_root / marker).exists() for marker in markers)
+
+
+def _bootstrap_spacy_model(model_name: str) -> bool:
+    wheel = _SPACY_MODEL_WHEELS.get(model_name)
+    if wheel is None:
+        logger.warning("NER: no runtime bootstrap source configured for spaCy model %s", model_name)
+        return False
+
+    runtime_path = _ensure_runtime_path()
+    runtime_root = Path(runtime_path)
+    if _spacy_model_installed(runtime_root, model_name):
+        return True
+
+    if not _install_runtime_requirements(runtime_path, [wheel], no_deps=False):
+        return False
+
+    if not _spacy_model_installed(runtime_root, model_name):
+        logger.warning("NER: runtime install completed but spaCy model %s is still missing", model_name)
+        return False
+    return True
+
+
+def _import_spacy() -> tuple[Any, Any]:
+    import spacy
+    from spacy.util import is_package
+
+    return spacy, is_package
+
+
 def _get_model(lang: str) -> Any | None:
     global _spacy_unavailable
     if _spacy_unavailable:
@@ -84,9 +195,9 @@ def _get_model(lang: str) -> Any | None:
             return cached
 
         model_name = LANG_MODELS[lang]
+        _ensure_runtime_path()
         try:
-            import spacy
-            from spacy.util import is_package
+            spacy, is_package = _import_spacy()
         except ImportError as exc:
             _spacy_unavailable = True
             logger.warning("NER: spaCy not installed, falling back to regex-only (%s)", exc)
@@ -101,11 +212,19 @@ def _get_model(lang: str) -> Any | None:
 
         try:
             if not is_package(model_name):
-                logger.warning(
-                    "NER: spaCy model %r not installed; run 'python -m spacy download %s'",
-                    model_name, model_name,
-                )
-                return None
+                if not _bootstrap_spacy_model(model_name):
+                    logger.warning(
+                        "NER: spaCy model %r not installed and runtime bootstrap failed",
+                        model_name,
+                    )
+                    return None
+                spacy, is_package = _import_spacy()
+                if not is_package(model_name):
+                    logger.warning(
+                        "NER: spaCy model %r still unavailable after runtime bootstrap",
+                        model_name,
+                    )
+                    return None
         except Exception:
             logger.exception("NER: is_package probe failed for %s", model_name)
             return None

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from unittest.mock import patch
 
 import pytest
@@ -89,6 +90,68 @@ class TestAnnotateWithoutSpacyModel:
         assert topics == []
 
 
+class TestSpacyRuntimeBootstrap:
+    def test_bootstrap_installs_english_runtime_wheel(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
+        monkeypatch.setenv("VOX_HOME", str(tmp_path))
+        monkeypatch.setattr(ner.sys, "path", list(ner.sys.path))
+
+        calls: list[tuple[str, list[str], bool]] = []
+        spacy_model_checks = iter([False, True])
+
+        monkeypatch.setattr(
+            ner,
+            "_install_runtime_requirements",
+            lambda runtime_path, requirements, *, no_deps: (
+                calls.append((runtime_path, list(requirements), no_deps)) or True
+            ),
+        )
+        monkeypatch.setattr(
+            ner,
+            "_spacy_model_installed",
+            lambda runtime_root, model_name: next(spacy_model_checks),
+        )
+
+        assert ner._bootstrap_spacy_model("en_core_web_sm") is True
+        assert calls == [(
+            str(tmp_path / "runtime" / "ner"),
+            [ner._EN_CORE_WEB_SM_WHEEL],
+            False,
+        )]
+        assert str(tmp_path / "runtime" / "ner") in sys.path
+
+    def test_get_model_bootstraps_english_model_when_missing(self, monkeypatch: pytest.MonkeyPatch):
+        ner._models.clear()
+        ner._missing_languages.clear()
+        ner._spacy_unavailable = False
+
+        class _Spacy:
+            def __init__(self) -> None:
+                self.loaded: list[str] = []
+
+            def load(self, model_name: str):
+                self.loaded.append(model_name)
+                return {"model": model_name}
+
+        fake_spacy = _Spacy()
+        package_checks = iter([False, True])
+        bootstrap_calls: list[str] = []
+
+        monkeypatch.setattr(
+            ner,
+            "_import_spacy",
+            lambda: (fake_spacy, lambda model_name: next(package_checks)),
+        )
+        monkeypatch.setattr(
+            ner,
+            "_bootstrap_spacy_model",
+            lambda model_name: (bootstrap_calls.append(model_name) or True),
+        )
+
+        assert ner._get_model("en") == {"model": "en_core_web_sm"}
+        assert bootstrap_calls == ["en_core_web_sm"]
+        assert fake_spacy.loaded == ["en_core_web_sm"]
+
+
 class TestAnnotateWithMockedModel:
 
     def _make_doc(self, ents=(), tokens=(), chunks=()):
@@ -115,7 +178,11 @@ class TestAnnotateWithMockedModel:
             words = text.split()
             tokens_ = []
             for idx, w in enumerate(words):
-                is_leading_det = idx == 0 and len(words) > 1 and w.lower() in {"the", "a", "an", "my", "these", "those", "this", "that"}
+                is_leading_det = (
+                    idx == 0
+                    and len(words) > 1
+                    and w.lower() in {"the", "a", "an", "my", "these", "those", "this", "that"}
+                )
                 tokens_.append(_Token(
                     pos="DET" if is_leading_det else "NOUN",
                     lemma=w.lower(),
