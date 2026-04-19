@@ -110,40 +110,41 @@ def main() -> int:
     print(json.dumps({"status": "ready"}), flush=True)
 
     try:
-        for raw_line in sys.stdin:
-            if not raw_line.strip():
-                continue
-            request = json.loads(raw_line)
-            op = request.get("op")
-            if op == "shutdown":
-                break
-            if op != "synthesize":
-                print(json.dumps({"status": "error", "error": f"Unsupported op: {op}"}), flush=True)
-                continue
+        with asyncio.Runner() as runner:
+            for raw_line in sys.stdin:
+                if not raw_line.strip():
+                    continue
+                request = json.loads(raw_line)
+                op = request.get("op")
+                if op == "shutdown":
+                    break
+                if op != "synthesize":
+                    print(json.dumps({"status": "error", "error": f"Unsupported op: {op}"}), flush=True)
+                    continue
 
-            try:
-                audio = asyncio.run(
-                    _generate_audio(
-                        runtime,
-                        SpeechRequest,
-                        tokenizer,
-                        sampling_params,
-                        text=str(request.get("text", "")),
-                        voice=str(request.get("voice") or args.default_voice or "neutral_female"),
+                try:
+                    audio = runner.run(
+                        _generate_audio(
+                            runtime,
+                            SpeechRequest,
+                            tokenizer,
+                            sampling_params,
+                            text=str(request.get("text", "")),
+                            voice=str(request.get("voice") or args.default_voice or "neutral_female"),
+                        )
                     )
-                )
-                print(
-                    json.dumps(
-                        {
-                            "status": "ok",
-                            "sample_rate": VOXTRAL_TTS_SAMPLE_RATE,
-                            "audio_b64": base64.b64encode(audio).decode("ascii"),
-                        }
-                    ),
-                    flush=True,
-                )
-            except Exception as exc:  # pragma: no cover - runtime-dependent
-                print(json.dumps({"status": "error", "error": str(exc)}), flush=True)
+                    print(
+                        json.dumps(
+                            {
+                                "status": "ok",
+                                "sample_rate": VOXTRAL_TTS_SAMPLE_RATE,
+                                "audio_b64": base64.b64encode(audio).decode("ascii"),
+                            }
+                        ),
+                        flush=True,
+                    )
+                except Exception as exc:  # pragma: no cover - runtime-dependent
+                    print(json.dumps({"status": "error", "error": str(exc)}), flush=True)
     finally:
         shutdown = getattr(runtime, "shutdown", None)
         if callable(shutdown):

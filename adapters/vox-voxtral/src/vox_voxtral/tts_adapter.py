@@ -382,8 +382,9 @@ class VoxtralTTSAdapter(TTSAdapter):
             ],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
             text=True,
+            bufsize=1,
             env=runtime.env,
         )
         startup_logs: list[str] = []

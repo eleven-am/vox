@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import subprocess
 import sys
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -413,6 +414,8 @@ class TestVoxtralTTSAdapterInfo:
             assert adapter.is_loaded is True
             assert adapter._subprocess_only is True
             popen.assert_called_once()
+            assert popen.call_args.kwargs["stderr"] is subprocess.STDOUT
+            assert popen.call_args.kwargs["bufsize"] == 1
 
     def test_synthesize_uses_subprocess_worker(self):
         with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
