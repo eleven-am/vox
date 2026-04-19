@@ -296,6 +296,21 @@ class TestResolve:
         assert link.is_symlink()
         assert link.resolve().exists()
 
+    def test_resolve_ensures_adapter_package_from_manifest(self, tmp_path: Path):
+        store = _make_store(tmp_path)
+        _write_manifest(store, "mymodel", "v1", adapter="fake-adapter")
+        manifest = store.resolve_model("mymodel", "v1")
+        assert manifest is not None
+        manifest.config["adapter_package"] = "vox-fake"
+        store.save_manifest("mymodel", "v1", manifest)
+        registry = _make_registry(store)
+
+        with patch.object(registry, "ensure_adapter", return_value=True) as ensure_mock:
+            info, _ = registry.resolve("mymodel", "v1")
+
+        ensure_mock.assert_called_once_with("fake-adapter", "vox-fake")
+        assert info.adapter == "fake-adapter"
+
     def test_resolve_creates_parent_dirs_for_nested_filenames(self, tmp_path: Path):
         store = _make_store(tmp_path)
         digest = "sha256-" + "cd" * 32

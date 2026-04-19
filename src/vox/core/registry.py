@@ -988,6 +988,9 @@ class ModelRegistry:
         size = sum(layer.size for layer in manifest.layers)
 
         info = ModelInfo.from_manifest_config(name, tag, cfg, size_bytes=size)
+        adapter_package = cfg.get("adapter_package", "")
+        if adapter_package and not self.ensure_adapter(info.adapter, adapter_package):
+            raise ModelLoadError(f"Failed to install adapter package: {adapter_package}")
 
 
 
