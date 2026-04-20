@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
-
 from dataclasses import replace
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
@@ -49,7 +49,8 @@ async def _run_transcribe(
         async with scheduler.acquire(model) as adapter:
             if not isinstance(adapter, STTAdapter):
                 raise HTTPException(status_code=400, detail=f"Model '{model}' is not an STT model")
-            result = adapter.transcribe(
+            result = await asyncio.to_thread(
+                adapter.transcribe,
                 audio,
                 language=language,
                 word_timestamps=word_timestamps,
@@ -58,12 +59,12 @@ async def _run_transcribe(
     except HTTPException:
         raise
     except ModelNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except VoxError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    except Exception:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as exc:
         logger.exception(f"Transcription failed for model {model}")
-        raise HTTPException(status_code=500, detail="Internal transcription error")
+        raise HTTPException(status_code=500, detail="Internal transcription error") from exc
 
     processing_ms = int((time.perf_counter() - start_time) * 1000)
     result = replace(result, model=model)
@@ -109,11 +110,11 @@ def _segments_payload(result) -> list[dict]:
 @router.post("/v1/audio/transcriptions")
 async def openai_transcribe(
     request: Request,
-    file: UploadFile = File(...),
-    model: str = Form(""),
-    language: str | None = Form(None),
-    response_format: str = Form("json"),
-    temperature: float = Form(0.0),
+    file: UploadFile = File(...),  # noqa: B008
+    model: str = Form(""),  # noqa: B008
+    language: str | None = Form(None),  # noqa: B008
+    response_format: str = Form("json"),  # noqa: B008
+    temperature: float = Form(0.0),  # noqa: B008
 ):
     """OpenAI-compatible transcription.
 

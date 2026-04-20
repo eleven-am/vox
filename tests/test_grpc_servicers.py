@@ -8,10 +8,19 @@ import numpy as np
 import pytest
 
 from vox.audio.codecs import encode_wav
-from vox.core.adapter import TTSAdapter
+from vox.core.adapter import STTAdapter, TTSAdapter
 from vox.core.cloned_voices import create_stored_voice
 from vox.core.store import BlobStore
-from vox.core.types import AdapterInfo, LoadedModelInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+from vox.core.types import (
+    AdapterInfo,
+    LoadedModelInfo,
+    ModelFormat,
+    ModelType,
+    SynthesizeChunk,
+    TranscribeResult,
+    TranscriptSegment,
+    VoiceInfo,
+)
 from vox.grpc import vox_pb2
 
 
@@ -37,7 +46,7 @@ class FakeContext:
 
 
 class DummyScheduler:
-    def __init__(self, adapter: TTSAdapter, loaded_models: list[LoadedModelInfo] | None = None):
+    def __init__(self, adapter: STTAdapter | TTSAdapter, loaded_models: list[LoadedModelInfo] | None = None):
         self._adapter = adapter
         self._loaded_models = loaded_models or []
 
@@ -80,6 +89,36 @@ class FakeCloneableTTSAdapter(TTSAdapter):
         self.last_synthesize_kwargs = kwargs
         yield SynthesizeChunk(audio=np.zeros(64, dtype=np.float32).tobytes(), sample_rate=24_000, is_final=False)
         yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
+
+
+class FakeSTTAdapter(STTAdapter):
+    def info(self) -> AdapterInfo:
+        return AdapterInfo(
+            name="fake-stt",
+            type=ModelType.STT,
+            architectures=("fake",),
+            default_sample_rate=16_000,
+            supported_formats=(ModelFormat.ONNX,),
+        )
+
+    def load(self, model_path: str, device: str, **kwargs) -> None:
+        pass
+
+    def unload(self) -> None:
+        pass
+
+    @property
+    def is_loaded(self) -> bool:
+        return True
+
+    def transcribe(self, audio, **kwargs) -> TranscribeResult:
+        return TranscribeResult(
+            text="hello grpc",
+            language="en",
+            duration_ms=1000,
+            model="fake-stt:latest",
+            segments=(TranscriptSegment(text="hello grpc", start_ms=0, end_ms=1000),),
+        )
 
 
 class TestHealthServicer:
@@ -207,6 +246,34 @@ class TestModelServicer:
 
 
 class TestTranscriptionServicer:
+    @pytest.mark.asyncio
+    async def test_transcribe_runs_in_worker_thread(self, tmp_path, monkeypatch):
+        from vox.grpc import transcription_servicer
+        from vox.grpc.transcription_servicer import TranscriptionServicer
+
+        async def run_in_thread(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        to_thread = AsyncMock(side_effect=run_in_thread)
+        monkeypatch.setattr(transcription_servicer.asyncio, "to_thread", to_thread)
+
+        store = _make_store(tmp_path)
+        registry = MagicMock()
+        scheduler = DummyScheduler(FakeSTTAdapter())
+        servicer = TranscriptionServicer(store, registry, scheduler)
+
+        response = await servicer.Transcribe(
+            vox_pb2.TranscribeRequest(
+                model="fake-stt:latest",
+                audio=encode_wav(np.zeros(16_000, dtype=np.float32), 16_000),
+                format_hint="wav",
+            ),
+            FakeContext(),
+        )
+
+        assert response.text == "hello grpc"
+        to_thread.assert_awaited_once()
+
     @pytest.mark.asyncio
     async def test_transcribe_no_audio(self, tmp_path):
         from vox.grpc.transcription_servicer import TranscriptionServicer

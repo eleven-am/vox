@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
+from dataclasses import replace
 
 import grpc
-from dataclasses import replace
 
 from vox.audio.pipeline import prepare_for_stt
 from vox.core.adapter import STTAdapter
@@ -39,7 +40,10 @@ class TranscriptionServicer(vox_pb2_grpc.TranscriptionServiceServicer):
     async def Transcribe(self, request, context):
         model = request.model or _get_default_stt(self._registry, self._store)
         if not model:
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "No model specified and no default STT model available")
+            await context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                "No model specified and no default STT model available",
+            )
 
         if not request.audio:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "No audio data provided")
@@ -54,7 +58,8 @@ class TranscriptionServicer(vox_pb2_grpc.TranscriptionServiceServicer):
                 if not isinstance(adapter, STTAdapter):
                     await context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"Model '{model}' is not an STT model")
 
-                result = adapter.transcribe(
+                result = await asyncio.to_thread(
+                    adapter.transcribe,
                     audio,
                     language=request.language or None,
                     word_timestamps=request.word_timestamps,

@@ -410,6 +410,26 @@ class TestTranscribe:
         assert set(body.keys()) == {"text"}
 
     @patch("vox.server.routes.transcribe.prepare_for_stt", return_value=np.zeros(16000, dtype=np.float32))
+    def test_transcribe_runs_in_worker_thread(self, _mock_prep):
+        async def run_in_thread(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        client = self._make_client_with_stt()
+        audio_bytes = b"\x00" * 1000
+        with patch(
+            "vox.server.routes.transcribe.asyncio.to_thread",
+            new=AsyncMock(side_effect=run_in_thread),
+        ) as mock_to_thread:
+            resp = client.post(
+                "/v1/audio/transcriptions",
+                files={"file": ("audio.wav", io.BytesIO(audio_bytes), "audio/wav")},
+                data={"model": "test-stt:latest", "response_format": "json"},
+            )
+
+        assert resp.status_code == 200
+        mock_to_thread.assert_awaited_once()
+
+    @patch("vox.server.routes.transcribe.prepare_for_stt", return_value=np.zeros(16000, dtype=np.float32))
     def test_transcribe_verbose_json_returns_rich_payload(self, _mock_prep):
         client = self._make_client_with_stt()
         audio_bytes = b"\x00" * 1000
