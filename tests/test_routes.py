@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from vox.audio.codecs import encode_wav
+from vox.audio.pipeline import AudioChunk
 from vox.core.adapter import STTAdapter, TTSAdapter
 from vox.core.cloned_voices import create_stored_voice
 from vox.core.errors import ModelNotFoundError
@@ -31,6 +32,17 @@ from vox.core.types import (
 )
 from vox.server.routes import get_default_model
 from vox.server.routes.transcribe import _mime_to_format
+
+
+def _fake_chunks() -> list[AudioChunk]:
+    return [
+        AudioChunk(
+            data=np.zeros(16000, dtype=np.float32),
+            sample_rate=16000,
+            duration_ms=1000,
+            offset_ms=0,
+        )
+    ]
 
 
 class FakeSTTAdapter(STTAdapter):
@@ -393,7 +405,7 @@ class TestTranscribe:
         app = _build_app(scheduler=scheduler)
         return TestClient(app)
 
-    @patch("vox.server.routes.transcribe.prepare_for_stt", return_value=np.zeros(16000, dtype=np.float32))
+    @patch("vox.server.routes.transcribe.prepare_for_stt_chunks", side_effect=lambda *a, **kw: _fake_chunks())
     def test_transcribe_returns_json(self, _mock_prep):
 
 
@@ -409,7 +421,7 @@ class TestTranscribe:
         assert body["text"] == "hello world"
         assert set(body.keys()) == {"text"}
 
-    @patch("vox.server.routes.transcribe.prepare_for_stt", return_value=np.zeros(16000, dtype=np.float32))
+    @patch("vox.server.routes.transcribe.prepare_for_stt_chunks", side_effect=lambda *a, **kw: _fake_chunks())
     def test_transcribe_runs_in_worker_thread(self, _mock_prep):
         async def run_in_thread(func, *args, **kwargs):
             return func(*args, **kwargs)
@@ -429,7 +441,7 @@ class TestTranscribe:
         assert resp.status_code == 200
         mock_to_thread.assert_awaited_once()
 
-    @patch("vox.server.routes.transcribe.prepare_for_stt", return_value=np.zeros(16000, dtype=np.float32))
+    @patch("vox.server.routes.transcribe.prepare_for_stt_chunks", side_effect=lambda *a, **kw: _fake_chunks())
     def test_transcribe_verbose_json_returns_rich_payload(self, _mock_prep):
         client = self._make_client_with_stt()
         audio_bytes = b"\x00" * 1000
@@ -446,7 +458,7 @@ class TestTranscribe:
         assert "processing_ms" in body
         assert "segments" in body
 
-    @patch("vox.server.routes.transcribe.prepare_for_stt", return_value=np.zeros(16000, dtype=np.float32))
+    @patch("vox.server.routes.transcribe.prepare_for_stt_chunks", side_effect=lambda *a, **kw: _fake_chunks())
     def test_transcribe_text_format(self, _mock_prep):
         client = self._make_client_with_stt()
         audio_bytes = b"\x00" * 1000
@@ -459,7 +471,7 @@ class TestTranscribe:
         assert resp.text == "hello world"
         assert "text/plain" in resp.headers["content-type"]
 
-    @patch("vox.server.routes.transcribe.prepare_for_stt", return_value=np.zeros(16000, dtype=np.float32))
+    @patch("vox.server.routes.transcribe.prepare_for_stt_chunks", side_effect=lambda *a, **kw: _fake_chunks())
     def test_transcribe_model_not_found_404(self, _mock_prep):
         client = self._make_client_with_stt()
         audio_bytes = b"\x00" * 1000
@@ -706,7 +718,7 @@ class TestTranscribeExtended:
         app = _build_app(scheduler=scheduler)
         return TestClient(app)
 
-    @patch("vox.server.routes.transcribe.prepare_for_stt", return_value=np.zeros(16000, dtype=np.float32))
+    @patch("vox.server.routes.transcribe.prepare_for_stt_chunks", side_effect=lambda *a, **kw: _fake_chunks())
     def test_transcribe_verbose_json(self, _mock_prep):
         client = self._make_client_with_stt()
         audio_bytes = b"\x00" * 1000
@@ -729,7 +741,7 @@ class TestTranscribeExtended:
         assert seg["words"][0]["confidence"] == 0.99
         assert seg["words"][1]["word"] == "world"
 
-    @patch("vox.server.routes.transcribe.prepare_for_stt", return_value=np.zeros(16000, dtype=np.float32))
+    @patch("vox.server.routes.transcribe.prepare_for_stt_chunks", side_effect=lambda *a, **kw: _fake_chunks())
     def test_openai_transcribe_endpoint(self, _mock_prep):
         client = self._make_client_with_stt()
         audio_bytes = b"\x00" * 1000
@@ -742,7 +754,7 @@ class TestTranscribeExtended:
         body = resp.json()
         assert body["text"] == "hello world"
 
-    @patch("vox.server.routes.transcribe.prepare_for_stt", return_value=np.zeros(16000, dtype=np.float32))
+    @patch("vox.server.routes.transcribe.prepare_for_stt_chunks", side_effect=lambda *a, **kw: _fake_chunks())
     def test_openai_transcribe_text_format(self, _mock_prep):
         client = self._make_client_with_stt()
         audio_bytes = b"\x00" * 1000
@@ -754,7 +766,7 @@ class TestTranscribeExtended:
         assert resp.status_code == 200
         assert resp.text == "hello world"
 
-    @patch("vox.server.routes.transcribe.prepare_for_stt", return_value=np.zeros(16000, dtype=np.float32))
+    @patch("vox.server.routes.transcribe.prepare_for_stt_chunks", side_effect=lambda *a, **kw: _fake_chunks())
     def test_transcribe_wrong_model_type_400(self, _mock_prep):
         """Sending a TTS model name to /v1/audio/transcriptions should return 400."""
         scheduler = MockScheduler()

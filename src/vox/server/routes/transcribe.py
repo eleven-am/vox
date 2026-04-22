@@ -8,7 +8,8 @@ from dataclasses import replace
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 
-from vox.audio.pipeline import prepare_for_stt
+from vox.audio.merger import merge_transcripts
+from vox.audio.pipeline import prepare_for_stt_chunks
 from vox.core.adapter import STTAdapter
 from vox.core.errors import ModelNotFoundError, VoxError
 from vox.core.ner import annotate, entity_to_dict
@@ -42,20 +43,25 @@ async def _run_transcribe(
         model = get_default_model("stt", registry, request.app.state.store)
 
     data = await file.read()
-    audio = prepare_for_stt(data, format_hint=_mime_to_format(file.content_type))
+    chunks = prepare_for_stt_chunks(data, format_hint=_mime_to_format(file.content_type))
 
     start_time = time.perf_counter()
     try:
         async with scheduler.acquire(model) as adapter:
             if not isinstance(adapter, STTAdapter):
                 raise HTTPException(status_code=400, detail=f"Model '{model}' is not an STT model")
-            result = await asyncio.to_thread(
-                adapter.transcribe,
-                audio,
-                language=language,
-                word_timestamps=word_timestamps,
-                temperature=temperature,
-            )
+            per_chunk: list[tuple] = []
+            for chunk in chunks:
+                partial = await asyncio.to_thread(
+                    adapter.transcribe,
+                    chunk.data,
+                    language=language,
+                    word_timestamps=word_timestamps,
+                    temperature=temperature,
+                )
+                partial = replace(partial, duration_ms=chunk.duration_ms)
+                per_chunk.append((partial, chunk.offset_ms))
+            result = merge_transcripts(per_chunk)
     except HTTPException:
         raise
     except ModelNotFoundError as e:

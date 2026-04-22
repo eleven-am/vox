@@ -91,6 +91,39 @@ class FakeCloneableTTSAdapter(TTSAdapter):
         yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
 
 
+class FakeCappedTTSAdapter(TTSAdapter):
+    def __init__(self, max_input_chars: int) -> None:
+        self._max_input_chars = max_input_chars
+        self.calls: list[str] = []
+
+    def info(self) -> AdapterInfo:
+        return AdapterInfo(
+            name="fake-capped-tts",
+            type=ModelType.TTS,
+            architectures=("fake",),
+            default_sample_rate=24_000,
+            supported_formats=(ModelFormat.ONNX,),
+            max_input_chars=self._max_input_chars,
+        )
+
+    def load(self, model_path: str, device: str, **kwargs) -> None:
+        pass
+
+    def unload(self) -> None:
+        pass
+
+    @property
+    def is_loaded(self) -> bool:
+        return True
+
+    def list_voices(self):
+        return [VoiceInfo(id="default", name="Default", language="en")]
+
+    async def synthesize(self, text: str, **kwargs):
+        self.calls.append(text)
+        yield SynthesizeChunk(audio=np.zeros(64, dtype=np.float32).tobytes(), sample_rate=24_000, is_final=True)
+
+
 class FakeSTTAdapter(STTAdapter):
     def info(self) -> AdapterInfo:
         return AdapterInfo(
@@ -443,6 +476,25 @@ class TestSynthesisServicer:
         assert adapter.last_synthesize_kwargs["voice"] is None
         assert adapter.last_synthesize_kwargs["reference_audio"] is not None
         assert adapter.last_synthesize_kwargs["reference_text"] == "hello there"
+
+    @pytest.mark.asyncio
+    async def test_synthesize_chunked_text_only_marks_final_chunk_final(self, tmp_path):
+        from vox.grpc.synthesis_servicer import SynthesisServicer
+
+        adapter = FakeCappedTTSAdapter(max_input_chars=8)
+        scheduler = DummyScheduler(adapter)
+        servicer = SynthesisServicer(_make_store(tmp_path), MagicMock(), scheduler)
+
+        chunks = [
+            chunk
+            async for chunk in servicer.Synthesize(
+                vox_pb2.SynthesizeRequest(model="test-tts:latest", input="One. Two. Three."),
+                FakeContext(),
+            )
+        ]
+
+        assert len(adapter.calls) == 3
+        assert [chunk.is_final for chunk in chunks] == [False, False, True]
 
 
 class TestProtoMessages:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -24,6 +26,18 @@ _CONTENT_TYPES: dict[str, str] = {
     "opus": "audio/opus",
 }
 
+STT_CHUNK_DURATION_MS = 5 * 60 * 1000
+
+
+@dataclass(frozen=True)
+class AudioChunk:
+    """A bounded slice of decoded STT-ready audio with its position in the original timeline."""
+
+    data: NDArray[np.float32]
+    sample_rate: int
+    duration_ms: int
+    offset_ms: int
+
 
 def prepare_for_stt(
     data: bytes,
@@ -44,6 +58,71 @@ def prepare_for_stt(
         audio = audio / peak
 
     return audio.astype(np.float32)
+
+
+def chunk_audio(
+    audio: NDArray[np.float32],
+    sample_rate: int,
+    chunk_duration_ms: int = STT_CHUNK_DURATION_MS,
+) -> list[AudioChunk]:
+    """Split a float32 mono waveform into fixed-duration chunks with preserved offsets.
+
+    Audio shorter than ``chunk_duration_ms`` is returned as a single chunk at offset 0.
+    """
+    if chunk_duration_ms <= 0:
+        raise ValueError(f"chunk_duration_ms must be positive, got {chunk_duration_ms}")
+    if sample_rate <= 0:
+        raise ValueError(f"sample_rate must be positive, got {sample_rate}")
+
+    total_samples = int(audio.shape[0])
+    total_duration_ms = int(total_samples / sample_rate * 1000)
+
+    if total_duration_ms <= chunk_duration_ms:
+        return [
+            AudioChunk(
+                data=audio,
+                sample_rate=sample_rate,
+                duration_ms=total_duration_ms,
+                offset_ms=0,
+            )
+        ]
+
+    chunk_samples = max(1, int(chunk_duration_ms * sample_rate / 1000))
+    chunks: list[AudioChunk] = []
+    offset_samples = 0
+    while offset_samples < total_samples:
+        end_samples = min(offset_samples + chunk_samples, total_samples)
+        segment = audio[offset_samples:end_samples]
+        segment_duration_ms = int(segment.shape[0] / sample_rate * 1000)
+        offset_ms = int(offset_samples / sample_rate * 1000)
+        chunks.append(
+            AudioChunk(
+                data=segment,
+                sample_rate=sample_rate,
+                duration_ms=segment_duration_ms,
+                offset_ms=offset_ms,
+            )
+        )
+        offset_samples = end_samples
+
+    return chunks
+
+
+def prepare_for_stt_chunks(
+    data: bytes,
+    target_rate: int = 16000,
+    format_hint: str | None = None,
+    chunk_duration_ms: int = STT_CHUNK_DURATION_MS,
+) -> list[AudioChunk]:
+    """Decode bytes and return bounded chunks ready for STT.
+
+    Adapters and model backends have per-call memory limits. Callers that expect to
+    transcribe full-length uploads (HTTP, one-shot gRPC) should use this and merge
+    the per-chunk results. Streaming paths that already receive bounded buffers
+    should keep using :func:`prepare_for_stt`.
+    """
+    audio = prepare_for_stt(data, target_rate=target_rate, format_hint=format_hint)
+    return chunk_audio(audio, sample_rate=target_rate, chunk_duration_ms=chunk_duration_ms)
 
 
 def prepare_for_output(

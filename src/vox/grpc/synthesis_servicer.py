@@ -4,6 +4,7 @@ import logging
 
 import grpc
 
+from vox.conversation.text_buffer import split_for_tts
 from vox.core.adapter import TTSAdapter
 from vox.core.cloned_voices import (
     create_stored_voice,
@@ -61,19 +62,26 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
                     request.voice or None,
                     request.language or None,
                 )
-                async for chunk in adapter.synthesize(
-                    request.input,
-                    voice=voice,
-                    speed=request.speed if request.speed > 0 else 1.0,
-                    language=language,
-                    reference_audio=reference_audio,
-                    reference_text=reference_text,
-                ):
-                    yield vox_pb2.AudioChunk(
-                        audio=chunk.audio,
-                        sample_rate=chunk.sample_rate,
-                        is_final=chunk.is_final,
-                    )
+                max_chars = int(getattr(adapter.info(), "max_input_chars", 0) or 0)
+                if max_chars > 0:
+                    text_chunks = split_for_tts(request.input, max_chars=max_chars)
+                else:
+                    text_chunks = [request.input] if request.input.strip() else []
+                for idx, text_chunk in enumerate(text_chunks):
+                    is_last_text_chunk = idx == len(text_chunks) - 1
+                    async for chunk in adapter.synthesize(
+                        text_chunk,
+                        voice=voice,
+                        speed=request.speed if request.speed > 0 else 1.0,
+                        language=language,
+                        reference_audio=reference_audio,
+                        reference_text=reference_text,
+                    ):
+                        yield vox_pb2.AudioChunk(
+                            audio=chunk.audio,
+                            sample_rate=chunk.sample_rate,
+                            is_final=chunk.is_final and is_last_text_chunk,
+                        )
         except ModelNotFoundError as e:
             await context.abort(grpc.StatusCode.NOT_FOUND, str(e))
         except VoxError as e:

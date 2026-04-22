@@ -7,7 +7,8 @@ from dataclasses import replace
 
 import grpc
 
-from vox.audio.pipeline import prepare_for_stt
+from vox.audio.merger import merge_transcripts
+from vox.audio.pipeline import prepare_for_stt_chunks
 from vox.core.adapter import STTAdapter
 from vox.core.errors import ModelNotFoundError, VoxError
 from vox.core.ner import annotate
@@ -49,7 +50,7 @@ class TranscriptionServicer(vox_pb2_grpc.TranscriptionServiceServicer):
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "No audio data provided")
 
         format_hint = request.format_hint or None
-        audio = prepare_for_stt(request.audio, format_hint=format_hint)
+        chunks = prepare_for_stt_chunks(request.audio, format_hint=format_hint)
 
         start_time = time.perf_counter()
 
@@ -58,13 +59,18 @@ class TranscriptionServicer(vox_pb2_grpc.TranscriptionServiceServicer):
                 if not isinstance(adapter, STTAdapter):
                     await context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"Model '{model}' is not an STT model")
 
-                result = await asyncio.to_thread(
-                    adapter.transcribe,
-                    audio,
-                    language=request.language or None,
-                    word_timestamps=request.word_timestamps,
-                    temperature=request.temperature if request.temperature > 0 else 0.0,
-                )
+                per_chunk: list[tuple] = []
+                for chunk in chunks:
+                    partial = await asyncio.to_thread(
+                        adapter.transcribe,
+                        chunk.data,
+                        language=request.language or None,
+                        word_timestamps=request.word_timestamps,
+                        temperature=request.temperature if request.temperature > 0 else 0.0,
+                    )
+                    partial = replace(partial, duration_ms=chunk.duration_ms)
+                    per_chunk.append((partial, chunk.offset_ms))
+                result = merge_transcripts(per_chunk)
         except ModelNotFoundError as e:
             await context.abort(grpc.StatusCode.NOT_FOUND, str(e))
         except VoxError as e:

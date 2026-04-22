@@ -9,6 +9,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from vox.audio.pipeline import get_content_type, prepare_for_output
+from vox.conversation.text_buffer import split_for_tts
 from vox.core.adapter import TTSAdapter
 from vox.core.cloned_voices import resolve_voice_request
 from vox.core.errors import (
@@ -18,6 +19,15 @@ from vox.core.errors import (
     VoxError,
 )
 from vox.server.routes import get_default_model
+
+
+def _split_for_adapter(text: str, adapter: TTSAdapter) -> list[str]:
+    """Respect the adapter's declared max_input_chars cap, falling back to the full text."""
+    max_chars = int(getattr(adapter.info(), "max_input_chars", 0) or 0)
+    if max_chars <= 0:
+        return [text] if text.strip() else []
+    return split_for_tts(text, max_chars=max_chars)
+
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -72,20 +82,22 @@ async def _full_synthesis(scheduler, store, model: str, req: SynthesizeRequest):
         if not isinstance(adapter, TTSAdapter):
             raise HTTPException(status_code=400, detail=f"Model '{model}' is not a TTS model")
         voice, language, reference_audio, reference_text = _resolve_voice_request(adapter, store, req)
+        text_chunks = _split_for_adapter(req.input, adapter)
         chunks = []
         sample_rate = 0
-        async for chunk in adapter.synthesize(
-            req.input,
-            voice=voice,
-            speed=req.speed,
-            language=language,
-            reference_audio=reference_audio,
-            reference_text=reference_text,
-        ):
-            audio_data = np.frombuffer(chunk.audio, dtype=np.float32)
-            if audio_data.size > 0:
-                chunks.append(audio_data)
-            sample_rate = chunk.sample_rate
+        for text_chunk in text_chunks:
+            async for chunk in adapter.synthesize(
+                text_chunk,
+                voice=voice,
+                speed=req.speed,
+                language=language,
+                reference_audio=reference_audio,
+                reference_text=reference_text,
+            ):
+                audio_data = np.frombuffer(chunk.audio, dtype=np.float32)
+                if audio_data.size > 0:
+                    chunks.append(audio_data)
+                sample_rate = chunk.sample_rate
 
         if not chunks:
             raise HTTPException(status_code=500, detail="No audio generated")
@@ -121,18 +133,19 @@ async def _stream_synthesis(scheduler, store, model: str, req: SynthesizeRequest
             if not isinstance(adapter, TTSAdapter):
                 return
             voice, language, reference_audio, reference_text = _resolve_voice_request(adapter, store, req)
-            async for chunk in adapter.synthesize(
-                req.input,
-                voice=voice,
-                speed=req.speed,
-                language=language,
-                reference_audio=reference_audio,
-                reference_text=reference_text,
-            ):
-                audio_data = np.frombuffer(chunk.audio, dtype=np.float32)
-                if audio_data.size > 0:
-                    encoded, _ = prepare_for_output(audio_data, chunk.sample_rate, req.response_format)
-                    yield encoded
+            for text_chunk in _split_for_adapter(req.input, adapter):
+                async for chunk in adapter.synthesize(
+                    text_chunk,
+                    voice=voice,
+                    speed=req.speed,
+                    language=language,
+                    reference_audio=reference_audio,
+                    reference_text=reference_text,
+                ):
+                    audio_data = np.frombuffer(chunk.audio, dtype=np.float32)
+                    if audio_data.size > 0:
+                        encoded, _ = prepare_for_output(audio_data, chunk.sample_rate, req.response_format)
+                        yield encoded
 
     return StreamingResponse(audio_stream(), media_type=content_type)
 
