@@ -6,7 +6,6 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import numpy as np
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -15,7 +14,6 @@ from vox.core.adapter import TTSAdapter
 from vox.core.store import BlobStore
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
 from vox.server.routes.bidi import router as bidi_router
-
 
 LONG_TEXT = (
     "In the quiet morning light the farmer walked to the fields, thinking of the "
@@ -234,8 +232,7 @@ class TestClientOverride:
 
 
 class TestKokoroDefaults:
-    def test_kokoro_adapter_declares_zero_cap(self):
-        """Verify the Kokoro adapter opts out of HTTP-layer chunking (library chunks internally)."""
+    def test_kokoro_adapter_declares_chunk_cap(self):
         from unittest.mock import patch
         with patch.dict("sys.modules", {
             "onnxruntime": MagicMock(),
@@ -243,7 +240,20 @@ class TestKokoroDefaults:
         }):
             from vox_kokoro.adapter import KokoroAdapter
             info = KokoroAdapter().info()
-            assert info.max_input_chars == 0
+            assert info.max_input_chars == 250
+
+    def test_kokoro_torch_adapter_declares_chunk_cap(self):
+        from unittest.mock import patch
+        with patch.dict("sys.modules", {
+            "torch": MagicMock(),
+            "torchaudio": MagicMock(),
+            "huggingface_hub": MagicMock(),
+            "kokoro": MagicMock(),
+            "kokoro.pipeline": MagicMock(),
+        }):
+            from vox_kokoro.torch_adapter import KokoroTorchAdapter
+            info = KokoroTorchAdapter().info()
+            assert info.max_input_chars == 250
 
 
 class TestQwen3Defaults:

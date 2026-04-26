@@ -1690,7 +1690,7 @@ wheels = [
 
 [[package]]
 name = "vox-runtime"
-version = "0.2.21"
+version = "0.2.23"
 source = { editable = "." }
 dependencies = [
     { name = "click" },

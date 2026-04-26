@@ -250,6 +250,7 @@ class KokoroTorchAdapter(TTSAdapter):
             supports_streaming=True,
             supports_voice_cloning=False,
             supported_languages=SUPPORTED_LANGUAGES,
+            max_input_chars=250,
         )
 
     def load(self, model_path: str, device: str, **kwargs: Any) -> None:
