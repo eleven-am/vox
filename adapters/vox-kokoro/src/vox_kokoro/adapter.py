@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import errno
 import logging
 import platform
+import shutil
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import MethodType
@@ -22,6 +24,8 @@ from vox.core.types import (
 from vox_kokoro.common import SAMPLE_RATE, SUPPORTED_LANGUAGES, voice_info, voice_lang_tag
 
 logger = logging.getLogger(__name__)
+_PHONEMIZER_LOGGER = logging.getLogger("vox_kokoro.phonemizer")
+_PHONEMIZER_LOGGER.setLevel(logging.ERROR)
 
 
 def _select_audio_output(session: InferenceSession, outputs: list[Any]) -> np.ndarray:
@@ -41,6 +45,47 @@ def _select_audio_output(session: InferenceSession, outputs: list[Any]) -> np.nd
     if candidates:
         return max(candidates, key=lambda item: item[0])[1]
     return np.asarray(outputs[0], dtype=np.float32)
+
+
+def _patch_phonemizer_compat() -> None:
+    try:
+        import phonemizer
+        from phonemizer.backend.espeak.api import EspeakAPI
+    except ImportError:
+        return
+
+    original_delete = getattr(EspeakAPI, "_delete", None)
+    if original_delete is not None and not getattr(original_delete, "_vox_patched", False):
+        def _delete_quietly(library, tempdir):
+            try:
+                original_delete(library, tempdir)
+            except FileNotFoundError:
+                return
+            except OSError as exc:
+                if exc.errno != errno.ENOTEMPTY:
+                    raise
+                shutil.rmtree(tempdir, ignore_errors=True)
+
+        _delete_quietly._vox_patched = True
+        EspeakAPI._delete = staticmethod(_delete_quietly)
+
+    original_phonemize = getattr(Tokenizer, "phonemize", None)
+    if original_phonemize is not None and not getattr(original_phonemize, "_vox_patched", False):
+        def _phonemize_quietly(self, text, lang="en-us", norm=True) -> str:
+            if norm:
+                text = Tokenizer.normalize_text(text)
+            phonemes = phonemizer.phonemize(
+                text,
+                lang,
+                preserve_punctuation=True,
+                with_stress=True,
+                logger=_PHONEMIZER_LOGGER,
+            )
+            phonemes = "".join(filter(lambda p: p in self.vocab, phonemes))
+            return phonemes.strip()
+
+        _phonemize_quietly._vox_patched = True
+        Tokenizer.phonemize = _phonemize_quietly
 
 def _get_onnx_providers(device: str) -> tuple[list[tuple[str, dict]], str]:
     """Choose ONNX execution providers based on *device* and platform."""
@@ -139,6 +184,7 @@ class KokoroAdapter(TTSAdapter):
         providers, resolved_device = _get_onnx_providers(device)
         self._device = resolved_device
 
+        _patch_phonemizer_compat()
         logger.info("Loading Kokoro model from %s (device=%s)", model_dir, self._device)
         session = InferenceSession(str(model_file), providers=providers)
         if voices_file.exists():

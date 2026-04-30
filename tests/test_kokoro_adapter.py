@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -68,9 +69,17 @@ class _FakeTokenizer:
     def __init__(self, *args, **kwargs):
         self.args = args
         self.kwargs = kwargs
+        self.vocab = {"a": 1, "b": 2, "c": 3, " ": 4}
+
+    @staticmethod
+    def normalize_text(text):
+        return text.strip()
 
     def tokenize(self, phonemes):
         return list(range(len(phonemes)))
+
+    def phonemize(self, text, lang="en-us", norm=True):
+        return text.strip()
 
 
 class _FakeConfig:
@@ -123,6 +132,31 @@ def _install_fake_modules(*, providers=None):
     sys.modules["kokoro_onnx"] = fake_kokoro
     sys.modules["onnxruntime"] = fake_ort
     return fake_ort
+
+
+def _install_fake_phonemizer():
+    fake_phonemizer = ModuleType("phonemizer")
+    fake_phonemizer.phonemize = MagicMock(return_value="ab c")
+
+    fake_backend = ModuleType("phonemizer.backend")
+    fake_espeak = ModuleType("phonemizer.backend.espeak")
+    fake_api = ModuleType("phonemizer.backend.espeak.api")
+
+    class _FakeEspeakAPI:
+        @staticmethod
+        def _delete(library, tempdir):
+            raise OSError(errno.ENOTEMPTY, "Directory not empty")
+
+    fake_api.EspeakAPI = _FakeEspeakAPI
+    fake_espeak.api = fake_api
+    fake_backend.espeak = fake_espeak
+    fake_phonemizer.backend = fake_backend
+
+    sys.modules["phonemizer"] = fake_phonemizer
+    sys.modules["phonemizer.backend"] = fake_backend
+    sys.modules["phonemizer.backend.espeak"] = fake_espeak
+    sys.modules["phonemizer.backend.espeak.api"] = fake_api
+    return fake_phonemizer, _FakeEspeakAPI
 
 
 def _install_fake_native_modules():
@@ -289,6 +323,36 @@ def test_kokoro_float_speed_prefers_named_audio_output(tmp_path: Path):
 
     assert sample_rate == 24000
     assert result_audio.tolist() == [0.0, 0.25, -0.25]
+
+
+def test_kokoro_load_patches_phonemizer_cleanup_and_logging(tmp_path: Path):
+    _install_fake_modules()
+    fake_phonemizer, fake_espeak_api = _install_fake_phonemizer()
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    model_dir = tmp_path / "kokoro"
+    (model_dir / "onnx").mkdir(parents=True)
+    (model_dir / "voices").mkdir(parents=True)
+    (model_dir / "onnx" / "model.onnx").write_bytes(b"onnx")
+    np.arange(512, dtype=np.float32).tofile(model_dir / "voices" / "af_heart.bin")
+
+    from vox_kokoro.adapter import KokoroAdapter
+
+    adapter = KokoroAdapter()
+    adapter.load(str(model_dir), "cpu")
+
+    tempdir = tmp_path / "espeak-temp"
+    tempdir.mkdir()
+    fake_espeak_api._delete(None, str(tempdir))
+
+    assert tempdir.exists() is False
+
+    tokenizer = adapter._kokoro.tokenizer
+    assert tokenizer.phonemize("  abc  ") == "ab c"
+    _, kwargs = fake_phonemizer.phonemize.call_args
+    assert kwargs["logger"].level == 40
 
 
 def test_kokoro_rejects_cuda_when_no_gpu_provider_is_available(tmp_path: Path):
