@@ -102,7 +102,7 @@ def encode_mp3(
     pcm16 = (audio * 32767.0).clip(-32768, 32767).astype(np.int16).tobytes()
     body = encoder.encode(pcm16)
     tail = encoder.flush()
-    return body + tail
+    return bytes(body + tail)
 
 
 def encode_opus(

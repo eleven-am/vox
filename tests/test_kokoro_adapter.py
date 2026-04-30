@@ -17,17 +17,27 @@ class _FakeInput:
         self.shape = None
 
 
+class _FakeOutput:
+    def __init__(self, name):
+        self.name = name
+
+
 class _FakeSession:
-    def __init__(self, model_path="fake-model.onnx", inputs=None):
+    def __init__(self, model_path="fake-model.onnx", inputs=None, outputs=None, run_outputs=None):
         self._model_path = model_path
         self._inputs = inputs or []
+        self._outputs = outputs or []
+        self._run_outputs = run_outputs or [np.array([0.0, 0.25, -0.25], dtype=np.float32)]
 
     def get_inputs(self):
         return self._inputs
 
+    def get_outputs(self):
+        return self._outputs
+
     def run(self, outputs, inputs):
         self.last_run = inputs
-        return [np.array([0.0, 0.25, -0.25], dtype=np.float32)]
+        return self._run_outputs
 
 
 class _FakeKokoro:
@@ -42,10 +52,10 @@ class _FakeKokoro:
         instance.voices = {"legacy": np.zeros((1, 1, 256), dtype=np.float32)}
         return instance
 
-    async def create_stream(self, text, voice, *, lang, speed):
+    async def create_stream(self, text, voice, *, lang, speed, trim=True):
         calls = getattr(self, "stream_calls", [])
         calls.append(
-            {"text": text, "voice": voice, "lang": lang, "speed": speed}
+            {"text": text, "voice": voice, "lang": lang, "speed": speed, "trim": trim}
         )
         self.stream_calls = calls
         yield np.array([0.0, 0.25, -0.25], dtype=np.float32), 24000
@@ -201,6 +211,7 @@ def test_kokoro_synthesize_uses_bcp47_language_tags(tmp_path: Path):
             "voice": "af_heart",
             "lang": "en-us",
             "speed": 1.0,
+            "trim": False,
         }
     ]
 
@@ -237,6 +248,47 @@ def test_kokoro_patches_float_speed_runtime(tmp_path: Path):
     assert sample_rate == 24000
     assert result_audio.shape == (3,)
     assert adapter._kokoro.sess.last_run["speed"].dtype == np.float32
+
+
+def test_kokoro_float_speed_prefers_named_audio_output(tmp_path: Path):
+    fake_ort = _install_fake_modules()
+    fake_ort.InferenceSession = MagicMock(
+        return_value=_FakeSession(
+            model_path="fake-model.onnx",
+            inputs=[
+                _FakeInput("input_ids", "tensor(int64)"),
+                _FakeInput("style", "tensor(float)"),
+                _FakeInput("speed", "tensor(float)"),
+            ],
+            outputs=[
+                _FakeOutput("style_out"),
+                _FakeOutput("audio"),
+            ],
+            run_outputs=[
+                np.array([9.0], dtype=np.float32),
+                np.array([0.0, 0.25, -0.25], dtype=np.float32),
+            ],
+        )
+    )
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    model_dir = tmp_path / "kokoro"
+    (model_dir / "onnx").mkdir(parents=True)
+    (model_dir / "voices").mkdir(parents=True)
+    (model_dir / "onnx" / "model.onnx").write_bytes(b"onnx")
+    np.arange(512, dtype=np.float32).tofile(model_dir / "voices" / "af_heart.bin")
+
+    from vox_kokoro.adapter import KokoroAdapter
+
+    adapter = KokoroAdapter()
+    adapter.load(str(model_dir), "cpu")
+
+    result_audio, sample_rate = adapter._kokoro._create_audio("abc", np.zeros((8, 1, 256), dtype=np.float32), 1.25)
+
+    assert sample_rate == 24000
+    assert result_audio.tolist() == [0.0, 0.25, -0.25]
 
 
 def test_kokoro_rejects_cuda_when_no_gpu_provider_is_available(tmp_path: Path):

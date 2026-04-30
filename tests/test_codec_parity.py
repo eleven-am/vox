@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,7 +12,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from vox.audio.codecs import encode_mp3, encode_opus
+from vox.audio.codecs import encode_flac, encode_mp3, encode_opus, encode_pcm, encode_wav
 from vox.audio.pipeline import prepare_for_output
 from vox.core.adapter import TTSAdapter
 from vox.core.store import BlobStore
@@ -61,7 +62,6 @@ class TestEncodeOpus:
     def test_roundtrip_via_soundfile(self):
         audio = _sine(dur_s=0.5)
         data = encode_opus(audio, 24_000)
-        import io
         import soundfile as sf
         decoded, sr = sf.read(io.BytesIO(data), dtype="float32")
         assert sr == 24_000
@@ -86,6 +86,23 @@ class TestPrepareForOutput:
         audio = _sine()
         with pytest.raises(ValueError, match="Unsupported output format"):
             prepare_for_output(audio, 24_000, "vorbis")
+
+
+class TestCodecReturnTypes:
+    @pytest.mark.parametrize(
+        ("fn", "needs_rate"),
+        [
+            (encode_wav, True),
+            (encode_flac, True),
+            (encode_pcm, False),
+            (encode_mp3, True),
+            (encode_opus, True),
+        ],
+    )
+    def test_encoders_return_bytes(self, fn, needs_rate):
+        audio = _sine(dur_s=0.25)
+        data = fn(audio, 24_000) if needs_rate else fn(audio)
+        assert isinstance(data, bytes)
 
 
 class TestMp3StreamEncoder:

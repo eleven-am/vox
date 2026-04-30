@@ -13,7 +13,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vox.audio.codecs import encode_wav
+from vox.audio.codecs import encode_mp3, encode_wav
 from vox.audio.pipeline import AudioChunk
 from vox.core.adapter import STTAdapter, TTSAdapter
 from vox.core.cloned_voices import create_stored_voice
@@ -809,6 +809,22 @@ class TestSynthesizeExtended:
         assert resp.status_code == 200
         assert "audio/" in resp.headers["content-type"]
         assert resp.content[:4] == b"RIFF"
+
+    def test_openai_speech_endpoint_mp3_returns_nonempty_body(self):
+        client = self._make_client_with_tts()
+        resp = client.post(
+            "/v1/audio/speech",
+            json={
+                "model": "test-tts:latest",
+                "input": "hello",
+                "voice": "default",
+                "response_format": "mp3",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "audio/mpeg"
+        assert len(resp.content) > 0
+        assert resp.content == encode_mp3(np.zeros(24000, dtype=np.float32), 24000)
 
     def test_openai_speech_endpoint_allows_voice_to_be_omitted(self):
         client = self._make_client_with_tts()

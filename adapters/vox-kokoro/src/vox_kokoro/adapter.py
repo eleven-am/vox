@@ -23,6 +23,25 @@ from vox_kokoro.common import SAMPLE_RATE, SUPPORTED_LANGUAGES, voice_info, voic
 
 logger = logging.getLogger(__name__)
 
+
+def _select_audio_output(session: InferenceSession, outputs: list[Any]) -> np.ndarray:
+    output_metas = list(session.get_outputs())
+    preferred_tokens = ("audio", "wave", "wav")
+    for idx, meta in enumerate(output_metas):
+        if idx >= len(outputs):
+            break
+        if any(token in meta.name.lower() for token in preferred_tokens):
+            return np.asarray(outputs[idx], dtype=np.float32)
+
+    candidates: list[tuple[int, np.ndarray]] = []
+    for output in outputs:
+        array = np.asarray(output)
+        if array.dtype.kind == "f" and array.size > 1:
+            candidates.append((array.size, np.asarray(array, dtype=np.float32)))
+    if candidates:
+        return max(candidates, key=lambda item: item[0])[1]
+    return np.asarray(outputs[0], dtype=np.float32)
+
 def _get_onnx_providers(device: str) -> tuple[list[tuple[str, dict]], str]:
     """Choose ONNX execution providers based on *device* and platform."""
     available = get_available_providers()
@@ -198,7 +217,7 @@ class KokoroAdapter(TTSAdapter):
         lang = language or _voice_lang(voice_id)
 
         async for audio_chunk, _token in self._kokoro.create_stream(
-            text, voice_id, lang=lang, speed=speed
+            text, voice_id, lang=lang, speed=speed, trim=False
         ):
             yield SynthesizeChunk(
                 audio=audio_chunk.astype(np.float32).tobytes(),
@@ -232,5 +251,13 @@ def _create_audio_float_speed(self, phonemes: str, voice: np.ndarray, speed: flo
         "style": np.array(voice, dtype=np.float32),
         "speed": np.array([speed], dtype=np.float32),
     }
-    audio = self.sess.run(None, inputs)[0]
+    outputs = self.sess.run(None, inputs)
+    audio = _select_audio_output(self.sess, outputs)
+    logger.info(
+        "kokoro_create_audio phonemes=%d tokens=%d audio_samples=%d outputs=%s",
+        len(phonemes),
+        len(tokens),
+        int(audio.size),
+        [meta.name for meta in self.sess.get_outputs()],
+    )
     return audio, SAMPLE_RATE
