@@ -7,10 +7,9 @@ import shutil
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import MethodType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from kokoro_onnx import Kokoro, KoKoroConfig, Tokenizer
 from onnxruntime import InferenceSession, get_available_providers
 
 from vox.core.adapter import TTSAdapter
@@ -22,6 +21,9 @@ from vox.core.types import (
     VoiceInfo,
 )
 from vox_kokoro.common import SAMPLE_RATE, SUPPORTED_LANGUAGES, voice_info, voice_lang_tag
+
+if TYPE_CHECKING:
+    from kokoro_onnx import Kokoro
 
 logger = logging.getLogger(__name__)
 _PHONEMIZER_LOGGER = logging.getLogger("vox_kokoro.phonemizer")
@@ -68,6 +70,8 @@ def _patch_phonemizer_compat() -> None:
 
         _delete_quietly._vox_patched = True
         EspeakAPI._delete = staticmethod(_delete_quietly)
+
+    from kokoro_onnx import Tokenizer
 
     original_phonemize = getattr(Tokenizer, "phonemize", None)
     if original_phonemize is not None and not getattr(original_phonemize, "_vox_patched", False):
@@ -186,6 +190,8 @@ class KokoroAdapter(TTSAdapter):
 
         _patch_phonemizer_compat()
         logger.info("Loading Kokoro model from %s (device=%s)", model_dir, self._device)
+        from kokoro_onnx import Kokoro
+
         session = InferenceSession(str(model_file), providers=providers)
         if voices_file.exists():
             self._kokoro = Kokoro.from_session(session, str(voices_file))
@@ -201,6 +207,8 @@ class KokoroAdapter(TTSAdapter):
         return None
 
     def _load_directory_layout(self, session: InferenceSession, model_file: Path, voices_dir: Path) -> Kokoro:
+        from kokoro_onnx import Kokoro, KoKoroConfig, Tokenizer
+
         voices = self._load_voice_tensors(voices_dir)
         kokoro = Kokoro.__new__(Kokoro)
         kokoro.sess = session
