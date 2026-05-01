@@ -52,9 +52,26 @@ def _select_audio_output(session: InferenceSession, outputs: list[Any]) -> np.nd
 def _patch_phonemizer_compat() -> None:
     try:
         import phonemizer
+        from phonemizer.backend.espeak import api as espeak_api
         from phonemizer.backend.espeak.api import EspeakAPI
+        from phonemizer.backend.espeak.words_mismatch import BaseWordsMismatch
     except ImportError:
         return
+
+    original_rmtree = getattr(espeak_api.shutil, "rmtree", None)
+    if original_rmtree is not None and not getattr(original_rmtree, "_vox_patched", False):
+        def _rmtree_quietly(path, *args, **kwargs):
+            try:
+                return original_rmtree(path, *args, **kwargs)
+            except FileNotFoundError:
+                return None
+            except OSError as exc:
+                if exc.errno != errno.ENOTEMPTY:
+                    raise
+                return original_rmtree(path, *args, ignore_errors=True, **kwargs)
+
+        _rmtree_quietly._vox_patched = True
+        espeak_api.shutil.rmtree = _rmtree_quietly
 
     original_delete = getattr(EspeakAPI, "_delete", None)
     if original_delete is not None and not getattr(original_delete, "_vox_patched", False):
@@ -70,6 +87,14 @@ def _patch_phonemizer_compat() -> None:
 
         _delete_quietly._vox_patched = True
         EspeakAPI._delete = staticmethod(_delete_quietly)
+
+    original_resume = getattr(BaseWordsMismatch, "_resume", None)
+    if original_resume is not None and not getattr(original_resume, "_vox_patched", False):
+        def _resume_quietly(self, lines, num_mismatches):
+            return None
+
+        _resume_quietly._vox_patched = True
+        BaseWordsMismatch._resume = _resume_quietly
 
     from kokoro_onnx import Tokenizer
 

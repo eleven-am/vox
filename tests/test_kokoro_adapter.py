@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import shutil
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -141,14 +142,28 @@ def _install_fake_phonemizer():
     fake_backend = ModuleType("phonemizer.backend")
     fake_espeak = ModuleType("phonemizer.backend.espeak")
     fake_api = ModuleType("phonemizer.backend.espeak.api")
+    fake_words_mismatch = ModuleType("phonemizer.backend.espeak.words_mismatch")
+
+    def _fake_rmtree(path, ignore_errors=False):
+        if ignore_errors:
+            shutil.rmtree(path, ignore_errors=True)
+            return None
+        raise OSError(errno.ENOTEMPTY, "Directory not empty")
 
     class _FakeEspeakAPI:
         @staticmethod
         def _delete(library, tempdir):
-            raise OSError(errno.ENOTEMPTY, "Directory not empty")
+            fake_api.shutil.rmtree(tempdir)
+
+    class _FakeBaseWordsMismatch:
+        def _resume(self, lines, num_mismatches):
+            raise AssertionError("resume should be patched")
 
     fake_api.EspeakAPI = _FakeEspeakAPI
+    fake_api.shutil = SimpleNamespace(rmtree=_fake_rmtree)
+    fake_words_mismatch.BaseWordsMismatch = _FakeBaseWordsMismatch
     fake_espeak.api = fake_api
+    fake_espeak.words_mismatch = fake_words_mismatch
     fake_backend.espeak = fake_espeak
     fake_phonemizer.backend = fake_backend
 
@@ -156,7 +171,8 @@ def _install_fake_phonemizer():
     sys.modules["phonemizer.backend"] = fake_backend
     sys.modules["phonemizer.backend.espeak"] = fake_espeak
     sys.modules["phonemizer.backend.espeak.api"] = fake_api
-    return fake_phonemizer, _FakeEspeakAPI
+    sys.modules["phonemizer.backend.espeak.words_mismatch"] = fake_words_mismatch
+    return fake_phonemizer, _FakeEspeakAPI, _FakeBaseWordsMismatch
 
 
 def _install_fake_native_modules():
@@ -327,7 +343,7 @@ def test_kokoro_float_speed_prefers_named_audio_output(tmp_path: Path):
 
 def test_kokoro_load_patches_phonemizer_cleanup_and_logging(tmp_path: Path):
     _install_fake_modules()
-    fake_phonemizer, fake_espeak_api = _install_fake_phonemizer()
+    fake_phonemizer, fake_espeak_api, fake_words_mismatch = _install_fake_phonemizer()
     sys.modules.pop("vox_kokoro", None)
     sys.modules.pop("vox_kokoro.adapter", None)
     sys.modules.pop("vox_kokoro.torch_adapter", None)
@@ -353,6 +369,7 @@ def test_kokoro_load_patches_phonemizer_cleanup_and_logging(tmp_path: Path):
     assert tokenizer.phonemize("  abc  ") == "ab c"
     _, kwargs = fake_phonemizer.phonemize.call_args
     assert kwargs["logger"].level == 40
+    assert fake_words_mismatch()._resume(["a"], 1) is None
 
 
 def test_kokoro_rejects_cuda_when_no_gpu_provider_is_available(tmp_path: Path):
