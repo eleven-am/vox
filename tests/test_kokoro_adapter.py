@@ -143,6 +143,7 @@ def _install_fake_phonemizer():
     fake_espeak = ModuleType("phonemizer.backend.espeak")
     fake_api = ModuleType("phonemizer.backend.espeak.api")
     fake_words_mismatch = ModuleType("phonemizer.backend.espeak.words_mismatch")
+    finalize_calls = []
 
     def _fake_rmtree(path, ignore_errors=False):
         if ignore_errors:
@@ -150,7 +151,14 @@ def _install_fake_phonemizer():
             return None
         raise OSError(errno.ENOTEMPTY, "Directory not empty")
 
+    def _fake_finalize(obj, func, *args, **kwargs):
+        finalize_calls.append((func, args, kwargs))
+        return SimpleNamespace()
+
     class _FakeEspeakAPI:
+        def __init__(self, library=None, data_path=None):
+            fake_api.weakref.finalize(self, self._delete, None, "/tmp/fake-espeak")
+
         @staticmethod
         def _delete(library, tempdir):
             fake_api.shutil.rmtree(tempdir)
@@ -161,6 +169,7 @@ def _install_fake_phonemizer():
 
     fake_api.EspeakAPI = _FakeEspeakAPI
     fake_api.shutil = SimpleNamespace(rmtree=_fake_rmtree)
+    fake_api.weakref = SimpleNamespace(finalize=_fake_finalize)
     fake_words_mismatch.BaseWordsMismatch = _FakeBaseWordsMismatch
     fake_espeak.api = fake_api
     fake_espeak.words_mismatch = fake_words_mismatch
@@ -172,7 +181,7 @@ def _install_fake_phonemizer():
     sys.modules["phonemizer.backend.espeak"] = fake_espeak
     sys.modules["phonemizer.backend.espeak.api"] = fake_api
     sys.modules["phonemizer.backend.espeak.words_mismatch"] = fake_words_mismatch
-    return fake_phonemizer, _FakeEspeakAPI, _FakeBaseWordsMismatch
+    return fake_phonemizer, _FakeEspeakAPI, _FakeBaseWordsMismatch, finalize_calls
 
 
 def _install_fake_native_modules():
@@ -343,7 +352,7 @@ def test_kokoro_float_speed_prefers_named_audio_output(tmp_path: Path):
 
 def test_kokoro_load_patches_phonemizer_cleanup_and_logging(tmp_path: Path):
     _install_fake_modules()
-    fake_phonemizer, fake_espeak_api, fake_words_mismatch = _install_fake_phonemizer()
+    fake_phonemizer, fake_espeak_api, fake_words_mismatch, finalize_calls = _install_fake_phonemizer()
     sys.modules.pop("vox_kokoro", None)
     sys.modules.pop("vox_kokoro.adapter", None)
     sys.modules.pop("vox_kokoro.torch_adapter", None)
@@ -364,6 +373,8 @@ def test_kokoro_load_patches_phonemizer_cleanup_and_logging(tmp_path: Path):
     fake_espeak_api._delete(None, str(tempdir))
 
     assert tempdir.exists() is False
+    fake_espeak_api()
+    assert finalize_calls[-1][0].__name__ == "_delete_quietly"
 
     tokenizer = adapter._kokoro.tokenizer
     assert tokenizer.phonemize("  abc  ") == "ab c"
