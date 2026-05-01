@@ -73,6 +73,25 @@ def _patch_phonemizer_compat() -> None:
         _delete_quietly._vox_patched = True
         EspeakAPI._delete = staticmethod(_delete_quietly)
 
+        original_init = getattr(EspeakAPI, "__init__", None)
+        if original_init is not None and not getattr(original_init, "_vox_patched", False):
+            def _init_quietly(self, *args, **kwargs):
+                finalize = espeak_api.weakref.finalize
+
+                def _finalize_override(obj, func, *f_args, **f_kwargs):
+                    if getattr(func, "__name__", None) == "_delete":
+                        func = _delete_quietly
+                    return finalize(obj, func, *f_args, **f_kwargs)
+
+                espeak_api.weakref.finalize = _finalize_override
+                try:
+                    return original_init(self, *args, **kwargs)
+                finally:
+                    espeak_api.weakref.finalize = finalize
+
+            _init_quietly._vox_patched = True
+            EspeakAPI.__init__ = _init_quietly
+
         original_finalize = getattr(espeak_api.weakref, "finalize", None)
         if original_finalize is not None and not getattr(original_finalize, "_vox_patched", False):
             def _finalize_quietly(obj, func, *args, **kwargs):
