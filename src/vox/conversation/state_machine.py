@@ -133,6 +133,13 @@ def _on_speech_stopped_interrupted(m: TurnStateMachine, e: TurnEvent) -> tuple[T
 
 
 def _on_user_transcript_final_listening(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
+    if bool(e.payload.get("defer_commit")):
+        delay_ms = int(e.payload.get("commit_delay_ms", 0))
+        if delay_ms > 0:
+            return None, [
+                cancel_timer(TimerKey.ENDPOINTING),
+                start_timer(TimerKey.ENDPOINTING, delay_ms),
+            ]
     return TurnState.THINKING, [cancel_timer(TimerKey.ENDPOINTING)]
 
 

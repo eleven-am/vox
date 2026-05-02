@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 import numpy as np
 import pytest
 
-from vox.conversation import TurnEvent, TurnEventType, TurnPolicy, TurnState
+from vox.conversation import TimerKey, TurnEvent, TurnEventType, TurnPolicy, TurnState
 from vox.conversation.session import (
     WIRE_AUDIO_DELTA,
     WIRE_ERROR,
@@ -28,6 +28,7 @@ from vox.conversation.session import (
 )
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+from vox.streaming.types import SpeechStopped, StreamTranscript
 
 
 
@@ -451,6 +452,35 @@ class TestEndpointingFallback:
         await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STOPPED))
         await asyncio.sleep(0.1)
 
+        assert session.state == TurnState.THINKING
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_transcript_after_speech_stop_waits_for_continuation_window(self):
+        session, _, _ = _build_session(
+            policy=TurnPolicy(max_endpointing_delay_ms=3000, min_interrupt_duration_ms=300),
+        )
+        await session.start()
+
+        await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
+        await asyncio.sleep(0.01)
+        assert session.state == TurnState.LISTENING
+
+        await session._forward_stream_event(SpeechStopped(timestamp_ms=2400))
+        await asyncio.sleep(0.01)
+        assert TimerKey.ENDPOINTING.value in session._timers
+
+        await session._forward_stream_event(StreamTranscript(
+            text="still thinking",
+            start_ms=0,
+            end_ms=2400,
+        ))
+        await asyncio.sleep(0.05)
+
+        assert session.state == TurnState.LISTENING
+
+        await asyncio.sleep(1.25)
         assert session.state == TurnState.THINKING
 
         await session.close()

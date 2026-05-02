@@ -84,6 +84,19 @@ class TestHappyPath:
         assert _action_types(actions) == [TurnActionType.CANCEL_TIMER]
         assert actions[0].payload["key"] == TimerKey.ENDPOINTING.value
 
+    def test_user_transcript_final_can_defer_commit(self):
+        m = _machine(TurnState.LISTENING)
+        actions = m.handle(ev(
+            TurnEventType.USER_TRANSCRIPT_FINAL,
+            defer_commit=True,
+            commit_delay_ms=900,
+        ))
+        assert m.state == TurnState.LISTENING
+        assert _action_types(actions) == [TurnActionType.CANCEL_TIMER, TurnActionType.START_TIMER]
+        assert actions[0].payload["key"] == TimerKey.ENDPOINTING.value
+        assert actions[1].payload["key"] == TimerKey.ENDPOINTING.value
+        assert actions[1].payload["duration_ms"] == 900
+
     def test_endpointing_timer_forces_turn_end(self):
         m = _machine(TurnState.LISTENING)
         actions = m.handle(timer_event(TimerKey.ENDPOINTING))
@@ -110,7 +123,7 @@ class TestBargeIn:
         assert _action_types(actions) == [TurnActionType.PAUSE_OUTPUT, TurnActionType.START_TIMER]
         timer = _action_with_payload(actions, TurnActionType.START_TIMER)
         assert timer.payload["key"] == TimerKey.CONFIRM_INTERRUPT.value
-        assert timer.payload["duration_ms"] == 500
+        assert timer.payload["duration_ms"] == 800
 
     def test_confirm_timer_fires_interrupt(self):
         m = _machine(TurnState.PAUSED)

@@ -100,6 +100,7 @@ _RESPONSE_STREAM_END = object()
 
 
 RESPONSE_STREAM_QUEUE_MAX = 1024
+TRANSCRIPT_CONTINUATION_COMMIT_MS = 1200
 
 
 @dataclass
@@ -362,9 +363,14 @@ class ConversationSession:
                 payload["words"] = stream_event.words
             await self._emit(payload)
 
+            defer_commit = self._has_active_timer(TimerKey.ENDPOINTING.value)
             await self._event_queue.put(TurnEvent(
                 type=TurnEventType.USER_TRANSCRIPT_FINAL,
-                payload={"text": stream_event.text},
+                payload={
+                    "text": stream_event.text,
+                    "defer_commit": defer_commit,
+                    "commit_delay_ms": self._transcript_commit_delay_ms() if defer_commit else 0,
+                },
             ))
 
 
@@ -515,6 +521,7 @@ class ConversationSession:
                     "type": WIRE_AUDIO_DELTA,
                     "audio": base64.b64encode(audio).decode("ascii"),
                     "sample_rate": sample_rate,
+                    "audio_format": "pcm16",
                 })
 
         elif action.type == TurnActionType.FLUSH_OUTPUT:
@@ -588,6 +595,19 @@ class ConversationSession:
             type=TurnEventType.TIMER_ELAPSED,
             payload={"key": key},
         ))
+
+    def _has_active_timer(self, key: str) -> bool:
+        task = self._timers.get(key)
+        return task is not None and not task.done()
+
+    def _transcript_commit_delay_ms(self) -> int:
+        return max(
+            0,
+            min(
+                self._config.policy.max_endpointing_delay_ms,
+                TRANSCRIPT_CONTINUATION_COMMIT_MS,
+            ),
+        )
 
     async def _evaluate_interrupt_candidate(self) -> None:
         """Consult the classifier before confirming a barge-in.
