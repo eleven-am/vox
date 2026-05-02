@@ -3,8 +3,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 
 
@@ -137,3 +138,20 @@ def test_load_auto_falls_back_to_cpu_when_cuda_provider_is_missing():
         providers=["CPUExecutionProvider"],
     )
     assert adapter._device == "cpu"
+
+
+def test_transcribe_accepts_english_locale_without_warning(tmp_path: Path):
+    _install_fake_modules(providers=["CPUExecutionProvider"])
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.adapter", None)
+
+    from vox_parakeet.adapter import ParakeetAdapter
+
+    adapter = ParakeetAdapter()
+    adapter.load("ignored-local-path", "cpu")
+
+    with patch("vox_parakeet.adapter.logger.warning") as warning:
+        result = adapter.transcribe(np.zeros(16_000, dtype=np.float32), language="en-us")
+
+    assert result.language == "en"
+    warning.assert_not_called()

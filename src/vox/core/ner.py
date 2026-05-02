@@ -59,6 +59,17 @@ _SPACY_MODEL_MARKERS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+_LANGUAGE_ALIASES: dict[str, str] = {
+    "en-us": "en",
+    "en-gb": "en",
+    "en-au": "en",
+    "en-ca": "en",
+    "en-nz": "en",
+    "en-ie": "en",
+    "en-za": "en",
+    "en-in": "en",
+}
+
 
 
 
@@ -177,7 +188,15 @@ def _import_spacy() -> tuple[Any, Any]:
     return spacy, is_package
 
 
+def _normalize_language(lang: str | None) -> str:
+    if not lang:
+        return "en"
+    normalized = lang.strip().lower()
+    return _LANGUAGE_ALIASES.get(normalized, normalized)
+
+
 def _get_model(lang: str) -> Any | None:
+    lang = _normalize_language(lang)
     global _spacy_unavailable
     if _spacy_unavailable:
         return None

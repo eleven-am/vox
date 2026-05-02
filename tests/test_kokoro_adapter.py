@@ -373,12 +373,14 @@ def test_kokoro_load_patches_phonemizer_cleanup_and_logging(tmp_path: Path):
     fake_espeak_api._delete(None, str(tempdir))
 
     assert tempdir.exists() is False
+    assert fake_espeak_api._delete.__name__ == "_delete_quietly"
     fake_espeak_api()
     assert finalize_calls[-1][0].__name__ == "_delete_quietly"
 
     tokenizer = adapter._kokoro.tokenizer
     assert tokenizer.phonemize("  abc  ") == "ab c"
     _, kwargs = fake_phonemizer.phonemize.call_args
+    assert kwargs["logger"].name == "phonemizer"
     assert kwargs["logger"].level == 40
     assert fake_words_mismatch()._resume(["a"], 1) is None
 

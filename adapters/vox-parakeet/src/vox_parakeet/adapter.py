@@ -27,6 +27,19 @@ logger = logging.getLogger(__name__)
 PARAKEET_SAMPLE_RATE = 16_000
 DEFAULT_MODEL_ID = "nemo-parakeet-tdt-0.6b-v3"
 
+_ENGLISH_LANGUAGE_CODES = frozenset({
+    "en",
+    "english",
+    "en-us",
+    "en-gb",
+    "en-au",
+    "en-ca",
+    "en-nz",
+    "en-ie",
+    "en-za",
+    "en-in",
+})
+
 
 _VRAM_ESTIMATES: dict[str, int] = {
     "0.6b": 1_300_000_000,
@@ -222,7 +235,7 @@ class ParakeetAdapter(STTAdapter):
         if not self._loaded or self._model is None:
             raise RuntimeError("Parakeet model is not loaded — call load() first")
 
-        if language and language not in ("en", "english"):
+        if language and language.strip().lower() not in _ENGLISH_LANGUAGE_CODES:
             logger.warning("Parakeet only supports English, ignoring language=%s", language)
 
         if len(audio) == 0:

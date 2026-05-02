@@ -89,6 +89,17 @@ class TestAnnotateWithoutSpacyModel:
         assert entities == []
         assert topics == []
 
+    def test_english_locale_alias_uses_english_runtime(self, monkeypatch: pytest.MonkeyPatch):
+        ner._models.clear()
+        ner._missing_languages.clear()
+        ner._spacy_unavailable = False
+
+        sentinel = object()
+        monkeypatch.setattr(ner, "_import_spacy", lambda: (object(), lambda _model_name: True))
+        monkeypatch.setattr(ner, "_models", {"en": sentinel})
+
+        assert ner._get_model("en-us") is sentinel
+
 
 class TestSpacyRuntimeBootstrap:
     def test_bootstrap_installs_english_runtime_wheel(self, tmp_path, monkeypatch: pytest.MonkeyPatch):

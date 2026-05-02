@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from kokoro_onnx import Kokoro
 
 logger = logging.getLogger(__name__)
-_PHONEMIZER_LOGGER = logging.getLogger("vox_kokoro.phonemizer")
+_PHONEMIZER_LOGGER = logging.getLogger("phonemizer")
 _PHONEMIZER_LOGGER.setLevel(logging.ERROR)
 
 
@@ -72,6 +72,8 @@ def _patch_phonemizer_compat() -> None:
 
         _delete_quietly._vox_patched = True
         EspeakAPI._delete = staticmethod(_delete_quietly)
+        if hasattr(espeak_api, "_delete"):
+            espeak_api._delete = _delete_quietly
 
         original_init = getattr(EspeakAPI, "__init__", None)
         if original_init is not None and not getattr(original_init, "_vox_patched", False):
