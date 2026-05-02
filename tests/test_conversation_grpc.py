@@ -15,7 +15,7 @@ import pytest
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
 from vox.grpc import vox_pb2
-from vox.grpc.conversation_servicer import ConversationServicer
+from vox.grpc.conversation_servicer import ConversationServicer, _wire_event_to_pb
 
 
 class ScriptedTTS(TTSAdapter):
@@ -268,3 +268,26 @@ async def test_turn_policy_passed_through():
         predicate=lambda m: m.WhichOneof("msg") == "session_created",
     )
     assert any(m.WhichOneof("msg") == "session_created" for m in out)
+
+
+def test_wire_event_to_pb_coerces_missing_numeric_fields_to_zero():
+    msg = _wire_event_to_pb({
+        "type": "input_audio_buffer.speech_started",
+        "timestamp_ms": None,
+    })
+    assert msg is not None
+    assert msg.speech_started.timestamp_ms == 0
+
+    transcript = _wire_event_to_pb({
+        "type": "conversation.item.input_audio_transcription.completed",
+        "transcript": "hello",
+        "language": "en-us",
+        "start_ms": None,
+        "end_ms": None,
+        "words": [{"word": "hello", "start_ms": None, "end_ms": None}],
+    })
+    assert transcript is not None
+    assert transcript.transcript_done.start_ms == 0
+    assert transcript.transcript_done.end_ms == 0
+    assert transcript.transcript_done.words[0].start_ms == 0
+    assert transcript.transcript_done.words[0].end_ms == 0

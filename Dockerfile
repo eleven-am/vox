@@ -6,6 +6,7 @@ ARG VOX_DEFAULT_DEVICE=auto
 ARG TORCH_VERSION=2.10.0
 ARG TORCHAUDIO_VERSION=2.10.0
 ARG TRANSFORMERS_VERSION=4.57.6
+ARG HUGGINGFACE_HUB_VERSION=0.36.2
 
 FROM ghcr.io/astral-sh/uv:0.7.20 AS uv
 
@@ -18,6 +19,7 @@ ARG VOX_ACCELERATOR
 ARG TORCH_VERSION
 ARG TORCHAUDIO_VERSION
 ARG TRANSFORMERS_VERSION
+ARG HUGGINGFACE_HUB_VERSION
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -72,17 +74,17 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         uv pip install --python .venv/bin/python \
             onnxruntime \
             "transformers==${TRANSFORMERS_VERSION}" \
-            huggingface-hub; \
+            "huggingface-hub==${HUGGINGFACE_HUB_VERSION}"; \
     elif [ "$TARGETARCH" = "amd64" ]; then \
         uv pip install --python .venv/bin/python \
             onnxruntime-gpu \
             "transformers==${TRANSFORMERS_VERSION}" \
-            huggingface-hub; \
+            "huggingface-hub==${HUGGINGFACE_HUB_VERSION}"; \
     else \
         uv pip install --python .venv/bin/python \
             onnxruntime \
             "transformers==${TRANSFORMERS_VERSION}" \
-            huggingface-hub; \
+            "huggingface-hub==${HUGGINGFACE_HUB_VERSION}"; \
     fi && \
     uv pip install --python .venv/bin/python \
         accelerate \

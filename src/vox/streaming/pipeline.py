@@ -74,6 +74,7 @@ class StreamPipeline:
         self._conversation_history: list[ConversationTurn] = []
         self._pending_user_text = ""
         self._low_eou_streak = 0
+        self._eou_disabled = False
         self._session_config: StreamSessionConfig | None = None
         self._executor = ThreadPoolExecutor(max_workers=self._config.stt_workers, thread_name_prefix="stt")
 
@@ -196,28 +197,38 @@ class StreamPipeline:
     def _add_eou_probability(self, transcript: StreamTranscript) -> StreamTranscript:
         self._pending_user_text = (self._pending_user_text + " " + transcript.text).strip()
 
+        if self._eou_disabled:
+            self._flush_pending_user_text()
+            transcript.eou_probability = None
+            return transcript
+
         history_with_current = self._conversation_history.copy()
         history_with_current.append(ConversationTurn(role="user", content=self._pending_user_text))
 
-        eou_probability = self._eou_model.predict(
-            history_with_current,
-            max_context_turns=self._history_limit(),
-        )
-        transcript.eou_probability = eou_probability
+        try:
+            eou_probability = self._eou_model.predict(
+                history_with_current,
+                max_context_turns=self._history_limit(),
+            )
+            transcript.eou_probability = eou_probability
 
-        if eou_probability >= self._config.eou_config.threshold:
-            self._flush_pending_user_text()
-        else:
-            self._low_eou_streak += 1
-
-
-
-            pending_tokens = self._eou_model.token_count(self._pending_user_text)
-            if (
-                self._low_eou_streak >= 3
-                or pending_tokens >= self._config.eou_config.max_pending_tokens
-            ):
+            if eou_probability >= self._config.eou_config.threshold:
                 self._flush_pending_user_text()
+            else:
+                self._low_eou_streak += 1
+
+                pending_tokens = self._eou_model.token_count(self._pending_user_text)
+                if (
+                    self._low_eou_streak >= 3
+                    or pending_tokens >= self._config.eou_config.max_pending_tokens
+                ):
+                    self._flush_pending_user_text()
+        except Exception:
+            logger.exception("EOU inference failed; disabling EOU and continuing without turn scoring")
+            self._eou_disabled = True
+            transcript.eou_probability = None
+            self._flush_pending_user_text()
+            return transcript
 
         return transcript
 

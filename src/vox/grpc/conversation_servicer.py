@@ -35,6 +35,10 @@ from vox.streaming.types import TARGET_SAMPLE_RATE
 logger = logging.getLogger(__name__)
 
 
+def _int_or_zero(value) -> int:
+    return int(value) if value is not None else 0
+
+
 class ConversationServicer(vox_pb2_grpc.ConversationServiceServicer):
     def __init__(self, store: BlobStore, registry: ModelRegistry, scheduler: Scheduler) -> None:
         self._store = store
@@ -179,21 +183,21 @@ def _wire_event_to_pb(event: dict) -> vox_pb2.ConverseServerMessage | None:
     if t == WIRE_SPEECH_STARTED:
         return vox_pb2.ConverseServerMessage(
             speech_started=vox_pb2.ConversationSpeechStarted(
-                timestamp_ms=int(event.get("timestamp_ms", 0)),
+                timestamp_ms=_int_or_zero(event.get("timestamp_ms")),
             ),
         )
     if t == WIRE_SPEECH_STOPPED:
         return vox_pb2.ConverseServerMessage(
             speech_stopped=vox_pb2.ConversationSpeechStopped(
-                timestamp_ms=int(event.get("timestamp_ms", 0)),
+                timestamp_ms=_int_or_zero(event.get("timestamp_ms")),
             ),
         )
     if t == WIRE_TRANSCRIPT_DONE:
         msg = vox_pb2.ConversationTranscriptDone(
             transcript=event.get("transcript", ""),
             language=event.get("language", ""),
-            start_ms=int(event.get("start_ms", 0)),
-            end_ms=int(event.get("end_ms", 0)),
+            start_ms=_int_or_zero(event.get("start_ms")),
+            end_ms=_int_or_zero(event.get("end_ms")),
         )
         if event.get("eou_probability") is not None:
             msg.eou_probability = float(event["eou_probability"])
@@ -201,16 +205,16 @@ def _wire_event_to_pb(event: dict) -> vox_pb2.ConverseServerMessage | None:
             msg.entities.append(vox_pb2.Entity(
                 type=ent.get("type", ""),
                 text=ent.get("text", ""),
-                start_char=int(ent.get("start_char", 0)),
-                end_char=int(ent.get("end_char", 0)),
+                start_char=_int_or_zero(ent.get("start_char")),
+                end_char=_int_or_zero(ent.get("end_char")),
             ))
         for topic in event.get("topics") or []:
             msg.topics.append(str(topic))
         for word in event.get("words") or []:
             pb_word = vox_pb2.WordTimestamp(
                 word=str(word.get("word", "")),
-                start_ms=int(word.get("start_ms", 0)),
-                end_ms=int(word.get("end_ms", 0)),
+                start_ms=_int_or_zero(word.get("start_ms")),
+                end_ms=_int_or_zero(word.get("end_ms")),
             )
             if word.get("confidence") is not None:
                 pb_word.confidence = float(word["confidence"])
@@ -228,7 +232,7 @@ def _wire_event_to_pb(event: dict) -> vox_pb2.ConverseServerMessage | None:
         return vox_pb2.ConverseServerMessage(
             audio_delta=vox_pb2.ConversationAudioDelta(
                 audio=pcm,
-                sample_rate=int(event.get("sample_rate", 0)),
+                sample_rate=_int_or_zero(event.get("sample_rate")),
             ),
         )
     if t == WIRE_RESPONSE_DONE:

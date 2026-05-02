@@ -139,3 +139,17 @@ class TestEOUContextWindow:
             "turn-4",
             "turn-5",
         ]
+
+
+class TestEOUFailureFallback:
+    def test_pipeline_disables_eou_and_flushes_on_predict_failure(self):
+        pipeline = StreamPipeline(scheduler=MagicMock())
+        pipeline._eou_model = MagicMock()
+        pipeline._eou_model.predict.side_effect = RuntimeError("broken eou backend")
+
+        transcript = pipeline._add_eou_probability(type("T", (), {"text": "hello world", "eou_probability": 0.9})())
+
+        assert transcript.eou_probability is None
+        assert pipeline._eou_disabled is True
+        assert pipeline._pending_user_text == ""
+        assert [turn.content for turn in pipeline._conversation_history] == ["hello world"]
