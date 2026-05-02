@@ -837,11 +837,13 @@ def _activated_adapter_path(vox_home: Path, adapter_path: Path) -> Iterator[None
 
 
 def _ensure_adapters_on_path(vox_home: Path) -> None:
-    """Keep only the adapters root on sys.path, not every installed package dir."""
+    """Remove adapter install locations from global import state."""
     adapters_root = _ensure_adapters_root(vox_home)
-    path_str = str(adapters_root)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
+    adapters_root_str = str(adapters_root.resolve())
+    sys.path[:] = [
+        entry for entry in sys.path
+        if str(Path(entry).resolve()) != adapters_root_str
+    ]
     _deactivate_installed_adapter_paths(vox_home)
     importlib.invalidate_caches()
 

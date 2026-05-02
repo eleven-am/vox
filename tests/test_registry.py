@@ -215,15 +215,16 @@ class TestGetAdapterClass:
 
 
 class TestAdapterIsolation:
-    def test_ensure_adapters_on_path_keeps_only_root(self, tmp_path: Path):
+    def test_ensure_adapters_on_path_removes_root_and_package_dirs(self, tmp_path: Path):
         adapters_root = tmp_path / ADAPTERS_DIR
         package_dir = adapters_root / "vox-fake"
         package_dir.mkdir(parents=True)
+        sys.path.insert(0, str(adapters_root))
         sys.path.insert(0, str(package_dir))
 
         _ensure_adapters_on_path(tmp_path)
 
-        assert str(adapters_root) in sys.path
+        assert str(adapters_root) not in sys.path
         assert str(package_dir) not in sys.path
 
     def test_ensure_adapter_rescans_installed_specs_before_reinstalling(self, tmp_path: Path):
