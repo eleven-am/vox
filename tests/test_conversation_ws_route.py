@@ -98,6 +98,8 @@ class TestSessionUpdate:
             assert msg["session"]["stt_model"] == "fake-stt:1"
             assert msg["session"]["tts_model"] == "fake-tts:1"
             assert msg["session"]["voice"] == "default"
+            assert msg["session"]["output_sample_rate"] == 16_000
+            assert msg["session"]["output_audio_format"] == "pcm16"
 
     def test_missing_stt_model_errors(self):
         client = TestClient(_build_app())
@@ -161,7 +163,12 @@ class TestResponseFlow:
         with client.websocket_connect("/v1/conversation") as ws:
             ws.send_json({
                 "type": "session.update",
-                "session": {"stt_model": "x:1", "tts_model": "y:1", "voice": "default"},
+                "session": {
+                    "stt_model": "x:1",
+                    "tts_model": "y:1",
+                    "voice": "default",
+                    "sample_rate": 48_000,
+                },
             })
             ws.receive_json()
 
@@ -181,7 +188,12 @@ class TestResponseFlow:
         with client.websocket_connect("/v1/conversation") as ws:
             ws.send_json({
                 "type": "session.update",
-                "session": {"stt_model": "x:1", "tts_model": "y:1", "voice": "default"},
+                "session": {
+                    "stt_model": "x:1",
+                    "tts_model": "y:1",
+                    "voice": "default",
+                    "sample_rate": 48_000,
+                },
             })
             ws.receive_json()
 
@@ -194,7 +206,9 @@ class TestResponseFlow:
             for d in deltas:
                 decoded = base64.b64decode(d["audio"])
                 assert len(decoded) > 0
-                assert d["sample_rate"] == 24_000
+                assert d["sample_rate"] == 48_000
+                assert d["audio_format"] == "pcm16"
+                assert np.frombuffer(decoded, dtype=np.int16).size > 512
 
     def test_response_delta_without_delta_field_errors(self):
         client = TestClient(_build_app())
@@ -272,5 +286,3 @@ class TestBadInput:
             ws.receive_json()
 
             ws.send_json({"type": "input_audio_buffer.append", "audio": "not valid base64!!!"})
-
-

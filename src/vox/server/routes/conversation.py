@@ -173,6 +173,8 @@ def _serialize_session_config(config: ConversationConfig) -> dict:
         "voice": config.voice,
         "language": config.language,
         "sample_rate": config.sample_rate,
+        "output_sample_rate": config.sample_rate,
+        "output_audio_format": "pcm16",
         "turn_policy": {
             "allow_interrupt_while_speaking": config.policy.allow_interrupt_while_speaking,
             "min_interrupt_duration_ms": config.policy.min_interrupt_duration_ms,

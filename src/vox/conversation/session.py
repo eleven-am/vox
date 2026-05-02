@@ -45,7 +45,7 @@ from vox.conversation.types import (
 from vox.core.adapter import TTSAdapter
 from vox.core.scheduler import Scheduler
 from vox.streaming.annotation import enrich_transcript
-from vox.streaming.codecs import pcm16_to_float32, resample_audio
+from vox.streaming.codecs import float32_to_pcm16, pcm16_to_float32, resample_audio
 from vox.streaming.pipeline import StreamPipeline
 from vox.streaming.types import (
     TARGET_SAMPLE_RATE,
@@ -140,6 +140,7 @@ class ConversationSession:
         self._pending_audio: list[tuple[bytes, int]] = []
         self._response_stream: _ResponseStream | None = None
         self._closed: bool = False
+        self._client_sample_rate: int = config.sample_rate
 
 
         self._flutter_cooldown_until: float = 0.0
@@ -215,6 +216,7 @@ class ConversationSession:
             return
 
         source_rate = sample_rate or self._config.sample_rate
+        self._client_sample_rate = source_rate
         audio = pcm16_to_float32(pcm16)
         if source_rate != TARGET_SAMPLE_RATE:
             audio = resample_audio(audio, source_rate, TARGET_SAMPLE_RATE)
@@ -476,13 +478,21 @@ class ConversationSession:
     async def _handle_tts_chunk(self, audio: bytes, sample_rate: int) -> None:
         if not audio:
             return
+        output_sample_rate = self._client_sample_rate or self._config.sample_rate
+        pcm_audio = np.frombuffer(audio, dtype=np.float32)
+        if pcm_audio.size == 0:
+            return
+        if sample_rate != output_sample_rate:
+            pcm_audio = resample_audio(pcm_audio, sample_rate, output_sample_rate)
+        encoded_audio = float32_to_pcm16(pcm_audio)
         if self._paused:
-            self._pending_audio.append((audio, sample_rate))
+            self._pending_audio.append((encoded_audio, output_sample_rate))
             return
         await self._emit({
             "type": WIRE_AUDIO_DELTA,
-            "audio": base64.b64encode(audio).decode("ascii"),
-            "sample_rate": sample_rate,
+            "audio": base64.b64encode(encoded_audio).decode("ascii"),
+            "sample_rate": output_sample_rate,
+            "audio_format": "pcm16",
         })
 
 
@@ -551,7 +561,7 @@ class ConversationSession:
                 ),
                 timeout=timeout_ms / 1000.0,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.debug("partial STT for interrupt check timed out after %dms", timeout_ms)
             return None
         except Exception:

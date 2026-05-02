@@ -140,7 +140,7 @@ async def test_streaming_response_emits_audio_and_done():
         messages=[
             vox_pb2.ConverseClientMessage(
                 session_update=vox_pb2.ConversationSessionUpdate(
-                    stt_model="x:1", tts_model="y:1", voice="default",
+                    stt_model="x:1", tts_model="y:1", voice="default", sample_rate=48_000,
                 ),
             ),
             vox_pb2.ConverseClientMessage(
@@ -164,7 +164,8 @@ async def test_streaming_response_emits_audio_and_done():
 
     delta = next(m for m in out if m.WhichOneof("msg") == "audio_delta")
     assert len(delta.audio_delta.audio) > 0
-    assert delta.audio_delta.sample_rate == 24_000
+    assert delta.audio_delta.sample_rate == 48_000
+    assert np.frombuffer(delta.audio_delta.audio, dtype=np.int16).size > 256
 
 
 @pytest.mark.asyncio
