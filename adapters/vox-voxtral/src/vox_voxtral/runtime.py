@@ -292,13 +292,15 @@ def _is_16gb_gpu(total_memory_bytes: int | None = None) -> bool:
 
 def _default_generation_gpu_memory_utilization() -> float:
     if _is_16gb_gpu():
-        return 0.9
+        return 0.62
     if _is_small_gpu():
         return 0.4
     return 0.4
 
 
 def _default_tokenizer_gpu_memory_utilization() -> float:
+    if _is_16gb_gpu():
+        return 0.01
     if _is_small_gpu():
         return 0.05
     return 0.1
@@ -491,7 +493,7 @@ def _parse_gpu_memory_utilization(raw_value: str | float | int | None, *, defaul
         value = float(raw_value)
     except (TypeError, ValueError):
         value = default
-    return min(max(value, 0.05), 0.95)
+    return min(max(value, 0.01), 0.95)
 
 
 def _target_gpu_memory_utilization(

@@ -104,6 +104,7 @@ class VoxtralTTSAdapter(TTSAdapter):
         self._subprocess_only = False
         self._loaded = False
         self._model_id: str = ""
+        self._model_ref: str = ""
         self._device: str = "cpu"
         self._default_voice: str | None = None
 
@@ -125,6 +126,7 @@ class VoxtralTTSAdapter(TTSAdapter):
 
         source = kwargs.pop("_source", None)
         self._model_id = source if source else model_path
+        self._model_ref = model_path
         self._default_voice = kwargs.pop("default_voice", None)
         explicit_stage_configs_path = kwargs.pop("_stage_configs_path", None)
         self._device = _select_device(device)
@@ -140,12 +142,12 @@ class VoxtralTTSAdapter(TTSAdapter):
             AsyncOmni, SamplingParams, SpeechRequest, MistralTokenizer = _load_voxtral_tts_runtime()
             self._speech_request_cls = SpeechRequest
 
-            logger.info("Loading Voxtral TTS model: %s (device=%s)", self._model_id, self._device)
+            logger.info("Loading Voxtral TTS model: %s (device=%s)", self._model_ref, self._device)
             start = time.perf_counter()
 
             self._tokenizer = self._load_tokenizer(MistralTokenizer)
             self._runtime = AsyncOmni(
-                model=self._model_id,
+                model=self._model_ref,
                 stage_configs_path=stage_configs_path,
                 log_stats=log_stats,
             )
@@ -169,7 +171,7 @@ class VoxtralTTSAdapter(TTSAdapter):
         self._loaded = True
 
     def _load_tokenizer(self, mistral_tokenizer_cls: Any) -> Any:
-        model_path = self._model_id
+        model_path = self._model_ref or self._model_id
         model_dir = None
         try:
             from pathlib import Path
@@ -374,7 +376,7 @@ class VoxtralTTSAdapter(TTSAdapter):
                 "-u",
                 worker_script,
                 "--model-id",
-                self._model_id,
+                self._model_ref or self._model_id,
                 "--stage-configs-path",
                 stage_configs_path,
                 "--default-voice",

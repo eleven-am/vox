@@ -310,15 +310,18 @@ class TestVoxtralTTSAdapterInfo:
             ), pytest.raises(RuntimeError, match="vllm-omni"):
                 adapter.load("mistralai/Voxtral-4B-TTS-2603", "auto")
 
-    def test_load_uses_vllm_omni_runtime(self):
+    def test_load_uses_vllm_omni_runtime(self, tmp_path):
         modules, torch, runtime, tokenizer, tokenizer_cls, sampling_params_cls = _build_voxtral_tts_runtime()
+        model_dir = tmp_path / "voxtral-local"
+        model_dir.mkdir()
+        (model_dir / "tekken.json").write_text("{}", encoding="utf-8")
 
         with patch.dict("sys.modules", modules):
             from vox_voxtral.tts_adapter import VoxtralTTSAdapter
 
             adapter = VoxtralTTSAdapter()
             adapter.load(
-                "mistralai/Voxtral-4B-TTS-2603",
+                str(model_dir),
                 "cuda",
                 _source="mistralai/Voxtral-4B-TTS-2603",
                 _stage_configs_path="/tmp/voxtral_tts.yaml",
@@ -327,10 +330,10 @@ class TestVoxtralTTSAdapterInfo:
             assert adapter.is_loaded is True
             assert adapter._runtime is runtime
             assert adapter._tokenizer is tokenizer
-            tokenizer_cls.from_hf_hub.assert_called_once_with("mistralai/Voxtral-4B-TTS-2603")
+            tokenizer_cls.from_file.assert_called_once_with(str(model_dir / "tekken.json"))
             modules["vllm_omni"].AsyncOmni.assert_called_once()
             _, kwargs = modules["vllm_omni"].AsyncOmni.call_args
-            assert kwargs["model"] == "mistralai/Voxtral-4B-TTS-2603"
+            assert kwargs["model"] == str(model_dir)
             assert kwargs["stage_configs_path"] == "/tmp/voxtral_tts.yaml"
             assert len(adapter._sampling_params) == 2
             sampling_params_cls.assert_called_once_with(max_tokens=2500)
@@ -409,13 +412,18 @@ class TestVoxtralTTSAdapterInfo:
                 patch("vox_voxtral.tts_adapter.ensure_voxtral_tts_runtime", return_value=runtime_info),
                 patch("vox_voxtral.tts_adapter.subprocess.Popen", return_value=worker) as popen,
             ):
-                adapter.load("mistralai/Voxtral-4B-TTS-2603", "cuda")
+                adapter.load(
+                    "/tmp/voxtral-local",
+                    "cuda",
+                    _source="mistralai/Voxtral-4B-TTS-2603",
+                )
 
             assert adapter.is_loaded is True
             assert adapter._subprocess_only is True
             popen.assert_called_once()
             assert popen.call_args.kwargs["stderr"] is subprocess.STDOUT
             assert popen.call_args.kwargs["bufsize"] == 1
+            assert "/tmp/voxtral-local" in popen.call_args.args[0]
 
     def test_synthesize_uses_subprocess_worker(self):
         with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):

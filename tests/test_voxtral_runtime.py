@@ -362,12 +362,12 @@ def test_write_stage_config_uses_triton_profile_on_16gb_gpu(tmp_path: Path, monk
     generation_args = config["stage_args"][0]["engine_args"]
     tokenizer_args = config["stage_args"][1]["engine_args"]
 
-    assert generation_args["gpu_memory_utilization"] == 0.9
+    assert generation_args["gpu_memory_utilization"] == 0.62
     assert generation_args["max_model_len"] == 512
     assert generation_args["kv_cache_dtype"] == "fp8"
     assert generation_args["attention_backend"] == "triton_attn"
     assert "dtype" not in generation_args
-    assert tokenizer_args["gpu_memory_utilization"] == 0.05
+    assert tokenizer_args["gpu_memory_utilization"] == 0.01
     assert tokenizer_args["max_num_batched_tokens"] == 4096
     assert tokenizer_args["max_model_len"] == 4096
     assert tokenizer_args["attention_backend"] == "triton_attn"
@@ -446,6 +446,13 @@ def test_write_stage_config_honors_stage_specific_env_overrides(tmp_path: Path, 
 
     assert generation_args["gpu_memory_utilization"] == 0.35
     assert tokenizer_args["gpu_memory_utilization"] == 0.2
+
+
+def test_parse_gpu_memory_utilization_allows_one_percent_floor():
+    from vox_voxtral import runtime as runtime_module
+
+    assert runtime_module._parse_gpu_memory_utilization("0.01", default=0.4) == 0.01
+    assert runtime_module._parse_gpu_memory_utilization("0.001", default=0.4) == 0.01
 
 
 def test_build_env_prepends_runtime_and_app_torch_lib_dirs(tmp_path: Path, monkeypatch):
