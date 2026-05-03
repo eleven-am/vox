@@ -81,16 +81,16 @@ class HeuristicInterruptClassifier:
 
     high_eou_threshold: float = 0.7
     low_eou_threshold: float = 0.3
-    high_eou_multiplier: float = 0.5
-    low_eou_multiplier: float = 1.5
-    min_window_ms: int = 100
+    high_eou_multiplier: float = 0.35
+    low_eou_multiplier: float = 1.25
+    min_window_ms: int = 75
 
 
 
 
-    tail_check_ms: int = 100
-    backchannel_rms_threshold: float = 0.015
-    min_real_interrupt_ms: int = 400
+    tail_check_ms: int = 80
+    backchannel_rms_threshold: float = 0.01
+    min_real_interrupt_ms: int = 180
 
 
 
@@ -141,14 +141,10 @@ class HeuristicInterruptClassifier:
             )
             tail = audio_since_paused[-tail_samples:]
             rms = float(np.sqrt(np.mean(tail * tail))) if tail.size else 0.0
-            if rms < self.backchannel_rms_threshold:
-                return False
-            return True
+            return not rms < self.backchannel_rms_threshold
 
 
-        if vad_active_duration_ms < self.min_real_interrupt_ms:
-            return False
-        return True
+        return not vad_active_duration_ms < self.min_real_interrupt_ms
 
 
 def _assumed_sample_rate(n_samples: int, duration_ms: int) -> int:

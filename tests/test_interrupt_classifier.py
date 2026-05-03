@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-
 import numpy as np
 import pytest
 
@@ -9,6 +7,11 @@ from vox.conversation import HeuristicInterruptClassifier, InterruptClassifier
 
 
 class TestConfirmWindowMs:
+    def test_default_tuning_is_aggressive(self):
+        c = HeuristicInterruptClassifier()
+        assert c.confirm_window_ms(base_ms=250, last_eou_probability=0.9) == 87
+        assert c.confirm_window_ms(base_ms=250, last_eou_probability=0.1) == 312
+
     def test_no_eou_returns_base(self):
         c = HeuristicInterruptClassifier()
         assert c.confirm_window_ms(base_ms=300, last_eou_probability=None) == 300
@@ -55,6 +58,12 @@ class TestConfirmWindowMs:
 
 class TestIsRealInterruptWithoutAudio:
     """No audio supplied → duration-only fallback (vad_active_ms vs threshold)."""
+
+    @pytest.mark.asyncio
+    async def test_default_duration_threshold_is_shorter(self):
+        c = HeuristicInterruptClassifier()
+        assert await c.is_real_interrupt(None, None, None, 179) is False
+        assert await c.is_real_interrupt(None, None, None, 180) is True
 
     @pytest.mark.asyncio
     async def test_short_duration_rejected(self):

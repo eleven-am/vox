@@ -21,11 +21,6 @@ from vox.conversation import (
 from vox.conversation.types import ev, timer_event
 
 
-
-
-
-
-
 def _machine(state: TurnState, policy: TurnPolicy | None = None) -> TurnStateMachine:
     m = TurnStateMachine(policy=policy)
     m._state = state
@@ -123,7 +118,7 @@ class TestBargeIn:
         assert _action_types(actions) == [TurnActionType.PAUSE_OUTPUT, TurnActionType.START_TIMER]
         timer = _action_with_payload(actions, TurnActionType.START_TIMER)
         assert timer.payload["key"] == TimerKey.CONFIRM_INTERRUPT.value
-        assert timer.payload["duration_ms"] == 800
+        assert timer.payload["duration_ms"] == 250
 
     def test_confirm_timer_fires_interrupt(self):
         m = _machine(TurnState.PAUSED)
