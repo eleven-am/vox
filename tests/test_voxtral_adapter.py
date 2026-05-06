@@ -337,7 +337,7 @@ class TestVoxtralTTSAdapterInfo:
             assert kwargs["stage_configs_path"] == "/tmp/voxtral_tts.yaml"
             assert len(adapter._sampling_params) == 2
             sampling_params_cls.assert_called_once_with(max_tokens=2500)
-            assert torch.cuda.is_available.called
+            assert adapter._device == "cuda"
 
     def test_synthesize_streams_voice_preset(self):
         async def generate(*args, **kwargs):

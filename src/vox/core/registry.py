@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from vox.core.adapter_resolution import AdapterResolver
+from vox.core.device_placement import runtime_profile_for_alias
 from vox.core.errors import ModelLoadError, ModelNotFoundError
-from vox.core.runtime import infer_runtime_profile
 from vox.core.store import BlobStore
 from vox.core.types import ModelInfo
 
@@ -580,10 +580,7 @@ LEGACY_NAME_ALIASES: dict[str, str] = {
 def _runtime_profile() -> str:
     """Return a coarse runtime profile used for family alias selection."""
     device = os.environ.get("VOX_DEVICE", "auto").strip().lower()
-    machine = platform.machine().strip().lower()
-    if device == "cuda" and machine in {"arm64", "aarch64"}:
-        return "spark"
-    return infer_runtime_profile(device_hint=device)
+    return runtime_profile_for_alias(device_hint=device)
 
 
 def resolve_family_alias(name: str, tag: str = "latest", *, explicit_tag: bool = False) -> tuple[str, str]:

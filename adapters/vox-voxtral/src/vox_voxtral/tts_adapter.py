@@ -17,6 +17,7 @@ import torch
 from numpy.typing import NDArray
 
 from vox.core.adapter import TTSAdapter
+from vox.core.device_placement import PlacementTier
 from vox.core.types import (
     AdapterInfo,
     ModelFormat,
@@ -24,7 +25,33 @@ from vox.core.types import (
     SynthesizeChunk,
     VoiceInfo,
 )
-from vox_voxtral.runtime import ensure_voxtral_tts_runtime, recommended_voxtral_tts_vram_bytes
+from vox_voxtral.runtime import (
+    VOXTRAL_TIER_DEFAULT,
+    VOXTRAL_TIER_SMALL_24GB,
+    VOXTRAL_TIER_SPARK_16GB,
+    ensure_voxtral_tts_runtime,
+    recommended_voxtral_tts_vram_bytes,
+    voxtral_tts_tier_extras,
+)
+
+
+VOXTRAL_TTS_TIERS: tuple[PlacementTier, ...] = (
+    PlacementTier(
+        name=VOXTRAL_TIER_SPARK_16GB,
+        total_memory_max_bytes=16 * 1024**3,
+        extras=voxtral_tts_tier_extras(VOXTRAL_TIER_SPARK_16GB),
+    ),
+    PlacementTier(
+        name=VOXTRAL_TIER_SMALL_24GB,
+        total_memory_max_bytes=24 * 1024**3,
+        extras=voxtral_tts_tier_extras(VOXTRAL_TIER_SMALL_24GB),
+    ),
+    PlacementTier(
+        name=VOXTRAL_TIER_DEFAULT,
+        total_memory_max_bytes=None,
+        extras=voxtral_tts_tier_extras(VOXTRAL_TIER_DEFAULT),
+    ),
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,22 +64,6 @@ PRESET_VOICES: list[VoiceInfo] = [
 ]
 
 SUPPORTED_LANGUAGES = ("en", "fr", "es", "de", "it", "pt", "nl", "ar", "hi")
-
-
-def _select_device(device: str) -> str:
-    if device == "cpu":
-        return "cpu"
-    if device in ("cuda", "auto") and torch.cuda.is_available():
-        return "cuda"
-    if device in ("mps", "auto") and torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
-
-def _select_dtype(device: str) -> torch.dtype:
-    if device == "cuda":
-        return torch.bfloat16
-    return torch.float32
 
 
 def _resolve_stage_configs_path(explicit_path: str | None) -> str:
@@ -107,6 +118,11 @@ class VoxtralTTSAdapter(TTSAdapter):
         self._model_ref: str = ""
         self._device: str = "cpu"
         self._default_voice: str | None = None
+        self._placement_tier: str | None = None
+        self._placement_extras: dict[str, Any] = {}
+
+    def placement_tiers(self) -> tuple[PlacementTier, ...]:
+        return VOXTRAL_TTS_TIERS
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
@@ -129,11 +145,13 @@ class VoxtralTTSAdapter(TTSAdapter):
         self._model_ref = model_path
         self._default_voice = kwargs.pop("default_voice", None)
         explicit_stage_configs_path = kwargs.pop("_stage_configs_path", None)
-        self._device = _select_device(device)
-        if self._device != "cuda":
+        self._placement_tier = kwargs.pop("_placement_tier", None)
+        self._placement_extras = dict(kwargs.pop("_placement_extras", {}) or {})
+        if device == "cpu":
             raise RuntimeError(
                 "Voxtral TTS on Vox requires CUDA + vLLM-Omni; CPU and MPS are not supported"
             )
+        self._device = "cuda"
 
         log_stats = bool(kwargs.pop("log_stats", False))
 

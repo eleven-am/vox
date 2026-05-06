@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from vox.core.device_placement import PlacementTier
 from vox.core.types import AdapterInfo, TranscribeResult, SynthesizeChunk, VoiceInfo
 
 
@@ -32,6 +33,9 @@ class BaseAdapter(ABC):
     def estimate_vram_bytes(self, **kwargs: Any) -> int:
         """Return estimated VRAM/RAM usage in bytes. Used by the scheduler for device placement."""
         return 0
+
+    def placement_tiers(self) -> tuple[PlacementTier, ...]:
+        return ()
 
 
 class STTAdapter(BaseAdapter):

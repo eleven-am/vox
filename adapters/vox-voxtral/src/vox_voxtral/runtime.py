@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from importlib import metadata
 from importlib.util import find_spec
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -21,6 +22,43 @@ class VoxtralRuntimeInfo:
     env: dict[str, str]
     stage_configs_path: str
     site_packages: str
+
+
+VOXTRAL_TIER_SPARK_16GB = "voxtral-tts-16gb"
+VOXTRAL_TIER_SMALL_24GB = "voxtral-tts-24gb"
+VOXTRAL_TIER_DEFAULT = "voxtral-tts-default"
+
+
+def voxtral_tts_tier_extras(tier: str) -> dict[str, Any]:
+    if tier == VOXTRAL_TIER_SPARK_16GB:
+        return {
+            "generation_gpu_memory_utilization": 0.62,
+            "tokenizer_gpu_memory_utilization": 0.01,
+            "generation_max_model_len": 512,
+            "tokenizer_max_num_batched_tokens": 4096,
+            "tokenizer_max_model_len": 4096,
+            "kv_cache_dtype": "fp8",
+            "attention_backend": "triton_attn",
+            "strip_dtype": True,
+            "vram_bytes": 12_000_000_000,
+        }
+    if tier == VOXTRAL_TIER_SMALL_24GB:
+        return {
+            "generation_gpu_memory_utilization": 0.4,
+            "tokenizer_gpu_memory_utilization": 0.05,
+            "generation_max_model_len": 1536,
+            "tokenizer_max_num_batched_tokens": 4096,
+            "tokenizer_max_model_len": 4096,
+            "vram_bytes": 12_000_000_000,
+        }
+    return {
+        "generation_gpu_memory_utilization": 0.4,
+        "tokenizer_gpu_memory_utilization": 0.1,
+        "generation_max_model_len": 2048,
+        "tokenizer_max_num_batched_tokens": 8192,
+        "tokenizer_max_model_len": 8192,
+        "vram_bytes": 16_000_000_000,
+    }
 
 
 def _vox_home() -> Path:

@@ -151,7 +151,7 @@ class TestLookup:
         registry = _make_registry(store)
         monkeypatch.setenv("VOX_DEVICE", "auto")
         monkeypatch.setattr("vox.core.registry.platform.machine", lambda: "arm64")
-        with patch("vox.core.registry.infer_runtime_profile", return_value="spark"):
+        with patch("vox.core.device_placement.infer_runtime_profile", return_value="spark"):
             entry = registry.lookup("parakeet")
             assert entry is CATALOG["parakeet-stt-nemo"]["tdt-0.6b-v3"]
 
@@ -415,7 +415,7 @@ class TestAvailableModels:
         monkeypatch.setenv("VOX_DEVICE", "auto")
         monkeypatch.setattr("vox.core.registry.platform.machine", lambda: "arm64")
 
-        with patch("vox.core.registry.infer_runtime_profile", return_value="spark"):
+        with patch("vox.core.device_placement.infer_runtime_profile", return_value="spark"):
             assert registry.resolve_model_ref("parakeet") == ("parakeet-stt-nemo", "tdt-0.6b-v3")
             assert registry.resolve_model_ref("kokoro") == ("kokoro-tts-torch", "v1.0")
 

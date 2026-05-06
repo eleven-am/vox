@@ -1,4 +1,4 @@
-"""Comprehensive tests for vox.core.scheduler.Scheduler."""
+"""Lifecycle tests for vox.core.scheduler.Scheduler — placement decisions live in test_device_placement.py."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ import pytest
 from vox.core.adapter import STTAdapter, TTSAdapter
 from vox.core.errors import ModelLoadError
 from vox.core.runtime import RuntimeCapabilities
-from vox.core.scheduler import Scheduler, _detect_device, _is_oom_error, _LoadedModel
+from vox.core.scheduler import Scheduler, _detect_device, _is_oom_error
 from vox.core.types import (
     AdapterInfo,
     LoadedModelInfo,
@@ -348,132 +348,6 @@ async def test_load_falls_back_to_cpu_on_oom():
     assert loaded[0].vram_bytes == 0
 
 
-def _make_mock_torch(*, free_bytes: int, total_bytes: int = 16_000_000_000):
-    class _MockCuda:
-        @staticmethod
-        def is_available() -> bool:
-            return True
-
-        @staticmethod
-        def mem_get_info() -> tuple[int, int]:
-            return free_bytes, total_bytes
-
-        @staticmethod
-        def empty_cache() -> None:
-            return None
-
-        @staticmethod
-        def synchronize() -> None:
-            return None
-
-    class _MockBackends:
-        pass
-
-    class _MockTorch:
-        cuda = _MockCuda()
-        backends = _MockBackends()
-
-    return _MockTorch()
-
-
-@pytest.mark.asyncio
-async def test_select_device_uses_estimate_and_routes_to_cpu_when_cuda_is_tight():
-    class EstimatedAdapter(FakeSTTAdapter):
-        estimate_kwargs: dict[str, Any] | None = None
-
-        def estimate_vram_bytes(self, **kwargs: Any) -> int:
-            type(self).estimate_kwargs = kwargs
-            return 4_000_000_000
-
-    registry = _make_registry_with_model(
-        adapter_cls=EstimatedAdapter,
-        parameters={"_source": "Qwen/Qwen3-ASR-1.7B"},
-    )
-    sched = Scheduler(registry, default_device="auto", max_loaded=3)
-    mock_torch = _make_mock_torch(free_bytes=3_500_000_000)
-    capabilities = RuntimeCapabilities(
-        system="linux",
-        machine="x86_64",
-        torch_cuda=True,
-        onnx_cuda=True,
-        onnx_coreml=False,
-        mps=False,
-        nvidia_device=True,
-    )
-
-    with (
-        patch.dict("sys.modules", {"torch": mock_torch}),
-        patch("vox.core.scheduler.detect_runtime_capabilities", return_value=capabilities),
-    ):
-        async with sched.acquire("whisper:large-v3") as adapter:
-            assert isinstance(adapter, EstimatedAdapter)
-            assert adapter.load_calls == [
-                ("/fake/models/whisper/large-v3", "cpu"),
-            ]
-
-    loaded = sched.list_loaded()
-    assert loaded[0].device == "cpu"
-    assert loaded[0].vram_bytes == 0
-    assert EstimatedAdapter.estimate_kwargs == {
-        "_source": "Qwen/Qwen3-ASR-1.7B",
-        "model_path": "/fake/models/whisper/large-v3",
-    }
-
-
-@pytest.mark.asyncio
-async def test_select_device_evicts_idle_cuda_model_before_falling_back_to_cpu():
-    class ExistingAdapter(FakeSTTAdapter):
-        def estimate_vram_bytes(self, **kwargs: Any) -> int:
-            return 2_000_000_000
-
-    class EstimatedAdapter(FakeSTTAdapter):
-        def estimate_vram_bytes(self, **kwargs: Any) -> int:
-            return 4_000_000_000
-
-    registry = FakeRegistry()
-    registry.add_model("existing", "latest", adapter_cls=ExistingAdapter)
-    registry.add_model("candidate", "latest", adapter_cls=EstimatedAdapter)
-    sched = Scheduler(registry, default_device="auto", max_loaded=3)
-    mock_torch = _make_mock_torch(free_bytes=3_500_000_000)
-    capabilities = RuntimeCapabilities(
-        system="linux",
-        machine="x86_64",
-        torch_cuda=True,
-        onnx_cuda=True,
-        onnx_coreml=False,
-        mps=False,
-        nvidia_device=True,
-    )
-
-    existing_info, _ = registry.resolve("existing", "latest")
-    existing_adapter = ExistingAdapter()
-    existing_adapter._loaded = True
-    existing_adapter._device = "cuda"
-    sched._models["existing:latest"] = _LoadedModel(
-        full_name="existing:latest",
-        info=existing_info,
-        adapter=existing_adapter,
-        device="cuda",
-        loaded_at=time.time() - 120,
-        last_used=time.time() - 120,
-    )
-
-    free_bytes = iter([3_500_000_000, 3_500_000_000, 5_500_000_000])
-
-    with (
-        patch.dict("sys.modules", {"torch": mock_torch}),
-        patch("vox.core.scheduler.detect_runtime_capabilities", return_value=capabilities),
-        patch("vox.core.scheduler._available_device_memory_bytes", side_effect=lambda device: next(free_bytes)),
-    ):
-        async with sched.acquire("candidate:latest") as adapter:
-            assert isinstance(adapter, EstimatedAdapter)
-            assert adapter.load_calls == [
-                ("/fake/models/candidate/latest", "auto"),
-            ]
-
-    assert existing_adapter.unload_calls == 1
-
-
 @pytest.mark.asyncio
 async def test_scheduler_passes_source_hint_to_adapter_load():
     class SourceAwareAdapter(FakeSTTAdapter):
@@ -499,62 +373,6 @@ async def test_scheduler_passes_source_hint_to_adapter_load():
         "sample_rate": 16000,
         "_source": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
     }
-
-
-@pytest.mark.asyncio
-async def test_select_device_keeps_cuda_when_estimate_fits():
-    class EstimatedAdapter(FakeSTTAdapter):
-        def estimate_vram_bytes(self, **kwargs: Any) -> int:
-            return 2_000_000_000
-
-    registry = _make_registry_with_model(adapter_cls=EstimatedAdapter)
-    sched = Scheduler(registry, default_device="auto", max_loaded=3)
-    mock_torch = _make_mock_torch(free_bytes=4_500_000_000)
-    capabilities = RuntimeCapabilities(
-        system="linux",
-        machine="x86_64",
-        torch_cuda=True,
-        onnx_cuda=True,
-        onnx_coreml=False,
-        mps=False,
-        nvidia_device=True,
-    )
-
-    with (
-        patch.dict("sys.modules", {"torch": mock_torch}),
-        patch("vox.core.scheduler.detect_runtime_capabilities", return_value=capabilities),
-    ):
-        async with sched.acquire("whisper:large-v3") as adapter:
-            assert isinstance(adapter, EstimatedAdapter)
-            assert adapter.load_calls == [
-                ("/fake/models/whisper/large-v3", "auto"),
-            ]
-
-    loaded = sched.list_loaded()
-    assert loaded[0].device == "cuda"
-    assert loaded[0].vram_bytes == 2_000_000_000
-
-
-@pytest.mark.asyncio
-async def test_select_device_respects_explicit_cuda_even_when_estimate_exceeds_free_memory():
-    class EstimatedAdapter(FakeSTTAdapter):
-        def estimate_vram_bytes(self, **kwargs: Any) -> int:
-            return 16_000_000_000
-
-    registry = _make_registry_with_model(adapter_cls=EstimatedAdapter)
-    sched = Scheduler(registry, default_device="cuda", max_loaded=3)
-    mock_torch = _make_mock_torch(free_bytes=3_500_000_000, total_bytes=130_000_000_000)
-
-    with patch.dict("sys.modules", {"torch": mock_torch}):
-        async with sched.acquire("whisper:large-v3") as adapter:
-            assert isinstance(adapter, EstimatedAdapter)
-            assert adapter.load_calls == [
-                ("/fake/models/whisper/large-v3", "cuda"),
-            ]
-
-    loaded = sched.list_loaded()
-    assert loaded[0].device == "cuda"
-    assert loaded[0].vram_bytes == 16_000_000_000
 
 
 @pytest.mark.asyncio
