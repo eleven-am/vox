@@ -1,33 +1,19 @@
-"""Tests for ModelRegistry: catalog lookup, adapter discovery, and model resolution."""
+"""Tests for ModelRegistry: catalog lookup and model resolution."""
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
-from vox.core.errors import AdapterNotFoundError, ModelNotFoundError
-from vox.core.registry import (
-    ADAPTERS_DIR,
-    ADAPTERS_NO_DEPS_ENV,
-    BUNDLED_ADAPTERS_ENV,
-    BUNDLED_ADAPTERS_NO_DEPS_ENV,
-    CATALOG,
-    DISABLE_BUNDLED_ADAPTERS_ENV,
-    AdapterInstallSpec,
-    ModelRegistry,
-    _ensure_adapters_on_path,
-    _find_bundled_adapter_source,
-    discover_adapters,
-    install_adapter_package,
-)
+from vox.core.adapter_resolution import AdapterResolver
+from vox.core.errors import ModelNotFoundError
+from vox.core.registry import CATALOG, ModelRegistry
 from vox.core.store import BlobStore, Manifest, ManifestLayer
 
 
 def _make_store(tmp_path: Path) -> BlobStore:
-    """Create a BlobStore rooted at tmp_path."""
     return BlobStore(root=tmp_path)
 
 
@@ -42,9 +28,7 @@ def _write_manifest(
     source: str | None = None,
     layers: list[ManifestLayer] | None = None,
 ) -> Manifest:
-    """Create a manifest on disk and return it."""
     if layers is None:
-
         digest = "sha256-" + "ab" * 32
         blob_path = store.blobs_dir / digest
         blob_path.parent.mkdir(parents=True, exist_ok=True)
@@ -74,13 +58,12 @@ def _write_manifest(
 
 
 def _make_registry(store: BlobStore, adapters: dict | None = None) -> ModelRegistry:
-    """Create a ModelRegistry with mocked adapter discovery."""
-    with patch("vox.core.registry.discover_adapters", return_value=adapters or {}):
-        return ModelRegistry(store)
-
-
-
-
+    resolver = AdapterResolver(
+        store.root, bundled_adapters_root=store.root / "_no_bundled"
+    )
+    if adapters is not None:
+        resolver._adapters = dict(adapters)
+    return ModelRegistry(store, resolver=resolver)
 
 
 class TestLookup:
@@ -173,19 +156,8 @@ class TestLookup:
             assert entry is CATALOG["parakeet-stt-nemo"]["tdt-0.6b-v3"]
 
 
-
-
-
-
-class TestGetAdapterClass:
-    def test_get_adapter_class_raises_when_missing(self, tmp_path: Path):
-        store = _make_store(tmp_path)
-        registry = _make_registry(store, adapters={})
-
-        with pytest.raises(AdapterNotFoundError):
-            registry.get_adapter_class("nonexistent")
-
-    def test_get_adapter_class_returns_class(self, tmp_path: Path):
+class TestAdapterForwarders:
+    def test_get_adapter_class_delegates_to_resolver(self, tmp_path: Path):
         store = _make_store(tmp_path)
 
         class FakeAdapter:
@@ -194,84 +166,13 @@ class TestGetAdapterClass:
         registry = _make_registry(store, adapters={"fake": FakeAdapter})
         assert registry.get_adapter_class("fake") is FakeAdapter
 
-    def test_get_adapter_class_loads_isolated_adapter_on_demand(self, tmp_path: Path):
+    def test_ensure_adapter_delegates_to_resolver(self, tmp_path: Path):
         store = _make_store(tmp_path)
-        registry = _make_registry(store, adapters={})
+        registry = _make_registry(store)
 
-        class FakeAdapter:
-            pass
-
-        package_dir = store.root / ADAPTERS_DIR / "vox-fake"
-        package_dir.mkdir(parents=True)
-        entry_point = MagicMock()
-        entry_point.load.return_value = FakeAdapter
-        registry._installed_adapter_specs = {
-            "fake": AdapterInstallSpec(entry_point=entry_point, path=package_dir),
-        }
-
-        assert registry.get_adapter_class("fake") is FakeAdapter
-        assert registry._adapters["fake"] is FakeAdapter
-        assert str(package_dir) not in sys.path
-
-
-class TestAdapterIsolation:
-    def test_ensure_adapters_on_path_removes_root_and_package_dirs(self, tmp_path: Path):
-        adapters_root = tmp_path / ADAPTERS_DIR
-        package_dir = adapters_root / "vox-fake"
-        package_dir.mkdir(parents=True)
-        sys.path.insert(0, str(adapters_root))
-        sys.path.insert(0, str(package_dir))
-
-        _ensure_adapters_on_path(tmp_path)
-
-        assert str(adapters_root) not in sys.path
-        assert str(package_dir) not in sys.path
-
-    def test_ensure_adapter_rescans_installed_specs_before_reinstalling(self, tmp_path: Path):
-        store = _make_store(tmp_path)
-        registry = _make_registry(store, adapters={})
-
-        package_dir = store.root / ADAPTERS_DIR / "vox-fake"
-        package_dir.mkdir(parents=True)
-        entry_point = MagicMock()
-        spec = AdapterInstallSpec(entry_point=entry_point, path=package_dir)
-
-        with (
-            patch("vox.core.registry._adapter_install_specs", return_value={"fake": spec}) as rescan_mock,
-            patch("vox.core.registry.install_adapter_package") as install_mock,
-        ):
+        with patch.object(registry.adapter_resolver, "ensure", return_value=True) as ensure_mock:
             assert registry.ensure_adapter("fake", "vox-fake") is True
-
-        rescan_mock.assert_called_once_with(store.root)
-        install_mock.assert_not_called()
-
-    def test_ensure_adapter_refreshes_outdated_bundled_install(self, tmp_path: Path):
-        store = _make_store(tmp_path)
-        registry = _make_registry(store, adapters={})
-
-        package_dir = store.root / ADAPTERS_DIR / "vox-fake"
-        package_dir.mkdir(parents=True)
-        entry_point = MagicMock()
-        spec = AdapterInstallSpec(entry_point=entry_point, path=package_dir)
-        registry._installed_adapter_specs = {"fake": spec}
-
-        with (
-            patch("vox.core.registry._bundled_adapter_version", return_value="0.2.31"),
-            patch("vox.core.registry._installed_adapter_version", side_effect=["0.2.30", "0.2.30"]),
-            patch(
-                "vox.core.registry._adapter_install_specs",
-                side_effect=[{"fake": spec}, {"fake": spec}],
-            ) as rescan_mock,
-            patch("vox.core.registry.install_adapter_package", return_value=True) as install_mock,
-        ):
-            assert registry.ensure_adapter("fake", "vox-fake") is True
-
-        assert rescan_mock.call_count == 2
-        install_mock.assert_called_once_with("vox-fake", store.root)
-
-
-
-
+        ensure_mock.assert_called_once_with("fake", "vox-fake")
 
 
 class TestResolve:
@@ -349,14 +250,12 @@ class TestResolve:
         _write_manifest(store, "mymodel", "v1")
         registry = _make_registry(store)
 
-
         model_dir = store.root / "models" / "links" / "mymodel" / "v1"
         model_dir.mkdir(parents=True, exist_ok=True)
         stale_link = model_dir / "model.onnx"
         stale_link.symlink_to("/nonexistent/path/that/does/not/exist")
         assert stale_link.is_symlink()
         assert not stale_link.exists()
-
 
         info, resolved_dir = registry.resolve("mymodel", "v1")
 
@@ -381,10 +280,6 @@ class TestResolve:
 
         info, _ = registry.resolve("mymodel", "v1")
         assert "_source" not in info.parameters
-
-
-
-
 
 
 class TestAvailableModels:
@@ -545,223 +440,3 @@ class TestAvailableModels:
         assert registry.resolve_model_ref("qwen3-asr", "0.6b", explicit_tag=True) == ("qwen3-stt-torch", "0.6b")
         assert registry.resolve_model_ref("speecht5", "asr", explicit_tag=True) == ("speecht5-stt-torch", "base")
         assert registry.resolve_model_ref("voxtral", "tts-4b", explicit_tag=True) == ("voxtral-tts-vllm", "4b")
-
-
-
-
-
-
-class TestDiscoverAdapters:
-    def test_discover_adapters_skips_broken_plugins(self):
-        """Broken entry points are logged and skipped rather than crashing."""
-        good_ep = MagicMock()
-        good_ep.name = "good"
-        good_ep.load.return_value = type("GoodAdapter", (), {})
-
-        bad_ep = MagicMock()
-        bad_ep.name = "broken"
-        bad_ep.load.side_effect = ImportError("missing dependency")
-
-        with patch("vox.core.registry.entry_points", return_value=[good_ep, bad_ep]):
-            adapters = discover_adapters()
-
-        assert "good" in adapters
-        assert "broken" not in adapters
-
-
-class TestBundledAdapters:
-    def test_find_bundled_adapter_source_uses_env_override(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        bundled_root = tmp_path / "bundled"
-        adapter_dir = bundled_root / "vox-kokoro"
-        adapter_dir.mkdir(parents=True)
-        (adapter_dir / "pyproject.toml").write_text("[project]\nname='vox-kokoro'\n", encoding="utf-8")
-
-        monkeypatch.setenv(BUNDLED_ADAPTERS_ENV, str(bundled_root))
-
-        assert _find_bundled_adapter_source("vox-kokoro") == adapter_dir
-
-    def test_find_bundled_adapter_source_can_be_disabled(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-        bundled_root = tmp_path / "bundled"
-        adapter_dir = bundled_root / "vox-kokoro"
-        adapter_dir.mkdir(parents=True)
-        (adapter_dir / "pyproject.toml").write_text("[project]\nname='vox-kokoro'\n", encoding="utf-8")
-
-        monkeypatch.setenv(BUNDLED_ADAPTERS_ENV, str(bundled_root))
-        monkeypatch.setenv(DISABLE_BUNDLED_ADAPTERS_ENV, "1")
-
-        assert _find_bundled_adapter_source("vox-kokoro") is None
-
-    def test_install_adapter_package_prefers_bundled_source(self, tmp_path: Path):
-        store = _make_store(tmp_path)
-        bundled_adapter = tmp_path / "adapters" / "vox-kokoro"
-        bundled_adapter.mkdir(parents=True)
-        (bundled_adapter / "pyproject.toml").write_text("[project]\nname='vox-kokoro'\n", encoding="utf-8")
-
-        calls: list[list[str]] = []
-
-        def _fake_run(cmd: list[str], **kwargs):
-            calls.append(cmd)
-            return MagicMock(returncode=0, stderr="")
-
-        with (
-            patch("vox.core.registry._find_bundled_adapter_source", return_value=bundled_adapter),
-            patch("vox.core.registry.subprocess.run", side_effect=_fake_run),
-        ):
-            assert install_adapter_package("vox-kokoro", store.root) is True
-
-        assert calls == [
-            [
-                "uv",
-                "pip",
-                "install",
-                "--python",
-                sys.executable,
-                "--target",
-                str(store.root / "adapters" / "vox-kokoro"),
-                "--upgrade",
-                "--refresh-package",
-                "vox-kokoro",
-                "--no-deps",
-                str(bundled_adapter),
-            ]
-        ]
-
-    def test_install_adapter_package_can_skip_bundled_dependencies(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        store = _make_store(tmp_path)
-        bundled_adapter = tmp_path / "adapters" / "vox-kokoro"
-        bundled_adapter.mkdir(parents=True)
-        (bundled_adapter / "pyproject.toml").write_text("[project]\nname='vox-kokoro'\n", encoding="utf-8")
-        monkeypatch.setenv(BUNDLED_ADAPTERS_NO_DEPS_ENV, "1")
-
-        calls: list[list[str]] = []
-
-        def _fake_run(cmd: list[str], **kwargs):
-            calls.append(cmd)
-            return MagicMock(returncode=0, stderr="")
-
-        with (
-            patch("vox.core.registry._find_bundled_adapter_source", return_value=bundled_adapter),
-            patch("vox.core.registry.subprocess.run", side_effect=_fake_run),
-        ):
-            assert install_adapter_package("vox-kokoro", store.root) is True
-
-        assert calls == [
-            [
-                "uv",
-                "pip",
-                "install",
-                "--python",
-                sys.executable,
-                "--target",
-                str(store.root / "adapters" / "vox-kokoro"),
-                "--upgrade",
-                "--refresh-package",
-                "vox-kokoro",
-                "--no-deps",
-                str(bundled_adapter),
-            ]
-        ]
-
-    def test_install_adapter_package_can_skip_dependencies_for_published_packages(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
-        store = _make_store(tmp_path)
-        monkeypatch.setenv(ADAPTERS_NO_DEPS_ENV, "1")
-        monkeypatch.setenv(DISABLE_BUNDLED_ADAPTERS_ENV, "1")
-
-        calls: list[list[str]] = []
-
-        def _fake_run(cmd: list[str], **kwargs):
-            calls.append(cmd)
-            return MagicMock(returncode=0, stderr="")
-
-        with patch("vox.core.registry.subprocess.run", side_effect=_fake_run):
-            assert install_adapter_package("vox-kokoro", store.root) is True
-
-        assert calls == [
-            [
-                "uv",
-                "pip",
-                "install",
-                "--python",
-                sys.executable,
-                "--target",
-                str(store.root / "adapters" / "vox-kokoro"),
-                "--upgrade",
-                "--refresh-package",
-                "vox-kokoro",
-                "--no-deps",
-                "vox-kokoro",
-            ]
-        ]
-
-    @pytest.mark.parametrize("package_name", ["vox-kokoro", "vox-microsoft", "vox-qwen", "vox-voxtral"])
-    def test_install_adapter_package_uses_default_no_deps_for_curated_packages(
-        self, tmp_path: Path, package_name: str
-    ):
-        store = _make_store(tmp_path)
-
-        calls: list[list[str]] = []
-
-        def _fake_run(cmd: list[str], **kwargs):
-            calls.append(cmd)
-            return MagicMock(returncode=0, stderr="")
-
-        with (
-            patch("vox.core.registry._find_bundled_adapter_source", return_value=None),
-            patch("vox.core.registry.subprocess.run", side_effect=_fake_run),
-        ):
-            assert install_adapter_package(package_name, store.root) is True
-
-        assert calls == [
-            [
-                "uv",
-                "pip",
-                "install",
-                "--python",
-                sys.executable,
-                "--target",
-                str(store.root / "adapters" / package_name),
-                "--upgrade",
-                "--refresh-package",
-                package_name,
-                "--no-deps",
-                package_name,
-            ]
-        ]
-
-    @pytest.mark.parametrize("package_name", ["vox-whisper"])
-    def test_install_adapter_package_installs_dependencies_for_published_packages_without_curated_no_deps(
-        self, tmp_path: Path, package_name: str
-    ):
-        store = _make_store(tmp_path)
-
-        calls: list[list[str]] = []
-
-        def _fake_run(cmd: list[str], **kwargs):
-            calls.append(cmd)
-            return MagicMock(returncode=0, stderr="")
-
-        with (
-            patch("vox.core.registry._find_bundled_adapter_source", return_value=None),
-            patch("vox.core.registry.subprocess.run", side_effect=_fake_run),
-        ):
-            assert install_adapter_package(package_name, store.root) is True
-
-        assert calls == [
-            [
-                "uv",
-                "pip",
-                "install",
-                "--python",
-                sys.executable,
-                "--target",
-                str(store.root / "adapters" / package_name),
-                "--upgrade",
-                "--refresh-package",
-                package_name,
-                package_name,
-            ]
-        ]

@@ -1,22 +1,16 @@
-"""Built-in model catalog, adapter discovery, and model registry for Vox."""
+"""Built-in model catalog and model registry for Vox."""
 
 from __future__ import annotations
 
-import importlib
 import logging
 import os
 import platform
-import subprocess
-import sys
-import tomllib
-from collections.abc import Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass, replace
-from importlib.metadata import EntryPoint, distributions, entry_points
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from vox.core.errors import AdapterNotFoundError, ModelLoadError, ModelNotFoundError
+from vox.core.adapter_resolution import AdapterResolver
+from vox.core.errors import ModelLoadError, ModelNotFoundError
 from vox.core.runtime import infer_runtime_profile
 from vox.core.store import BlobStore
 from vox.core.types import ModelInfo
@@ -445,22 +439,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
 
 
 
-ADAPTERS_DIR = "adapters"
 REGISTRY_BASE_URL = "https://raw.githubusercontent.com/eleven-am/vox-registry/main"
-BUNDLED_ADAPTERS_ENV = "VOX_BUNDLED_ADAPTERS"
-BUNDLED_ADAPTERS_NO_DEPS_ENV = "VOX_BUNDLED_ADAPTERS_NO_DEPS"
-DISABLE_BUNDLED_ADAPTERS_ENV = "VOX_DISABLE_BUNDLED_ADAPTERS"
-ADAPTERS_NO_DEPS_ENV = "VOX_ADAPTERS_NO_DEPS"
-ADAPTER_INSTALL_TIMEOUT_ENV = "VOX_ADAPTER_INSTALL_TIMEOUT_SECONDS"
-DEFAULT_NO_DEPS_ADAPTER_PACKAGES = {
-    "vox-dia",
-    "vox-kokoro",
-    "vox-microsoft",
-    "vox-openvoice",
-    "vox-parakeet",
-    "vox-qwen",
-    "vox-voxtral",
-}
 IMPLICIT_MODEL_ALIASES: dict[str, dict[str, tuple[str, str]]] = {
     "parakeet": {
         "spark": ("parakeet-stt-nemo", "tdt-0.6b-v3"),
@@ -656,223 +635,18 @@ def fetch_registry_index() -> list[dict[str, Any]] | None:
         return None
 
 
-def _find_bundled_adapter_source(package_name: str) -> Path | None:
-    """Return a local adapter source tree when one is bundled with the app."""
-    if os.environ.get(DISABLE_BUNDLED_ADAPTERS_ENV, "").lower() in {"1", "true", "yes", "on"}:
-        return None
-
-    candidates: list[Path] = []
-
-    bundled_root = os.environ.get(BUNDLED_ADAPTERS_ENV)
-    if bundled_root:
-        candidates.append(Path(bundled_root))
-
-    candidates.append(Path(__file__).resolve().parents[3] / "adapters")
-
-    for base_dir in candidates:
-        candidate = base_dir / package_name
-        if (candidate / "pyproject.toml").is_file():
-            return candidate
-    return None
-
-
-def _adapter_install_dir(vox_home: Path, package_name: str) -> Path:
-    """Return the isolated install directory for a single adapter package."""
-    return vox_home / ADAPTERS_DIR / package_name
-
-
-@dataclass(frozen=True)
-class AdapterInstallSpec:
-    entry_point: EntryPoint
-    path: Path
-
-
-def install_adapter_package(package_name: str, vox_home: Path) -> bool:
-    """Install an adapter package into the vox adapters directory.
-
-    Returns True if installation succeeded, False otherwise.
-    """
-    target_dir = _adapter_install_dir(vox_home, package_name)
-    target_dir.mkdir(parents=True, exist_ok=True)
-    package_spec = package_name
-
-    bundled_source = _find_bundled_adapter_source(package_name)
-    install_timeout = int(os.environ.get(ADAPTER_INSTALL_TIMEOUT_ENV, "900"))
-    install_no_deps = package_name in DEFAULT_NO_DEPS_ADAPTER_PACKAGES
-    install_no_deps = install_no_deps or os.environ.get(ADAPTERS_NO_DEPS_ENV, "").lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
-    if bundled_source is not None:
-        package_spec = str(bundled_source)
-        install_no_deps = install_no_deps or os.environ.get(BUNDLED_ADAPTERS_NO_DEPS_ENV, "").lower() in {
-            "1",
-            "true",
-            "yes",
-            "on",
-        }
-        logger.info("Installing bundled adapter package from %s", bundled_source)
-
-    installers = [
-        ["uv", "pip", "install", "--python", sys.executable],
-        [sys.executable, "-m", "pip", "install"],
-    ]
-    for installer in installers:
-        try:
-            cmd = [*installer, "--target", str(target_dir), "--upgrade"]
-            if installer[:2] == ["uv", "pip"]:
-                cmd.extend(["--refresh-package", package_name])
-            if install_no_deps:
-                cmd.append("--no-deps")
-            cmd.append(package_spec)
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=install_timeout,
-            )
-            if result.returncode == 0:
-                logger.info("Installed adapter package: %s", package_name)
-                return True
-            logger.warning("%s failed: %s", " ".join(installer), result.stderr)
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            continue
-
-    logger.error("Failed to install adapter package: %s", package_name)
-    return False
-
-
-def _ensure_adapters_root(vox_home: Path) -> Path:
-    """Ensure the adapters root exists and return it."""
-    adapters_root = vox_home / ADAPTERS_DIR
-    adapters_root.mkdir(parents=True, exist_ok=True)
-    return adapters_root
-
-
-def _adapter_install_specs(vox_home: Path) -> dict[str, AdapterInstallSpec]:
-    """Discover adapter entry points from isolated install dirs without importing them."""
-    adapters_root = _ensure_adapters_root(vox_home)
-    specs: dict[str, AdapterInstallSpec] = {}
-    for package_dir in sorted(path for path in adapters_root.iterdir() if path.is_dir()):
-        try:
-            package_dists = list(distributions(path=[str(package_dir)]))
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning("Skipping adapter install dir '%s': %s", package_dir, exc)
-            continue
-        for dist in package_dists:
-            for ep in dist.entry_points:
-                if ep.group != "vox.adapters":
-                    continue
-                specs[ep.name] = AdapterInstallSpec(entry_point=ep, path=package_dir)
-    return specs
-
-
-def _installed_adapter_version(vox_home: Path, package_name: str) -> str | None:
-    """Return the installed adapter package version from its isolated dir."""
-    package_dir = _adapter_install_dir(vox_home, package_name)
-    if not package_dir.is_dir():
-        return None
-    normalized = package_name.replace("-", "_")
-    try:
-        for dist in distributions(path=[str(package_dir)]):
-            name = (dist.metadata.get("Name") or "").replace("-", "_")
-            if name == normalized:
-                return dist.version
-    except Exception as exc:  # pragma: no cover - defensive
-        logger.warning("Failed to inspect adapter version for '%s': %s", package_name, exc)
-    return None
-
-
-def _bundled_adapter_version(package_name: str) -> str | None:
-    """Return the bundled adapter version declared in pyproject.toml."""
-    bundled_source = _find_bundled_adapter_source(package_name)
-    if bundled_source is None:
-        return None
-    pyproject = bundled_source / "pyproject.toml"
-    if not pyproject.is_file():
-        return None
-    try:
-        data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as exc:  # pragma: no cover - defensive
-        logger.warning("Failed to parse bundled adapter metadata for '%s': %s", package_name, exc)
-        return None
-    project = data.get("project", {})
-    version = project.get("version")
-    return version if isinstance(version, str) else None
-
-
-def _deactivate_installed_adapter_paths(vox_home: Path, *, keep: Path | None = None) -> None:
-    """Remove isolated adapter install dirs from sys.path except *keep*."""
-    adapters_root = _ensure_adapters_root(vox_home).resolve()
-    keep_resolved = keep.resolve() if keep is not None else None
-    retained: list[str] = []
-    for entry in sys.path:
-        try:
-            resolved = Path(entry).resolve()
-        except OSError:
-            retained.append(entry)
-            continue
-        if resolved.parent == adapters_root and resolved != keep_resolved:
-            continue
-        retained.append(entry)
-    sys.path[:] = retained
-
-
-@contextmanager
-def _activated_adapter_path(vox_home: Path, adapter_path: Path) -> Iterator[None]:
-    """Temporarily activate one isolated adapter dir on sys.path."""
-    original_sys_path = list(sys.path)
-    _deactivate_installed_adapter_paths(vox_home, keep=adapter_path)
-    path_str = str(adapter_path)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
-    importlib.invalidate_caches()
-    try:
-        yield
-    finally:
-        sys.path[:] = original_sys_path
-        importlib.invalidate_caches()
-
-
-def _ensure_adapters_on_path(vox_home: Path) -> None:
-    """Remove adapter install locations from global import state."""
-    adapters_root = _ensure_adapters_root(vox_home)
-    adapters_root_str = str(adapters_root.resolve())
-    sys.path[:] = [
-        entry for entry in sys.path
-        if str(Path(entry).resolve()) != adapters_root_str
-    ]
-    _deactivate_installed_adapter_paths(vox_home)
-    importlib.invalidate_caches()
-
-
-def discover_adapters() -> dict[str, type]:
-    """Discover globally installed adapter classes via 'vox.adapters' entry points."""
-    adapters: dict[str, type] = {}
-    for ep in entry_points(group="vox.adapters"):
-        try:
-            adapters[ep.name] = ep.load()
-        except Exception as e:
-            logger.warning(f"Skipping broken adapter plugin '{ep.name}': {e}")
-    return adapters
-
-
-
-
 
 
 class ModelRegistry:
     """Ties the built-in catalog, blob store, and adapter discovery together."""
 
-    def __init__(self, store: BlobStore) -> None:
+    def __init__(self, store: BlobStore, resolver: AdapterResolver | None = None) -> None:
         self._store = store
-        _ensure_adapters_on_path(self._store.root)
-        self._adapters = discover_adapters()
-        self._installed_adapter_specs = _adapter_install_specs(self._store.root)
+        self._resolver = resolver or AdapterResolver(self._store.root)
 
-
+    @property
+    def adapter_resolver(self) -> AdapterResolver:
+        return self._resolver
 
     def resolve_model_ref(self, name: str, tag: str = "latest", *, explicit_tag: bool = False) -> tuple[str, str]:
         """Resolve a possibly-bare model reference to a concrete catalog tag."""
@@ -914,60 +688,10 @@ class ModelRegistry:
 
 
     def ensure_adapter(self, adapter_name: str, package_name: str) -> bool:
-        """Ensure an adapter is installed. Auto-installs if needed."""
-        bundled_version = _bundled_adapter_version(package_name)
-        installed_version = _installed_adapter_version(self._store.root, package_name)
-        needs_refresh = bundled_version is not None and installed_version != bundled_version
-        if adapter_name in self._adapters or adapter_name in self._installed_adapter_specs:
-            if not needs_refresh:
-                return True
-            logger.info(
-                "Refreshing adapter '%s' from bundled source (%s -> %s)",
-                package_name,
-                installed_version or "missing",
-                bundled_version,
-            )
-            self._adapters.pop(adapter_name, None)
-
-        _ensure_adapters_on_path(self._store.root)
-        self._installed_adapter_specs = _adapter_install_specs(self._store.root)
-        installed_version = _installed_adapter_version(self._store.root, package_name)
-        needs_refresh = bundled_version is not None and installed_version != bundled_version
-        if adapter_name in self._adapters or adapter_name in self._installed_adapter_specs:
-            if not needs_refresh:
-                return True
-            self._adapters.pop(adapter_name, None)
-
-        action = "refreshing" if needs_refresh else "installing"
-        logger.info("Adapter '%s' %s %s...", adapter_name, action, package_name)
-        if not install_adapter_package(package_name, self._store.root):
-            return False
-
-        _ensure_adapters_on_path(self._store.root)
-        self._installed_adapter_specs = _adapter_install_specs(self._store.root)
-        return adapter_name in self._adapters or adapter_name in self._installed_adapter_specs
+        return self._resolver.ensure(adapter_name, package_name)
 
     def get_adapter_class(self, adapter_name: str) -> type:
-        """Return the adapter class for *adapter_name*.
-
-        Raises :class:`AdapterNotFoundError` if no matching adapter is installed.
-        """
-        cls = self._adapters.get(adapter_name)
-        if cls is not None:
-            return cls
-
-        spec = self._installed_adapter_specs.get(adapter_name)
-        if spec is None:
-            self._installed_adapter_specs = _adapter_install_specs(self._store.root)
-            spec = self._installed_adapter_specs.get(adapter_name)
-        if spec is None:
-            raise AdapterNotFoundError(adapter_name)
-
-        with _activated_adapter_path(self._store.root, spec.path):
-            cls = spec.entry_point.load()
-
-        self._adapters[adapter_name] = cls
-        return cls
+        return self._resolver.resolve(adapter_name)
 
 
 
