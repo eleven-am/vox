@@ -10,6 +10,7 @@ the user. That keeps Vox's scope limited to speech inference + turn orchestratio
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -17,13 +18,97 @@ from contextlib import suppress
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from vox.conversation import TurnPolicy
-from vox.conversation.session import ConversationConfig, ConversationSession
 from vox.logging_context import new_request_id, request_id_var
-from vox.streaming.types import TARGET_SAMPLE_RATE
+from vox.operations.conversation import (
+    ConvAudioDeltaEvent,
+    ConvDoneEvent,
+    ConvErrorEvent,
+    ConversationOrchestrator,
+    ConvEvent,
+    ConvResponseCancelledEvent,
+    ConvResponseCommittedEvent,
+    ConvResponseCreatedEvent,
+    ConvResponseDoneEvent,
+    ConvSessionCreatedEvent,
+    ConvSpeechStartedEvent,
+    ConvSpeechStoppedEvent,
+    ConvStateChangedEvent,
+    ConvTranscriptDoneEvent,
+    parse_session_update,
+    serialize_session_config,
+)
+from vox.operations.errors import (
+    OperationError,
+    SessionAlreadyConfiguredError,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+WIRE_SESSION_CREATED = "session.created"
+WIRE_SPEECH_STARTED = "input_audio_buffer.speech_started"
+WIRE_SPEECH_STOPPED = "input_audio_buffer.speech_stopped"
+WIRE_TRANSCRIPT_DONE = "conversation.item.input_audio_transcription.completed"
+WIRE_RESPONSE_CREATED = "response.created"
+WIRE_AUDIO_DELTA = "response.audio.delta"
+WIRE_RESPONSE_DONE = "response.done"
+WIRE_RESPONSE_CANCELLED = "response.cancelled"
+WIRE_RESPONSE_COMMITTED = "response.committed"
+WIRE_STATE_CHANGED = "turn.state_changed"
+
+
+def _event_to_wire(event: ConvEvent) -> dict | None:
+    if isinstance(event, ConvSessionCreatedEvent):
+        return {
+            "type": WIRE_SESSION_CREATED,
+            "session": serialize_session_config(event.config),
+        }
+    if isinstance(event, ConvSpeechStartedEvent):
+        return {"type": WIRE_SPEECH_STARTED, "timestamp_ms": event.timestamp_ms}
+    if isinstance(event, ConvSpeechStoppedEvent):
+        return {"type": WIRE_SPEECH_STOPPED, "timestamp_ms": event.timestamp_ms}
+    if isinstance(event, ConvTranscriptDoneEvent):
+        payload: dict = {
+            "type": WIRE_TRANSCRIPT_DONE,
+            "transcript": event.transcript,
+            "language": event.language,
+            "start_ms": event.start_ms,
+            "end_ms": event.end_ms,
+        }
+        if event.eou_probability is not None:
+            payload["eou_probability"] = event.eou_probability
+        if event.entities:
+            payload["entities"] = list(event.entities)
+        if event.topics:
+            payload["topics"] = list(event.topics)
+        if event.words:
+            payload["words"] = list(event.words)
+        return payload
+    if isinstance(event, ConvResponseCreatedEvent):
+        return {"type": WIRE_RESPONSE_CREATED}
+    if isinstance(event, ConvAudioDeltaEvent):
+        return {
+            "type": WIRE_AUDIO_DELTA,
+            "audio": event.audio_b64,
+            "sample_rate": event.sample_rate,
+            "audio_format": event.audio_format,
+        }
+    if isinstance(event, ConvResponseDoneEvent):
+        return {"type": WIRE_RESPONSE_DONE}
+    if isinstance(event, ConvResponseCancelledEvent):
+        return {"type": WIRE_RESPONSE_CANCELLED}
+    if isinstance(event, ConvResponseCommittedEvent):
+        return {"type": WIRE_RESPONSE_COMMITTED}
+    if isinstance(event, ConvStateChangedEvent):
+        return {
+            "type": WIRE_STATE_CHANGED,
+            "state": event.state,
+            "previous_state": event.previous_state,
+        }
+    if isinstance(event, ConvErrorEvent):
+        return {"type": "error", "message": event.message}
+    return None
 
 
 @router.websocket("/v1/conversation")
@@ -37,12 +122,18 @@ async def conversation_ws(websocket: WebSocket) -> None:
 
     logger.info("conversation ws connected")
 
-    session: ConversationSession | None = None
+    orchestrator = ConversationOrchestrator(scheduler=scheduler)
 
-    async def emit(event: dict) -> None:
+    async def emit_events() -> None:
+        async for event in orchestrator.events():
+            wire = _event_to_wire(event)
+            if wire is not None:
+                with suppress(Exception):
+                    await websocket.send_json(wire)
+            if isinstance(event, ConvDoneEvent):
+                return
 
-        with suppress(Exception):
-            await websocket.send_json(event)
+    emit_task = asyncio.create_task(emit_events())
 
     try:
         while True:
@@ -65,25 +156,16 @@ async def conversation_ws(websocket: WebSocket) -> None:
                 continue
 
             if msg_type == "session.update":
-                if session is not None:
-                    await _send_error(websocket, "session already configured")
-                    continue
                 try:
-                    config = _parse_session_update(msg)
-                except ValueError as exc:
+                    config = parse_session_update(msg)
+                    await orchestrator.start_session(config)
+                except SessionAlreadyConfiguredError:
+                    await _send_error(websocket, "session already configured")
+                except OperationError as exc:
                     await _send_error(websocket, str(exc))
-                    continue
-                session = ConversationSession(
-                    scheduler=scheduler, config=config, on_event=emit,
-                )
-                await session.start()
-                await websocket.send_json({
-                    "type": "session.created",
-                    "session": _serialize_session_config(config),
-                })
                 continue
 
-            if session is None:
+            if orchestrator.config is None:
                 await _send_error(websocket, "send session.update first")
                 continue
 
@@ -98,10 +180,10 @@ async def conversation_ws(websocket: WebSocket) -> None:
                     await _send_error(websocket, f"invalid base64 audio: {exc}")
                     continue
                 sample_rate = int(msg.get("sample_rate", 0)) or None
-                await session.ingest_audio(pcm, sample_rate=sample_rate)
+                await orchestrator.ingest_pcm16(pcm, sample_rate=sample_rate)
 
             elif msg_type == "response.start":
-                await session.start_response_stream()
+                await orchestrator.start_response()
 
             elif msg_type == "response.delta":
                 response = msg.get("response", {}) or {}
@@ -109,13 +191,13 @@ async def conversation_ws(websocket: WebSocket) -> None:
                 if not text:
                     await _send_error(websocket, "response.delta requires 'delta' text")
                     continue
-                await session.append_response_text(text)
+                await orchestrator.append_response_text(text)
 
             elif msg_type == "response.commit":
-                await session.commit_response_stream()
+                await orchestrator.commit_response()
 
             elif msg_type == "response.cancel":
-                await session.cancel_response()
+                await orchestrator.cancel_response()
 
             else:
                 await _send_error(websocket, f"unknown message type: {msg_type!r}")
@@ -127,61 +209,18 @@ async def conversation_ws(websocket: WebSocket) -> None:
         with suppress(Exception):
             await _send_error(websocket, "internal error; closing")
     finally:
-        if session is not None:
-            await session.close()
+        await orchestrator.end_of_stream()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(emit_task, timeout=5.0)
+        if not emit_task.done():
+            emit_task.cancel()
+            with suppress(Exception):
+                await emit_task
+        await orchestrator.close()
         with suppress(Exception):
             await websocket.close()
         logger.info("conversation ws closed")
         request_id_var.reset(token)
-
-
-def _parse_session_update(msg: dict) -> ConversationConfig:
-    sess = msg.get("session") or msg
-    stt_model = sess.get("stt_model") or sess.get("input_audio_transcription", {}).get("model")
-    tts_model = sess.get("tts_model") or sess.get("output_audio_generation", {}).get("model")
-    if not stt_model:
-        raise ValueError("session.update requires 'stt_model'")
-    if not tts_model:
-        raise ValueError("session.update requires 'tts_model'")
-
-    policy_in = sess.get("turn_policy") or sess.get("policy") or {}
-    policy_kwargs = {}
-    for field, key in (
-        ("allow_interrupt_while_speaking", "allow_interrupt_while_speaking"),
-        ("min_interrupt_duration_ms", "min_interrupt_duration_ms"),
-        ("max_endpointing_delay_ms", "max_endpointing_delay_ms"),
-        ("stable_speaking_min_ms", "stable_speaking_min_ms"),
-    ):
-        if key in policy_in:
-            policy_kwargs[field] = policy_in[key]
-    policy = TurnPolicy(**policy_kwargs) if policy_kwargs else TurnPolicy()
-
-    return ConversationConfig(
-        stt_model=stt_model,
-        tts_model=tts_model,
-        voice=sess.get("voice"),
-        language=sess.get("language", "en"),
-        sample_rate=int(sess.get("sample_rate") or TARGET_SAMPLE_RATE),
-        policy=policy,
-    )
-
-
-def _serialize_session_config(config: ConversationConfig) -> dict:
-    return {
-        "stt_model": config.stt_model,
-        "tts_model": config.tts_model,
-        "voice": config.voice,
-        "language": config.language,
-        "sample_rate": config.sample_rate,
-        "output_sample_rate": config.sample_rate,
-        "output_audio_format": "pcm16",
-        "turn_policy": {
-            "allow_interrupt_while_speaking": config.policy.allow_interrupt_while_speaking,
-            "min_interrupt_duration_ms": config.policy.min_interrupt_duration_ms,
-            "max_endpointing_delay_ms": config.policy.max_endpointing_delay_ms,
-            "stable_speaking_min_ms": config.policy.stable_speaking_min_ms,
-        },
-    }
 
 
 async def _send_error(websocket: WebSocket, message: str) -> None:

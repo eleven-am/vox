@@ -1,31 +1,36 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
+from contextlib import suppress
 
+from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
-from vox.core.registry import ModelRegistry
 from vox.grpc import vox_pb2, vox_pb2_grpc
-from vox.streaming.annotation import enrich_transcript
-from vox.streaming.codecs import pcm16_to_float32, resample_audio
-from vox.streaming.opus import OPUS_SAMPLE_RATE, OpusStreamDecoder
-from vox.streaming.partials import PartialTranscriptService
-from vox.streaming.pipeline import StreamPipeline, StreamPipelineConfig
-from vox.streaming.session import SpeechSession
-from vox.streaming.types import (
-    TARGET_SAMPLE_RATE,
-    SpeechStarted,
-    SpeechStopped,
-    StreamSessionConfig,
-    StreamTranscript,
-    samples_to_ms,
+from vox.operations.errors import (
+    OperationError,
+    SessionNotConfiguredError,
 )
+from vox.operations.streaming_transcription import (
+    DoneEvent,
+    ErrorEvent,
+    SessionReadyEvent,
+    SpeechStartedEvent,
+    SpeechStoppedEvent,
+    StreamingTranscriptionConfig,
+    StreamingTranscriptionSession,
+    TranscriptEvent,
+)
+from vox.streaming.opus import OPUS_SAMPLE_RATE
+from vox.streaming.pipeline import StreamPipelineConfig
+from vox.streaming.types import StreamTranscript
 
 logger = logging.getLogger(__name__)
 
 
-def _to_pb_entities(entities: list[dict]) -> list[vox_pb2.Entity]:
+def _to_pb_entities(entities) -> list[vox_pb2.Entity]:
     return [
         vox_pb2.Entity(
             type=str(e.get("type", "")),
@@ -37,7 +42,7 @@ def _to_pb_entities(entities: list[dict]) -> list[vox_pb2.Entity]:
     ]
 
 
-def _to_pb_words(words: list[dict]) -> list[vox_pb2.WordTimestamp]:
+def _to_pb_words(words) -> list[vox_pb2.WordTimestamp]:
     pb_words: list[vox_pb2.WordTimestamp] = []
     for w in words:
         kwargs = {
@@ -52,7 +57,7 @@ def _to_pb_words(words: list[dict]) -> list[vox_pb2.WordTimestamp]:
     return pb_words
 
 
-def _to_pb_segments(segments: list[dict]) -> list[vox_pb2.TranscriptSegment]:
+def _to_pb_segments(segments) -> list[vox_pb2.TranscriptSegment]:
     return [
         vox_pb2.TranscriptSegment(
             text=str(s.get("text", "")),
@@ -64,15 +69,59 @@ def _to_pb_segments(segments: list[dict]) -> list[vox_pb2.TranscriptSegment]:
     ]
 
 
-def _get_default_stt(registry: ModelRegistry, store: BlobStore) -> str:
-    for m in store.list_models():
-        if m.type.value == "stt":
-            return m.full_name
-    for name, tags in registry.available_models().items():
-        for tag, entry in tags.items():
-            if entry.get("type") == "stt":
-                return f"{name}:{tag}"
-    return ""
+def _transcript_to_pb(transcript: StreamTranscript) -> vox_pb2.StreamTranscriptResult:
+    kwargs = {
+        "text": transcript.text,
+        "is_partial": transcript.is_partial,
+        "start_ms": transcript.start_ms,
+        "end_ms": transcript.end_ms,
+        "audio_duration_ms": transcript.audio_duration_ms,
+        "processing_duration_ms": transcript.processing_duration_ms,
+        "model": transcript.model or "",
+    }
+    if transcript.eou_probability is not None:
+        kwargs["eou_probability"] = transcript.eou_probability
+    pb = vox_pb2.StreamTranscriptResult(**kwargs)
+    if transcript.entities:
+        pb.entities.extend(_to_pb_entities(transcript.entities))
+    if transcript.topics:
+        pb.topics.extend(transcript.topics)
+    if transcript.words:
+        pb.words.extend(_to_pb_words(transcript.words))
+    if transcript.segments:
+        pb.segments.extend(_to_pb_segments(transcript.segments))
+    return pb
+
+
+def _event_to_pb(event) -> vox_pb2.StreamOutput | None:
+    if isinstance(event, SessionReadyEvent):
+        return vox_pb2.StreamOutput(ready=vox_pb2.StreamReady())
+    if isinstance(event, SpeechStartedEvent):
+        return vox_pb2.StreamOutput(
+            speech_started=vox_pb2.StreamSpeechStarted(timestamp_ms=event.timestamp_ms),
+        )
+    if isinstance(event, SpeechStoppedEvent):
+        return vox_pb2.StreamOutput(
+            speech_stopped=vox_pb2.StreamSpeechStopped(timestamp_ms=event.timestamp_ms),
+        )
+    if isinstance(event, TranscriptEvent):
+        return vox_pb2.StreamOutput(transcript=_transcript_to_pb(event.transcript))
+    if isinstance(event, ErrorEvent):
+        return vox_pb2.StreamOutput(error=vox_pb2.StreamErrorMessage(message=event.message))
+    return None
+
+
+def _config_from_pb(cfg) -> StreamingTranscriptionConfig:
+    return StreamingTranscriptionConfig(
+        model=cfg.model or "",
+        language=cfg.language or "en",
+        sample_rate=cfg.sample_rate or 16_000,
+        partials=bool(cfg.partials),
+        partial_window_ms=cfg.partial_window_ms or 1500,
+        partial_stride_ms=cfg.partial_stride_ms or 700,
+        include_word_timestamps=bool(cfg.include_word_timestamps),
+        temperature=float(cfg.temperature),
+    )
 
 
 class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
@@ -94,207 +143,80 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
         request_iterator: AsyncIterator[vox_pb2.StreamInput],
         context,
     ) -> AsyncIterator[vox_pb2.StreamOutput]:
-        pipeline: StreamPipeline | None = None
-        session_config: StreamSessionConfig | None = None
-        session = SpeechSession()
-        opus_decoder: OpusStreamDecoder | None = None
-        partial_service: PartialTranscriptService | None = None
-
-        def _lang() -> str:
-            return session_config.language if session_config else "en"
-
-        async for client_msg in request_iterator:
-            if context.cancelled():
-                break
-
-            msg_type = client_msg.WhichOneof("msg")
-
-            if msg_type == "config":
-                if session_config is not None:
-                    yield vox_pb2.StreamOutput(
-                        error=vox_pb2.StreamErrorMessage(message="Session already configured")
-                    )
-                    continue
-
-                cfg = client_msg.config
-                model = cfg.model or _get_default_stt(self._registry, self._store)
-
-                session_config = StreamSessionConfig(
-                    language=cfg.language or "en",
-                    sample_rate=cfg.sample_rate or TARGET_SAMPLE_RATE,
-                    model=model,
-                    partials=cfg.partials,
-                    partial_window_ms=cfg.partial_window_ms or 1500,
-                    partial_stride_ms=cfg.partial_stride_ms or 700,
-                    include_word_timestamps=cfg.include_word_timestamps,
-                    temperature=cfg.temperature,
-                )
-
-                pipeline = StreamPipeline(
-                    scheduler=self._scheduler,
-                    config=self._pipeline_config,
-                )
-                pipeline.configure(session_config)
-
-                partial_service = PartialTranscriptService(
-                    transcribe_async_fn=pipeline.transcribe_async,
-                )
-
-                logger.info("Stream session configured: model=%s, language=%s", model, session_config.language)
-                yield vox_pb2.StreamOutput(ready=vox_pb2.StreamReady())
-                continue
-
-            if pipeline is None or session_config is None or partial_service is None:
-                yield vox_pb2.StreamOutput(
-                    error=vox_pb2.StreamErrorMessage(message="Session not configured")
-                )
-                continue
-
-            if msg_type == "audio":
-                audio = pcm16_to_float32(client_msg.audio.pcm16)
-                src_rate = client_msg.audio.sample_rate or session_config.sample_rate
-                if src_rate != TARGET_SAMPLE_RATE:
-                    audio = resample_audio(audio, src_rate, TARGET_SAMPLE_RATE)
-
-                session.append_audio(audio)
-                async for event in pipeline.process_audio(audio):
-                    yield self._map_event(event, session, _lang())
-
-                for msg in await self._handle_partials(session, partial_service, session_config):
-                    yield msg
-
-            elif msg_type == "opus_frame":
-                opus_frame = client_msg.opus_frame
-                if opus_decoder is None:
-                    sample_rate = opus_frame.sample_rate or OPUS_SAMPLE_RATE
-                    channels = opus_frame.channels or 1
-                    opus_decoder = OpusStreamDecoder(sample_rate=sample_rate, channels=channels)
-
-                try:
-                    audio = opus_decoder.decode_frame(opus_frame.data)
-                    audio = resample_audio(audio, OPUS_SAMPLE_RATE, TARGET_SAMPLE_RATE)
-
-                    session.append_audio(audio)
-                    async for event in pipeline.process_audio(audio):
-                        yield self._map_event(event, session, _lang())
-
-                    for msg in await self._handle_partials(session, partial_service, session_config):
-                        yield msg
-                except Exception as e:
-                    yield vox_pb2.StreamOutput(
-                        error=vox_pb2.StreamErrorMessage(message=str(e))
-                    )
-
-            elif msg_type == "encoded_audio":
-                try:
-                    from vox.audio.pipeline import prepare_for_stt
-
-                    encoded = client_msg.encoded_audio
-                    audio = prepare_for_stt(encoded.data, format_hint=encoded.format or None)
-
-                    session.append_audio(audio)
-                    async for event in pipeline.process_audio(audio):
-                        yield self._map_event(event, session, _lang())
-
-                    for msg in await self._handle_partials(session, partial_service, session_config):
-                        yield msg
-                except Exception as e:
-                    yield vox_pb2.StreamOutput(
-                        error=vox_pb2.StreamErrorMessage(message=str(e))
-                    )
-
-            elif msg_type == "end_of_stream":
-                break
-
-        if pipeline is not None and partial_service is not None and session_config is not None:
-            if opus_decoder is not None:
-                try:
-                    audio = opus_decoder.flush()
-                    if audio.size > 0:
-                        audio = resample_audio(audio, OPUS_SAMPLE_RATE, TARGET_SAMPLE_RATE)
-                        async for event in pipeline.process_audio(audio):
-                            yield self._map_event(event, session, _lang())
-                except Exception as e:
-                    yield vox_pb2.StreamOutput(
-                        error=vox_pb2.StreamErrorMessage(message=str(e))
-                    )
-
-            remaining = partial_service.flush_remaining_audio(session)
-            if remaining is not None and len(remaining) > 0:
-                try:
-                    duration_ms = samples_to_ms(len(remaining))
-                    if duration_ms > 0:
-                        transcript = await pipeline.transcribe_async(audio=remaining)
-                        if transcript.text.strip():
-                            enrich_transcript(transcript, _lang())
-                            yield self._map_transcript(transcript, is_partial=False)
-                except Exception as e:
-                    yield vox_pb2.StreamOutput(
-                        error=vox_pb2.StreamErrorMessage(message=str(e))
-                    )
-
-            pipeline.reset()
-            pipeline.shutdown()
-
-    def _map_event(self, event, session: SpeechSession, language: str) -> vox_pb2.StreamOutput:
-        if isinstance(event, SpeechStarted):
-            session.start_speech()
-            return vox_pb2.StreamOutput(
-                speech_started=vox_pb2.StreamSpeechStarted(timestamp_ms=event.timestamp_ms)
-            )
-        elif isinstance(event, SpeechStopped):
-            session.stop_speech()
-            return vox_pb2.StreamOutput(
-                speech_stopped=vox_pb2.StreamSpeechStopped(timestamp_ms=event.timestamp_ms)
-            )
-        elif isinstance(event, StreamTranscript):
-            enrich_transcript(event, language)
-            return self._map_transcript(event, is_partial=False)
-        return vox_pb2.StreamOutput(
-            error=vox_pb2.StreamErrorMessage(message="Unknown event")
+        session = StreamingTranscriptionSession(
+            scheduler=self._scheduler,
+            registry=self._registry,
+            store=self._store,
+            pipeline_config=self._pipeline_config,
         )
+        out_queue: asyncio.Queue[vox_pb2.StreamOutput | None] = asyncio.Queue()
 
-    def _map_transcript(self, transcript: StreamTranscript, is_partial: bool) -> vox_pb2.StreamOutput:
-        kwargs = {
-            "text": transcript.text,
-            "is_partial": is_partial or transcript.is_partial,
-            "start_ms": transcript.start_ms,
-            "end_ms": transcript.end_ms,
-            "audio_duration_ms": transcript.audio_duration_ms,
-            "processing_duration_ms": transcript.processing_duration_ms,
-            "model": transcript.model or "",
-        }
-        if transcript.eou_probability is not None:
-            kwargs["eou_probability"] = transcript.eou_probability
+        async def pump_events() -> None:
+            try:
+                async for event in session.events():
+                    pb = _event_to_pb(event)
+                    if pb is not None:
+                        await out_queue.put(pb)
+                    if isinstance(event, DoneEvent):
+                        break
+            finally:
+                await out_queue.put(None)
 
-        pb = vox_pb2.StreamTranscriptResult(**kwargs)
-        if transcript.entities:
-            pb.entities.extend(_to_pb_entities(transcript.entities))
-        if transcript.topics:
-            pb.topics.extend(transcript.topics)
-        if transcript.words:
-            pb.words.extend(_to_pb_words(transcript.words))
-        if transcript.segments:
-            pb.segments.extend(_to_pb_segments(transcript.segments))
+        async def drain_client() -> None:
+            try:
+                async for client_msg in request_iterator:
+                    if context.cancelled():
+                        break
+                    msg_type = client_msg.WhichOneof("msg")
+                    if msg_type == "config":
+                        try:
+                            await session.configure(_config_from_pb(client_msg.config))
+                        except OperationError as exc:
+                            await session.report_error(str(exc))
+                        continue
+                    if msg_type == "audio":
+                        try:
+                            await session.submit_pcm16(
+                                client_msg.audio.pcm16,
+                                sample_rate=client_msg.audio.sample_rate or None,
+                            )
+                        except SessionNotConfiguredError as exc:
+                            await session.report_error(str(exc))
+                    elif msg_type == "opus_frame":
+                        try:
+                            await session.submit_opus(
+                                client_msg.opus_frame.data,
+                                sample_rate=client_msg.opus_frame.sample_rate or OPUS_SAMPLE_RATE,
+                                channels=client_msg.opus_frame.channels or 1,
+                            )
+                        except SessionNotConfiguredError as exc:
+                            await session.report_error(str(exc))
+                    elif msg_type == "encoded_audio":
+                        try:
+                            await session.submit_encoded(
+                                client_msg.encoded_audio.data,
+                                format_hint=client_msg.encoded_audio.format or None,
+                            )
+                        except SessionNotConfiguredError as exc:
+                            await session.report_error(str(exc))
+                    elif msg_type == "end_of_stream":
+                        break
+            finally:
+                await session.end_of_stream()
 
-        return vox_pb2.StreamOutput(transcript=pb)
-
-    async def _handle_partials(
-        self,
-        session: SpeechSession,
-        partial_service: PartialTranscriptService,
-        config: StreamSessionConfig,
-    ) -> list[vox_pb2.StreamOutput]:
-        messages = []
-        if not session.is_active() or not config.partials:
-            return messages
-
+        emit_task = asyncio.create_task(pump_events())
+        client_task = asyncio.create_task(drain_client())
         try:
-            transcript = await partial_service.generate_partial_async(session, config)
-            if transcript:
-                messages.append(self._map_transcript(transcript, is_partial=True))
-        except Exception as e:
-            messages.append(vox_pb2.StreamOutput(
-                error=vox_pb2.StreamErrorMessage(message=str(e))
-            ))
-        return messages
+            while True:
+                item = await out_queue.get()
+                if item is None:
+                    break
+                yield item
+        finally:
+            client_task.cancel()
+            emit_task.cancel()
+            with suppress(Exception):
+                await client_task
+            with suppress(Exception):
+                await emit_task
+            await session.close()

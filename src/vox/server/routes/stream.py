@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from contextlib import suppress
@@ -7,33 +8,84 @@ from contextlib import suppress
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from vox.logging_context import new_request_id, request_id_var
-from vox.streaming.annotation import enrich_transcript
-from vox.streaming.codecs import pcm16_to_float32, resample_audio
-from vox.streaming.partials import PartialTranscriptService
-from vox.streaming.pipeline import StreamPipeline
-from vox.streaming.session import SpeechSession
-from vox.streaming.types import (
-    TARGET_SAMPLE_RATE,
-    SpeechStarted,
-    SpeechStopped,
-    StreamSessionConfig,
-    StreamTranscript,
+from vox.operations.errors import (
+    NoDefaultModelError,
+    OperationError,
+    SessionNotConfiguredError,
+    UnknownMessageTypeError,
 )
+from vox.operations.streaming_transcription import (
+    DoneEvent,
+    ErrorEvent,
+    SessionReadyEvent,
+    SpeechStartedEvent,
+    SpeechStoppedEvent,
+    StreamingTranscriptionConfig,
+    StreamingTranscriptionSession,
+    TranscriptEvent,
+)
+from vox.streaming.types import StreamTranscript
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-def _get_default_stt(registry, store) -> str:
-    for m in store.list_models():
-        if m.type.value == "stt":
-            return m.full_name
-    for name, tags in registry.available_models().items():
-        for tag, entry in tags.items():
-            if entry.get("type") == "stt":
-                return f"{name}:{tag}"
-    return ""
+def _operation_error_message(exc: OperationError) -> str:
+    if isinstance(exc, NoDefaultModelError):
+        return "No STT model specified and no default STT model available"
+    return str(exc)
+
+
+def _config_from_message(data: dict) -> StreamingTranscriptionConfig:
+    return StreamingTranscriptionConfig(
+        model=data.get("model", "") or "",
+        language=data.get("language", "en") or "en",
+        sample_rate=int(data.get("sample_rate") or 0) or 16_000,
+        partials=bool(data.get("partials", False)),
+        partial_window_ms=int(data.get("partial_window_ms") or 1500),
+        partial_stride_ms=int(data.get("partial_stride_ms") or 700),
+        include_word_timestamps=bool(data.get("include_word_timestamps", False)),
+        temperature=float(data.get("temperature", 0.0) or 0.0),
+    )
+
+
+def _transcript_to_payload(transcript: StreamTranscript) -> dict:
+    payload = {
+        "type": "transcript",
+        "text": transcript.text,
+        "is_partial": transcript.is_partial,
+        "start_ms": transcript.start_ms,
+        "end_ms": transcript.end_ms,
+        "audio_duration_ms": transcript.audio_duration_ms,
+        "processing_duration_ms": transcript.processing_duration_ms,
+        "model": transcript.model,
+    }
+    if transcript.eou_probability is not None:
+        payload["eou_probability"] = transcript.eou_probability
+    if transcript.entities:
+        payload["entities"] = transcript.entities
+    if transcript.topics:
+        payload["topics"] = transcript.topics
+    if transcript.words:
+        payload["words"] = transcript.words
+    if transcript.segments:
+        payload["segments"] = transcript.segments
+    return payload
+
+
+def _event_to_wire(event) -> dict | None:
+    if isinstance(event, SessionReadyEvent):
+        return {"type": "ready"}
+    if isinstance(event, SpeechStartedEvent):
+        return {"type": "speech_started", "timestamp_ms": event.timestamp_ms}
+    if isinstance(event, SpeechStoppedEvent):
+        return {"type": "speech_stopped", "timestamp_ms": event.timestamp_ms}
+    if isinstance(event, TranscriptEvent):
+        return _transcript_to_payload(event.transcript)
+    if isinstance(event, ErrorEvent):
+        return {"type": "error", "message": event.message}
+    return None
 
 
 @router.websocket("/v1/audio/stream")
@@ -48,11 +100,21 @@ async def audio_stream(websocket: WebSocket):
     registry = websocket.app.state.registry
     store = websocket.app.state.store
 
-    pipeline: StreamPipeline | None = None
-    session_config: StreamSessionConfig | None = None
-    session = SpeechSession()
-    partial_service: PartialTranscriptService | None = None
+    session = StreamingTranscriptionSession(
+        scheduler=scheduler, registry=registry, store=store,
+    )
     disconnected = False
+
+    async def emit_events() -> None:
+        async for event in session.events():
+            wire = _event_to_wire(event)
+            if wire is not None:
+                with suppress(Exception):
+                    await websocket.send_json(wire)
+            if isinstance(event, DoneEvent):
+                return
+
+    emit_task = asyncio.create_task(emit_events())
 
     try:
         while True:
@@ -63,147 +125,43 @@ async def audio_stream(websocket: WebSocket):
                 msg_type = data.get("type", "")
 
                 if msg_type == "config":
-                    if session_config is not None:
-                        await websocket.send_json({"type": "error", "message": "Session already configured"})
-                        continue
-
-                    model = data.get("model", "") or _get_default_stt(registry, store)
-                    if not model:
-                        await websocket.send_json(
-                            {
-                                "type": "error",
-                                "message": "No STT model specified and no default STT model available",
-                            }
-                        )
-                        continue
-
-                    session_config = StreamSessionConfig(
-                        language=data.get("language", "en"),
-                        sample_rate=data.get("sample_rate", TARGET_SAMPLE_RATE),
-                        model=model,
-                        partials=data.get("partials", False),
-                        partial_window_ms=data.get("partial_window_ms", 1500),
-                        partial_stride_ms=data.get("partial_stride_ms", 700),
-                        include_word_timestamps=data.get("include_word_timestamps", False),
-                        temperature=data.get("temperature", 0.0),
-                    )
-
-                    pipeline = StreamPipeline(scheduler=scheduler)
-                    pipeline.configure(session_config)
-
-                    partial_service = PartialTranscriptService(
-                        transcribe_async_fn=pipeline.transcribe_async,
-                    )
-
-                    logger.info("WS stream configured: model=%s, language=%s", model, session_config.language)
-                    await websocket.send_json({"type": "ready"})
+                    try:
+                        await session.configure(_config_from_message(data))
+                    except OperationError as exc:
+                        await session.report_error(_operation_error_message(exc))
                     continue
 
                 if msg_type == "end":
                     break
 
-                await websocket.send_json({"type": "error", "message": f"Unknown message type: {msg_type}"})
+                await session.report_error(str(UnknownMessageTypeError(msg_type)))
                 continue
 
             if "bytes" in raw and raw["bytes"]:
-                if pipeline is None or session_config is None or partial_service is None:
-                    await websocket.send_json({"type": "error", "message": "Session not configured"})
-                    continue
-
-                audio_bytes = raw["bytes"]
-                audio = pcm16_to_float32(audio_bytes)
-                src_rate = session_config.sample_rate
-                if src_rate != TARGET_SAMPLE_RATE:
-                    audio = resample_audio(audio, src_rate, TARGET_SAMPLE_RATE)
-
-                session.append_audio(audio)
-                async for event in pipeline.process_audio(audio):
-                    await _send_event(websocket, event, session, session_config.language)
-
-                if session.is_active() and session_config.partials:
-                    try:
-                        transcript = await partial_service.generate_partial_async(session, session_config)
-                        if transcript:
-                            await _send_transcript(websocket, transcript)
-                    except Exception as e:
-                        await websocket.send_json({"type": "error", "message": str(e)})
+                try:
+                    await session.submit_pcm16(raw["bytes"])
+                except SessionNotConfiguredError:
+                    await session.report_error("Session not configured")
 
     except WebSocketDisconnect:
         disconnected = True
         logger.info("WS stream client disconnected")
-    except Exception as e:
+    except Exception as exc:
         disconnected = True
         logger.exception("WS stream error")
         with suppress(Exception):
-            await websocket.send_json({"type": "error", "message": str(e)})
+            await websocket.send_json({"type": "error", "message": str(exc)})
     finally:
-        if pipeline is not None and partial_service is not None and not disconnected:
-            remaining = partial_service.flush_remaining_audio(session)
-            if remaining is not None and len(remaining) > 0:
-                try:
-                    transcript = await pipeline.transcribe_async(
-                        audio=remaining,
-                        language=session_config.language if session_config is not None else None,
-                        word_timestamps=(
-                            session_config.include_word_timestamps
-                            if session_config is not None
-                            else False
-                        ),
-                    )
-                    if transcript.text.strip():
-                        if session_config is not None:
-                            enrich_transcript(transcript, session_config.language)
-                        await _send_transcript(websocket, transcript)
-                except Exception:
-                    pass
-
-        if pipeline is not None:
-            pipeline.reset()
-            pipeline.shutdown()
-
+        if not disconnected:
+            await session.end_of_stream()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(emit_task, timeout=5.0)
+        if not emit_task.done():
+            emit_task.cancel()
+            with suppress(Exception):
+                await emit_task
+        await session.close()
         with suppress(Exception):
             await websocket.close()
         logger.info("realtime STT ws closed")
         request_id_var.reset(token)
-
-
-async def _send_event(websocket: WebSocket, event, session: SpeechSession, language: str) -> None:
-    if isinstance(event, SpeechStarted):
-        session.start_speech()
-        await websocket.send_json({
-            "type": "speech_started",
-            "timestamp_ms": event.timestamp_ms,
-        })
-    elif isinstance(event, SpeechStopped):
-        session.stop_speech()
-        await websocket.send_json({
-            "type": "speech_stopped",
-            "timestamp_ms": event.timestamp_ms,
-        })
-    elif isinstance(event, StreamTranscript):
-        enrich_transcript(event, language)
-        await _send_transcript(websocket, event)
-
-
-async def _send_transcript(websocket: WebSocket, transcript: StreamTranscript) -> None:
-    msg = {
-        "type": "transcript",
-        "text": transcript.text,
-        "is_partial": transcript.is_partial,
-        "start_ms": transcript.start_ms,
-        "end_ms": transcript.end_ms,
-        "audio_duration_ms": transcript.audio_duration_ms,
-        "processing_duration_ms": transcript.processing_duration_ms,
-        "model": transcript.model,
-    }
-    if transcript.eou_probability is not None:
-        msg["eou_probability"] = transcript.eou_probability
-    if transcript.entities:
-        msg["entities"] = transcript.entities
-    if transcript.topics:
-        msg["topics"] = transcript.topics
-    if transcript.words:
-        msg["words"] = transcript.words
-    if transcript.segments:
-        msg["segments"] = transcript.segments
-    await websocket.send_json(msg)
