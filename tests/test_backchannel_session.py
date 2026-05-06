@@ -269,7 +269,13 @@ class TestClassifierFailureFallsBackToInterrupt:
             def confirm_window_ms(self, base_ms, eou):
                 return base_ms
 
-            async def is_real_interrupt(self, audio, partial_transcript, eou, duration_ms):
+            def wants_short_circuit(self):
+                return False
+
+            def should_short_circuit(self, partial_transcript):
+                return False
+
+            async def is_real_interrupt(self, audio, partial_transcript, eou, duration_ms, sample_rate):
                 raise RuntimeError("classifier exploded")
 
         tts = LongTTS()

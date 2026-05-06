@@ -86,7 +86,13 @@ class _AcceptAllClassifier:
             return max(int(base_ms * self.lo_mult), self.floor)
         return base_ms
 
-    async def is_real_interrupt(self, audio, partial_transcript, eou, duration_ms):
+    def wants_short_circuit(self):
+        return False
+
+    def should_short_circuit(self, partial_transcript):
+        return False
+
+    async def is_real_interrupt(self, audio, partial_transcript, eou, duration_ms, sample_rate):
         return True
 
 
@@ -296,7 +302,11 @@ class TestEouModulatedConfirmWindow:
         class StrictClassifier:
             def confirm_window_ms(self, base_ms, last_eou_probability):
                 return 500
-            async def is_real_interrupt(self, audio, partial_transcript, eou, dur):
+            def wants_short_circuit(self):
+                return False
+            def should_short_circuit(self, partial_transcript):
+                return False
+            async def is_real_interrupt(self, audio, partial_transcript, eou, dur, sample_rate):
                 return True
 
         tts = ScriptedTTS()

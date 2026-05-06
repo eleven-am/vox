@@ -96,7 +96,6 @@ class TurnPolicy:
     min_interrupt_duration_ms: int = 250
     max_endpointing_delay_ms: int = 3000
     stable_speaking_min_ms: int = 150
-    interrupt_stt_timeout_ms: int = 150
 
 
 

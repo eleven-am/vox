@@ -46,7 +46,9 @@ from vox.core.adapter import TTSAdapter
 from vox.core.scheduler import Scheduler
 from vox.streaming.annotation import enrich_transcript
 from vox.streaming.codecs import float32_to_pcm16, pcm16_to_float32, resample_audio
+from vox.streaming.partials import PartialTranscriptService
 from vox.streaming.pipeline import StreamPipeline
+from vox.streaming.session import SpeechSession
 from vox.streaming.types import (
     TARGET_SAMPLE_RATE,
     SpeechStarted,
@@ -124,14 +126,26 @@ class ConversationSession:
 
         self._sm = TurnStateMachine(policy=config.policy)
 
+        self._wants_partials = bool(self._config.interrupt_classifier.wants_short_circuit())
+
         self._pipeline = StreamPipeline(scheduler=scheduler)
-        self._pipeline.configure(StreamSessionConfig(
+        self._stream_session_config = StreamSessionConfig(
             language=config.language,
             sample_rate=TARGET_SAMPLE_RATE,
             model=config.stt_model,
-            partials=False,
+            partials=self._wants_partials,
             include_word_timestamps=False,
-        ))
+        )
+        self._pipeline.configure(self._stream_session_config)
+
+        self._speech_session: SpeechSession | None = None
+        self._partial_service: PartialTranscriptService | None = None
+        self._latest_partial: StreamTranscript | None = None
+        if self._wants_partials:
+            self._speech_session = SpeechSession()
+            self._partial_service = PartialTranscriptService(
+                transcribe_async_fn=self._pipeline.transcribe_async,
+            )
 
         self._event_queue: asyncio.Queue[TurnEvent] = asyncio.Queue()
         self._timers: dict[str, asyncio.Task] = {}
@@ -157,8 +171,6 @@ class ConversationSession:
         self._audio_ring: np.ndarray = np.empty(0, dtype=np.float32)
         self._audio_ring_max_samples: int = TARGET_SAMPLE_RATE * 2
 
-        self._short_circuit_task: asyncio.Task | None = None
-
 
 
 
@@ -175,8 +187,6 @@ class ConversationSession:
         for task in list(self._timers.values()):
             task.cancel()
         self._timers.clear()
-
-        await self._cancel_short_circuit_task()
 
         if self._tts_task and not self._tts_task.done():
             self._tts_task.cancel()
@@ -232,6 +242,8 @@ class ConversationSession:
             self._audio_ring = np.concatenate([self._audio_ring, audio])
             if self._audio_ring.size > self._audio_ring_max_samples:
                 self._audio_ring = self._audio_ring[-self._audio_ring_max_samples:]
+            if self._speech_session is not None:
+                self._speech_session.append_audio(audio)
 
         try:
             async for stream_event in self._pipeline.process_audio(audio):
@@ -239,6 +251,23 @@ class ConversationSession:
         except Exception as exc:
             logger.exception("pipeline.process_audio raised")
             await self._emit({"type": WIRE_ERROR, "message": str(exc)})
+            return
+
+        if (
+            self._wants_partials
+            and self._partial_service is not None
+            and self._speech_session is not None
+            and self._speech_session.is_active()
+        ):
+            try:
+                partial = await self._partial_service.generate_partial_async(
+                    self._speech_session, self._stream_session_config,
+                )
+            except Exception:
+                logger.exception("partial transcript generation raised")
+                partial = None
+            if partial is not None:
+                await self._forward_stream_event(partial)
 
     async def submit_response_text(self, text: str) -> None:
         """Agent delivers the reply text; session kicks off TTS."""
@@ -312,6 +341,8 @@ class ConversationSession:
 
     async def _forward_stream_event(self, stream_event) -> None:
         if isinstance(stream_event, SpeechStarted):
+            if self._speech_session is not None:
+                self._speech_session.start_speech()
             await self._emit({
                 "type": WIRE_SPEECH_STARTED,
                 "timestamp_ms": stream_event.timestamp_ms,
@@ -334,6 +365,8 @@ class ConversationSession:
                 payload={"confirm_window_ms": confirm_ms},
             ))
         elif isinstance(stream_event, SpeechStopped):
+            if self._speech_session is not None:
+                self._speech_session.stop_speech()
             self._vad_started_at = None
             await self._emit({
                 "type": WIRE_SPEECH_STOPPED,
@@ -343,7 +376,20 @@ class ConversationSession:
                 type=TurnEventType.SPEECH_STOPPED,
                 timestamp_ms=stream_event.timestamp_ms,
             ))
+        elif isinstance(stream_event, StreamTranscript) and stream_event.is_partial:
+            self._latest_partial = stream_event
+            if (
+                self._sm.state == TurnState.PAUSED
+                and self._config.interrupt_classifier.should_short_circuit(stream_event.text)
+                and self._has_active_timer(TimerKey.CONFIRM_INTERRUPT.value)
+            ):
+                await self._cancel_timer(TimerKey.CONFIRM_INTERRUPT.value)
+                await self._event_queue.put(TurnEvent(
+                    type=TurnEventType.TIMER_ELAPSED,
+                    payload={"key": TimerKey.CONFIRM_INTERRUPT.value},
+                ))
         elif isinstance(stream_event, StreamTranscript):
+            self._latest_partial = None
 
 
             enrich_transcript(stream_event, self._config.language)
@@ -547,45 +593,9 @@ class ConversationSession:
             duration_ms = int(action.payload["duration_ms"])
             await self._cancel_timer(key)
             self._timers[key] = asyncio.create_task(self._timer_task(key, duration_ms))
-            if key == TimerKey.CONFIRM_INTERRUPT.value and self._config.interrupt_classifier.wants_short_circuit():
-                await self._cancel_short_circuit_task()
-                self._short_circuit_task = asyncio.create_task(self._try_short_circuit_during_paused())
 
         elif action.type == TurnActionType.CANCEL_TIMER:
-            key = action.payload["key"]
-            await self._cancel_timer(key)
-            if key == TimerKey.CONFIRM_INTERRUPT.value:
-                await self._cancel_short_circuit_task()
-
-    async def _try_partial_transcript(self, audio: np.ndarray | None) -> str | None:
-        """Best-effort STT pass on the PAUSED-window audio.
-
-        Time-boxed by `policy.interrupt_stt_timeout_ms` so a slow STT adapter
-        can't inflate barge-in latency. On timeout / exception / empty audio,
-        returns None and the classifier uses audio + EOU only.
-        """
-        if audio is None or audio.size == 0:
-            return None
-        timeout_ms = self._config.policy.interrupt_stt_timeout_ms
-        if timeout_ms <= 0:
-            return None
-        try:
-            result = await asyncio.wait_for(
-                self._pipeline.transcribe_async(
-                    audio=audio,
-                    language=self._config.language,
-                    word_timestamps=False,
-                ),
-                timeout=timeout_ms / 1000.0,
-            )
-        except TimeoutError:
-            logger.debug("partial STT for interrupt check timed out after %dms", timeout_ms)
-            return None
-        except Exception:
-            logger.exception("partial STT raised during interrupt check; continuing without it")
-            return None
-        text = getattr(result, "text", "") if result is not None else ""
-        return text.strip() or None
+            await self._cancel_timer(action.payload["key"])
 
     async def _timer_task(self, key: str, duration_ms: int) -> None:
         try:
@@ -649,7 +659,9 @@ class ConversationSession:
             )
             audio_tail = self._audio_ring[-tail_samples:]
 
-        partial_transcript = await self._try_partial_transcript(audio_tail)
+        partial_transcript = (
+            self._latest_partial.text if self._latest_partial is not None else None
+        )
 
         try:
             is_real = await self._config.interrupt_classifier.is_real_interrupt(
@@ -687,38 +699,6 @@ class ConversationSession:
             task.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await task
-
-    async def _cancel_short_circuit_task(self) -> None:
-        task = self._short_circuit_task
-        self._short_circuit_task = None
-        if task and not task.done():
-            task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await task
-
-    async def _try_short_circuit_during_paused(self) -> None:
-        if self._vad_started_at is None or self._audio_ring.size == 0:
-            return
-        vad_active_ms = max(0, int((time.monotonic() - self._vad_started_at) * 1000))
-        tail_samples = min(
-            self._audio_ring.size,
-            max(1, vad_active_ms * TARGET_SAMPLE_RATE // 1000),
-        )
-        audio_tail = self._audio_ring[-tail_samples:]
-
-        partial = await self._try_partial_transcript(audio_tail)
-        if partial is None:
-            return
-        if not self._config.interrupt_classifier.should_short_circuit(partial):
-            return
-
-        if not self._has_active_timer(TimerKey.CONFIRM_INTERRUPT.value):
-            return
-        await self._cancel_timer(TimerKey.CONFIRM_INTERRUPT.value)
-        await self._event_queue.put(TurnEvent(
-            type=TurnEventType.TIMER_ELAPSED,
-            payload={"key": TimerKey.CONFIRM_INTERRUPT.value},
-        ))
 
 
 

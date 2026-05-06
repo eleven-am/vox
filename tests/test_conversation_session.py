@@ -312,9 +312,7 @@ class TestBargeIn:
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_keyword_short_circuit_fires_before_timer(self):
-        import time
-
+    async def test_keyword_partial_short_circuits_before_timer(self):
         tts = ScriptedTTSAdapter(chunks=20, inter_chunk_delay=0.02)
         scheduler = MockScheduler(tts)
         collector = EventCollector()
@@ -330,10 +328,6 @@ class TestBargeIn:
         )
         session = ConversationSession(scheduler=scheduler, config=config, on_event=collector)
 
-        async def _fake_partial(audio):
-            return "please stop talking"
-        session._try_partial_transcript = _fake_partial
-
         await session.start()
         await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
         await _drain_events(session)
@@ -341,14 +335,19 @@ class TestBargeIn:
         await asyncio.sleep(0.05)
         assert session.state == TurnState.SPEAKING
 
-        session._audio_ring = (np.ones(8000, dtype=np.float32) * 0.1)
-        session._vad_started_at = time.monotonic() - 0.1
         await session._event_queue.put(TurnEvent(
             type=TurnEventType.SPEECH_STARTED,
             payload={"confirm_window_ms": 500},
         ))
+        await asyncio.sleep(0.01)
+        assert session.state == TurnState.PAUSED
 
-        await asyncio.sleep(0.05)
+        await session._forward_stream_event(StreamTranscript(
+            text="please stop talking",
+            is_partial=True,
+        ))
+
+        await asyncio.sleep(0.01)
         await _drain_events(session)
 
         assert session.state == TurnState.INTERRUPTED
@@ -356,6 +355,53 @@ class TestBargeIn:
         assert collector.by_type(WIRE_RESPONSE_CANCELLED)
 
         await session.close()
+
+    @pytest.mark.asyncio
+    async def test_keyword_partial_outside_paused_does_not_short_circuit(self):
+        tts = ScriptedTTSAdapter(chunks=20, inter_chunk_delay=0.02)
+        scheduler = MockScheduler(tts)
+        collector = EventCollector()
+        config = ConversationConfig(
+            stt_model="fake-stt:latest",
+            tts_model="fake-tts:latest",
+            voice="default",
+            language="en",
+            policy=TurnPolicy(min_interrupt_duration_ms=500, max_endpointing_delay_ms=200),
+            interrupt_classifier=HeuristicInterruptClassifier(
+                interrupt_keywords=frozenset({"stop"}),
+            ),
+        )
+        session = ConversationSession(scheduler=scheduler, config=config, on_event=collector)
+        await session.start()
+
+        await session._forward_stream_event(StreamTranscript(
+            text="please stop talking",
+            is_partial=True,
+        ))
+
+        assert session._latest_partial is not None
+        assert session._latest_partial.text == "please stop talking"
+        assert session.state == TurnState.IDLE
+        assert not collector.by_type(WIRE_RESPONSE_CANCELLED)
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_classifier_without_keywords_disables_partials(self):
+        tts = ScriptedTTSAdapter()
+        scheduler = MockScheduler(tts)
+        collector = EventCollector()
+        config = ConversationConfig(
+            stt_model="fake-stt:latest",
+            tts_model="fake-tts:latest",
+            voice="default",
+            language="en",
+            interrupt_classifier=HeuristicInterruptClassifier(),
+        )
+        session = ConversationSession(scheduler=scheduler, config=config, on_event=collector)
+        assert session._wants_partials is False
+        assert session._partial_service is None
+        assert session._speech_session is None
 
     @pytest.mark.asyncio
     async def test_pending_audio_buffered_during_pause(self):
