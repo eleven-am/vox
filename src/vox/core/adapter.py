@@ -50,15 +50,6 @@ class STTAdapter(BaseAdapter):
         """Synchronous full-utterance transcription."""
         ...
 
-    def transcribe_stream(
-        self,
-        audio_iter: AsyncIterator[NDArray[np.float32]],
-        *,
-        language: str | None = None,
-    ) -> AsyncIterator[TranscribeResult]:
-        """Optional: streaming partial transcripts."""
-        raise NotImplementedError(f"{self.info().name} does not support streaming STT")
-
     def detect_language(self, audio: NDArray[np.float32]) -> str:
         """Optional: language identification from audio."""
         raise NotImplementedError(f"{self.info().name} does not support language detection")
