@@ -13,7 +13,14 @@ import asyncio
 import numpy as np
 import pytest
 
-from vox.conversation import TimerKey, TurnEvent, TurnEventType, TurnPolicy, TurnState
+from vox.conversation import (
+    HeuristicInterruptClassifier,
+    TimerKey,
+    TurnEvent,
+    TurnEventType,
+    TurnPolicy,
+    TurnState,
+)
 from vox.conversation.session import (
     WIRE_AUDIO_DELTA,
     WIRE_ERROR,
@@ -106,7 +113,13 @@ class _AcceptAllClassifier:
     def confirm_window_ms(self, base_ms, last_eou_probability):
         return base_ms
 
-    async def is_real_interrupt(self, audio, partial_transcript, eou, duration_ms):
+    def wants_short_circuit(self):
+        return False
+
+    def should_short_circuit(self, partial_transcript):
+        return False
+
+    async def is_real_interrupt(self, audio, partial_transcript, eou, duration_ms, sample_rate):
         return True
 
 
@@ -295,6 +308,52 @@ class TestBargeIn:
         assert tts.cancelled_at_chunk is None
 
         assert not collector.by_type(WIRE_RESPONSE_CANCELLED)
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_keyword_short_circuit_fires_before_timer(self):
+        import time
+
+        tts = ScriptedTTSAdapter(chunks=20, inter_chunk_delay=0.02)
+        scheduler = MockScheduler(tts)
+        collector = EventCollector()
+        config = ConversationConfig(
+            stt_model="fake-stt:latest",
+            tts_model="fake-tts:latest",
+            voice="default",
+            language="en",
+            policy=TurnPolicy(min_interrupt_duration_ms=500, max_endpointing_delay_ms=200),
+            interrupt_classifier=HeuristicInterruptClassifier(
+                interrupt_keywords=frozenset({"stop"}),
+            ),
+        )
+        session = ConversationSession(scheduler=scheduler, config=config, on_event=collector)
+
+        async def _fake_partial(audio):
+            return "please stop talking"
+        session._try_partial_transcript = _fake_partial
+
+        await session.start()
+        await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
+        await _drain_events(session)
+        await session.submit_response_text("long reply")
+        await asyncio.sleep(0.05)
+        assert session.state == TurnState.SPEAKING
+
+        session._audio_ring = (np.ones(8000, dtype=np.float32) * 0.1)
+        session._vad_started_at = time.monotonic() - 0.1
+        await session._event_queue.put(TurnEvent(
+            type=TurnEventType.SPEECH_STARTED,
+            payload={"confirm_window_ms": 500},
+        ))
+
+        await asyncio.sleep(0.05)
+        await _drain_events(session)
+
+        assert session.state == TurnState.INTERRUPTED
+        assert tts.cancelled_at_chunk is not None
+        assert collector.by_type(WIRE_RESPONSE_CANCELLED)
 
         await session.close()
 

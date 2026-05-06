@@ -89,7 +89,7 @@ class ConversationConfig:
         if self.policy is None:
             self.policy = TurnPolicy()
         if self.interrupt_classifier is None:
-            self.interrupt_classifier = HeuristicInterruptClassifier()
+            self.interrupt_classifier = HeuristicInterruptClassifier(language=self.language)
 
 
 _RESPONSE_STREAM_END = object()
@@ -157,6 +157,8 @@ class ConversationSession:
         self._audio_ring: np.ndarray = np.empty(0, dtype=np.float32)
         self._audio_ring_max_samples: int = TARGET_SAMPLE_RATE * 2
 
+        self._short_circuit_task: asyncio.Task | None = None
+
 
 
 
@@ -173,6 +175,8 @@ class ConversationSession:
         for task in list(self._timers.values()):
             task.cancel()
         self._timers.clear()
+
+        await self._cancel_short_circuit_task()
 
         if self._tts_task and not self._tts_task.done():
             self._tts_task.cancel()
@@ -543,9 +547,15 @@ class ConversationSession:
             duration_ms = int(action.payload["duration_ms"])
             await self._cancel_timer(key)
             self._timers[key] = asyncio.create_task(self._timer_task(key, duration_ms))
+            if key == TimerKey.CONFIRM_INTERRUPT.value and self._config.interrupt_classifier.wants_short_circuit():
+                await self._cancel_short_circuit_task()
+                self._short_circuit_task = asyncio.create_task(self._try_short_circuit_during_paused())
 
         elif action.type == TurnActionType.CANCEL_TIMER:
-            await self._cancel_timer(action.payload["key"])
+            key = action.payload["key"]
+            await self._cancel_timer(key)
+            if key == TimerKey.CONFIRM_INTERRUPT.value:
+                await self._cancel_short_circuit_task()
 
     async def _try_partial_transcript(self, audio: np.ndarray | None) -> str | None:
         """Best-effort STT pass on the PAUSED-window audio.
@@ -647,6 +657,7 @@ class ConversationSession:
                 partial_transcript,
                 self._last_eou_probability,
                 vad_active_ms,
+                TARGET_SAMPLE_RATE,
             )
         except Exception:
             logger.exception("interrupt classifier raised; defaulting to real interrupt")
@@ -676,6 +687,38 @@ class ConversationSession:
             task.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await task
+
+    async def _cancel_short_circuit_task(self) -> None:
+        task = self._short_circuit_task
+        self._short_circuit_task = None
+        if task and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await task
+
+    async def _try_short_circuit_during_paused(self) -> None:
+        if self._vad_started_at is None or self._audio_ring.size == 0:
+            return
+        vad_active_ms = max(0, int((time.monotonic() - self._vad_started_at) * 1000))
+        tail_samples = min(
+            self._audio_ring.size,
+            max(1, vad_active_ms * TARGET_SAMPLE_RATE // 1000),
+        )
+        audio_tail = self._audio_ring[-tail_samples:]
+
+        partial = await self._try_partial_transcript(audio_tail)
+        if partial is None:
+            return
+        if not self._config.interrupt_classifier.should_short_circuit(partial):
+            return
+
+        if not self._has_active_timer(TimerKey.CONFIRM_INTERRUPT.value):
+            return
+        await self._cancel_timer(TimerKey.CONFIRM_INTERRUPT.value)
+        await self._event_queue.put(TurnEvent(
+            type=TurnEventType.TIMER_ELAPSED,
+            payload={"key": TimerKey.CONFIRM_INTERRUPT.value},
+        ))
 
 
 

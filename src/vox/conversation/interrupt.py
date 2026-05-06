@@ -23,6 +23,19 @@ import numpy as np
 from numpy.typing import NDArray
 
 
+DEFAULT_INTERRUPT_KEYWORDS_BY_LANG: dict[str, frozenset[str]] = {
+    "en": frozenset({"stop", "wait", "hold on", "pause", "cancel", "nevermind", "never mind"}),
+    "fr": frozenset({"arrête", "arretez", "arrêtez", "attends", "attendez", "pause", "annule", "annulez"}),
+    "es": frozenset({"para", "pare", "espera", "alto", "pausa", "cancela", "cancele"}),
+    "de": frozenset({"stopp", "stop", "warte", "warten", "halt", "pause", "abbrechen"}),
+    "it": frozenset({"ferma", "fermati", "fermo", "aspetta", "pausa", "annulla"}),
+    "pt": frozenset({"para", "pare", "espera", "pausa", "cancela", "cancele"}),
+    "nl": frozenset({"stop", "wacht", "pauze", "annuleer"}),
+    "ar": frozenset({"توقف", "انتظر", "إلغاء"}),
+    "hi": frozenset({"रुको", "रुकिए", "ठहरो", "रद्द"}),
+}
+
+
 @runtime_checkable
 class InterruptClassifier(Protocol):
     """Decides confirm-window duration and whether an interrupt is real."""
@@ -40,12 +53,19 @@ class InterruptClassifier(Protocol):
         """
         ...
 
+    def wants_short_circuit(self) -> bool:
+        ...
+
+    def should_short_circuit(self, partial_transcript: str | None) -> bool:
+        ...
+
     async def is_real_interrupt(
         self,
         audio_since_paused: NDArray[np.float32] | None,
         partial_transcript: str | None,
         last_eou_probability: float | None,
         vad_active_duration_ms: int,
+        sample_rate: int,
     ) -> bool:
         """Called when the confirm timer fires. Return True to confirm the
         interrupt, False to treat as a backchannel and resume TTS.
@@ -54,6 +74,8 @@ class InterruptClassifier(Protocol):
           window, or None if STT wasn't available (timed out, errored, or no
           audio). Caller supplies it as-is; the classifier is responsible
           for any normalisation appropriate to its language / domain.
+        sample_rate: rate of audio_since_paused in Hz; required so the
+          classifier can size its tail window in samples without inferring.
         """
         ...
 
@@ -95,9 +117,17 @@ class HeuristicInterruptClassifier:
 
 
 
-
-
     interrupt_keywords: frozenset[str] = field(default_factory=frozenset)
+    language: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.interrupt_keywords and self.language:
+            defaults = DEFAULT_INTERRUPT_KEYWORDS_BY_LANG.get(self.language.lower())
+            if defaults:
+                self.interrupt_keywords = defaults
+
+    def wants_short_circuit(self) -> bool:
+        return bool(self.interrupt_keywords)
 
     def confirm_window_ms(
         self,
@@ -114,27 +144,31 @@ class HeuristicInterruptClassifier:
             scaled = base_ms
         return max(scaled, self.min_window_ms)
 
+    def should_short_circuit(self, partial_transcript: str | None) -> bool:
+        if not partial_transcript or not self.interrupt_keywords:
+            return False
+        normalised = partial_transcript.strip().lower()
+        if not normalised:
+            return False
+        return any(keyword in normalised for keyword in self.interrupt_keywords)
+
     async def is_real_interrupt(
         self,
         audio_since_paused: NDArray[np.float32] | None,
         partial_transcript: str | None,
         last_eou_probability: float | None,
         vad_active_duration_ms: int,
+        sample_rate: int,
     ) -> bool:
 
 
 
-        if partial_transcript and self.interrupt_keywords:
-            normalised = partial_transcript.strip().lower()
-            if normalised:
-                for keyword in self.interrupt_keywords:
-                    if keyword in normalised:
-                        return True
+        if self.should_short_circuit(partial_transcript):
+            return True
 
         if audio_since_paused is not None and audio_since_paused.size > 0:
 
 
-            sample_rate = _assumed_sample_rate(audio_since_paused.size, vad_active_duration_ms)
             tail_samples = min(
                 audio_since_paused.size,
                 max(1, self.tail_check_ms * sample_rate // 1000),
@@ -145,22 +179,3 @@ class HeuristicInterruptClassifier:
 
 
         return not vad_active_duration_ms < self.min_real_interrupt_ms
-
-
-def _assumed_sample_rate(n_samples: int, duration_ms: int) -> int:
-    """Infer the audio's sample rate from its size + expected duration.
-
-    Falls back to 16 kHz (Vox's TARGET_SAMPLE_RATE) when duration is zero or
-    too small to be informative. This lets the classifier work without an
-    explicit sample-rate parameter — we compute the tail-window size from what
-    the session actually collected.
-    """
-    if duration_ms <= 0:
-        return 16_000
-    rate = int(round(n_samples / (duration_ms / 1000.0)))
-
-    if rate < 8_000:
-        return 16_000
-    if rate > 48_000:
-        return 48_000
-    return rate
