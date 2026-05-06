@@ -1,34 +1,34 @@
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
-from dataclasses import replace
 
 import grpc
 
-from vox.audio.merger import merge_transcripts
-from vox.audio.pipeline import prepare_for_stt_chunks
-from vox.core.adapter import STTAdapter
 from vox.core.errors import ModelNotFoundError, VoxError
-from vox.core.ner import annotate
 from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.grpc import vox_pb2, vox_pb2_grpc
+from vox.operations.errors import (
+    EmptyAudioError,
+    NoDefaultModelError,
+    OperationError,
+    WrongModelTypeError,
+)
+from vox.operations.transcription import (
+    AnnotateRequest,
+    TranscriptionRequest,
+    annotate_text,
+    transcribe,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _get_default_stt(registry: ModelRegistry, store: BlobStore) -> str:
-    for m in store.list_models():
-        if m.type.value == "stt":
-            return m.full_name
-    for name, tags in registry.available_models().items():
-        for tag, entry in tags.items():
-            if entry.get("type") == "stt":
-                return f"{name}:{tag}"
-    return ""
+def _operation_error_status(exc: OperationError) -> tuple[grpc.StatusCode, str]:
+    if isinstance(exc, (NoDefaultModelError, EmptyAudioError, WrongModelTypeError)):
+        return grpc.StatusCode.INVALID_ARGUMENT, str(exc)
+    return grpc.StatusCode.INTERNAL, str(exc)
 
 
 class TranscriptionServicer(vox_pb2_grpc.TranscriptionServiceServicer):
@@ -39,49 +39,38 @@ class TranscriptionServicer(vox_pb2_grpc.TranscriptionServiceServicer):
         self._scheduler = scheduler
 
     async def Transcribe(self, request, context):
-        model = request.model or _get_default_stt(self._registry, self._store)
-        if not model:
-            await context.abort(
-                grpc.StatusCode.INVALID_ARGUMENT,
-                "No model specified and no default STT model available",
-            )
-
-        if not request.audio:
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "No audio data provided")
-
-        format_hint = request.format_hint or None
-        chunks = prepare_for_stt_chunks(request.audio, format_hint=format_hint)
-
-        start_time = time.perf_counter()
-
+        op_request = TranscriptionRequest(
+            audio=request.audio,
+            model=request.model,
+            format_hint=request.format_hint or None,
+            language=request.language or None,
+            word_timestamps=request.word_timestamps,
+            temperature=request.temperature if request.temperature > 0 else 0.0,
+            annotate_text=True,
+        )
         try:
-            async with self._scheduler.acquire(model) as adapter:
-                if not isinstance(adapter, STTAdapter):
-                    await context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"Model '{model}' is not an STT model")
-
-                per_chunk: list[tuple] = []
-                for chunk in chunks:
-                    partial = await asyncio.to_thread(
-                        adapter.transcribe,
-                        chunk.data,
-                        language=request.language or None,
-                        word_timestamps=request.word_timestamps,
-                        temperature=request.temperature if request.temperature > 0 else 0.0,
-                    )
-                    partial = replace(partial, duration_ms=chunk.duration_ms)
-                    per_chunk.append((partial, chunk.offset_ms))
-                result = merge_transcripts(per_chunk)
-        except ModelNotFoundError as e:
-            await context.abort(grpc.StatusCode.NOT_FOUND, str(e))
-        except VoxError as e:
-            await context.abort(grpc.StatusCode.INTERNAL, str(e))
+            bundle = await transcribe(
+                scheduler=self._scheduler,
+                registry=self._registry,
+                store=self._store,
+                request=op_request,
+            )
+        except OperationError as exc:
+            code, msg = _operation_error_status(exc)
+            await context.abort(code, msg)
+            return
+        except ModelNotFoundError as exc:
+            await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))
+            return
+        except VoxError as exc:
+            await context.abort(grpc.StatusCode.INTERNAL, str(exc))
+            return
         except Exception:
-            logger.exception(f"Transcription failed for model {model}")
+            logger.exception("Transcription failed")
             await context.abort(grpc.StatusCode.INTERNAL, "Internal transcription error")
+            return
 
-        processing_ms = int((time.perf_counter() - start_time) * 1000)
-        result = replace(result, model=model)
-
+        result = bundle.result
         segments = []
         for s in result.segments:
             words = [
@@ -93,7 +82,6 @@ class TranscriptionServicer(vox_pb2_grpc.TranscriptionServiceServicer):
                 )
                 for w in s.words
             ] if s.words else []
-
             segments.append(vox_pb2.TranscriptSegment(
                 text=s.text,
                 start_ms=s.start_ms,
@@ -101,41 +89,26 @@ class TranscriptionServicer(vox_pb2_grpc.TranscriptionServiceServicer):
                 words=words,
             ))
 
-        lang = request.language or result.language or "en"
-        entities, topics = annotate(result.text, lang) if result.text else ([], [])
-
         return vox_pb2.TranscribeResponse(
             model=result.model,
             text=result.text,
             language=result.language or "",
             duration_ms=result.duration_ms,
-            processing_ms=processing_ms,
+            processing_ms=bundle.processing_ms,
             segments=segments,
             entities=[
-                vox_pb2.Entity(
-                    type=e.type,
-                    text=e.text,
-                    start_char=e.start_char,
-                    end_char=e.end_char,
-                )
-                for e in entities
+                vox_pb2.Entity(type=e.type, text=e.text, start_char=e.start_char, end_char=e.end_char)
+                for e in bundle.entities
             ],
-            topics=topics,
+            topics=list(bundle.topics),
         )
 
     async def Annotate(self, request, context):
-        text = request.text or ""
-        language = request.language or "en"
-        entities, topics = annotate(text, language)
+        result = annotate_text(AnnotateRequest(text=request.text or "", language=request.language or "en"))
         return vox_pb2.AnnotateResponse(
             entities=[
-                vox_pb2.Entity(
-                    type=e.type,
-                    text=e.text,
-                    start_char=e.start_char,
-                    end_char=e.end_char,
-                )
-                for e in entities
+                vox_pb2.Entity(type=e.type, text=e.text, start_char=e.start_char, end_char=e.end_char)
+                for e in result.entities
             ],
-            topics=topics,
+            topics=list(result.topics),
         )

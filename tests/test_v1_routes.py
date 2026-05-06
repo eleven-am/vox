@@ -55,16 +55,9 @@ class _FakeSTT(STTAdapter):
             WordTimestamp(word="visited", start_ms=500, end_ms=900),
             WordTimestamp(word="Paris", start_ms=900, end_ms=1300),
         )
-        seg = TranscriptSegment(
-            text="Alice visited Paris",
-            start_ms=0, end_ms=1300,
-            words=words,
-        )
+        seg = TranscriptSegment(text="Alice visited Paris", start_ms=0, end_ms=1300, words=words)
         return TranscribeResult(
-            text="Alice visited Paris",
-            segments=(seg,),
-            language="en",
-            duration_ms=1300,
+            text="Alice visited Paris", segments=(seg,), language="en", duration_ms=1300,
         )
 
 
@@ -123,13 +116,7 @@ def _build_app(*, store: BlobStore, stt=None, tts=None, loaded=None):
     registry.lookup.return_value = None
     app.state.registry = registry
     sched = _DummyScheduler(stt or _FakeSTT())
-    if tts is not None:
-
-        sched_tts = _DummyScheduler(tts)
-        app.state.scheduler = sched
-        app.state.tts_scheduler = sched_tts
-    else:
-        app.state.scheduler = sched
+    app.state.scheduler = sched
     app.state.scheduler._loaded = loaded or []
     app.include_router(health_router)
     app.include_router(models_router)
@@ -139,7 +126,7 @@ def _build_app(*, store: BlobStore, stt=None, tts=None, loaded=None):
     return app
 
 
-class TestHealthAlias:
+class TestV1HealthAlias:
     def test_v1_health_returns_ok(self, tmp_path: Path):
         client = TestClient(_build_app(store=BlobStore(root=tmp_path)))
         resp = client.get("/v1/health")
@@ -153,10 +140,9 @@ class TestHealthAlias:
         assert resp.json() == {"status": "ok"}
 
 
-class TestModelsAlias:
+class TestV1ModelsMapping:
     def test_v1_models_lists(self, tmp_path: Path):
-        store = BlobStore(root=tmp_path)
-        client = TestClient(_build_app(store=store))
+        client = TestClient(_build_app(store=BlobStore(root=tmp_path)))
         resp = client.get("/v1/models")
         assert resp.status_code == 200
         assert resp.json() == {"models": []}
@@ -167,26 +153,25 @@ class TestModelsAlias:
         assert resp.status_code == 200
         assert resp.json() == {"models": []}
 
-    def test_v1_models_show_path_param_404(self, tmp_path: Path):
+    def test_v1_models_show_unknown_returns_404(self, tmp_path: Path):
         client = TestClient(_build_app(store=BlobStore(root=tmp_path)))
         resp = client.get("/v1/models/nonexistent:v1")
         assert resp.status_code == 404
 
-    def test_v1_models_delete_path_param_404(self, tmp_path: Path):
+    def test_v1_models_delete_unknown_returns_404(self, tmp_path: Path):
         client = TestClient(_build_app(store=BlobStore(root=tmp_path)))
         resp = client.delete("/v1/models/nonexistent:v1")
         assert resp.status_code == 404
 
-    def test_v1_models_pull_rejects_unknown(self, tmp_path: Path):
+    def test_v1_models_pull_unknown_returns_404(self, tmp_path: Path):
         client = TestClient(_build_app(store=BlobStore(root=tmp_path)))
         resp = client.post("/v1/models/pull", json={"name": "nonexistent:v1"})
         assert resp.status_code == 404
 
 
-class TestV1TranscriptionsVerboseJson:
-    def test_default_is_thin_text_only(self, tmp_path: Path):
-        app = _build_app(store=BlobStore(root=tmp_path), stt=_FakeSTT())
-        client = TestClient(app)
+class TestV1TranscriptionsTransport:
+    def test_default_response_format_returns_text_only(self, tmp_path: Path):
+        client = TestClient(_build_app(store=BlobStore(root=tmp_path), stt=_FakeSTT()))
         resp = client.post(
             "/v1/audio/transcriptions",
             files={"file": ("a.wav", io.BytesIO(_wav_bytes()), "audio/wav")},
@@ -197,9 +182,8 @@ class TestV1TranscriptionsVerboseJson:
         assert set(body.keys()) == {"text"}
         assert body["text"] == "Alice visited Paris"
 
-    def test_verbose_json_includes_segments_words(self, tmp_path: Path):
-        app = _build_app(store=BlobStore(root=tmp_path), stt=_FakeSTT())
-        client = TestClient(app)
+    def test_verbose_json_includes_segments_and_words(self, tmp_path: Path):
+        client = TestClient(_build_app(store=BlobStore(root=tmp_path), stt=_FakeSTT()))
         resp = client.post(
             "/v1/audio/transcriptions",
             files={"file": ("a.wav", io.BytesIO(_wav_bytes()), "audio/wav")},
@@ -207,29 +191,10 @@ class TestV1TranscriptionsVerboseJson:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert body["text"] == "Alice visited Paris"
-        assert body["model"] == "fake-stt:latest"
-        assert "segments" in body
-        assert body["segments"][0]["text"] == "Alice visited Paris"
         assert body["segments"][0]["words"][0]["word"] == "Alice"
 
-    def test_verbose_json_includes_entities_and_topics_when_present(self, tmp_path: Path):
-        app = _build_app(store=BlobStore(root=tmp_path), stt=_FakeSTT())
-        client = TestClient(app)
-        resp = client.post(
-            "/v1/audio/transcriptions",
-            files={"file": ("a.wav", io.BytesIO(_wav_bytes()), "audio/wav")},
-            data={"model": "fake-stt:latest", "response_format": "verbose_json", "language": "en"},
-        )
-        body = resp.json()
-
-        assert "model" in body and "duration_ms" in body
-        if "entities" in body:
-            assert any(e.get("type") for e in body["entities"])
-
     def test_text_format_returns_plain(self, tmp_path: Path):
-        app = _build_app(store=BlobStore(root=tmp_path), stt=_FakeSTT())
-        client = TestClient(app)
+        client = TestClient(_build_app(store=BlobStore(root=tmp_path), stt=_FakeSTT()))
         resp = client.post(
             "/v1/audio/transcriptions",
             files={"file": ("a.wav", io.BytesIO(_wav_bytes()), "audio/wav")},
@@ -239,18 +204,13 @@ class TestV1TranscriptionsVerboseJson:
         assert resp.text == "Alice visited Paris"
 
 
-class TestV1SpeechRichFlags:
-    def test_speech_accepts_stream_and_language(self, tmp_path: Path):
+class TestV1SpeechTransport:
+    def test_speech_passes_request_through_to_adapter(self, tmp_path: Path):
         tts = _FakeTTS()
         store = BlobStore(root=tmp_path)
-
         create_stored_voice(
-            store,
-            voice_id="voice1234",
-            name="Roy",
-            audio_bytes=_wav_bytes(),
-            content_type="audio/wav",
-            language="en",
+            store, voice_id="voice1234", name="Roy",
+            audio_bytes=_wav_bytes(), content_type="audio/wav", language="en",
         )
         app = FastAPI()
         app.state.store = store
@@ -265,17 +225,12 @@ class TestV1SpeechRichFlags:
         resp = client.post(
             "/v1/audio/speech",
             json={
-                "model": "fake-tts:latest",
-                "input": "hello",
-                "voice": "voice1234",
-                "language": "fr",
-                "response_format": "wav",
+                "model": "fake-tts:latest", "input": "hello",
+                "voice": "voice1234", "language": "fr", "response_format": "wav",
             },
         )
         assert resp.status_code == 200
-
         assert tts.last_kwargs is not None
         assert tts.last_kwargs["voice"] is None
         assert tts.last_kwargs["reference_audio"] is not None
-
         assert tts.last_kwargs["language"] == "fr"

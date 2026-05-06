@@ -4,33 +4,53 @@ import logging
 
 import grpc
 
-from vox.conversation.text_buffer import split_for_tts
-from vox.core.adapter import TTSAdapter
-from vox.core.cloned_voices import (
-    create_stored_voice,
-    delete_stored_voice,
-    generate_voice_id,
-    list_stored_voices,
-    resolve_voice_request,
+from vox.core.errors import (
+    ModelNotFoundError,
+    VoiceCloningUnsupportedError,
+    VoiceNotFoundError,
+    VoxError,
 )
-from vox.core.errors import ModelNotFoundError, VoxError
 from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.grpc import vox_pb2, vox_pb2_grpc
+from vox.operations.errors import (
+    EmptyInputError,
+    NoAudioGeneratedError,
+    NoDefaultModelError,
+    OperationError,
+    VoiceAudioRequiredError,
+    VoiceIdRequiredError,
+    VoiceNameRequiredError,
+    VoiceNotFoundOperationError,
+    WrongModelTypeError,
+)
+from vox.operations.synthesis import SynthesisRequest, synthesize_raw
+from vox.operations.voices import (
+    CreateVoiceRequest,
+    create_voice,
+    delete_voice,
+    list_voices,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _get_default_tts(registry: ModelRegistry, store: BlobStore) -> str:
-    for m in store.list_models():
-        if m.type.value == "tts":
-            return m.full_name
-    for name, tags in registry.available_models().items():
-        for tag, entry in tags.items():
-            if entry.get("type") == "tts":
-                return f"{name}:{tag}"
-    return ""
+def _operation_error_status(exc: OperationError) -> tuple[grpc.StatusCode, str]:
+    if isinstance(exc, (
+        NoDefaultModelError,
+        EmptyInputError,
+        WrongModelTypeError,
+        VoiceNameRequiredError,
+        VoiceAudioRequiredError,
+        VoiceIdRequiredError,
+    )):
+        return grpc.StatusCode.INVALID_ARGUMENT, str(exc)
+    if isinstance(exc, VoiceNotFoundOperationError):
+        return grpc.StatusCode.NOT_FOUND, str(exc)
+    if isinstance(exc, NoAudioGeneratedError):
+        return grpc.StatusCode.INTERNAL, str(exc)
+    return grpc.StatusCode.INTERNAL, str(exc)
 
 
 class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
@@ -41,118 +61,94 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
         self._scheduler = scheduler
 
     async def Synthesize(self, request, context):
-        model = request.model or _get_default_tts(self._registry, self._store)
-        if not model:
-            await context.abort(
-                grpc.StatusCode.INVALID_ARGUMENT,
-                "No model specified and no default TTS model available",
-            )
-
-        if not request.input or not request.input.strip():
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "No input text provided")
-
+        op_req = SynthesisRequest(
+            input=request.input,
+            model=request.model,
+            voice=request.voice or None,
+            speed=request.speed if request.speed > 0 else 1.0,
+            language=request.language or None,
+            response_format="wav",
+        )
         try:
-            async with self._scheduler.acquire(model) as adapter:
-                if not isinstance(adapter, TTSAdapter):
-                    await context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"Model '{model}' is not a TTS model")
-
-                voice, language, reference_audio, reference_text = _resolve_voice_request(
-                    adapter,
-                    self._store,
-                    request.voice or None,
-                    request.language or None,
+            iterator = await synthesize_raw(
+                scheduler=self._scheduler,
+                registry=self._registry,
+                store=self._store,
+                request=op_req,
+            )
+            async for chunk in iterator:
+                yield vox_pb2.AudioChunk(
+                    audio=chunk.audio,
+                    sample_rate=chunk.sample_rate,
+                    is_final=chunk.is_final,
                 )
-                max_chars = int(getattr(adapter.info(), "max_input_chars", 0) or 0)
-                if max_chars > 0:
-                    text_chunks = split_for_tts(request.input, max_chars=max_chars)
-                else:
-                    text_chunks = [request.input] if request.input.strip() else []
-                for idx, text_chunk in enumerate(text_chunks):
-                    is_last_text_chunk = idx == len(text_chunks) - 1
-                    async for chunk in adapter.synthesize(
-                        text_chunk,
-                        voice=voice,
-                        speed=request.speed if request.speed > 0 else 1.0,
-                        language=language,
-                        reference_audio=reference_audio,
-                        reference_text=reference_text,
-                    ):
-                        yield vox_pb2.AudioChunk(
-                            audio=chunk.audio,
-                            sample_rate=chunk.sample_rate,
-                            is_final=chunk.is_final and is_last_text_chunk,
-                        )
-        except ModelNotFoundError as e:
-            await context.abort(grpc.StatusCode.NOT_FOUND, str(e))
-        except VoxError as e:
-            await context.abort(grpc.StatusCode.INTERNAL, str(e))
+        except OperationError as exc:
+            code, msg = _operation_error_status(exc)
+            await context.abort(code, msg)
+            return
+        except (VoiceCloningUnsupportedError, VoiceNotFoundError) as exc:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
+            return
+        except ModelNotFoundError as exc:
+            await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))
+            return
+        except VoxError as exc:
+            await context.abort(grpc.StatusCode.INTERNAL, str(exc))
+            return
         except Exception:
-            logger.exception(f"Synthesis failed for model {model}")
+            logger.exception("Synthesis failed")
             await context.abort(grpc.StatusCode.INTERNAL, "Internal synthesis error")
 
     async def ListVoices(self, request, context):
-        scheduler = self._scheduler
-
         try:
-            if not request.model:
-                all_voices = []
-                for loaded in scheduler.list_loaded():
-                    if loaded.type.value == "tts":
-                        full_name = f"{loaded.name}:{loaded.tag}"
-                        async with scheduler.acquire(full_name) as adapter:
-                            if isinstance(adapter, TTSAdapter):
-                                for v in _voices_for_adapter(adapter, self._store):
-                                    all_voices.append(vox_pb2.VoiceInfo(
-                                        id=v.id,
-                                        name=v.name,
-                                        language=v.language or "",
-                                        gender=v.gender or "",
-                                        description=v.description or "",
-                                        is_cloned=v.is_cloned,
-                                        model=full_name,
-                                    ))
-                return vox_pb2.ListVoicesResponse(voices=all_voices)
+            listed = await list_voices(
+                scheduler=self._scheduler,
+                store=self._store,
+                model=request.model or None,
+            )
+        except OperationError as exc:
+            code, msg = _operation_error_status(exc)
+            await context.abort(code, msg)
+            return
+        except ModelNotFoundError as exc:
+            await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))
+            return
+        except VoxError as exc:
+            await context.abort(grpc.StatusCode.INTERNAL, str(exc))
+            return
 
-            async with scheduler.acquire(request.model) as adapter:
-                if not isinstance(adapter, TTSAdapter):
-                    await context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"Model '{request.model}' is not a TTS model")
-
-                voices = [
-                    vox_pb2.VoiceInfo(
-                        id=v.id,
-                        name=v.name,
-                        language=v.language or "",
-                        gender=v.gender or "",
-                        description=v.description or "",
-                        is_cloned=v.is_cloned,
-                    )
-                    for v in _voices_for_adapter(adapter, self._store)
-                ]
-                return vox_pb2.ListVoicesResponse(voices=voices)
-        except ModelNotFoundError as e:
-            await context.abort(grpc.StatusCode.NOT_FOUND, str(e))
-        except VoxError as e:
-            await context.abort(grpc.StatusCode.INTERNAL, str(e))
+        voices = []
+        for entry in listed:
+            v = entry.voice
+            voices.append(vox_pb2.VoiceInfo(
+                id=v.id,
+                name=v.name,
+                language=v.language or "",
+                gender=v.gender or "",
+                description=v.description or "",
+                is_cloned=v.is_cloned,
+                model=entry.model or "",
+            ))
+        return vox_pb2.ListVoicesResponse(voices=voices)
 
     async def CreateVoice(self, request, context):
-        if not request.name or not request.name.strip():
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Voice name is required")
-        if not request.audio:
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Audio sample is required")
-
+        op_req = CreateVoiceRequest(
+            name=request.name,
+            audio=request.audio,
+            content_type=request.format_hint or None,
+            language=request.language or None,
+            gender=request.gender or None,
+            reference_text=request.reference_text or None,
+        )
         try:
-            voice = create_stored_voice(
-                self._store,
-                voice_id=generate_voice_id(self._store),
-                name=request.name,
-                audio_bytes=request.audio,
-                content_type=request.format_hint or None,
-                language=request.language or None,
-                gender=request.gender or None,
-                reference_text=request.reference_text or None,
-            )
-        except (TypeError, ValueError, RuntimeError) as e:
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e))
+            voice = create_voice(store=self._store, request=op_req)
+        except OperationError as exc:
+            code, msg = _operation_error_status(exc)
+            await context.abort(code, msg)
+            return
+        except (TypeError, ValueError, RuntimeError) as exc:
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
+            return
 
         return vox_pb2.CreateVoiceResponse(
             voice=vox_pb2.VoiceInfo(
@@ -167,27 +163,10 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
         )
 
     async def DeleteVoice(self, request, context):
-        if not request.id:
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "Voice ID is required")
-
-        deleted = delete_stored_voice(self._store, request.id)
-        if not deleted:
-            await context.abort(grpc.StatusCode.NOT_FOUND, f"Voice '{request.id}' not found")
-
+        try:
+            delete_voice(store=self._store, voice_id=request.id)
+        except OperationError as exc:
+            code, msg = _operation_error_status(exc)
+            await context.abort(code, msg)
+            return
         return vox_pb2.DeleteVoiceResponse(id=request.id, deleted=True)
-
-
-def _voices_for_adapter(adapter: TTSAdapter, store: BlobStore):
-    voices = list(adapter.list_voices())
-    if adapter.info().supports_voice_cloning:
-        voices.extend(voice.to_voice_info() for voice in list_stored_voices(store))
-    return voices
-
-
-def _resolve_voice_request(
-    adapter: TTSAdapter,
-    store: BlobStore,
-    voice_id: str | None,
-    language: str | None,
-):
-    return resolve_voice_request(adapter, store, voice_id, language)

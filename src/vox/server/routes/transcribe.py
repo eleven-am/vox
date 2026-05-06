@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
-from dataclasses import replace
+from dataclasses import asdict
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 
-from vox.audio.merger import merge_transcripts
-from vox.audio.pipeline import prepare_for_stt_chunks
-from vox.core.adapter import STTAdapter
 from vox.core.errors import ModelNotFoundError, VoxError
-from vox.core.ner import annotate, entity_to_dict
-from vox.server.routes import get_default_model
+from vox.operations.errors import (
+    EmptyAudioError,
+    NoDefaultModelError,
+    OperationError,
+    WrongModelTypeError,
+)
+from vox.operations.transcription import TranscriptionRequest, transcribe
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -27,6 +27,16 @@ def _mime_to_format(content_type: str | None) -> str | None:
     return replacements.get(fmt, fmt)
 
 
+def _operation_error_to_http(exc: OperationError) -> HTTPException:
+    if isinstance(exc, NoDefaultModelError):
+        return HTTPException(status_code=400, detail=str(exc))
+    if isinstance(exc, EmptyAudioError):
+        return HTTPException(status_code=400, detail=str(exc))
+    if isinstance(exc, WrongModelTypeError):
+        return HTTPException(status_code=400, detail=str(exc))
+    return HTTPException(status_code=500, detail=str(exc))
+
+
 async def _run_transcribe(
     *,
     request: Request,
@@ -35,53 +45,40 @@ async def _run_transcribe(
     language: str | None,
     word_timestamps: bool,
     temperature: float,
+    annotate_text: bool = False,
 ):
     scheduler = request.app.state.scheduler
     registry = request.app.state.registry
-
-    if not model:
-        model = get_default_model("stt", registry, request.app.state.store)
+    store = request.app.state.store
 
     data = await file.read()
-    chunks = prepare_for_stt_chunks(data, format_hint=_mime_to_format(file.content_type))
-
-    start_time = time.perf_counter()
+    op_request = TranscriptionRequest(
+        audio=data,
+        model=model or "",
+        format_hint=_mime_to_format(file.content_type),
+        language=language,
+        word_timestamps=word_timestamps,
+        temperature=temperature,
+        annotate_text=annotate_text,
+    )
     try:
-        async with scheduler.acquire(model) as adapter:
-            if not isinstance(adapter, STTAdapter):
-                raise HTTPException(status_code=400, detail=f"Model '{model}' is not an STT model")
-            per_chunk: list[tuple] = []
-            for chunk in chunks:
-                partial = await asyncio.to_thread(
-                    adapter.transcribe,
-                    chunk.data,
-                    language=language,
-                    word_timestamps=word_timestamps,
-                    temperature=temperature,
-                )
-                partial = replace(partial, duration_ms=chunk.duration_ms)
-                per_chunk.append((partial, chunk.offset_ms))
-            result = merge_transcripts(per_chunk)
-    except HTTPException:
-        raise
-    except ModelNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e)) from e
-    except VoxError as e:
-        raise HTTPException(status_code=500, detail=str(e)) from e
+        bundle = await transcribe(
+            scheduler=scheduler, registry=registry, store=store, request=op_request,
+        )
+    except OperationError as exc:
+        raise _operation_error_to_http(exc) from exc
+    except ModelNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except VoxError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception(f"Transcription failed for model {model}")
         raise HTTPException(status_code=500, detail="Internal transcription error") from exc
 
-    processing_ms = int((time.perf_counter() - start_time) * 1000)
-    result = replace(result, model=model)
-    logger.info(
-        "transcribe %s audio_ms=%d processing_ms=%d chars=%d",
-        model, result.duration_ms, processing_ms, len(result.text or ""),
-    )
-    return result, processing_ms
+    return bundle.result, bundle.processing_ms, bundle.entities, bundle.topics
 
 
-def _rich_payload(result, processing_ms: int, language_hint: str | None) -> dict:
+def _rich_payload(result, processing_ms: int, entities, topics) -> dict:
     response = {
         "model": result.model,
         "text": result.text,
@@ -89,12 +86,10 @@ def _rich_payload(result, processing_ms: int, language_hint: str | None) -> dict
         "duration_ms": result.duration_ms,
         "processing_ms": processing_ms,
     }
-    if result.text:
-        entities, topics = annotate(result.text, language_hint or result.language or "en")
-        if entities:
-            response["entities"] = [entity_to_dict(e) for e in entities]
-        if topics:
-            response["topics"] = topics
+    if entities:
+        response["entities"] = [asdict(e) for e in entities]
+    if topics:
+        response["topics"] = list(topics)
     return response
 
 
@@ -122,23 +117,17 @@ async def openai_transcribe(
     response_format: str = Form("json"),  # noqa: B008
     temperature: float = Form(0.0),  # noqa: B008
 ):
-    """OpenAI-compatible transcription.
-
-    - response_format=json (default): {"text": ...} — strict OpenAI shape.
-    - response_format=verbose_json: rich payload with segments/words + Vox extras (entities, topics).
-    - response_format=text: plain text.
-    """
     verbose = response_format == "verbose_json"
-    result, processing_ms = await _run_transcribe(
+    result, processing_ms, entities, topics = await _run_transcribe(
         request=request, file=file, model=model, language=language,
-        word_timestamps=verbose, temperature=temperature,
+        word_timestamps=verbose, temperature=temperature, annotate_text=verbose,
     )
 
     if response_format == "text":
         return PlainTextResponse(result.text)
 
     if verbose:
-        response = _rich_payload(result, processing_ms, language)
+        response = _rich_payload(result, processing_ms, entities, topics)
         response["segments"] = _segments_payload(result)
         return response
 

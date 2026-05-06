@@ -10,7 +10,7 @@ import numpy as np
 
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
-from vox.server.routes.synthesize import _split_for_adapter
+from vox.operations.synthesis import _split_for_adapter
 
 
 class _CappedTTS(TTSAdapter):
