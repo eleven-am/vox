@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from vox.audio.codecs import encode_wav
-from vox.core.adapter import STTAdapter, TTSAdapter
+from vox.core.adapter import STTAdapter
 from vox.core.cloned_voices import create_stored_voice
 from vox.core.store import BlobStore
 from vox.core.types import (
@@ -16,12 +16,12 @@ from vox.core.types import (
     LoadedModelInfo,
     ModelFormat,
     ModelType,
-    SynthesizeChunk,
     TranscribeResult,
     TranscriptSegment,
-    VoiceInfo,
 )
 from vox.grpc import vox_pb2
+
+from tests.fakes import FakeCloneableTTSAdapter
 
 
 def _make_store(tmp_path: Path) -> BlobStore:
@@ -56,25 +56,6 @@ class DummyScheduler:
 
     def list_loaded(self):
         return self._loaded_models
-
-
-class FakeCloneableTTSAdapter(TTSAdapter):
-    def info(self) -> AdapterInfo:
-        return AdapterInfo(
-            name="fake-tts-cloneable", type=ModelType.TTS,
-            architectures=("fake",), default_sample_rate=24_000,
-            supported_formats=(ModelFormat.ONNX,),
-            supports_voice_cloning=True,
-        )
-    def load(self, *a, **k): pass
-    def unload(self): pass
-    @property
-    def is_loaded(self): return True
-    def list_voices(self):
-        return [VoiceInfo(id="default", name="Default", language="en")]
-    async def synthesize(self, text, **kwargs):
-        yield SynthesizeChunk(audio=np.zeros(64, dtype=np.float32).tobytes(), sample_rate=24_000, is_final=False)
-        yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
 
 
 class FakeSTTAdapter(STTAdapter):

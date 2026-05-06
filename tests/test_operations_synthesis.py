@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -8,7 +7,7 @@ import numpy as np
 import pytest
 
 from vox.audio.codecs import encode_wav
-from vox.core.adapter import STTAdapter, TTSAdapter
+from vox.core.adapter import TTSAdapter
 from vox.core.cloned_voices import create_stored_voice
 from vox.core.store import BlobStore
 from vox.core.types import (
@@ -16,7 +15,6 @@ from vox.core.types import (
     ModelFormat,
     ModelType,
     SynthesizeChunk,
-    TranscribeResult,
     VoiceInfo,
 )
 from vox.operations.errors import (
@@ -31,6 +29,8 @@ from vox.operations.synthesis import (
     synthesize_raw,
     synthesize_stream,
 )
+
+from tests.fakes import FakeSTTAdapter as FakeSTT, FakeScheduler as DummyScheduler
 
 
 class FakeTTS(TTSAdapter):
@@ -63,33 +63,6 @@ class FakeTTS(TTSAdapter):
             sample_rate=24_000, is_final=False,
         )
         yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
-
-
-class FakeSTT(STTAdapter):
-    def info(self) -> AdapterInfo:
-        return AdapterInfo(
-            name="fake-stt", type=ModelType.STT,
-            architectures=("fake",), default_sample_rate=16_000,
-            supported_formats=(ModelFormat.ONNX,),
-        )
-    def load(self, *a, **k): ...
-    def unload(self): ...
-    @property
-    def is_loaded(self): return True
-    def transcribe(self, audio, **k):
-        return TranscribeResult(text="x")
-
-
-class DummyScheduler:
-    def __init__(self, adapter):
-        self._adapter = adapter
-
-    @asynccontextmanager
-    async def acquire(self, _model):
-        yield self._adapter
-
-    def list_loaded(self):
-        return []
 
 
 @pytest.mark.asyncio

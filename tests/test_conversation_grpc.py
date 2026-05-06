@@ -7,7 +7,6 @@ This file focuses on proto encoding/decoding and error mapping.
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
 
 import numpy as np
 import pytest
@@ -16,6 +15,8 @@ from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
 from vox.grpc import vox_pb2
 from vox.grpc.conversation_servicer import ConversationServicer, _wire_event_to_pb
+
+from tests.fakes import FakeScheduler
 
 
 class ScriptedTTS(TTSAdapter):
@@ -47,12 +48,7 @@ class ScriptedTTS(TTSAdapter):
         yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
 
 
-class DummyScheduler:
-    def __init__(self, adapter): self._a = adapter
-
-    @asynccontextmanager
-    async def acquire(self, _model: str):
-        yield self._a
+DummyScheduler = FakeScheduler
 
 
 class FakeContext:

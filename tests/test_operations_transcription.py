@@ -1,23 +1,11 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
 from vox.audio.codecs import encode_wav
-from vox.core.adapter import STTAdapter, TTSAdapter
-from vox.core.types import (
-    AdapterInfo,
-    ModelFormat,
-    ModelType,
-    SynthesizeChunk,
-    TranscribeResult,
-    TranscriptSegment,
-    VoiceInfo,
-    WordTimestamp,
-)
 from vox.operations.errors import (
     EmptyAudioError,
     NoDefaultModelError,
@@ -30,71 +18,12 @@ from vox.operations.transcription import (
     transcribe,
 )
 
+from tests.fakes import FakeSTTAdapter as FakeSTT, FakeTTSAdapter as FakeTTS, FakeScheduler as DummyScheduler
+
 
 def _wav_bytes(dur_s: float = 1.0, sr: int = 16_000) -> bytes:
     audio = np.zeros(int(dur_s * sr), dtype=np.float32)
     return encode_wav(audio, sr)
-
-
-class FakeSTT(STTAdapter):
-    def __init__(self, text: str = "hello world", language: str = "en"):
-        self._text = text
-        self._language = language
-        self.last_kwargs: dict | None = None
-
-    def info(self) -> AdapterInfo:
-        return AdapterInfo(
-            name="fake-stt", type=ModelType.STT,
-            architectures=("fake",), default_sample_rate=16_000,
-            supported_formats=(ModelFormat.ONNX,),
-        )
-
-    def load(self, *a, **k): ...
-    def unload(self): ...
-    @property
-    def is_loaded(self): return True
-
-    def transcribe(self, audio, **kwargs):
-        self.last_kwargs = kwargs
-        return TranscribeResult(
-            text=self._text,
-            language=self._language,
-            duration_ms=1000,
-            segments=(
-                TranscriptSegment(
-                    text=self._text, start_ms=0, end_ms=1000,
-                    words=(WordTimestamp(word=self._text, start_ms=0, end_ms=1000),),
-                ),
-            ),
-        )
-
-
-class FakeTTS(TTSAdapter):
-    def info(self) -> AdapterInfo:
-        return AdapterInfo(
-            name="fake-tts", type=ModelType.TTS,
-            architectures=("fake",), default_sample_rate=24_000,
-            supported_formats=(ModelFormat.ONNX,),
-        )
-    def load(self, *a, **k): ...
-    def unload(self): ...
-    @property
-    def is_loaded(self): return True
-    def list_voices(self): return [VoiceInfo(id="default", name="Default")]
-    async def synthesize(self, text, **kw):
-        yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
-
-
-class DummyScheduler:
-    def __init__(self, adapter):
-        self._adapter = adapter
-
-    @asynccontextmanager
-    async def acquire(self, _model):
-        yield self._adapter
-
-    def list_loaded(self):
-        return []
 
 
 @pytest.mark.asyncio

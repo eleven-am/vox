@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from contextlib import asynccontextmanager
 
 import numpy as np
 from fastapi import FastAPI
@@ -19,6 +18,8 @@ from starlette.websockets import WebSocketDisconnect
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
 from vox.server.routes.conversation import router as conversation_router
+
+from tests.fakes import FakeScheduler
 
 
 class ScriptedTTS(TTSAdapter):
@@ -48,17 +49,9 @@ class ScriptedTTS(TTSAdapter):
         yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
 
 
-class DummyScheduler:
-    def __init__(self, adapter): self._a = adapter
-
-    @asynccontextmanager
-    async def acquire(self, _model: str):
-        yield self._a
-
-
 def _build_app() -> FastAPI:
     app = FastAPI()
-    app.state.scheduler = DummyScheduler(ScriptedTTS())
+    app.state.scheduler = FakeScheduler(ScriptedTTS())
     app.include_router(conversation_router)
     return app
 

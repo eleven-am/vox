@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from vox.audio.codecs import encode_wav
-from vox.core.adapter import STTAdapter, TTSAdapter
+from vox.core.adapter import TTSAdapter
 from vox.core.cloned_voices import create_stored_voice
 from vox.core.store import BlobStore
 from vox.core.types import (
@@ -31,6 +31,8 @@ from vox.operations.voices import (
     get_voice_reference,
     list_voices,
 )
+
+from tests.fakes import FakeSTTAdapter as FakeSTT, FakeScheduler
 
 
 def _wav() -> bytes:
@@ -59,31 +61,13 @@ class FakeTTS(TTSAdapter):
             yield
 
 
-class FakeSTT(STTAdapter):
-    def info(self) -> AdapterInfo:
-        return AdapterInfo(
-            name="fake-stt", type=ModelType.STT,
-            architectures=("fake",), default_sample_rate=16_000,
-            supported_formats=(ModelFormat.ONNX,),
-        )
-    def load(self, *a, **k): ...
-    def unload(self): ...
-    @property
-    def is_loaded(self): return True
-    def transcribe(self, audio, **k): ...
-
-
-class DummyScheduler:
+class DummyScheduler(FakeScheduler):
     def __init__(self, adapter, loaded=None):
-        self._adapter = adapter
-        self._loaded = loaded or []
-
-    @asynccontextmanager
-    async def acquire(self, _model):
-        yield self._adapter
+        super().__init__(adapter)
+        self._loaded_list = loaded or []
 
     def list_loaded(self):
-        return self._loaded
+        return self._loaded_list
 
 
 @pytest.mark.asyncio

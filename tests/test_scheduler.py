@@ -12,7 +12,7 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from vox.core.adapter import STTAdapter, TTSAdapter
+from vox.core.adapter import STTAdapter
 from vox.core.errors import ModelLoadError
 from vox.core.runtime import RuntimeCapabilities
 from vox.core.scheduler import Scheduler, _detect_device, _is_oom_error
@@ -22,10 +22,11 @@ from vox.core.types import (
     ModelFormat,
     ModelInfo,
     ModelType,
-    SynthesizeChunk,
     TranscribeResult,
     parse_model_name,
 )
+
+from tests.fakes import FakeTTSAdapter
 
 
 class FakeSTTAdapter(STTAdapter):
@@ -75,45 +76,6 @@ class FakeSTTAdapter(STTAdapter):
         temperature: float = 0.0,
     ) -> TranscribeResult:
         return TranscribeResult(text="hello")
-
-
-class FakeTTSAdapter(TTSAdapter):
-    """Minimal TTS adapter for testing."""
-
-    def __init__(self):
-        self._loaded = False
-
-    def info(self) -> AdapterInfo:
-        return AdapterInfo(
-            name="fake-tts",
-            type=ModelType.TTS,
-            architectures=("fake",),
-            default_sample_rate=24000,
-            supported_formats=(ModelFormat.ONNX,),
-        )
-
-    def load(self, model_path: str, device: str, **kwargs: Any) -> None:
-        self._loaded = True
-
-    def unload(self) -> None:
-        self._loaded = False
-
-    @property
-    def is_loaded(self) -> bool:
-        return self._loaded
-
-    async def synthesize(
-        self,
-        text: str,
-        *,
-        voice: str | None = None,
-        speed: float = 1.0,
-        language: str | None = None,
-        reference_audio: np.ndarray | None = None,
-        reference_text: str | None = None,
-    ) -> AsyncIterator[SynthesizeChunk]:
-        yield SynthesizeChunk(audio=b"\x00" * 4, sample_rate=24000, is_final=True)
-
 
 
 

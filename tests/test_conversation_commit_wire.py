@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-from contextlib import asynccontextmanager
 
 import numpy as np
 import pytest
@@ -17,6 +16,8 @@ from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk,
 from vox.grpc import vox_pb2
 from vox.grpc.conversation_servicer import ConversationServicer
 from vox.server.routes.conversation import router as conversation_router
+
+from tests.fakes import FakeScheduler
 
 
 class QuickTTS(TTSAdapter):
@@ -40,10 +41,7 @@ class QuickTTS(TTSAdapter):
         yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
 
 
-class DummyScheduler:
-    def __init__(self, adapter): self._a = adapter
-    @asynccontextmanager
-    async def acquire(self, _): yield self._a
+DummyScheduler = FakeScheduler
 
 
 class FakeContext:

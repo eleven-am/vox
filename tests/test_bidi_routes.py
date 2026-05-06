@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from contextlib import asynccontextmanager
 from typing import Any
 
 import numpy as np
@@ -9,7 +8,6 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from vox.core.adapter import STTAdapter, TTSAdapter
-from vox.core.errors import ModelNotFoundError
 from vox.core.types import (
     AdapterInfo,
     ModelFormat,
@@ -19,6 +17,8 @@ from vox.core.types import (
     TranscriptSegment,
 )
 from vox.server.routes import bidi
+
+from tests.fakes import FakeScheduler
 
 
 class FakeChunkingSTTAdapter(STTAdapter):
@@ -88,22 +88,10 @@ class FakeStreamingTTSAdapter(TTSAdapter):
         yield SynthesizeChunk(audio=audio_b.tobytes(), sample_rate=24000, is_final=True)
 
 
-class MockScheduler:
-    def __init__(self) -> None:
-        self._adapters: dict[str, STTAdapter | TTSAdapter] = {}
-
-    def register(self, model_name: str, adapter: STTAdapter | TTSAdapter) -> None:
-        self._adapters[model_name] = adapter
-
-    @asynccontextmanager
-    async def acquire(self, model_name: str):
-        adapter = self._adapters.get(model_name)
-        if adapter is None:
-            raise ModelNotFoundError(model_name)
-        yield adapter
+MockScheduler = FakeScheduler
 
 
-def _build_app(*, scheduler: MockScheduler, registry: Any, store: Any) -> FastAPI:
+def _build_app(*, scheduler: FakeScheduler, registry: Any, store: Any) -> FastAPI:
     app = FastAPI()
     app.state.scheduler = scheduler
     app.state.registry = registry

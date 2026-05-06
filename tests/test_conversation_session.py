@@ -10,8 +10,6 @@ These tests don't use real STT/TTS models. Instead, we:
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
-
 import numpy as np
 import pytest
 
@@ -30,7 +28,7 @@ from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
 from vox.streaming.types import SpeechStopped, StreamTranscript
 
-
+from tests.fakes import FakeScheduler
 
 
 
@@ -76,13 +74,7 @@ class ScriptedTTSAdapter(TTSAdapter):
             raise
 
 
-class MockScheduler:
-    def __init__(self, adapter: TTSAdapter) -> None:
-        self._adapter = adapter
-
-    @asynccontextmanager
-    async def acquire(self, _model: str):
-        yield self._adapter
+MockScheduler = FakeScheduler
 
 
 class EventCollector:

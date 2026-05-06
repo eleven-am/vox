@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import asynccontextmanager
 
 import numpy as np
 import pytest
@@ -28,6 +27,10 @@ from vox.conversation.session import (
 )
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+
+from tests.fakes import FakeScheduler
+
+MockScheduler = FakeScheduler
 
 
 class QuickTTS(TTSAdapter):
@@ -67,12 +70,6 @@ class BrokenTTS(TTSAdapter):
     async def synthesize(self, text, **_):
         raise RuntimeError("adapter exploded")
         yield  # pragma: no cover
-
-
-class MockScheduler:
-    def __init__(self, adapter): self._a = adapter
-    @asynccontextmanager
-    async def acquire(self, _): yield self._a
 
 
 class Collector:

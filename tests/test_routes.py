@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import io
-from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -13,7 +12,6 @@ from fastapi.testclient import TestClient
 
 from vox.audio.codecs import encode_wav
 from vox.core.adapter import STTAdapter, TTSAdapter
-from vox.core.errors import ModelNotFoundError
 from vox.core.store import BlobStore, Manifest, ManifestLayer
 from vox.core.types import (
     AdapterInfo,
@@ -28,6 +26,8 @@ from vox.core.types import (
 )
 from vox.server.routes import get_default_model
 from vox.server.routes.transcribe import _mime_to_format
+
+from tests.fakes import FakeScheduler
 
 
 def _wav_bytes(dur_s: float = 1.0, sr: int = 16_000) -> bytes:
@@ -79,21 +79,12 @@ class FakeTTSAdapter(TTSAdapter):
         yield SynthesizeChunk(audio=np.zeros(24000, dtype=np.float32).tobytes(), sample_rate=24000, is_final=True)
 
 
-class MockScheduler:
+class MockScheduler(FakeScheduler):
     def __init__(self):
-        self._adapters: dict[str, Any] = {}
+        super().__init__()
         self._loaded = []
         self._unload = True
         self.preloaded: list[str] = []
-
-    def register(self, name: str, adapter): self._adapters[name] = adapter
-
-    @asynccontextmanager
-    async def acquire(self, name: str):
-        adapter = self._adapters.get(name)
-        if adapter is None:
-            raise ModelNotFoundError(name)
-        yield adapter
 
     def list_loaded(self): return self._loaded
     def set_loaded(self, ms): self._loaded = ms
@@ -101,8 +92,6 @@ class MockScheduler:
 
     async def unload(self, name: str) -> bool: return self._unload
     async def preload(self, name: str) -> None: self.preloaded.append(name)
-    async def start(self): pass
-    async def stop(self): pass
 
 
 def _build_app(scheduler: MockScheduler | None = None, registry: Any = None, store: Any = None) -> FastAPI:
