@@ -410,7 +410,7 @@ class TestVoxtralTTSAdapterInfo:
             adapter = VoxtralTTSAdapter()
             with (
                 patch("vox_voxtral.tts_adapter.ensure_voxtral_tts_runtime", return_value=runtime_info),
-                patch("vox_voxtral.tts_adapter.subprocess.Popen", return_value=worker) as popen,
+                patch("vox_voxtral.backends.subprocess.Popen", return_value=worker) as popen,
             ):
                 adapter.load(
                     "/tmp/voxtral-local",
@@ -426,25 +426,30 @@ class TestVoxtralTTSAdapterInfo:
             assert "/tmp/voxtral-local" in popen.call_args.args[0]
 
     def test_synthesize_uses_subprocess_worker(self):
+        import base64
+
+        audio_bytes = b"\x00\x00\x80?\x00\x00\x00@"
+
+        async def fake_generate(text: str, voice: str):
+            from vox.core.types import SynthesizeChunk
+            yield SynthesizeChunk(audio=audio_bytes, sample_rate=24000, is_final=False)
+            yield SynthesizeChunk(audio=b"", sample_rate=24000, is_final=True)
+
         with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
             from vox_voxtral.tts_adapter import VoxtralTTSAdapter
 
             adapter = VoxtralTTSAdapter()
             adapter._loaded = True
             adapter._subprocess_only = True
-            adapter._worker_request = MagicMock(
-                return_value={
-                    "status": "ok",
-                    "sample_rate": 24000,
-                    "audio_b64": "AACAPwAAAEA=",
-                }
-            )
+            mock_backend = MagicMock()
+            mock_backend.generate = fake_generate
+            adapter._backend = mock_backend
 
             chunks = asyncio.run(_collect_voxtral_tts_stream(adapter))
 
             assert len(chunks) == 2
             assert chunks[0].is_final is False
-            assert chunks[0].audio == b"\x00\x00\x80?\x00\x00\x00@"
+            assert chunks[0].audio == audio_bytes
             assert chunks[1].is_final is True
 
     def test_synthesize_rejects_reference_audio_until_released(self):

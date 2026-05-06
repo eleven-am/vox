@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import json
 import os
 import sys
@@ -12,7 +11,11 @@ from typing import Any
 
 import numpy as np
 
+
 VOXTRAL_TTS_SAMPLE_RATE = 24_000
+
+OP_SYNTHESIZE = "synthesize"
+OP_SHUTDOWN = "shutdown"
 
 
 def _gpu_memory_utilization() -> float:
@@ -38,6 +41,16 @@ def _load_tokenizer(mistral_tokenizer_cls: Any, model_id: str) -> Any:
     if candidate.is_dir() and (candidate / "tekken.json").is_file():
         return mistral_tokenizer_cls.from_file(str(candidate / "tekken.json"))
     return mistral_tokenizer_cls.from_hf_hub(model_id)
+
+
+def _extract_audio_chunk(audio_chunk: Any, chunk_idx: int) -> np.ndarray:
+    if isinstance(audio_chunk, list):
+        if not audio_chunk:
+            return np.asarray([], dtype=np.float32)
+        audio_chunk = audio_chunk[chunk_idx] if chunk_idx < len(audio_chunk) else audio_chunk[-1]
+    if hasattr(audio_chunk, "detach"):
+        audio_chunk = audio_chunk.float().detach().cpu().numpy()
+    return np.asarray(audio_chunk, dtype=np.float32)
 
 
 async def _generate_audio(
@@ -70,15 +83,7 @@ async def _generate_audio(
         if not multimodal_output or "audio" not in multimodal_output:
             continue
 
-        audio_chunk = multimodal_output["audio"]
-        if isinstance(audio_chunk, list):
-            if not audio_chunk:
-                continue
-            audio_chunk = audio_chunk[chunk_idx] if chunk_idx < len(audio_chunk) else audio_chunk[-1]
-        if hasattr(audio_chunk, "detach"):
-            audio_chunk = audio_chunk.float().detach().cpu().numpy()
-
-        audio_array = np.asarray(audio_chunk, dtype=np.float32)
+        audio_array = _extract_audio_chunk(multimodal_output["audio"], chunk_idx)
         if finished and accumulated_sample and len(audio_array) > accumulated_sample:
             audio_array = audio_array[accumulated_sample:]
 
@@ -107,6 +112,8 @@ def main() -> int:
         log_stats=False,
     )
     sampling_params = [SamplingParams(max_tokens=2500), SamplingParams(max_tokens=2500)]
+
+    import base64
     print(json.dumps({"status": "ready"}), flush=True)
 
     try:
@@ -116,9 +123,9 @@ def main() -> int:
                     continue
                 request = json.loads(raw_line)
                 op = request.get("op")
-                if op == "shutdown":
+                if op == OP_SHUTDOWN:
                     break
-                if op != "synthesize":
+                if op != OP_SYNTHESIZE:
                     print(json.dumps({"status": "error", "error": f"Unsupported op: {op}"}), flush=True)
                     continue
 
@@ -143,7 +150,7 @@ def main() -> int:
                         ),
                         flush=True,
                     )
-                except Exception as exc:  # pragma: no cover - runtime-dependent
+                except Exception as exc:
                     print(json.dumps({"status": "error", "error": str(exc)}), flush=True)
     finally:
         shutdown = getattr(runtime, "shutdown", None)
@@ -153,5 +160,5 @@ def main() -> int:
     return 0
 
 
-if __name__ == "__main__":  # pragma: no cover - subprocess entrypoint
+if __name__ == "__main__":
     raise SystemExit(main())

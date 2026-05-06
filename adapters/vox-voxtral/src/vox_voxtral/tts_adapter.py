@@ -1,11 +1,6 @@
 from __future__ import annotations
 
-import asyncio
-import base64
-import json
 import logging
-import subprocess
-import threading
 import time
 from collections.abc import AsyncIterator
 from importlib.resources import files
@@ -24,6 +19,11 @@ from vox.core.types import (
     ModelType,
     SynthesizeChunk,
     VoiceInfo,
+)
+from vox_voxtral.backends import (
+    InProcessOmniBackend,
+    OmniBackend,
+    SubprocessOmniBackend,
 )
 from vox_voxtral.runtime import (
     VOXTRAL_TIER_DEFAULT,
@@ -106,12 +106,10 @@ def _load_voxtral_tts_runtime() -> tuple[type[Any], type[Any], type[Any], type[A
 class VoxtralTTSAdapter(TTSAdapter):
 
     def __init__(self) -> None:
+        self._backend: OmniBackend | None = None
         self._runtime: Any | None = None
-        self._sampling_params: list[Any] = []
         self._tokenizer: Any | None = None
         self._speech_request_cls: Any | None = None
-        self._worker_proc: subprocess.Popen[str] | None = None
-        self._worker_lock = threading.Lock()
         self._subprocess_only = False
         self._loaded = False
         self._model_id: str = ""
@@ -174,6 +172,12 @@ class VoxtralTTSAdapter(TTSAdapter):
 
             elapsed = time.perf_counter() - start
             logger.info("Voxtral TTS model loaded in %.2fs", elapsed)
+            self._backend = InProcessOmniBackend(
+                runtime=self._runtime,
+                tokenizer=self._tokenizer,
+                speech_request_cls=self._speech_request_cls,
+                sampling_params=self._sampling_params,
+            )
             self._subprocess_only = False
             self._loaded = True
             return
@@ -184,7 +188,7 @@ class VoxtralTTSAdapter(TTSAdapter):
                 exc,
             )
 
-        self._start_worker(explicit_stage_configs_path=explicit_stage_configs_path)
+        self._backend = self._make_subprocess_backend(explicit_stage_configs_path=explicit_stage_configs_path)
         self._subprocess_only = True
         self._loaded = True
 
@@ -197,32 +201,42 @@ class VoxtralTTSAdapter(TTSAdapter):
             candidate = Path(model_path)
             if candidate.is_dir() and (candidate / "tekken.json").is_file():
                 model_dir = candidate
-        except Exception:  # pragma: no cover - defensive
+        except Exception:
             model_dir = None
 
         if model_dir is not None:
             return mistral_tokenizer_cls.from_file(str(model_dir / "tekken.json"))
         return mistral_tokenizer_cls.from_hf_hub(self._model_id)
 
+    def _make_subprocess_backend(self, *, explicit_stage_configs_path: str | None) -> SubprocessOmniBackend:
+        worker_script = str(Path(__file__).with_name("voxtral_tts_worker.py"))
+        runtime = ensure_voxtral_tts_runtime()
+        stage_configs_path = explicit_stage_configs_path or runtime.stage_configs_path
+        return SubprocessOmniBackend.from_worker_script(
+            python_executable=runtime.python_executable,
+            worker_script=worker_script,
+            model_id=self._model_ref or self._model_id,
+            stage_configs_path=stage_configs_path,
+            default_voice=self._default_voice or "neutral_female",
+            env=runtime.env,
+        )
+
     def unload(self) -> None:
-        shutdown = getattr(self._runtime, "shutdown", None)
-        if callable(shutdown):
-            shutdown()
-        if self._worker_proc is not None:
+        import asyncio
+
+        if self._backend is not None:
+            backend = self._backend
+            self._backend = None
             try:
-                if self._worker_proc.stdin is not None:
-                    self._worker_proc.stdin.write(json.dumps({"op": "shutdown"}) + "\n")
-                    self._worker_proc.stdin.flush()
-            except Exception:
-                pass
-            try:
-                self._worker_proc.terminate()
-                self._worker_proc.wait(timeout=10)
-            except Exception:
-                self._worker_proc.kill()
-            self._worker_proc = None
+                loop = asyncio.get_running_loop()
+                loop.create_task(backend.close())
+            except RuntimeError:
+                try:
+                    asyncio.run(backend.close())
+                except Exception:
+                    pass
+
         self._runtime = None
-        self._sampling_params = []
         self._tokenizer = None
         self._speech_request_cls = None
         self._subprocess_only = False
@@ -260,86 +274,11 @@ class VoxtralTTSAdapter(TTSAdapter):
         voice_id = voice or self._default_voice or "neutral_female"
         _ = max(0.5, min(speed, 2.0))
 
-        if self._subprocess_only:
-            payload = await asyncio.to_thread(
-                self._worker_request,
-                text=text,
-                voice=voice_id,
-            )
-            audio = base64.b64decode(payload["audio_b64"])
-            yield SynthesizeChunk(
-                audio=audio,
-                sample_rate=int(payload.get("sample_rate", VOXTRAL_TTS_SAMPLE_RATE)),
-                is_final=False,
-            )
-            yield SynthesizeChunk(
-                audio=b"",
-                sample_rate=int(payload.get("sample_rate", VOXTRAL_TTS_SAMPLE_RATE)),
-                is_final=True,
-            )
-            return
-
-        if self._runtime is None or self._tokenizer is None:
+        if self._backend is None:
             raise RuntimeError("Voxtral TTS model is not loaded — call load() first")
 
-        instruct_tokenizer = self._tokenizer.instruct_tokenizer
-        if self._speech_request_cls is None:
-            raise RuntimeError("Voxtral TTS speech request class is not initialized")
-        tokenized = instruct_tokenizer.encode_speech_request(
-            self._speech_request_cls(input=text, voice=voice_id)
-        )
-        inputs: dict[str, Any] = {
-            "prompt_token_ids": tokenized.tokens,
-            "additional_information": {"voice": [voice_id]},
-        }
-
-        accumulated_sample = 0
-        chunk_idx = 0
-        async for stage_output in self._runtime.generate(
-            inputs,
-            request_id=str(time.time_ns()),
-            sampling_params_list=self._sampling_params,
-        ):
-            multimodal_output = getattr(stage_output, "multimodal_output", None)
-            finished = bool(getattr(stage_output, "finished", False))
-            if not multimodal_output or "audio" not in multimodal_output:
-                continue
-
-            audio_chunk = multimodal_output["audio"]
-            audio_array = self._to_numpy_audio_chunk(audio_chunk, chunk_idx)
-            if finished and accumulated_sample and len(audio_array) > accumulated_sample:
-                audio_array = audio_array[accumulated_sample:]
-
-            accumulated_sample += len(audio_array)
-            chunk_idx += 1
-
-            yield SynthesizeChunk(
-                audio=audio_array.astype(np.float32, copy=False).tobytes(),
-                sample_rate=VOXTRAL_TTS_SAMPLE_RATE,
-                is_final=False,
-            )
-
-        yield SynthesizeChunk(
-            audio=b"",
-            sample_rate=VOXTRAL_TTS_SAMPLE_RATE,
-            is_final=True,
-        )
-
-    @staticmethod
-    def _to_numpy_audio_chunk(audio_chunk: Any, chunk_idx: int) -> NDArray[np.float32]:
-        if isinstance(audio_chunk, list):
-            if not audio_chunk:
-                return np.asarray([], dtype=np.float32)
-            audio_chunk = audio_chunk[chunk_idx] if chunk_idx < len(audio_chunk) else audio_chunk[-1]
-
-        if hasattr(audio_chunk, "detach"):
-            audio_chunk = audio_chunk.float().detach().cpu().numpy()
-            return np.asarray(audio_chunk, dtype=np.float32)
-
-        if isinstance(audio_chunk, np.ndarray):
-            return audio_chunk.astype(np.float32, copy=False)
-
-        return np.asarray(audio_chunk, dtype=np.float32)
+        async for chunk in self._backend.generate(text=text, voice=voice_id):
+            yield chunk
 
     def list_voices(self) -> list[VoiceInfo]:
         if self._runtime is not None:
@@ -382,102 +321,3 @@ class VoxtralTTSAdapter(TTSAdapter):
     def estimate_vram_bytes(self, **kwargs: Any) -> int:
         del kwargs
         return recommended_voxtral_tts_vram_bytes()
-
-    def _start_worker(self, *, explicit_stage_configs_path: str | None) -> None:
-        worker_script = str(Path(__file__).with_name("voxtral_tts_worker.py"))
-        runtime = ensure_voxtral_tts_runtime()
-        stage_configs_path = explicit_stage_configs_path or runtime.stage_configs_path
-
-        self._worker_proc = subprocess.Popen(
-            [
-                runtime.python_executable,
-                "-u",
-                worker_script,
-                "--model-id",
-                self._model_ref or self._model_id,
-                "--stage-configs-path",
-                stage_configs_path,
-                "--default-voice",
-                self._default_voice or "neutral_female",
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            env=runtime.env,
-        )
-        startup_logs: list[str] = []
-        while True:
-            line = self._read_worker_line(allow_empty=True)
-            if not line:
-                stderr = ""
-                if self._worker_proc.stderr is not None:
-                    stderr = self._worker_proc.stderr.read()
-                message = stderr or "\n".join(startup_logs) or "Failed to start Voxtral TTS worker"
-                raise RuntimeError(message)
-
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                startup_logs.append(line.strip())
-                continue
-
-            if payload.get("status") == "ready":
-                return
-
-            stderr = ""
-            if self._worker_proc.stderr is not None:
-                stderr = self._worker_proc.stderr.read()
-            message = payload.get("error") or stderr or "\n".join(startup_logs) or "Failed to start Voxtral TTS worker"
-            raise RuntimeError(message)
-
-    def _worker_request(self, *, text: str, voice: str) -> dict[str, Any]:
-        if self._worker_proc is None or self._worker_proc.stdin is None:
-            raise RuntimeError("Voxtral TTS worker is not running")
-
-        with self._worker_lock:
-            self._worker_proc.stdin.write(
-                json.dumps(
-                    {
-                        "op": "synthesize",
-                        "text": text,
-                        "voice": voice,
-                    }
-                )
-                + "\n"
-            )
-            self._worker_proc.stdin.flush()
-            request_logs: list[str] = []
-            while True:
-                line = self._read_worker_line()
-                try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
-                    request_logs.append(line.strip())
-                    continue
-
-                if payload.get("status") == "ok":
-                    return payload
-
-                message = (
-                    payload.get("error")
-                    or "\n".join(log for log in request_logs if log)
-                    or "Voxtral TTS worker request failed"
-                )
-                raise RuntimeError(message)
-
-    def _read_worker_line(self, *, allow_empty: bool = False) -> str:
-        if self._worker_proc is None or self._worker_proc.stdout is None:
-            raise RuntimeError("Voxtral TTS worker is not running")
-
-        line = self._worker_proc.stdout.readline()
-        if line:
-            return line
-        if allow_empty:
-            return ""
-
-        stderr = ""
-        if self._worker_proc.stderr is not None:
-            stderr = self._worker_proc.stderr.read()
-        raise RuntimeError(stderr or "Voxtral TTS worker exited unexpectedly")
