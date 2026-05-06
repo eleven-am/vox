@@ -82,3 +82,32 @@ class VoiceReferenceNotFoundError(OperationError):
     def __init__(self, voice_id: str) -> None:
         self.voice_id = voice_id
         super().__init__(f"Reference audio for voice '{voice_id}' not found")
+
+
+class SessionAlreadyConfiguredError(OperationError):
+    def __init__(self) -> None:
+        super().__init__("Session already configured")
+
+
+class SessionNotConfiguredError(OperationError):
+    def __init__(self) -> None:
+        super().__init__("Session not configured")
+
+
+class UnknownMessageTypeError(OperationError):
+    def __init__(self, msg_type: str) -> None:
+        self.msg_type = msg_type
+        super().__init__(f"Unknown message type: {msg_type}")
+
+
+class UnsupportedFormatError(OperationError):
+    def __init__(self, kind: str, value: str, supported: list[str]) -> None:
+        self.kind = kind
+        self.value = value
+        self.supported = supported
+        super().__init__(f"Unsupported {kind} '{value}'. Supported values: {sorted(supported)}")
+
+
+class InvalidConfigError(OperationError):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
