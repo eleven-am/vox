@@ -146,16 +146,6 @@ def _patch_transformers_runtime() -> None:
     pytorch_utils.isin_mps_friendly = _numpy_fallback
 
 
-def _select_device(device: str) -> str:
-    torch = _load_torch_runtime()
-    if torch is None:
-        return "cpu"
-    if device == "cpu":
-        return "cpu"
-    if device in ("cuda", "auto") and torch.cuda.is_available():
-        return "cuda"
-    return "cpu"
-
 
 def _load_tts_runtime() -> type[Any]:
     _ensure_runtime_path()
@@ -231,7 +221,7 @@ class XTTSAdapter(TTSAdapter):
 
         source = kwargs.pop("_source", None)
         self._model_id = source if source else model_path
-        self._device = _select_device(device)
+        self._device = device
 
         TTS = _load_tts_runtime()
         logger.info("Loading XTTS model: %s (device=%s)", self._model_id, self._device)

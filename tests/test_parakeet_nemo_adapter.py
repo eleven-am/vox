@@ -159,19 +159,6 @@ def test_load_rejects_non_cuda_device(monkeypatch: pytest.MonkeyPatch):
         adapter.load("ignored-local-path", "cpu")
 
 
-def test_load_rejects_missing_cuda(monkeypatch: pytest.MonkeyPatch):
-    _install_fake_nemo()
-    _install_fake_torch(cuda_available=False)
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
-
-    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
-
-    adapter = ParakeetNemoAdapter()
-    with pytest.raises(RuntimeError, match="requires CUDA"):
-        adapter.load("ignored-local-path", "cuda")
-
-
 def test_load_asr_model_class_bootstraps_missing_nemo_runtime(monkeypatch: pytest.MonkeyPatch):
     _install_fake_torch(cuda_available=True)
     sys.modules.pop("vox_parakeet", None)

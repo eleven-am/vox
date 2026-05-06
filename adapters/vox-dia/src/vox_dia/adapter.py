@@ -54,13 +54,6 @@ def _ensure_runtime_path() -> str:
     return runtime_path
 
 
-def _select_device(device: str) -> str:
-    if device == "cpu":
-        return "cpu"
-    if device in ("cuda", "auto") and torch.cuda.is_available():
-        return "cuda"
-    return "cpu"
-
 
 def _load_transformers_runtime() -> tuple[Any, Any]:
     runtime_path = _ensure_runtime_path()
@@ -206,7 +199,7 @@ class DiaAdapter(TTSAdapter):
         self._model_id = source if source else model_path
         path = Path(model_path)
         self._model_ref = str(path) if path.exists() else self._model_id
-        self._device = _select_device(device)
+        self._device = device
         if self._device != "cuda":
             raise RuntimeError(
                 "Dia requires a CUDA-capable GPU. CPU execution is not supported by the official runtime."

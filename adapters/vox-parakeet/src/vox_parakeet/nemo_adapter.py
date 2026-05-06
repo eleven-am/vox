@@ -36,16 +36,6 @@ _RUNTIME_DEPENDENCIES = ("nemo-toolkit[asr]",)
 _VOX_HOME_ENV = "VOX_HOME"
 
 
-def _select_device(device: str) -> str:
-    torch = _torch_module()
-    if device not in ("cuda", "auto"):
-        raise RuntimeError(
-            "Parakeet NeMo is a CUDA-backed adapter and requires device='cuda' or 'auto'"
-        )
-    if not torch.cuda.is_available():
-        raise RuntimeError("Parakeet NeMo requires CUDA; CPU fallback is disabled")
-    return "cuda"
-
 
 def _torch_module() -> Any:
     try:
@@ -287,7 +277,11 @@ class ParakeetNemoAdapter(STTAdapter):
         if self._loaded:
             return
 
-        self._device = _select_device(device)
+        if device not in ("cuda", "auto"):
+            raise RuntimeError(
+                "Parakeet NeMo is a CUDA-backed adapter and requires device='cuda' or 'auto'"
+            )
+        self._device = "cuda"
         source = kwargs.pop("_source", None)
         self._model_id, checkpoint_path = _resolve_model_ref(model_path, source)
         ASRModel = _load_asr_model_class()

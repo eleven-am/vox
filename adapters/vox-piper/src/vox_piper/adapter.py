@@ -28,15 +28,6 @@ PIPER_SAMPLE_RATE = 22_050
 _DEFAULT_VOICE_ID = "default"
 
 
-def _select_device(device: str) -> str:
-    if device == "cpu":
-        return "cpu"
-    if device in ("cuda", "auto") and torch.cuda.is_available():
-        return "cuda"
-    if device in ("mps", "auto") and torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
 
 def _read_json(path: Path) -> dict[str, Any]:
     with open(path) as f:
@@ -212,7 +203,7 @@ class PiperAdapter(TTSAdapter):
         self._sample_rate = _extract_sample_rate(self._config)
         self._voices = _extract_speakers(self._config)
         self._model_id = kwargs.pop("_source", None) or str(model_file)
-        self._device = _select_device(device)
+        self._device = device
 
         use_cuda = self._device == "cuda"
         PiperVoice = _load_piper_voice_class()

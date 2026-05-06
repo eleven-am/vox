@@ -58,15 +58,6 @@ OPENVOICE_VOICE_NAMES = (
 OPENVOICE_LANGUAGES = ("en", "zh")
 
 
-def _select_device(device: str) -> str:
-    if device == "cpu":
-        return "cpu"
-    if device in ("cuda", "auto") and torch.cuda.is_available():
-        return "cuda:0"
-    if device in ("mps", "auto") and torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
 
 def _language_name(language: str | None) -> str:
     if language is None:
@@ -235,7 +226,7 @@ class OpenVoiceTTSAdapter(TTSAdapter):
         if self._loaded:
             return
 
-        self._device = _select_device(device)
+        self._device = device
         kwargs.pop("_source", None)
         self._model_root = Path(model_path)
         BaseSpeakerTTS, ToneColorConverter = _load_openvoice_api()

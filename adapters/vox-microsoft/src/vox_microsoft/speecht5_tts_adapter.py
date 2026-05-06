@@ -50,15 +50,6 @@ VOICE_TO_XVECTOR_INDEX: dict[str, int] = {
 }
 
 
-def _select_device(device: str) -> str:
-    if device == "cpu":
-        return "cpu"
-    if device in ("cuda", "auto") and torch.cuda.is_available():
-        return "cuda"
-    if device in ("mps", "auto") and torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
 
 class SpeechT5TTSAdapter(TTSAdapter):
 
@@ -89,7 +80,7 @@ class SpeechT5TTSAdapter(TTSAdapter):
 
         source = kwargs.pop("_source", None)
         self._model_id = source if source else model_path
-        self._device = _select_device(device)
+        self._device = device
         model_ref = str(Path(model_path)) if Path(model_path).exists() else self._model_id
 
         logger.info("Loading SpeechT5 TTS model: %s (device=%s)", model_ref, self._device)

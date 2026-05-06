@@ -39,12 +39,9 @@ class TestXTTSAdapter:
         tts_instance = MagicMock()
         tts_instance.to.return_value = tts_instance
         tts_instance.eval.return_value = tts_instance
-        torch_runtime = MagicMock()
-        torch_runtime.cuda.is_available.return_value = True
 
         with (
             patch("vox_xtts.adapter._load_tts_runtime", return_value=MagicMock(return_value=tts_instance)) as load_rt,
-            patch("vox_xtts.adapter._load_torch_runtime", return_value=torch_runtime),
         ):
             adapter = XTTSAdapter()
             adapter.load("ignored", "cuda", _source="tts_models/multilingual/multi-dataset/xtts_v2")

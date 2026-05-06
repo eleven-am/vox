@@ -40,14 +40,6 @@ _VRAM_ESTIMATES: dict[str, int] = {
 }
 
 
-def _select_device(device: str) -> str:
-    if device == "cpu":
-        return "cpu"
-    if device in ("cuda", "auto") and torch.cuda.is_available():
-        return "cuda"
-    return "cpu"
-
-
 def _select_compute_type(device: str, requested: str | None = None) -> str:
     if requested:
         return requested
@@ -164,7 +156,7 @@ class WhisperAdapter(STTAdapter):
         _ensure_runtime_dependencies()
         source = kwargs.pop("_source", None)
         self._model_id = str(source or model_path)
-        self._device = _select_device(device)
+        self._device = device
         requested_compute_type = kwargs.pop("compute_type", None)
         self._compute_type = _select_compute_type(self._device, requested_compute_type)
         self._beam_size = int(kwargs.pop("beam_size", 5))

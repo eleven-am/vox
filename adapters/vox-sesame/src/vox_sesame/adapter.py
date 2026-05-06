@@ -35,16 +35,6 @@ DEFAULT_VOICES: list[VoiceInfo] = [
 ]
 
 
-def _select_device(device: str) -> str:
-    if device == "cpu":
-        return "cpu"
-    if device in ("cuda", "auto") and torch.cuda.is_available():
-        return "cuda"
-    if device in ("mps", "auto") and torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
-
 def _select_dtype(device: str) -> torch.dtype:
     if device == "cuda":
         return torch.bfloat16
@@ -119,7 +109,7 @@ class SesameTTSAdapter(TTSAdapter):
 
         source = kwargs.pop("_source", None)
         self._model_id = source if source else model_path
-        self._device = _select_device(device)
+        self._device = device
         dtype = _select_dtype(self._device)
 
         CsmForConditionalGeneration = _get_csm_model_class()

@@ -123,19 +123,6 @@ class TestWhisperAdapterInfo:
             assert str(target_dir) in install_cmd
             assert sys.path[0] == str(target_dir)
 
-    def test_load_uses_cpu_int8_when_cuda_missing(self):
-        torch_mock = _mock_torch(cuda_available=False)
-        fw_module, model_cls = _mock_faster_whisper_module()
-        model_cls.return_value = MagicMock()
-
-        with patch.dict("sys.modules", {"torch": torch_mock, "faster_whisper": fw_module}):
-            from vox_whisper.adapter import WhisperAdapter
-
-            adapter = WhisperAdapter()
-            adapter.load("local-model", "cuda", _source="Systran/faster-whisper-base.en")
-
-            model_cls.assert_called_once_with("Systran/faster-whisper-base.en", device="cpu", compute_type="int8")
-
     def test_load_falls_back_to_cpu_when_ct2_cuda_runtime_is_missing(self):
         torch_mock = _mock_torch(cuda_available=True)
         fw_module, model_cls = _mock_faster_whisper_module()

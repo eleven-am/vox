@@ -70,17 +70,6 @@ def _torch() -> Any:
     return importlib.import_module("torch")
 
 
-def _select_device(device: str) -> str:
-    torch = _torch()
-    if device == "cpu":
-        return "cpu"
-    if device in ("cuda", "auto") and torch.cuda.is_available():
-        return "cuda"
-    if device in ("mps", "auto") and torch.backends.mps.is_available():
-        return "mps"
-    return "cpu"
-
-
 def _select_dtype(device: str) -> Any:
     torch = _torch()
     if device == "cuda":
@@ -257,7 +246,7 @@ class Qwen3TTSAdapter(TTSAdapter):
         self._model_ref = str(path) if path.exists() else self._model_id
         self._mode = _detect_mode(self._model_id, override=mode_override)
 
-        self._device = _select_device(device)
+        self._device = device
         try:
             Qwen3TTSModel = _load_qwen_tts_model()
             dtype = _select_dtype(self._device)
