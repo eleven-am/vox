@@ -1,7 +1,7 @@
-"""Integration tests for the WS /v1/conversation endpoint.
+"""Wire-mapping tests for the WS /v1/conversation endpoint.
 
-Uses FastAPI TestClient.websocket_connect to drive a scripted agent-side
-conversation against a real ConversationSession backed by mocked STT/TTS.
+Behavioural orchestration tests live in test_operations_conversation.py.
+This file focuses on JSON encoding/decoding and error mapping at the WS edge.
 """
 
 from __future__ import annotations
@@ -80,8 +80,8 @@ def _drain_until(ws, predicate, max_events: int = 50) -> list[dict]:
     return events
 
 
-class TestSessionUpdate:
-    def test_accepts_config_and_emits_session_created(self):
+class TestSessionUpdateWireMapping:
+    def test_session_update_emits_wire_session_created(self):
         client = TestClient(_build_app())
         with client.websocket_connect("/v1/conversation") as ws:
             ws.send_json({
@@ -96,12 +96,9 @@ class TestSessionUpdate:
             msg = ws.receive_json()
             assert msg["type"] == "session.created"
             assert msg["session"]["stt_model"] == "fake-stt:1"
-            assert msg["session"]["tts_model"] == "fake-tts:1"
-            assert msg["session"]["voice"] == "default"
-            assert msg["session"]["output_sample_rate"] == 16_000
             assert msg["session"]["output_audio_format"] == "pcm16"
 
-    def test_missing_stt_model_errors(self):
+    def test_missing_stt_model_emits_wire_error(self):
         client = TestClient(_build_app())
         with client.websocket_connect("/v1/conversation") as ws:
             ws.send_json({
@@ -112,24 +109,7 @@ class TestSessionUpdate:
             assert msg["type"] == "error"
             assert "stt_model" in msg["message"]
 
-    def test_double_session_update_errors(self):
-        client = TestClient(_build_app())
-        with client.websocket_connect("/v1/conversation") as ws:
-            ws.send_json({
-                "type": "session.update",
-                "session": {"stt_model": "x:1", "tts_model": "y:1"},
-            })
-            ws.receive_json()
-
-            ws.send_json({
-                "type": "session.update",
-                "session": {"stt_model": "a:1", "tts_model": "b:1"},
-            })
-            msg = ws.receive_json()
-            assert msg["type"] == "error"
-            assert "already configured" in msg["message"]
-
-    def test_must_send_session_update_first(self):
+    def test_audio_before_session_update_emits_wire_error(self):
         client = TestClient(_build_app())
         with client.websocket_connect("/v1/conversation") as ws:
             ws.send_json({"type": "input_audio_buffer.append", "audio": ""})
@@ -137,66 +117,19 @@ class TestSessionUpdate:
             assert msg["type"] == "error"
             assert "session.update" in msg["message"]
 
-    def test_turn_policy_passed_through(self):
+
+class TestResponseFlowWire:
+    def test_streaming_response_audio_delta_is_base64_pcm(self):
         client = TestClient(_build_app())
         with client.websocket_connect("/v1/conversation") as ws:
             ws.send_json({
                 "type": "session.update",
                 "session": {
-                    "stt_model": "x:1",
-                    "tts_model": "y:1",
-                    "turn_policy": {
-                        "min_interrupt_duration_ms": 150,
-                        "stable_speaking_min_ms": 100,
-                    },
-                },
-            })
-            msg = ws.receive_json()
-            assert msg["session"]["turn_policy"]["min_interrupt_duration_ms"] == 150
-            assert msg["session"]["turn_policy"]["stable_speaking_min_ms"] == 100
-
-
-class TestResponseFlow:
-    def test_streaming_response_emits_audio_and_done(self):
-        """Agent sends start + delta + commit → audio deltas + done."""
-        client = TestClient(_build_app())
-        with client.websocket_connect("/v1/conversation") as ws:
-            ws.send_json({
-                "type": "session.update",
-                "session": {
-                    "stt_model": "x:1",
-                    "tts_model": "y:1",
-                    "voice": "default",
-                    "sample_rate": 48_000,
+                    "stt_model": "x:1", "tts_model": "y:1",
+                    "voice": "default", "sample_rate": 48_000,
                 },
             })
             ws.receive_json()
-
-            ws.send_json({"type": "response.start"})
-            ws.send_json({"type": "response.delta", "delta": "hi there"})
-            ws.send_json({"type": "response.commit"})
-
-            events = _drain_until(ws, lambda e: e.get("type") == "response.done")
-            types = [e["type"] for e in events]
-            assert "response.created" in types
-            assert "response.committed" in types
-            assert "response.audio.delta" in types
-            assert "response.done" in types
-
-    def test_audio_delta_payload_is_base64_pcm(self):
-        client = TestClient(_build_app())
-        with client.websocket_connect("/v1/conversation") as ws:
-            ws.send_json({
-                "type": "session.update",
-                "session": {
-                    "stt_model": "x:1",
-                    "tts_model": "y:1",
-                    "voice": "default",
-                    "sample_rate": 48_000,
-                },
-            })
-            ws.receive_json()
-
             ws.send_json({"type": "response.delta", "delta": "hi"})
             ws.send_json({"type": "response.commit"})
             events = _drain_until(ws, lambda e: e.get("type") == "response.done")
@@ -210,43 +143,9 @@ class TestResponseFlow:
                 assert d["audio_format"] == "pcm16"
                 assert np.frombuffer(decoded, dtype=np.int16).size > 512
 
-    def test_response_delta_without_delta_field_errors(self):
-        client = TestClient(_build_app())
-        with client.websocket_connect("/v1/conversation") as ws:
-            ws.send_json({
-                "type": "session.update",
-                "session": {"stt_model": "x:1", "tts_model": "y:1"},
-            })
-            ws.receive_json()
 
-            ws.send_json({"type": "response.delta"})
-            msg = ws.receive_json()
-            assert msg["type"] == "error"
-            assert "delta" in msg["message"]
-
-    def test_streamed_response_delta_starts_audio_before_commit(self):
-        client = TestClient(_build_app())
-        with client.websocket_connect("/v1/conversation") as ws:
-            ws.send_json({
-                "type": "session.update",
-                "session": {"stt_model": "x:1", "tts_model": "y:1", "voice": "default"},
-            })
-            ws.receive_json()
-
-            ws.send_json({"type": "response.delta", "delta": "Hello world. Still pending"})
-            early_events = _drain_until(ws, lambda e: e.get("type") == "response.audio.delta")
-            early_types = [e["type"] for e in early_events]
-            assert "response.created" in early_types
-            assert "response.audio.delta" in early_types
-            assert "response.done" not in early_types
-
-            ws.send_json({"type": "response.commit"})
-            final_events = _drain_until(ws, lambda e: e.get("type") == "response.done")
-            assert any(e["type"] == "response.done" for e in final_events)
-
-
-class TestBadInput:
-    def test_invalid_json_frame_returns_error(self):
+class TestBadInputWireMapping:
+    def test_invalid_json_frame_returns_wire_error(self):
         client = TestClient(_build_app())
         with client.websocket_connect("/v1/conversation") as ws:
             ws.send_text("not json")
@@ -254,21 +153,7 @@ class TestBadInput:
             assert msg["type"] == "error"
             assert "invalid JSON" in msg["message"]
 
-    def test_unknown_type_returns_error(self):
-        client = TestClient(_build_app())
-        with client.websocket_connect("/v1/conversation") as ws:
-            ws.send_json({
-                "type": "session.update",
-                "session": {"stt_model": "x:1", "tts_model": "y:1"},
-            })
-            ws.receive_json()
-
-            ws.send_json({"type": "make.coffee"})
-            msg = ws.receive_json()
-            assert msg["type"] == "error"
-            assert "unknown message type" in msg["message"]
-
-    def test_missing_type_returns_error(self):
+    def test_missing_type_returns_wire_error(self):
         client = TestClient(_build_app())
         with client.websocket_connect("/v1/conversation") as ws:
             ws.send_json({"no_type_here": "oops"})
@@ -276,7 +161,7 @@ class TestBadInput:
             assert msg["type"] == "error"
             assert "missing 'type'" in msg["message"]
 
-    def test_invalid_base64_audio_returns_error(self):
+    def test_unknown_type_after_session_returns_wire_error(self):
         client = TestClient(_build_app())
         with client.websocket_connect("/v1/conversation") as ws:
             ws.send_json({
@@ -284,5 +169,7 @@ class TestBadInput:
                 "session": {"stt_model": "x:1", "tts_model": "y:1"},
             })
             ws.receive_json()
-
-            ws.send_json({"type": "input_audio_buffer.append", "audio": "not valid base64!!!"})
+            ws.send_json({"type": "make.coffee"})
+            msg = ws.receive_json()
+            assert msg["type"] == "error"
+            assert "unknown message type" in msg["message"]

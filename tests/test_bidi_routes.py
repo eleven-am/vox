@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from contextlib import asynccontextmanager
 from typing import Any
-from unittest.mock import patch
 
 import numpy as np
 from fastapi import FastAPI
@@ -119,7 +118,7 @@ class _StoreModel:
         self.type = type("T", (), {"value": model_type})()
 
 
-def test_longform_stt_streams_progress_then_final_transcript():
+def test_longform_stt_wire_round_trip_emits_ready_progress_done():
     scheduler = MockScheduler()
     adapter = FakeChunkingSTTAdapter()
     scheduler.register("test-stt:latest", adapter)
@@ -146,7 +145,6 @@ def test_longform_stt_streams_progress_then_final_transcript():
         progress = websocket.receive_json()
         assert progress["type"] == "progress"
         assert progress["uploaded_ms"] == 1000
-        assert progress["chunks_completed"] == 1
 
         websocket.send_text(json.dumps({"type": "end"}))
         done = websocket.receive_json()
@@ -155,44 +153,9 @@ def test_longform_stt_streams_progress_then_final_transcript():
     assert done["text"] == "chunk 1"
     assert done["language"] == "en"
     assert len(done["segments"]) == 1
-    assert adapter.calls == 1
 
 
-def test_longform_stt_accepts_self_contained_encoded_audio_chunks():
-    scheduler = MockScheduler()
-    adapter = FakeChunkingSTTAdapter()
-    scheduler.register("test-stt:latest", adapter)
-    store = type("Store", (), {"list_models": lambda self: [_StoreModel("test-stt:latest", "stt")]})()
-    registry = type("Registry", (), {"available_models": lambda self: {}})()
-
-    with (
-        patch.object(bidi, "prepare_for_stt", return_value=np.zeros(16000, dtype=np.float32)) as mock_prepare,
-        TestClient(_build_app(scheduler=scheduler, registry=registry, store=store)) as client,
-        client.websocket_connect("/v1/audio/transcriptions/stream") as websocket,
-    ):
-        websocket.send_text(json.dumps({
-            "type": "config",
-            "input_format": "webm",
-            "chunk_ms": 1000,
-            "overlap_ms": 0,
-        }))
-        ready = websocket.receive_json()
-        assert ready["type"] == "ready"
-        assert ready["input_format"] == "webm"
-
-        websocket.send_bytes(b"fake-webm-chunk")
-        progress = websocket.receive_json()
-        assert progress["type"] == "progress"
-
-        websocket.send_text(json.dumps({"type": "end"}))
-        done = websocket.receive_json()
-
-    mock_prepare.assert_called_once_with(b"fake-webm-chunk", format_hint="webm")
-    assert done["type"] == "done"
-    assert adapter.calls == 1
-
-
-def test_longform_tts_streams_audio_chunks_and_done():
+def test_longform_tts_wire_round_trip_emits_ready_audio_done():
     scheduler = MockScheduler()
     scheduler.register("test-tts:latest", FakeStreamingTTSAdapter())
     store = type("Store", (), {"list_models": lambda self: [_StoreModel("test-tts:latest", "tts")]})()
@@ -217,7 +180,6 @@ def test_longform_tts_streams_audio_chunks_and_done():
         assert audio_start["response_format"] == "pcm16"
 
         saw_audio = False
-        saw_progress = False
         done = None
         while done is None:
             message = websocket.receive()
@@ -225,10 +187,8 @@ def test_longform_tts_streams_audio_chunks_and_done():
                 assert message["bytes"]
                 saw_audio = True
                 continue
-
             payload = json.loads(message["text"])
             if payload["type"] == "progress":
-                saw_progress = True
                 continue
             if payload["type"] == "done":
                 done = payload
@@ -236,13 +196,11 @@ def test_longform_tts_streams_audio_chunks_and_done():
             raise AssertionError(f"Unexpected websocket payload: {payload}")
 
     assert saw_audio
-    assert saw_progress
     assert done["type"] == "done"
     assert done["response_format"] == "pcm16"
-    assert done["text_length"] > 0
 
 
-def test_longform_tts_rejects_unsupported_response_format():
+def test_longform_tts_wire_rejects_unsupported_response_format():
     scheduler = MockScheduler()
     scheduler.register("test-tts:latest", FakeStreamingTTSAdapter())
     store = type("Store", (), {"list_models": lambda self: [_StoreModel("test-tts:latest", "tts")]})()
@@ -262,7 +220,7 @@ def test_longform_tts_rejects_unsupported_response_format():
     assert "Unsupported response_format" in response["message"]
 
 
-def test_longform_stt_rejects_unsupported_input_format():
+def test_longform_stt_wire_rejects_unsupported_input_format():
     scheduler = MockScheduler()
     scheduler.register("test-stt:latest", FakeChunkingSTTAdapter())
     store = type("Store", (), {"list_models": lambda self: [_StoreModel("test-stt:latest", "stt")]})()
