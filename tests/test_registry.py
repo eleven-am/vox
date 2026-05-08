@@ -56,9 +56,7 @@ def _write_manifest(
 
 
 def _make_registry(store: BlobStore, adapters: dict | None = None) -> ModelRegistry:
-    resolver = AdapterResolver(
-        store.root, bundled_adapters_root=store.root / "_no_bundled"
-    )
+    resolver = AdapterResolver(store.root)
     if adapters is not None:
         resolver._adapters = dict(adapters)
     return ModelRegistry(store, resolver=resolver)

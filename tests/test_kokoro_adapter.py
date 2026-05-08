@@ -275,6 +275,35 @@ def test_kokoro_synthesize_uses_bcp47_language_tags(tmp_path: Path):
     ]
 
 
+def test_kokoro_synthesize_normalizes_generic_english(tmp_path: Path):
+    _install_fake_modules()
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    model_dir = tmp_path / "kokoro"
+    (model_dir / "onnx").mkdir(parents=True)
+    (model_dir / "voices").mkdir(parents=True)
+    (model_dir / "onnx" / "model.onnx").write_bytes(b"onnx")
+    np.arange(512, dtype=np.float32).tofile(model_dir / "voices" / "af_heart.bin")
+
+    from vox_kokoro.adapter import KokoroAdapter
+
+    adapter = KokoroAdapter()
+    adapter.load(str(model_dir), "cpu")
+
+    async def _collect():
+        return [
+            chunk
+            async for chunk in adapter.synthesize("Hello world", voice="af_heart", language="en")
+        ]
+
+    chunks = asyncio.run(_collect())
+
+    assert len(chunks) == 2
+    assert adapter._kokoro.stream_calls[0]["lang"] == "en-us"
+
+
 def test_kokoro_patches_float_speed_runtime(tmp_path: Path):
     fake_ort = _install_fake_modules()
     fake_ort.InferenceSession = MagicMock(

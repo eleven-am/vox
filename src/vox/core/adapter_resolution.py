@@ -7,7 +7,6 @@ import logging
 import os
 import subprocess
 import sys
-import tomllib
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -20,9 +19,6 @@ logger = logging.getLogger(__name__)
 
 
 ADAPTERS_DIR = "adapters"
-BUNDLED_ADAPTERS_ENV = "VOX_BUNDLED_ADAPTERS"
-BUNDLED_ADAPTERS_NO_DEPS_ENV = "VOX_BUNDLED_ADAPTERS_NO_DEPS"
-DISABLE_BUNDLED_ADAPTERS_ENV = "VOX_DISABLE_BUNDLED_ADAPTERS"
 ADAPTERS_NO_DEPS_ENV = "VOX_ADAPTERS_NO_DEPS"
 ADAPTER_INSTALL_TIMEOUT_ENV = "VOX_ADAPTER_INSTALL_TIMEOUT_SECONDS"
 DEFAULT_NO_DEPS_ADAPTER_PACKAGES = {
@@ -57,22 +53,16 @@ def _default_install_runner(cmd: list[str], timeout: int) -> subprocess.Complete
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
-def _bundled_adapters_root_default() -> Path:
-    return Path(__file__).resolve().parents[3] / "adapters"
-
-
 class AdapterResolver:
     """Single-responsibility module owning adapter discovery, install, activation, and caching."""
 
     def __init__(
         self,
         vox_home: Path,
-        bundled_adapters_root: Path | None = None,
         *,
         install_runner: InstallRunner | None = None,
     ) -> None:
         self._vox_home = vox_home
-        self._bundled_root = bundled_adapters_root or _bundled_adapters_root_default()
         self._install_runner = install_runner or _default_install_runner
         self._adapters: dict[str, type] = {}
         self._installed_specs: dict[str, AdapterInstallSpec] = {}
@@ -137,48 +127,16 @@ class AdapterResolver:
             return None
         return self._installed_version_at(package_dir, package_name=package_name)
 
-    def bundled_version(self, package_name: str) -> str | None:
-        bundled_source = self._find_bundled_source(package_name)
-        if bundled_source is None:
-            return None
-        pyproject = bundled_source / "pyproject.toml"
-        if not pyproject.is_file():
-            return None
-        try:
-            data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
-        except (OSError, tomllib.TOMLDecodeError) as exc:
-            logger.warning("Failed to parse bundled adapter metadata for '%s': %s", package_name, exc)
-            return None
-        project = data.get("project", {})
-        version = project.get("version")
-        return version if isinstance(version, str) else None
-
     def ensure(self, adapter_name: str, package_name: str) -> bool:
-        bundled_version = self.bundled_version(package_name)
-        installed_version = self.installed_version(package_name)
-        needs_refresh = bundled_version is not None and installed_version != bundled_version
         if adapter_name in self._adapters or adapter_name in self._installed_specs:
-            if not needs_refresh:
-                return True
-            logger.info(
-                "Refreshing adapter '%s' from bundled source (%s -> %s)",
-                package_name,
-                installed_version or "missing",
-                bundled_version,
-            )
-            self._adapters.pop(adapter_name, None)
+            return True
 
         self._sanitize_sys_path()
         self._refresh_installed_specs()
-        installed_version = self.installed_version(package_name)
-        needs_refresh = bundled_version is not None and installed_version != bundled_version
         if adapter_name in self._adapters or adapter_name in self._installed_specs:
-            if not needs_refresh:
-                return True
-            self._adapters.pop(adapter_name, None)
+            return True
 
-        action = "refreshing" if needs_refresh else "installing"
-        logger.info("Adapter '%s' %s %s...", adapter_name, action, package_name)
+        logger.info("Adapter '%s' installing %s from package registry...", adapter_name, package_name)
         if not self._install_package(package_name):
             return False
 
@@ -222,22 +180,6 @@ class AdapterResolver:
     def _adapter_install_dir(self, package_name: str) -> Path:
         return self._vox_home / ADAPTERS_DIR / package_name
 
-    def _find_bundled_source(self, package_name: str) -> Path | None:
-        if os.environ.get(DISABLE_BUNDLED_ADAPTERS_ENV, "").lower() in {"1", "true", "yes", "on"}:
-            return None
-
-        candidates: list[Path] = []
-        bundled_root = os.environ.get(BUNDLED_ADAPTERS_ENV)
-        if bundled_root:
-            candidates.append(Path(bundled_root))
-        candidates.append(self._bundled_root)
-
-        for base_dir in candidates:
-            candidate = base_dir / package_name
-            if (candidate / "pyproject.toml").is_file():
-                return candidate
-        return None
-
     def _installed_version_at(
         self,
         package_dir: Path,
@@ -257,9 +199,7 @@ class AdapterResolver:
     def _install_package(self, package_name: str) -> bool:
         target_dir = self._adapter_install_dir(package_name)
         target_dir.mkdir(parents=True, exist_ok=True)
-        package_spec = package_name
 
-        bundled_source = self._find_bundled_source(package_name)
         install_timeout = int(os.environ.get(ADAPTER_INSTALL_TIMEOUT_ENV, "900"))
         install_no_deps = package_name in DEFAULT_NO_DEPS_ADAPTER_PACKAGES
         install_no_deps = install_no_deps or os.environ.get(ADAPTERS_NO_DEPS_ENV, "").lower() in {
@@ -268,15 +208,6 @@ class AdapterResolver:
             "yes",
             "on",
         }
-        if bundled_source is not None:
-            package_spec = str(bundled_source)
-            install_no_deps = install_no_deps or os.environ.get(BUNDLED_ADAPTERS_NO_DEPS_ENV, "").lower() in {
-                "1",
-                "true",
-                "yes",
-                "on",
-            }
-            logger.info("Installing bundled adapter package from %s", bundled_source)
 
         installers = [
             ["uv", "pip", "install", "--python", sys.executable],
@@ -289,7 +220,7 @@ class AdapterResolver:
                     cmd.extend(["--refresh-package", package_name])
                 if install_no_deps:
                     cmd.append("--no-deps")
-                cmd.append(package_spec)
+                cmd.append(package_name)
                 result = self._install_runner(cmd, install_timeout)
                 if result.returncode == 0:
                     logger.info("Installed adapter package: %s", package_name)

@@ -30,6 +30,15 @@ _PHONEMIZER_LOGGER = logging.getLogger("phonemizer")
 _PHONEMIZER_LOGGER.setLevel(logging.ERROR)
 
 
+def _normalize_language(language: str | None, voice_id: str) -> str:
+    if language is None:
+        return voice_lang_tag(voice_id)
+    normalized = language.strip().lower()
+    if normalized in {"", "en", "eng", "english"}:
+        return voice_lang_tag(voice_id)
+    return normalized
+
+
 def _select_audio_output(session: InferenceSession, outputs: list[Any]) -> np.ndarray:
     output_metas = list(session.get_outputs())
     preferred_tokens = ("audio", "wave", "wav")
@@ -309,7 +318,7 @@ class KokoroAdapter(TTSAdapter):
         voice_id = voice or "af_heart"
         speed = max(0.5, min(speed, 2.0))
 
-        lang = language or _voice_lang(voice_id)
+        lang = _normalize_language(language, voice_id)
 
         async for audio_chunk, _token in self._kokoro.create_stream(
             text, voice_id, lang=lang, speed=speed, trim=False
