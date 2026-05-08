@@ -21,7 +21,12 @@ from vox.operations.conversation import (
 )
 from vox.operations.errors import OperationError, SessionAlreadyConfiguredError
 from vox.server.routes.conversation import _event_to_wire, _send_error, parse_session_update
-from vox.server.rtc_ice import ice_servers_from_env
+from vox.server.rtc_ice import (
+    ice_servers_from_env,
+    patch_aioice_turn_error_code_parser,
+    rewrite_private_relay_candidates,
+    server_ice_servers_from_env,
+)
 from vox.server.rtc_media import RtcAudioOutputTrack, pump_input_audio
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 
@@ -63,7 +68,8 @@ async def create_rtc_answer(request: Request, session_id: str) -> dict:
         registry.close(record.session_id)
         raise HTTPException(status_code=404, detail="RTC session not found")
 
-    pc = RTCPeerConnection(configuration=_rtc_configuration(ice_servers_from_env()))
+    patch_aioice_turn_error_code_parser()
+    pc = RTCPeerConnection(configuration=_rtc_configuration(server_ice_servers_from_env()))
     record.rtc_peer = pc
     if record.audio_output is None:
         record.audio_output = asyncio.Queue()
@@ -103,7 +109,8 @@ async def create_rtc_answer(request: Request, session_id: str) -> dict:
     ))
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
-    for event in _candidate_events_from_sdp(pc.localDescription.sdp):
+    answer_sdp = rewrite_private_relay_candidates(pc.localDescription.sdp)
+    for event in _candidate_events_from_sdp(answer_sdp):
         await _emit_media_event(record, event)
     await _emit_media_event(record, {"type": "rtc.ice_candidate", "candidate": None})
 
@@ -112,7 +119,7 @@ async def create_rtc_answer(request: Request, session_id: str) -> dict:
         "media_token": media_token,
         "events_url": f"/v1/rtc/sessions/{session_id}/events?token={media_token}",
         "type": pc.localDescription.type,
-        "sdp": pc.localDescription.sdp,
+        "sdp": answer_sdp,
     }
 
 

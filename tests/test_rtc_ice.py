@@ -4,7 +4,14 @@ import base64
 import hashlib
 import hmac
 
-from vox.server.rtc_ice import ice_servers_from_env
+from aioice import stun
+
+from vox.server.rtc_ice import (
+    ice_servers_from_env,
+    patch_aioice_turn_error_code_parser,
+    rewrite_private_relay_candidates,
+    server_ice_servers_from_env,
+)
 
 
 def test_ice_servers_empty_without_env(monkeypatch):
@@ -62,3 +69,68 @@ def test_turn_rest_credentials_are_generated_from_shared_secret(monkeypatch):
         "username": username,
         "credential": expected,
     }]
+
+
+def test_server_ice_uses_browser_config_when_not_overridden(monkeypatch):
+    monkeypatch.delenv("VOX_RTC_SERVER_STUN_URLS", raising=False)
+    monkeypatch.delenv("VOX_RTC_SERVER_TURN_URLS", raising=False)
+    monkeypatch.setenv("VOX_RTC_STUN_URLS", "stun:turn.maix.ovh:3478")
+    monkeypatch.setenv("VOX_RTC_TURN_URLS", "turn:turn.maix.ovh:3478?transport=udp")
+    monkeypatch.setenv("VOX_RTC_TURN_USERNAME", "user")
+    monkeypatch.setenv("VOX_RTC_TURN_CREDENTIAL", "pass")
+
+    assert server_ice_servers_from_env(now=1000.0) == [
+        {"urls": ["stun:turn.maix.ovh:3478"]},
+        {
+            "urls": ["turn:turn.maix.ovh:3478?transport=udp"],
+            "username": "user",
+            "credential": "pass",
+        },
+    ]
+
+
+def test_server_ice_can_use_internal_turn_url_with_same_secret(monkeypatch):
+    monkeypatch.delenv("VOX_RTC_TURN_USERNAME", raising=False)
+    monkeypatch.delenv("VOX_RTC_TURN_CREDENTIAL", raising=False)
+    monkeypatch.setenv("VOX_RTC_STUN_URLS", "stun:turn.maix.ovh:3478")
+    monkeypatch.setenv("VOX_RTC_TURN_URLS", "turn:turn.maix.ovh:3478?transport=udp")
+    monkeypatch.setenv("VOX_RTC_SERVER_TURN_URLS", "turn:coturn.coturn.svc.cluster.local:3478?transport=udp")
+    monkeypatch.setenv("VOX_RTC_TURN_SECRET", "shared-secret")
+    monkeypatch.setenv("VOX_RTC_TURN_CREDENTIAL_TTL_SECONDS", "60")
+
+    servers = server_ice_servers_from_env(now=1000.0)
+
+    username = "1060"
+    expected = base64.b64encode(
+        hmac.new(b"shared-secret", username.encode("utf-8"), hashlib.sha1).digest()
+    ).decode("ascii")
+    assert servers == [{
+        "urls": ["turn:coturn.coturn.svc.cluster.local:3478?transport=udp"],
+        "username": username,
+        "credential": expected,
+    }]
+
+
+def test_aioice_error_code_patch_accepts_binary_reason_bytes():
+    patch_aioice_turn_error_code_parser()
+
+    parsed = stun.ATTRIBUTES_BY_TYPE[0x0009][3](b"\x00\x00\x04\x01\xff\xff")
+
+    assert parsed == (401, "\ufffd\ufffd")
+
+
+def test_private_relay_candidates_are_rewritten_to_public_turn_addr(monkeypatch):
+    monkeypatch.setenv("VOX_RTC_TURN_URLS", "turn:turn.maix.ovh:3478?transport=udp")
+    monkeypatch.setattr("vox.server.rtc_ice._resolve_public_addr", lambda host: "176.149.222.82")
+    sdp = "\r\n".join([
+        "v=0",
+        "a=candidate:host 1 udp 2130706431 10.244.0.205 42599 typ host",
+        "a=candidate:relay 1 udp 16777215 10.244.0.130 49159 typ relay raddr 10.244.0.205 rport 47668",
+        "",
+    ])
+
+    rewritten = rewrite_private_relay_candidates(sdp)
+
+    assert "10.244.0.130 49159 typ relay" not in rewritten
+    assert "176.149.222.82 49159 typ relay" in rewritten
+    assert "10.244.0.205 42599 typ host" in rewritten

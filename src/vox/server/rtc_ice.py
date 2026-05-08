@@ -3,8 +3,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import os
+import socket
 import time
+from struct import unpack
+from urllib.parse import urlparse
+
+from aioice import stun
 
 
 def ice_servers_from_env(*, now: float | None = None) -> list[dict]:
@@ -14,14 +20,64 @@ def ice_servers_from_env(*, now: float | None = None) -> list[dict]:
     coturn `use-auth-secret`, set VOX_RTC_TURN_SECRET and Vox will generate a
     short-lived username/password pair per session.
     """
+    return _ice_servers_from_env(
+        now=now,
+        stun_env="VOX_RTC_STUN_URLS",
+        turn_env="VOX_RTC_TURN_URLS",
+    )
+
+
+def server_ice_servers_from_env(*, now: float | None = None) -> list[dict]:
+    """Build the ICE servers used by Vox's server-side aiortc peer.
+
+    Browsers need public ICE URLs, but a Vox pod may need to reach coturn by
+    its in-cluster service name. When VOX_RTC_SERVER_TURN_URLS is set, use it
+    for the server peer while reusing the existing TURN credentials.
+    """
+    if not os.environ.get("VOX_RTC_SERVER_TURN_URLS") and not os.environ.get("VOX_RTC_SERVER_STUN_URLS"):
+        return ice_servers_from_env(now=now)
+    return _ice_servers_from_env(
+        now=now,
+        stun_env="VOX_RTC_SERVER_STUN_URLS",
+        turn_env="VOX_RTC_SERVER_TURN_URLS",
+    )
+
+
+def patch_aioice_turn_error_code_parser() -> None:
+    """Allow aioice to handle coturn ERROR-CODE reason bytes defensively."""
+    attr = stun.ATTRIBUTES_BY_TYPE.get(0x0009)
+    if attr and attr[3] is _unpack_error_code_compat:
+        return
+    stun.ATTRIBUTES_BY_TYPE[0x0009] = (
+        0x0009,
+        "ERROR-CODE",
+        stun.pack_error_code,
+        _unpack_error_code_compat,
+    )
+
+
+def rewrite_private_relay_candidates(sdp: str) -> str:
+    public_host = _public_turn_host_from_env()
+    if not public_host:
+        return sdp
+
+    public_addr = _resolve_public_addr(public_host)
+    lines = [
+        _rewrite_candidate_line(line, public_addr)
+        for line in sdp.splitlines()
+    ]
+    return "\r\n".join(lines) + ("\r\n" if sdp.endswith(("\r\n", "\n")) else "")
+
+
+def _ice_servers_from_env(*, now: float | None, stun_env: str, turn_env: str) -> list[dict]:
     now = time.time() if now is None else now
     servers: list[dict] = []
 
-    stun_urls = _csv_env("VOX_RTC_STUN_URLS")
+    stun_urls = _csv_env(stun_env)
     if stun_urls:
         servers.append({"urls": stun_urls})
 
-    turn_urls = _csv_env("VOX_RTC_TURN_URLS")
+    turn_urls = _csv_env(turn_env)
     if not turn_urls:
         return servers
 
@@ -54,6 +110,63 @@ def ice_servers_from_env(*, now: float | None = None) -> list[dict]:
         })
 
     return servers
+
+
+def _unpack_error_code_compat(data: bytes) -> tuple[int, str]:
+    if len(data) < 4:
+        raise ValueError("STUN error code is less than 4 bytes")
+    _reserved, code_high, code_low = unpack("!HBB", data[0:4])
+    return code_high * 100 + code_low, data[4:].decode("utf8", errors="replace")
+
+
+def _public_turn_host_from_env() -> str | None:
+    turn_urls = _csv_env("VOX_RTC_TURN_URLS")
+    for url in turn_urls:
+        host = _turn_uri_host(url)
+        if host:
+            return host
+    return None
+
+
+def _turn_uri_host(url: str) -> str | None:
+    parsed = urlparse(url)
+    if parsed.scheme not in {"turn", "turns"}:
+        return None
+    if parsed.hostname:
+        return parsed.hostname
+    host_port = parsed.path.split("?", 1)[0]
+    if not host_port:
+        return None
+    if host_port.startswith("[") and "]" in host_port:
+        return host_port[1:host_port.index("]")]
+    return host_port.rsplit(":", 1)[0]
+
+
+def _resolve_public_addr(host: str) -> str:
+    try:
+        return socket.getaddrinfo(host, None, family=socket.AF_INET, type=socket.SOCK_DGRAM)[0][4][0]
+    except OSError:
+        return host
+
+
+def _rewrite_candidate_line(line: str, public_addr: str) -> str:
+    if not line.startswith("a=candidate:") or " typ relay" not in line:
+        return line
+
+    parts = line.split()
+    if len(parts) < 8 or not _is_private_addr(parts[4]):
+        return line
+
+    parts[4] = public_addr
+    return " ".join(parts)
+
+
+def _is_private_addr(value: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return addr.is_private or addr.is_loopback or addr.is_link_local
 
 
 def _csv_env(name: str) -> list[str]:
