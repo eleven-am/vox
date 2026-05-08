@@ -15,11 +15,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from tests.fakes import FakeScheduler
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+from vox.operations.conversation import ConvAudioClearEvent
+from vox.server.routes.conversation import _event_to_wire
 from vox.server.routes.conversation import router as conversation_router
-
-from tests.fakes import FakeScheduler
 
 
 class ScriptedTTS(TTSAdapter):
@@ -112,6 +113,12 @@ class TestSessionUpdateWireMapping:
 
 
 class TestResponseFlowWire:
+    def test_audio_clear_event_maps_to_wire_message(self):
+        assert _event_to_wire(ConvAudioClearEvent()) == {
+            "type": "response.audio.clear",
+            "response_id": "",
+        }
+
     def test_streaming_response_audio_delta_is_base64_pcm(self):
         client = TestClient(_build_app())
         with client.websocket_connect("/v1/conversation") as ws:
@@ -134,6 +141,8 @@ class TestResponseFlowWire:
                 assert len(decoded) > 0
                 assert d["sample_rate"] == 48_000
                 assert d["audio_format"] == "pcm16"
+                assert d["response_id"]
+                assert d["sequence"] > 0
                 assert np.frombuffer(decoded, dtype=np.int16).size > 512
 
 

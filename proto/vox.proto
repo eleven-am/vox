@@ -324,16 +324,31 @@ message ConverseServerMessage {
     ConversationStateChanged state_changed = 9;
     ConversationError error = 10;
     ConversationResponseCommitted response_committed = 11;
+    ConversationAudioClear audio_clear = 12;
+    ConversationInterruptionDetected interruption_detected = 13;
+    ConversationInterruptionFalsePositive interruption_false_positive = 14;
+    ConversationTurnEouPredicted turn_eou_predicted = 15;
   }
 }
 
-message ConversationResponseCommitted {}
+message ConversationResponseCommitted {
+  string response_id = 1;
+}
 
 message ConversationTurnPolicy {
   bool allow_interrupt_while_speaking = 1;
   uint32 min_interrupt_duration_ms = 2;
   uint32 max_endpointing_delay_ms = 3;
   uint32 stable_speaking_min_ms = 4;
+  uint32 false_interruption_timeout_ms = 5;
+  uint32 min_interrupt_words = 6;
+  bool partial_interrupts = 7;
+  bool dynamic_endpointing = 8;
+  uint32 min_endpointing_delay_ms = 9;
+  uint32 speaking_interrupt_min_duration_ms = 10;
+  uint32 speaking_interrupt_min_words = 11;
+  uint32 self_echo_min_words = 12;
+  float self_echo_min_overlap = 13;
 }
 
 message ConversationSessionUpdate {
@@ -343,6 +358,8 @@ message ConversationSessionUpdate {
   string language = 4;
   uint32 sample_rate = 5;
   ConversationTurnPolicy policy = 6;
+  string vad_backend = 7;
+  string turn_detector = 8;
 }
 
 message ConversationAudioAppend {
@@ -381,16 +398,51 @@ message ConversationTranscriptDone {
   repeated WordTimestamp words = 8;
 }
 
-message ConversationResponseCreated {}
+message ConversationResponseCreated {
+  string response_id = 1;
+}
 
 message ConversationAudioDelta {
   bytes audio = 1;
   uint32 sample_rate = 2;
+  string response_id = 3;
+  uint32 sequence = 4;
 }
 
-message ConversationResponseDone {}
+message ConversationAudioClear {
+  string response_id = 1;
+}
 
-message ConversationResponseCancelled {}
+message ConversationInterruptionDetected {
+  string response_id = 1;
+  uint32 vad_active_ms = 2;
+  string partial_transcript = 3;
+}
+
+message ConversationInterruptionFalsePositive {
+  string response_id = 1;
+  uint32 vad_active_ms = 2;
+  string partial_transcript = 3;
+}
+
+message ConversationTurnEouPredicted {
+  float probability = 1;
+  float threshold = 2;
+  string decision = 3;
+  string action = 4;
+  uint32 delay_ms = 5;
+  string turn_detector = 6;
+  uint32 start_ms = 7;
+  uint32 end_ms = 8;
+}
+
+message ConversationResponseDone {
+  string response_id = 1;
+}
+
+message ConversationResponseCancelled {
+  string response_id = 1;
+}
 
 message ConversationStateChanged {
   string state = 1;

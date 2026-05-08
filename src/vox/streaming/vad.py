@@ -3,14 +3,15 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass, field
+from typing import Protocol
 
 import numpy as np
 from numpy.typing import NDArray
 
 from vox.streaming.buffer import AudioRingBuffer
 from vox.streaming.types import (
-    TARGET_SAMPLE_RATE,
     MS_PER_SAMPLE,
+    TARGET_SAMPLE_RATE,
     SpeechStarted,
     SpeechStopped,
 )
@@ -23,6 +24,7 @@ MAX_BUFFER_SAMPLES = (15_000 + 3_000 + 1_000) * MS_PER_SAMPLE
 
 @dataclass
 class VADConfig:
+    backend: str = "silero"
     start_threshold: float = 0.6
     continue_threshold: float = 0.4
     min_silence_duration_ms: int = 1000
@@ -44,6 +46,17 @@ class SpeechSegment:
     audio: NDArray[np.float32]
     start_ms: int
     end_ms: int
+
+
+class VADBackend(Protocol):
+    def get_speech_timestamps(
+        self,
+        audio: NDArray[np.float32],
+        threshold: float = 0.5,
+        min_silence_duration_ms: int = 500,
+        speech_pad_ms: int = 100,
+        min_speech_duration_ms: int = 250,
+    ) -> list[dict[str, int]]: ...
 
 
 class SileroVAD:
@@ -103,12 +116,108 @@ class SileroVAD:
         )
 
 
+class TenVAD:
+    """Optional TEN VAD backend.
+
+    The TEN Python binding is intentionally loaded lazily so Vox can keep
+    Silero as the default without forcing an experimental dependency on every
+    installation. TEN operates on fixed 16 kHz frames and returns frame-level
+    speech probabilities, which this adapter converts into Silero-style sample
+    timestamps for the existing endpointing code.
+    """
+
+    def __init__(self, hop_size: int = 160) -> None:
+        self._hop_size = hop_size
+        self._instances: dict[float, object] = {}
+
+    def _instance_for(self, threshold: float) -> object:
+        threshold = float(threshold)
+        if threshold not in self._instances:
+            try:
+                from ten_vad import TenVad as TenVadBinding
+            except ImportError as exc:
+                raise RuntimeError(
+                    "TEN VAD backend requires the optional 'ten-vad' package. "
+                    "Install it with the vox 'ten-vad' extra or pip install ten-vad."
+                ) from exc
+            self._instances[threshold] = TenVadBinding(self._hop_size, threshold)
+        return self._instances[threshold]
+
+    def get_speech_timestamps(
+        self,
+        audio: NDArray[np.float32],
+        threshold: float = 0.5,
+        min_silence_duration_ms: int = 500,
+        speech_pad_ms: int = 100,
+        min_speech_duration_ms: int = 250,
+    ) -> list[dict[str, int]]:
+        if audio.size == 0:
+            return []
+
+        vad = self._instance_for(threshold)
+        pcm16 = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
+        speech_frames: list[tuple[int, int]] = []
+
+        for start in range(0, len(pcm16), self._hop_size):
+            end = min(start + self._hop_size, len(pcm16))
+            frame = pcm16[start:end]
+            if len(frame) < self._hop_size:
+                frame = np.pad(frame, (0, self._hop_size - len(frame)))
+
+            probability, flag = vad.process(frame)
+            is_speech = int(flag) == 1 or float(probability) >= threshold
+            if is_speech:
+                speech_frames.append((start, end))
+
+        if not speech_frames:
+            return []
+
+        min_silence_samples = int(min_silence_duration_ms * MS_PER_SAMPLE)
+        pad_samples = int(speech_pad_ms * MS_PER_SAMPLE)
+        min_speech_samples = int(min_speech_duration_ms * MS_PER_SAMPLE)
+        timestamps: list[dict[str, int]] = []
+        current_start, current_end = speech_frames[0]
+
+        for start, end in speech_frames[1:]:
+            if start - current_end <= min_silence_samples:
+                current_end = end
+                continue
+
+            timestamps.append({
+                "start": max(0, current_start - pad_samples),
+                "end": min(len(pcm16), current_end + pad_samples),
+            })
+            current_start, current_end = start, end
+
+        timestamps.append({
+            "start": max(0, current_start - pad_samples),
+            "end": min(len(pcm16), current_end + pad_samples),
+        })
+        return [
+            ts for ts in timestamps
+            if ts["end"] - ts["start"] >= min_speech_samples
+        ]
+
+
+def create_vad_backend(name: str) -> VADBackend:
+    normalized = (name or "silero").strip().lower().replace("_", "-")
+    if normalized == "silero":
+        return SileroVAD()
+    if normalized in {"ten", "ten-vad", "tenvad"}:
+        return TenVAD()
+    raise ValueError(f"unknown VAD backend: {name}")
+
+
 @dataclass
 class VADProcessor:
     config: VADConfig = field(default_factory=VADConfig)
     state: VADState = field(default_factory=VADState)
     buffer: AudioRingBuffer = field(default_factory=lambda: AudioRingBuffer(MAX_BUFFER_SAMPLES))
-    _vad_model: SileroVAD = field(default_factory=SileroVAD)
+    _vad_model: VADBackend | None = None
+
+    def __post_init__(self) -> None:
+        if self._vad_model is None:
+            self._vad_model = create_vad_backend(self.config.backend)
 
     def _duration_ms(self) -> int:
         return len(self.buffer) // MS_PER_SAMPLE
@@ -168,7 +277,10 @@ class VADProcessor:
             if len(overflow_audio) > 0:
                 self.buffer.append(overflow_audio)
             if segment.end_ms - segment.start_ms < self.config.min_audio_duration_ms:
-                logger.debug("Segment too short after max_utterance cap (%dms), skipping", segment.end_ms - segment.start_ms)
+                logger.debug(
+                    "Segment too short after max_utterance cap (%dms), skipping",
+                    segment.end_ms - segment.start_ms,
+                )
                 return SpeechStopped(timestamp_ms=segment.end_ms), None
             return SpeechStopped(timestamp_ms=self.state.audio_end_ms), segment
 

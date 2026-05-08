@@ -16,11 +16,15 @@ from vox.core.types import (
     VoiceInfo,
 )
 from vox.operations.conversation import (
+    ConvAudioClearEvent,
     ConvAudioDeltaEvent,
     ConvDoneEvent,
     ConvErrorEvent,
     ConversationOrchestrator,
+    ConvInterruptionDetectedEvent,
     ConvSessionCreatedEvent,
+    ConvTurnEouPredictedEvent,
+    _wire_event_to_session_event,
     parse_session_update,
     serialize_session_config,
 )
@@ -90,12 +94,20 @@ def test_parse_session_update_accepts_turn_policy_overrides():
             "turn_policy": {
                 "min_interrupt_duration_ms": 150,
                 "stable_speaking_min_ms": 100,
+                "speaking_interrupt_min_duration_ms": 650,
+                "speaking_interrupt_min_words": 3,
+                "self_echo_min_words": 4,
+                "self_echo_min_overlap": 0.8,
             },
         },
     })
     assert config.policy is not None
     assert config.policy.min_interrupt_duration_ms == 150
     assert config.policy.stable_speaking_min_ms == 100
+    assert config.policy.speaking_interrupt_min_duration_ms == 650
+    assert config.policy.speaking_interrupt_min_words == 3
+    assert config.policy.self_echo_min_words == 4
+    assert config.policy.self_echo_min_overlap == pytest.approx(0.8)
 
 
 def test_serialize_session_config_round_trip_includes_policy_and_audio_format():
@@ -108,6 +120,50 @@ def test_serialize_session_config_round_trip_includes_policy_and_audio_format():
     assert payload["output_audio_format"] == "pcm16"
     assert payload["output_sample_rate"] == 48_000
     assert payload["turn_policy"]["min_interrupt_duration_ms"] > 0
+    assert payload["turn_policy"]["speaking_interrupt_min_duration_ms"] == 500
+    assert payload["turn_policy"]["speaking_interrupt_min_words"] == 2
+    assert payload["turn_policy"]["self_echo_min_words"] == 3
+    assert payload["turn_policy"]["self_echo_min_overlap"] == pytest.approx(0.7)
+
+
+def test_audio_clear_wire_event_maps_to_operation_event():
+    event = _wire_event_to_session_event({"type": "response.audio.clear", "response_id": "resp_1"})
+    assert isinstance(event, ConvAudioClearEvent)
+    assert event.response_id == "resp_1"
+
+
+def test_interruption_detected_wire_event_maps_to_operation_event():
+    event = _wire_event_to_session_event({
+        "type": "interruption.detected",
+        "response_id": "resp_1",
+        "vad_active_ms": 320,
+        "partial_transcript": "wait",
+    })
+    assert isinstance(event, ConvInterruptionDetectedEvent)
+    assert event.response_id == "resp_1"
+
+
+def test_turn_eou_predicted_wire_event_maps_to_operation_event():
+    event = _wire_event_to_session_event({
+        "type": "turn.eou.predicted",
+        "probability": 0.82,
+        "threshold": 0.5,
+        "decision": "complete",
+        "action": "commit",
+        "delay_ms": 0,
+        "turn_detector": "livekit",
+        "start_ms": 10,
+        "end_ms": 420,
+    })
+
+    assert isinstance(event, ConvTurnEouPredictedEvent)
+    assert event.probability == pytest.approx(0.82)
+    assert event.decision == "complete"
+    assert event.action == "commit"
+    assert event.turn_detector == "livekit"
+    assert event.delay_ms == 0
+    assert event.start_ms == 10
+    assert event.end_ms == 420
 
 
 @pytest.mark.asyncio
@@ -163,6 +219,8 @@ async def test_streaming_response_emits_audio_and_done_events():
     audio_deltas = [e for e in events if isinstance(e, ConvAudioDeltaEvent)]
     assert audio_deltas
     assert audio_deltas[0].audio_format == "pcm16"
+    assert audio_deltas[0].response_id
+    assert audio_deltas[0].sequence > 0
     await orchestrator.close()
 
 

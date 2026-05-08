@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vox RTC Browser Client</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    body {
+      margin: 0;
+      padding: 24px;
+      background: Canvas;
+      color: CanvasText;
+    }
+    main {
+      max-width: 920px;
+      margin: 0 auto;
+      display: grid;
+      gap: 16px;
+    }
+    section {
+      border: 1px solid color-mix(in srgb, CanvasText 20%, transparent);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    label {
+      display: grid;
+      gap: 6px;
+      font-size: 14px;
+    }
+    input, textarea, button {
+      font: inherit;
+    }
+    input, textarea {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px 10px;
+      border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
+      border-radius: 6px;
+      background: Canvas;
+      color: CanvasText;
+    }
+    textarea {
+      min-height: 80px;
+      resize: vertical;
+    }
+    button {
+      min-height: 36px;
+      padding: 8px 12px;
+      border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
+      border-radius: 6px;
+      background: ButtonFace;
+      color: ButtonText;
+      cursor: pointer;
+    }
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 12px;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    pre {
+      min-height: 240px;
+      max-height: 420px;
+      overflow: auto;
+      margin: 0;
+      padding: 12px;
+      border-radius: 6px;
+      background: color-mix(in srgb, CanvasText 8%, Canvas);
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Vox RTC Browser Client</h1>
+
+    <section class="grid">
+      <label>
+        Vox HTTP base
+        <input id="httpBase" value="http://localhost:11435">
+      </label>
+      <label>
+        STT model
+        <input id="sttModel" value="fake-stt:1">
+      </label>
+      <label>
+        TTS model
+        <input id="ttsModel" value="fake-tts:1">
+      </label>
+      <label>
+        Voice
+        <input id="voice" value="default">
+      </label>
+    </section>
+
+    <section>
+      <div class="actions">
+        <button id="connectBtn">Connect</button>
+        <button id="disconnectBtn" disabled>Disconnect</button>
+      </div>
+      <audio id="assistantAudio" autoplay playsinline controls></audio>
+    </section>
+
+    <section>
+      <label>
+        Assistant text
+        <textarea id="assistantText">Hello. This is Vox speaking over WebRTC.</textarea>
+      </label>
+      <div class="actions" style="margin-top: 12px;">
+        <button id="sendTextBtn" disabled>Send response</button>
+        <button id="cancelBtn" disabled>Cancel response</button>
+      </div>
+    </section>
+
+    <section>
+      <pre id="log"></pre>
+    </section>
+  </main>
+
+  <script>
+    const httpBaseInput = document.querySelector("#httpBase");
+    const sttModelInput = document.querySelector("#sttModel");
+    const ttsModelInput = document.querySelector("#ttsModel");
+    const voiceInput = document.querySelector("#voice");
+    const connectBtn = document.querySelector("#connectBtn");
+    const disconnectBtn = document.querySelector("#disconnectBtn");
+    const sendTextBtn = document.querySelector("#sendTextBtn");
+    const cancelBtn = document.querySelector("#cancelBtn");
+    const assistantText = document.querySelector("#assistantText");
+    const assistantAudio = document.querySelector("#assistantAudio");
+    const logEl = document.querySelector("#log");
+
+    let pc = null;
+    let controlWs = null;
+    let eventSource = null;
+    let mediaToken = null;
+    let sessionId = null;
+    let micStream = null;
+    let pendingCandidates = [];
+
+    function log(type, payload) {
+      const line = `[${new Date().toISOString()}] ${type} ${JSON.stringify(payload)}`;
+      logEl.textContent += `${line}\n`;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function wsBase(httpBase) {
+      const url = new URL(httpBase);
+      url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+      return url.toString().replace(/\/$/, "");
+    }
+
+    async function postJson(path, body, token = null) {
+      const headers = { "content-type": "application/json" };
+      if (token) headers.authorization = `Bearer ${token}`;
+      const response = await fetch(`${httpBaseInput.value.replace(/\/$/, "")}${path}`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body)
+      });
+      if (!response.ok) {
+        throw new Error(`${response.status} ${await response.text()}`);
+      }
+      return response.json();
+    }
+
+    async function flushCandidates() {
+      if (!mediaToken) return;
+      const candidates = pendingCandidates;
+      pendingCandidates = [];
+      for (const candidate of candidates) {
+        await postJson(`/v1/rtc/sessions/${sessionId}/candidates`, { candidate }, mediaToken);
+      }
+    }
+
+    async function connect() {
+      connectBtn.disabled = true;
+      const session = await postJson("/v1/rtc/sessions", {});
+      sessionId = session.session_id;
+      log("session", session);
+
+      pc = new RTCPeerConnection({ iceServers: session.ice_servers });
+      pc.ontrack = (event) => {
+        assistantAudio.srcObject = event.streams[0];
+        log("track", { kind: event.track.kind });
+      };
+      pc.onicecandidate = async (event) => {
+        const candidate = event.candidate ? event.candidate.toJSON() : null;
+        if (!mediaToken) {
+          pendingCandidates.push(candidate);
+          return;
+        }
+        await postJson(`/v1/rtc/sessions/${sessionId}/candidates`, { candidate }, mediaToken);
+      };
+      pc.onconnectionstatechange = () => log("pc.connectionState", { state: pc.connectionState });
+      pc.oniceconnectionstatechange = () => log("pc.iceConnectionState", { state: pc.iceConnectionState });
+
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+      for (const track of micStream.getAudioTracks()) {
+        pc.addTrack(track, micStream);
+      }
+
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      const answer = await postJson(
+        `/v1/rtc/sessions/${sessionId}/offer`,
+        { type: pc.localDescription.type, sdp: pc.localDescription.sdp },
+        session.client_token
+      );
+      mediaToken = answer.media_token;
+      await pc.setRemoteDescription({ type: answer.type, sdp: answer.sdp });
+      await flushCandidates();
+      log("answer", { session_id: answer.session_id, type: answer.type, events_url: answer.events_url });
+
+      eventSource = new EventSource(`${httpBaseInput.value.replace(/\/$/, "")}${answer.events_url}`);
+      eventSource.onmessage = (event) => log("sse.message", JSON.parse(event.data));
+      eventSource.addEventListener("rtc.ice_candidate", async (event) => {
+        const payload = JSON.parse(event.data);
+        log("sse.ice", payload);
+        await pc.addIceCandidate(payload.candidate);
+      });
+      eventSource.addEventListener("rtc.connection_state", (event) => log("sse.connection", JSON.parse(event.data)));
+      eventSource.addEventListener("rtc.ice_connection_state", (event) => log("sse.ice_connection", JSON.parse(event.data)));
+      eventSource.addEventListener("close", () => log("sse.close", {}));
+
+      controlWs = new WebSocket(`${wsBase(httpBaseInput.value)}/v1/rtc/sessions/${sessionId}/control`);
+      controlWs.onmessage = (event) => log("control", JSON.parse(event.data));
+      controlWs.onopen = () => {
+        controlWs.send(JSON.stringify({
+          type: "session.update",
+          session: {
+            stt_model: sttModelInput.value,
+            tts_model: ttsModelInput.value,
+            voice: voiceInput.value,
+            vad_backend: "silero",
+            turn_detector: "livekit",
+            turn_policy: {
+              allow_interrupt_while_speaking: true,
+              partial_interrupts: true,
+              dynamic_endpointing: true,
+              speaking_interrupt_min_duration_ms: 500,
+              speaking_interrupt_min_words: 2
+            }
+          }
+        }));
+      };
+      controlWs.onclose = (event) => log("control.close", { code: event.code, reason: event.reason });
+
+      disconnectBtn.disabled = false;
+      sendTextBtn.disabled = false;
+      cancelBtn.disabled = false;
+    }
+
+    async function disconnect() {
+      sendTextBtn.disabled = true;
+      cancelBtn.disabled = true;
+      disconnectBtn.disabled = true;
+      if (eventSource) eventSource.close();
+      if (controlWs && controlWs.readyState === WebSocket.OPEN) controlWs.close();
+      if (pc) await pc.close();
+      if (micStream) micStream.getTracks().forEach((track) => track.stop());
+      eventSource = null;
+      controlWs = null;
+      pc = null;
+      micStream = null;
+      mediaToken = null;
+      sessionId = null;
+      pendingCandidates = [];
+      connectBtn.disabled = false;
+    }
+
+    connectBtn.addEventListener("click", () => connect().catch((error) => {
+      log("error", { message: error.message });
+      connectBtn.disabled = false;
+    }));
+    disconnectBtn.addEventListener("click", () => disconnect().catch((error) => log("error", { message: error.message })));
+    sendTextBtn.addEventListener("click", () => {
+      if (!controlWs || controlWs.readyState !== WebSocket.OPEN) return;
+      controlWs.send(JSON.stringify({ type: "response.start" }));
+      controlWs.send(JSON.stringify({ type: "response.delta", delta: assistantText.value }));
+      controlWs.send(JSON.stringify({ type: "response.commit" }));
+    });
+    cancelBtn.addEventListener("click", () => {
+      if (controlWs && controlWs.readyState === WebSocket.OPEN) {
+        controlWs.send(JSON.stringify({ type: "response.cancel" }));
+      }
+    });
+  </script>
+</body>
+</html>

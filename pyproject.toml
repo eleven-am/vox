@@ -24,10 +24,25 @@ dependencies = [
     "spacy>=3.7.0",
     "lameenc>=1.8.1",
     "opuslib>=3.0.1",
+    "aiortc>=1.14.0",
 ]
 
 [project.scripts]
 vox = "vox.cli:cli"
+
+[project.optional-dependencies]
+ten-vad = [
+    "ten-vad>=1.0.6",
+]
+ten-turn = [
+    "torch>=2.0.0",
+    "transformers>=4.45.0",
+]
+turn-research = [
+    "ten-vad>=1.0.6",
+    "torch>=2.0.0",
+    "transformers>=4.45.0",
+]
 
 [build-system]
 requires = ["hatchling"]

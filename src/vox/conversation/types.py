@@ -96,6 +96,15 @@ class TurnPolicy:
     min_interrupt_duration_ms: int = 250
     max_endpointing_delay_ms: int = 3000
     stable_speaking_min_ms: int = 150
+    false_interruption_timeout_ms: int = 2000
+    min_interrupt_words: int = 0
+    partial_interrupts: bool = True
+    dynamic_endpointing: bool = True
+    min_endpointing_delay_ms: int = 400
+    speaking_interrupt_min_duration_ms: int = 500
+    speaking_interrupt_min_words: int = 2
+    self_echo_min_words: int = 3
+    self_echo_min_overlap: float = 0.7
 
 
 

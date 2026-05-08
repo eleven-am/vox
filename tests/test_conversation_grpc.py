@@ -11,12 +11,12 @@ import asyncio
 import numpy as np
 import pytest
 
+from tests.fakes import FakeScheduler
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
 from vox.grpc import vox_pb2
-from vox.grpc.conversation_servicer import ConversationServicer, _wire_event_to_pb
-
-from tests.fakes import FakeScheduler
+from vox.grpc.conversation_servicer import ConversationServicer, _pb_to_config, _wire_event_to_pb
+from vox.operations.conversation import ConvAudioClearEvent
 
 
 class ScriptedTTS(TTSAdapter):
@@ -103,6 +103,57 @@ async def test_session_update_proto_maps_to_session_created_pb():
     assert any(m.WhichOneof("msg") == "session_created" for m in out)
 
 
+def test_session_update_proto_preserves_backend_selection():
+    config = _pb_to_config(vox_pb2.ConversationSessionUpdate(
+        stt_model="x:1",
+        tts_model="y:1",
+        vad_backend="ten-vad",
+        turn_detector="ten-turn",
+    ))
+
+    assert config.vad_backend == "ten-vad"
+    assert config.turn_detector == "ten-turn"
+
+
+def test_session_update_proto_preserves_speaking_interrupt_policy():
+    config = _pb_to_config(vox_pb2.ConversationSessionUpdate(
+        stt_model="x:1",
+        tts_model="y:1",
+        policy=vox_pb2.ConversationTurnPolicy(
+            speaking_interrupt_min_duration_ms=650,
+            speaking_interrupt_min_words=3,
+            self_echo_min_words=4,
+            self_echo_min_overlap=0.8,
+        ),
+    ))
+
+    assert config.policy is not None
+    assert config.policy.speaking_interrupt_min_duration_ms == 650
+    assert config.policy.speaking_interrupt_min_words == 3
+    assert config.policy.self_echo_min_words == 4
+    assert config.policy.self_echo_min_overlap == pytest.approx(0.8)
+
+
+def test_turn_eou_predicted_event_maps_to_proto():
+    msg = _wire_event_to_pb({
+        "type": "turn.eou.predicted",
+        "probability": 0.25,
+        "threshold": 0.5,
+        "decision": "incomplete",
+        "action": "wait",
+        "delay_ms": 800,
+        "turn_detector": "livekit",
+        "start_ms": 20,
+        "end_ms": 120,
+    })
+
+    assert msg is not None
+    assert msg.WhichOneof("msg") == "turn_eou_predicted"
+    assert msg.turn_eou_predicted.probability == pytest.approx(0.25)
+    assert msg.turn_eou_predicted.action == "wait"
+    assert msg.turn_eou_predicted.delay_ms == 800
+
+
 @pytest.mark.asyncio
 async def test_missing_stt_model_proto_maps_to_error_pb():
     servicer = ConversationServicer(
@@ -146,6 +197,8 @@ async def test_audio_delta_event_decodes_to_pcm_bytes_in_proto():
     delta = next(m for m in out if m.WhichOneof("msg") == "audio_delta")
     assert len(delta.audio_delta.audio) > 0
     assert delta.audio_delta.sample_rate == 48_000
+    assert delta.audio_delta.response_id
+    assert delta.audio_delta.sequence > 0
 
 
 @pytest.mark.asyncio
@@ -187,3 +240,17 @@ def test_wire_event_to_pb_coerces_missing_numeric_fields_to_zero():
     assert transcript.transcript_done.end_ms == 0
     assert transcript.transcript_done.words[0].start_ms == 0
     assert transcript.transcript_done.words[0].end_ms == 0
+
+
+def test_audio_clear_event_maps_to_proto_message():
+    msg = _wire_event_to_pb({"type": "response.audio.clear", "response_id": "resp_1"})
+    assert msg is not None
+    assert msg.WhichOneof("msg") == "audio_clear"
+    assert msg.audio_clear.response_id == "resp_1"
+
+    from vox.grpc.conversation_servicer import _event_to_pb
+
+    direct = _event_to_pb(ConvAudioClearEvent(response_id="resp_2"))
+    assert direct is not None
+    assert direct.WhichOneof("msg") == "audio_clear"
+    assert direct.audio_clear.response_id == "resp_2"

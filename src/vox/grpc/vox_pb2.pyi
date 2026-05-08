@@ -466,7 +466,7 @@ class ConverseClientMessage(_message.Message):
     def __init__(self, session_update: _Optional[_Union[ConversationSessionUpdate, _Mapping]] = ..., audio_append: _Optional[_Union[ConversationAudioAppend, _Mapping]] = ..., response_cancel: _Optional[_Union[ConversationResponseCancel, _Mapping]] = ..., response_start: _Optional[_Union[ConversationResponseStart, _Mapping]] = ..., response_delta: _Optional[_Union[ConversationResponseDelta, _Mapping]] = ..., response_commit: _Optional[_Union[ConversationResponseCommit, _Mapping]] = ...) -> None: ...
 
 class ConverseServerMessage(_message.Message):
-    __slots__ = ("session_created", "speech_started", "speech_stopped", "transcript_done", "response_created", "audio_delta", "response_done", "response_cancelled", "state_changed", "error", "response_committed")
+    __slots__ = ("session_created", "speech_started", "speech_stopped", "transcript_done", "response_created", "audio_delta", "response_done", "response_cancelled", "state_changed", "error", "response_committed", "audio_clear", "interruption_detected", "interruption_false_positive", "turn_eou_predicted")
     SESSION_CREATED_FIELD_NUMBER: _ClassVar[int]
     SPEECH_STARTED_FIELD_NUMBER: _ClassVar[int]
     SPEECH_STOPPED_FIELD_NUMBER: _ClassVar[int]
@@ -478,6 +478,10 @@ class ConverseServerMessage(_message.Message):
     STATE_CHANGED_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
     RESPONSE_COMMITTED_FIELD_NUMBER: _ClassVar[int]
+    AUDIO_CLEAR_FIELD_NUMBER: _ClassVar[int]
+    INTERRUPTION_DETECTED_FIELD_NUMBER: _ClassVar[int]
+    INTERRUPTION_FALSE_POSITIVE_FIELD_NUMBER: _ClassVar[int]
+    TURN_EOU_PREDICTED_FIELD_NUMBER: _ClassVar[int]
     session_created: ConversationSessionCreated
     speech_started: ConversationSpeechStarted
     speech_stopped: ConversationSpeechStopped
@@ -489,39 +493,67 @@ class ConverseServerMessage(_message.Message):
     state_changed: ConversationStateChanged
     error: ConversationError
     response_committed: ConversationResponseCommitted
-    def __init__(self, session_created: _Optional[_Union[ConversationSessionCreated, _Mapping]] = ..., speech_started: _Optional[_Union[ConversationSpeechStarted, _Mapping]] = ..., speech_stopped: _Optional[_Union[ConversationSpeechStopped, _Mapping]] = ..., transcript_done: _Optional[_Union[ConversationTranscriptDone, _Mapping]] = ..., response_created: _Optional[_Union[ConversationResponseCreated, _Mapping]] = ..., audio_delta: _Optional[_Union[ConversationAudioDelta, _Mapping]] = ..., response_done: _Optional[_Union[ConversationResponseDone, _Mapping]] = ..., response_cancelled: _Optional[_Union[ConversationResponseCancelled, _Mapping]] = ..., state_changed: _Optional[_Union[ConversationStateChanged, _Mapping]] = ..., error: _Optional[_Union[ConversationError, _Mapping]] = ..., response_committed: _Optional[_Union[ConversationResponseCommitted, _Mapping]] = ...) -> None: ...
+    audio_clear: ConversationAudioClear
+    interruption_detected: ConversationInterruptionDetected
+    interruption_false_positive: ConversationInterruptionFalsePositive
+    turn_eou_predicted: ConversationTurnEouPredicted
+    def __init__(self, session_created: _Optional[_Union[ConversationSessionCreated, _Mapping]] = ..., speech_started: _Optional[_Union[ConversationSpeechStarted, _Mapping]] = ..., speech_stopped: _Optional[_Union[ConversationSpeechStopped, _Mapping]] = ..., transcript_done: _Optional[_Union[ConversationTranscriptDone, _Mapping]] = ..., response_created: _Optional[_Union[ConversationResponseCreated, _Mapping]] = ..., audio_delta: _Optional[_Union[ConversationAudioDelta, _Mapping]] = ..., response_done: _Optional[_Union[ConversationResponseDone, _Mapping]] = ..., response_cancelled: _Optional[_Union[ConversationResponseCancelled, _Mapping]] = ..., state_changed: _Optional[_Union[ConversationStateChanged, _Mapping]] = ..., error: _Optional[_Union[ConversationError, _Mapping]] = ..., response_committed: _Optional[_Union[ConversationResponseCommitted, _Mapping]] = ..., audio_clear: _Optional[_Union[ConversationAudioClear, _Mapping]] = ..., interruption_detected: _Optional[_Union[ConversationInterruptionDetected, _Mapping]] = ..., interruption_false_positive: _Optional[_Union[ConversationInterruptionFalsePositive, _Mapping]] = ..., turn_eou_predicted: _Optional[_Union[ConversationTurnEouPredicted, _Mapping]] = ...) -> None: ...
 
 class ConversationResponseCommitted(_message.Message):
-    __slots__ = ()
-    def __init__(self) -> None: ...
+    __slots__ = ("response_id",)
+    RESPONSE_ID_FIELD_NUMBER: _ClassVar[int]
+    response_id: str
+    def __init__(self, response_id: _Optional[str] = ...) -> None: ...
 
 class ConversationTurnPolicy(_message.Message):
-    __slots__ = ("allow_interrupt_while_speaking", "min_interrupt_duration_ms", "max_endpointing_delay_ms", "stable_speaking_min_ms")
+    __slots__ = ("allow_interrupt_while_speaking", "min_interrupt_duration_ms", "max_endpointing_delay_ms", "stable_speaking_min_ms", "false_interruption_timeout_ms", "min_interrupt_words", "partial_interrupts", "dynamic_endpointing", "min_endpointing_delay_ms", "speaking_interrupt_min_duration_ms", "speaking_interrupt_min_words", "self_echo_min_words", "self_echo_min_overlap")
     ALLOW_INTERRUPT_WHILE_SPEAKING_FIELD_NUMBER: _ClassVar[int]
     MIN_INTERRUPT_DURATION_MS_FIELD_NUMBER: _ClassVar[int]
     MAX_ENDPOINTING_DELAY_MS_FIELD_NUMBER: _ClassVar[int]
     STABLE_SPEAKING_MIN_MS_FIELD_NUMBER: _ClassVar[int]
+    FALSE_INTERRUPTION_TIMEOUT_MS_FIELD_NUMBER: _ClassVar[int]
+    MIN_INTERRUPT_WORDS_FIELD_NUMBER: _ClassVar[int]
+    PARTIAL_INTERRUPTS_FIELD_NUMBER: _ClassVar[int]
+    DYNAMIC_ENDPOINTING_FIELD_NUMBER: _ClassVar[int]
+    MIN_ENDPOINTING_DELAY_MS_FIELD_NUMBER: _ClassVar[int]
+    SPEAKING_INTERRUPT_MIN_DURATION_MS_FIELD_NUMBER: _ClassVar[int]
+    SPEAKING_INTERRUPT_MIN_WORDS_FIELD_NUMBER: _ClassVar[int]
+    SELF_ECHO_MIN_WORDS_FIELD_NUMBER: _ClassVar[int]
+    SELF_ECHO_MIN_OVERLAP_FIELD_NUMBER: _ClassVar[int]
     allow_interrupt_while_speaking: bool
     min_interrupt_duration_ms: int
     max_endpointing_delay_ms: int
     stable_speaking_min_ms: int
-    def __init__(self, allow_interrupt_while_speaking: bool = ..., min_interrupt_duration_ms: _Optional[int] = ..., max_endpointing_delay_ms: _Optional[int] = ..., stable_speaking_min_ms: _Optional[int] = ...) -> None: ...
+    false_interruption_timeout_ms: int
+    min_interrupt_words: int
+    partial_interrupts: bool
+    dynamic_endpointing: bool
+    min_endpointing_delay_ms: int
+    speaking_interrupt_min_duration_ms: int
+    speaking_interrupt_min_words: int
+    self_echo_min_words: int
+    self_echo_min_overlap: float
+    def __init__(self, allow_interrupt_while_speaking: bool = ..., min_interrupt_duration_ms: _Optional[int] = ..., max_endpointing_delay_ms: _Optional[int] = ..., stable_speaking_min_ms: _Optional[int] = ..., false_interruption_timeout_ms: _Optional[int] = ..., min_interrupt_words: _Optional[int] = ..., partial_interrupts: bool = ..., dynamic_endpointing: bool = ..., min_endpointing_delay_ms: _Optional[int] = ..., speaking_interrupt_min_duration_ms: _Optional[int] = ..., speaking_interrupt_min_words: _Optional[int] = ..., self_echo_min_words: _Optional[int] = ..., self_echo_min_overlap: _Optional[float] = ...) -> None: ...
 
 class ConversationSessionUpdate(_message.Message):
-    __slots__ = ("stt_model", "tts_model", "voice", "language", "sample_rate", "policy")
+    __slots__ = ("stt_model", "tts_model", "voice", "language", "sample_rate", "policy", "vad_backend", "turn_detector")
     STT_MODEL_FIELD_NUMBER: _ClassVar[int]
     TTS_MODEL_FIELD_NUMBER: _ClassVar[int]
     VOICE_FIELD_NUMBER: _ClassVar[int]
     LANGUAGE_FIELD_NUMBER: _ClassVar[int]
     SAMPLE_RATE_FIELD_NUMBER: _ClassVar[int]
     POLICY_FIELD_NUMBER: _ClassVar[int]
+    VAD_BACKEND_FIELD_NUMBER: _ClassVar[int]
+    TURN_DETECTOR_FIELD_NUMBER: _ClassVar[int]
     stt_model: str
     tts_model: str
     voice: str
     language: str
     sample_rate: int
     policy: ConversationTurnPolicy
-    def __init__(self, stt_model: _Optional[str] = ..., tts_model: _Optional[str] = ..., voice: _Optional[str] = ..., language: _Optional[str] = ..., sample_rate: _Optional[int] = ..., policy: _Optional[_Union[ConversationTurnPolicy, _Mapping]] = ...) -> None: ...
+    vad_backend: str
+    turn_detector: str
+    def __init__(self, stt_model: _Optional[str] = ..., tts_model: _Optional[str] = ..., voice: _Optional[str] = ..., language: _Optional[str] = ..., sample_rate: _Optional[int] = ..., policy: _Optional[_Union[ConversationTurnPolicy, _Mapping]] = ..., vad_backend: _Optional[str] = ..., turn_detector: _Optional[str] = ...) -> None: ...
 
 class ConversationAudioAppend(_message.Message):
     __slots__ = ("pcm16", "sample_rate")
@@ -586,24 +618,80 @@ class ConversationTranscriptDone(_message.Message):
     def __init__(self, transcript: _Optional[str] = ..., language: _Optional[str] = ..., start_ms: _Optional[int] = ..., end_ms: _Optional[int] = ..., eou_probability: _Optional[float] = ..., entities: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ..., topics: _Optional[_Iterable[str]] = ..., words: _Optional[_Iterable[_Union[WordTimestamp, _Mapping]]] = ...) -> None: ...
 
 class ConversationResponseCreated(_message.Message):
-    __slots__ = ()
-    def __init__(self) -> None: ...
+    __slots__ = ("response_id",)
+    RESPONSE_ID_FIELD_NUMBER: _ClassVar[int]
+    response_id: str
+    def __init__(self, response_id: _Optional[str] = ...) -> None: ...
 
 class ConversationAudioDelta(_message.Message):
-    __slots__ = ("audio", "sample_rate")
+    __slots__ = ("audio", "sample_rate", "response_id", "sequence")
     AUDIO_FIELD_NUMBER: _ClassVar[int]
     SAMPLE_RATE_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_ID_FIELD_NUMBER: _ClassVar[int]
+    SEQUENCE_FIELD_NUMBER: _ClassVar[int]
     audio: bytes
     sample_rate: int
-    def __init__(self, audio: _Optional[bytes] = ..., sample_rate: _Optional[int] = ...) -> None: ...
+    response_id: str
+    sequence: int
+    def __init__(self, audio: _Optional[bytes] = ..., sample_rate: _Optional[int] = ..., response_id: _Optional[str] = ..., sequence: _Optional[int] = ...) -> None: ...
+
+class ConversationAudioClear(_message.Message):
+    __slots__ = ("response_id",)
+    RESPONSE_ID_FIELD_NUMBER: _ClassVar[int]
+    response_id: str
+    def __init__(self, response_id: _Optional[str] = ...) -> None: ...
+
+class ConversationInterruptionDetected(_message.Message):
+    __slots__ = ("response_id", "vad_active_ms", "partial_transcript")
+    RESPONSE_ID_FIELD_NUMBER: _ClassVar[int]
+    VAD_ACTIVE_MS_FIELD_NUMBER: _ClassVar[int]
+    PARTIAL_TRANSCRIPT_FIELD_NUMBER: _ClassVar[int]
+    response_id: str
+    vad_active_ms: int
+    partial_transcript: str
+    def __init__(self, response_id: _Optional[str] = ..., vad_active_ms: _Optional[int] = ..., partial_transcript: _Optional[str] = ...) -> None: ...
+
+class ConversationInterruptionFalsePositive(_message.Message):
+    __slots__ = ("response_id", "vad_active_ms", "partial_transcript")
+    RESPONSE_ID_FIELD_NUMBER: _ClassVar[int]
+    VAD_ACTIVE_MS_FIELD_NUMBER: _ClassVar[int]
+    PARTIAL_TRANSCRIPT_FIELD_NUMBER: _ClassVar[int]
+    response_id: str
+    vad_active_ms: int
+    partial_transcript: str
+    def __init__(self, response_id: _Optional[str] = ..., vad_active_ms: _Optional[int] = ..., partial_transcript: _Optional[str] = ...) -> None: ...
+
+class ConversationTurnEouPredicted(_message.Message):
+    __slots__ = ("probability", "threshold", "decision", "action", "delay_ms", "turn_detector", "start_ms", "end_ms")
+    PROBABILITY_FIELD_NUMBER: _ClassVar[int]
+    THRESHOLD_FIELD_NUMBER: _ClassVar[int]
+    DECISION_FIELD_NUMBER: _ClassVar[int]
+    ACTION_FIELD_NUMBER: _ClassVar[int]
+    DELAY_MS_FIELD_NUMBER: _ClassVar[int]
+    TURN_DETECTOR_FIELD_NUMBER: _ClassVar[int]
+    START_MS_FIELD_NUMBER: _ClassVar[int]
+    END_MS_FIELD_NUMBER: _ClassVar[int]
+    probability: float
+    threshold: float
+    decision: str
+    action: str
+    delay_ms: int
+    turn_detector: str
+    start_ms: int
+    end_ms: int
+    def __init__(self, probability: _Optional[float] = ..., threshold: _Optional[float] = ..., decision: _Optional[str] = ..., action: _Optional[str] = ..., delay_ms: _Optional[int] = ..., turn_detector: _Optional[str] = ..., start_ms: _Optional[int] = ..., end_ms: _Optional[int] = ...) -> None: ...
 
 class ConversationResponseDone(_message.Message):
-    __slots__ = ()
-    def __init__(self) -> None: ...
+    __slots__ = ("response_id",)
+    RESPONSE_ID_FIELD_NUMBER: _ClassVar[int]
+    response_id: str
+    def __init__(self, response_id: _Optional[str] = ...) -> None: ...
 
 class ConversationResponseCancelled(_message.Message):
-    __slots__ = ()
-    def __init__(self) -> None: ...
+    __slots__ = ("response_id",)
+    RESPONSE_ID_FIELD_NUMBER: _ClassVar[int]
+    response_id: str
+    def __init__(self, response_id: _Optional[str] = ...) -> None: ...
 
 class ConversationStateChanged(_message.Message):
     __slots__ = ("state", "previous_state")

@@ -16,7 +16,8 @@ import asyncio
 import numpy as np
 import pytest
 
-from vox.conversation import TurnPolicy, TurnState
+from tests.fakes import FakeScheduler
+from vox.conversation import TurnPolicy
 from vox.conversation.session import (
     RESPONSE_STREAM_QUEUE_MAX,
     WIRE_ERROR,
@@ -27,8 +28,6 @@ from vox.conversation.session import (
 )
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
-
-from tests.fakes import FakeScheduler
 
 MockScheduler = FakeScheduler
 

@@ -1,4 +1,3 @@
-
 """Client and server classes corresponding to protobuf-defined services."""
 import grpc
 import warnings
@@ -79,7 +78,6 @@ def add_HealthServiceServicer_to_server(servicer, server):
             'vox.HealthService', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
     server.add_registered_method_handlers('vox.HealthService', rpc_method_handlers)
-
 
 
 class HealthService(object):
@@ -226,7 +224,6 @@ def add_ModelServiceServicer_to_server(servicer, server):
             'vox.ModelService', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
     server.add_registered_method_handlers('vox.ModelService', rpc_method_handlers)
-
 
 
 class ModelService(object):
@@ -397,7 +394,6 @@ def add_TranscriptionServiceServicer_to_server(servicer, server):
     server.add_registered_method_handlers('vox.TranscriptionService', rpc_method_handlers)
 
 
-
 class TranscriptionService(object):
     """Missing associated documentation comment in .proto file."""
 
@@ -542,7 +538,6 @@ def add_SynthesisServiceServicer_to_server(servicer, server):
             'vox.SynthesisService', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
     server.add_registered_method_handlers('vox.SynthesisService', rpc_method_handlers)
-
 
 
 class SynthesisService(object):
@@ -697,7 +692,6 @@ def add_StreamingServiceServicer_to_server(servicer, server):
     server.add_registered_method_handlers('vox.StreamingService', rpc_method_handlers)
 
 
-
 class StreamingService(object):
     """Missing associated documentation comment in .proto file."""
 
@@ -781,7 +775,6 @@ def add_ConversationServiceServicer_to_server(servicer, server):
             'vox.ConversationService', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
     server.add_registered_method_handlers('vox.ConversationService', rpc_method_handlers)
-
 
 
 class ConversationService(object):

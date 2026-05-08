@@ -10,6 +10,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests.fakes import FakeScheduler
 from vox.audio.codecs import encode_wav
 from vox.core.adapter import STTAdapter, TTSAdapter
 from vox.core.store import BlobStore, Manifest, ManifestLayer
@@ -26,8 +27,6 @@ from vox.core.types import (
 )
 from vox.server.routes import get_default_model
 from vox.server.routes.transcribe import _mime_to_format
-
-from tests.fakes import FakeScheduler
 
 
 def _wav_bytes(dur_s: float = 1.0, sr: int = 16_000) -> bytes:
@@ -446,3 +445,21 @@ class TestCreateApp:
         assert hasattr(app.state, "registry")
         assert hasattr(app.state, "store")
         assert app.title == "Vox"
+
+    def test_create_app_can_enable_browser_cors(self, tmp_path, monkeypatch):
+        from vox.server.app import create_app
+
+        monkeypatch.setenv("VOX_CORS_ORIGINS", "http://localhost:8000")
+        client = TestClient(create_app(vox_home=tmp_path))
+
+        resp = client.options(
+            "/v1/rtc/sessions",
+            headers={
+                "origin": "http://localhost:8000",
+                "access-control-request-method": "POST",
+                "access-control-request-headers": "authorization,content-type",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.headers["access-control-allow-origin"] == "http://localhost:8000"

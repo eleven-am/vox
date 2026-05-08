@@ -10,9 +10,11 @@ These tests don't use real STT/TTS models. Instead, we:
 from __future__ import annotations
 
 import asyncio
+
 import numpy as np
 import pytest
 
+from tests.fakes import FakeScheduler
 from vox.conversation import (
     HeuristicInterruptClassifier,
     TimerKey,
@@ -22,22 +24,22 @@ from vox.conversation import (
     TurnState,
 )
 from vox.conversation.session import (
+    WIRE_AUDIO_CLEAR,
     WIRE_AUDIO_DELTA,
     WIRE_ERROR,
+    WIRE_INTERRUPTION_DETECTED,
+    WIRE_INTERRUPTION_FALSE_POSITIVE,
     WIRE_RESPONSE_CANCELLED,
     WIRE_RESPONSE_CREATED,
     WIRE_RESPONSE_DONE,
     WIRE_STATE_CHANGED,
+    WIRE_TURN_EOU_PREDICTED,
     ConversationConfig,
     ConversationSession,
 )
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
 from vox.streaming.types import SpeechStopped, StreamTranscript
-
-from tests.fakes import FakeScheduler
-
-
 
 
 class ScriptedTTSAdapter(TTSAdapter):
@@ -127,6 +129,7 @@ def _build_session(
     *,
     adapter: TTSAdapter | None = None,
     policy: TurnPolicy | None = None,
+    audio_preprocessor=None,
 ) -> tuple[ConversationSession, EventCollector, ScriptedTTSAdapter]:
     tts = adapter or ScriptedTTSAdapter()
     scheduler = MockScheduler(tts)
@@ -139,6 +142,7 @@ def _build_session(
         language="en",
         policy=policy or TurnPolicy(min_interrupt_duration_ms=50, max_endpointing_delay_ms=200),
         interrupt_classifier=_AcceptAllClassifier(),
+        audio_preprocessor=audio_preprocessor,
     )
     session = ConversationSession(scheduler=scheduler, config=config, on_event=collector)
     return session, collector, tts
@@ -165,12 +169,65 @@ class TestLifecycle:
         session, _, _ = _build_session()
         await session.start()
         await session.close()
+
+    @pytest.mark.asyncio
+    async def test_final_transcript_emits_eou_prediction_event(self):
+        session, collector, _ = _build_session()
+        await session.start()
+
+        await session._forward_stream_event(StreamTranscript(
+            text="that is all",
+            eou_probability=0.9,
+            start_ms=100,
+            end_ms=600,
+        ))
+        await _drain_events(session)
+
+        events = collector.by_type(WIRE_TURN_EOU_PREDICTED)
+        assert events
+        assert events[-1]["probability"] == pytest.approx(0.9)
+        assert events[-1]["threshold"] == pytest.approx(0.5)
+        assert events[-1]["decision"] == "complete"
+        assert events[-1]["action"] == "commit"
+        assert events[-1]["turn_detector"] == "livekit"
+        assert events[-1]["start_ms"] == 100
+        assert events[-1]["end_ms"] == 600
+
+        await session.close()
         assert session._runner.done()
 
     @pytest.mark.asyncio
     async def test_state_starts_idle(self):
         session, _, _ = _build_session()
         assert session.state == TurnState.IDLE
+
+    @pytest.mark.asyncio
+    async def test_ingest_audio_applies_preprocessor_before_pipeline(self):
+        seen: dict[str, object] = {}
+
+        def preprocessor(audio: np.ndarray, sample_rate: int) -> np.ndarray:
+            seen["pre_sample_rate"] = sample_rate
+            seen["pre_audio"] = audio.copy()
+            return np.zeros_like(audio)
+
+        session, _, _ = _build_session(audio_preprocessor=preprocessor)
+
+        async def fake_process_audio(audio: np.ndarray):
+            seen["pipeline_audio"] = audio.copy()
+            if False:
+                yield None
+
+        session._pipeline.process_audio = fake_process_audio  # type: ignore[method-assign]
+
+        await session.start()
+        pcm = (np.ones(160, dtype=np.int16) * 1000).tobytes()
+        await session.ingest_audio(pcm, 16_000)
+
+        assert seen["pre_sample_rate"] == 16_000
+        assert np.any(seen["pre_audio"])
+        assert np.all(seen["pipeline_audio"] == 0)
+
+        await session.close()
 
 
 class TestTTSHappyPath:
@@ -194,6 +251,26 @@ class TestTTSHappyPath:
         assert len(collector.by_type(WIRE_AUDIO_DELTA)) >= 1
         assert collector.by_type(WIRE_RESPONSE_DONE)
         assert session.state == TurnState.IDLE
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_audio_deltas_include_response_id_and_sequence(self):
+        session, collector, _ = _build_session()
+        await session.start()
+
+        await session.submit_response_text("hello there")
+        await asyncio.sleep(0.1)
+        await _drain_events(session)
+
+        created = collector.by_type(WIRE_RESPONSE_CREATED)
+        deltas = collector.by_type(WIRE_AUDIO_DELTA)
+        assert created
+        assert deltas
+        response_id = created[0]["response_id"]
+        assert response_id
+        assert {d["response_id"] for d in deltas} == {response_id}
+        assert [d["sequence"] for d in deltas] == sorted(d["sequence"] for d in deltas)
 
         await session.close()
 
@@ -266,6 +343,7 @@ class TestBargeIn:
         assert session.state == TurnState.SPEAKING
 
 
+        session._latest_partial = StreamTranscript(text="I need", is_partial=True)
         await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
         await asyncio.sleep(0.01)
         assert session.state == TurnState.PAUSED
@@ -275,6 +353,8 @@ class TestBargeIn:
         await _drain_events(session)
 
         assert session.state == TurnState.INTERRUPTED
+        assert collector.by_type(WIRE_INTERRUPTION_DETECTED)
+        assert collector.by_type(WIRE_AUDIO_CLEAR)
         assert collector.by_type(WIRE_RESPONSE_CANCELLED)
         assert tts.cancelled_at_chunk is not None
 
@@ -307,6 +387,8 @@ class TestBargeIn:
 
         assert tts.cancelled_at_chunk is None
 
+        assert collector.by_type(WIRE_INTERRUPTION_FALSE_POSITIVE) == []
+        assert not collector.by_type(WIRE_AUDIO_CLEAR)
         assert not collector.by_type(WIRE_RESPONSE_CANCELLED)
 
         await session.close()
@@ -352,7 +434,36 @@ class TestBargeIn:
 
         assert session.state == TurnState.INTERRUPTED
         assert tts.cancelled_at_chunk is not None
+        assert collector.by_type(WIRE_INTERRUPTION_DETECTED)
+        assert collector.by_type(WIRE_AUDIO_CLEAR)
         assert collector.by_type(WIRE_RESPONSE_CANCELLED)
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_interrupted_response_only_adds_heard_text_to_eou_history(self):
+        tts = ScriptedTTSAdapter(chunks=1, inter_chunk_delay=0.01)
+        session, _, _ = _build_session(
+            adapter=tts,
+            policy=TurnPolicy(min_interrupt_duration_ms=50, max_endpointing_delay_ms=200),
+        )
+        await session.start()
+
+        await session.append_response_text("Hello world. Second sentence is not heard yet")
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if tts.texts == ["Hello world."]:
+                break
+        assert tts.texts == ["Hello world."]
+
+        session._latest_partial = StreamTranscript(text="I need", is_partial=True)
+        await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
+        await asyncio.sleep(0.1)
+        await _drain_events(session)
+
+        history = session._pipeline._conversation_history
+        assistant_turns = [turn.content for turn in history if turn.role == "assistant"]
+        assert assistant_turns == ["Hello world."]
 
         await session.close()
 
@@ -387,7 +498,7 @@ class TestBargeIn:
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_classifier_without_keywords_disables_partials(self):
+    async def test_partial_interrupt_policy_enables_partials_without_keywords(self):
         tts = ScriptedTTSAdapter()
         scheduler = MockScheduler(tts)
         collector = EventCollector()
@@ -396,6 +507,24 @@ class TestBargeIn:
             tts_model="fake-tts:latest",
             voice="default",
             language="en",
+            interrupt_classifier=HeuristicInterruptClassifier(),
+        )
+        session = ConversationSession(scheduler=scheduler, config=config, on_event=collector)
+        assert session._wants_partials is True
+        assert session._partial_service is not None
+        assert session._speech_session is not None
+
+    @pytest.mark.asyncio
+    async def test_partial_interrupt_policy_can_disable_partials_without_keywords(self):
+        tts = ScriptedTTSAdapter()
+        scheduler = MockScheduler(tts)
+        collector = EventCollector()
+        config = ConversationConfig(
+            stt_model="fake-stt:latest",
+            tts_model="fake-tts:latest",
+            voice="default",
+            language="en",
+            policy=TurnPolicy(partial_interrupts=False),
             interrupt_classifier=HeuristicInterruptClassifier(),
         )
         session = ConversationSession(scheduler=scheduler, config=config, on_event=collector)
@@ -581,6 +710,21 @@ class TestEndpointingFallback:
         assert session.state == TurnState.THINKING
 
         await session.close()
+
+    @pytest.mark.asyncio
+    async def test_dynamic_endpointing_uses_recent_pause_history(self):
+        session, _, _ = _build_session(
+            policy=TurnPolicy(
+                max_endpointing_delay_ms=3000,
+                min_endpointing_delay_ms=400,
+                dynamic_endpointing=True,
+            ),
+        )
+        session._recent_endpoint_pauses_ms = [800, 1000, 1200]
+        assert session._transcript_commit_delay_ms() == 1250
+
+        session._recent_endpoint_pauses_ms = [100]
+        assert session._transcript_commit_delay_ms() == 400
 
 
 class TestAssistantTurnInEouHistory:

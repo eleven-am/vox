@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from vox.conversation import HeuristicInterruptClassifier, InterruptClassifier
-from vox.conversation.interrupt import DEFAULT_INTERRUPT_KEYWORDS_BY_LANG
+from vox.conversation.interrupt import DEFAULT_INTERRUPT_KEYWORDS_BY_LANG, looks_like_self_echo
 
 
 class TestConfirmWindowMs:
@@ -230,6 +230,29 @@ class TestKeywordOverride:
         assert await c.is_real_interrupt(None, None, None, 500, 16_000) is True
 
 
+class TestSelfEchoHeuristic:
+    def test_contiguous_assistant_phrase_matches(self):
+        assert looks_like_self_echo(
+            "the appointment is tomorrow",
+            "Sure. The appointment is tomorrow at noon.",
+        )
+
+    def test_high_word_overlap_matches(self):
+        assert looks_like_self_echo(
+            "appointment tomorrow noon",
+            "Sure. The appointment is tomorrow at noon.",
+        )
+
+    def test_short_transcript_does_not_match(self):
+        assert not looks_like_self_echo("sure", "Sure. The appointment is tomorrow at noon.")
+
+    def test_unrelated_user_interrupt_does_not_match(self):
+        assert not looks_like_self_echo(
+            "wait I need to change that",
+            "Sure. The appointment is tomorrow at noon.",
+        )
+
+
 class TestLanguageDefaults:
     def test_language_loads_default_keywords(self):
         c = HeuristicInterruptClassifier(language="en")
@@ -257,6 +280,22 @@ class TestLanguageDefaults:
         for lang in ("en", "fr", "es", "de", "it", "pt", "nl", "ar", "hi"):
             assert lang in DEFAULT_INTERRUPT_KEYWORDS_BY_LANG
             assert len(DEFAULT_INTERRUPT_KEYWORDS_BY_LANG[lang]) > 0
+
+
+class TestMinimumWords:
+    @pytest.mark.asyncio
+    async def test_min_interrupt_words_rejects_short_partial(self):
+        c = HeuristicInterruptClassifier(min_interrupt_words=2)
+        assert await c.is_real_interrupt(None, "wait", None, 500, 16_000) is False
+        assert await c.is_real_interrupt(None, "wait please", None, 500, 16_000) is True
+
+    @pytest.mark.asyncio
+    async def test_keyword_override_bypasses_min_words(self):
+        c = HeuristicInterruptClassifier(
+            min_interrupt_words=3,
+            interrupt_keywords=frozenset({"stop"}),
+        )
+        assert await c.is_real_interrupt(None, "stop", None, 100, 16_000) is True
 
 
 class TestShortCircuit:

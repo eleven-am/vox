@@ -19,12 +19,15 @@ from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.grpc import vox_pb2, vox_pb2_grpc
 from vox.operations.conversation import (
+    ConvAudioClearEvent,
     ConvAudioDeltaEvent,
     ConvDoneEvent,
     ConvErrorEvent,
     ConversationOrchestrator,
     ConversationSessionConfig,
     ConvEvent,
+    ConvInterruptionDetectedEvent,
+    ConvInterruptionFalsePositiveEvent,
     ConvResponseCancelledEvent,
     ConvResponseCommittedEvent,
     ConvResponseCreatedEvent,
@@ -34,6 +37,7 @@ from vox.operations.conversation import (
     ConvSpeechStoppedEvent,
     ConvStateChangedEvent,
     ConvTranscriptDoneEvent,
+    ConvTurnEouPredictedEvent,
 )
 from vox.operations.errors import (
     InvalidConfigError,
@@ -76,6 +80,45 @@ def _pb_to_config(update: vox_pb2.ConversationSessionUpdate) -> ConversationSess
             policy_pb.stable_speaking_min_ms
             or default_policy.stable_speaking_min_ms
         ),
+        false_interruption_timeout_ms=(
+            policy_pb.false_interruption_timeout_ms
+            or default_policy.false_interruption_timeout_ms
+        ),
+        min_interrupt_words=(
+            policy_pb.min_interrupt_words
+            if has_policy
+            else default_policy.min_interrupt_words
+        ),
+        partial_interrupts=(
+            policy_pb.partial_interrupts
+            if has_policy
+            else default_policy.partial_interrupts
+        ),
+        dynamic_endpointing=(
+            policy_pb.dynamic_endpointing
+            if has_policy
+            else default_policy.dynamic_endpointing
+        ),
+        min_endpointing_delay_ms=(
+            policy_pb.min_endpointing_delay_ms
+            or default_policy.min_endpointing_delay_ms
+        ),
+        speaking_interrupt_min_duration_ms=(
+            policy_pb.speaking_interrupt_min_duration_ms
+            or default_policy.speaking_interrupt_min_duration_ms
+        ),
+        speaking_interrupt_min_words=(
+            policy_pb.speaking_interrupt_min_words
+            or default_policy.speaking_interrupt_min_words
+        ),
+        self_echo_min_words=(
+            policy_pb.self_echo_min_words
+            or default_policy.self_echo_min_words
+        ),
+        self_echo_min_overlap=(
+            policy_pb.self_echo_min_overlap
+            or default_policy.self_echo_min_overlap
+        ),
     )
 
     return ConversationSessionConfig(
@@ -84,6 +127,8 @@ def _pb_to_config(update: vox_pb2.ConversationSessionUpdate) -> ConversationSess
         voice=update.voice or None,
         language=update.language or "en",
         sample_rate=update.sample_rate or TARGET_SAMPLE_RATE,
+        vad_backend=update.vad_backend or "silero",
+        turn_detector=update.turn_detector or "livekit",
         policy=policy,
     )
 
@@ -135,24 +180,62 @@ def _event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage | None:
         return vox_pb2.ConverseServerMessage(transcript_done=msg)
     if isinstance(event, ConvResponseCreatedEvent):
         return vox_pb2.ConverseServerMessage(
-            response_created=vox_pb2.ConversationResponseCreated(),
+            response_created=vox_pb2.ConversationResponseCreated(response_id=event.response_id),
         )
     if isinstance(event, ConvAudioDeltaEvent):
         pcm = base64.b64decode(event.audio_b64) if event.audio_b64 else b""
         return vox_pb2.ConverseServerMessage(
             audio_delta=vox_pb2.ConversationAudioDelta(
-                audio=pcm, sample_rate=event.sample_rate,
+                audio=pcm,
+                sample_rate=event.sample_rate,
+                response_id=event.response_id,
+                sequence=event.sequence,
             ),
         )
+    if isinstance(event, ConvAudioClearEvent):
+        return vox_pb2.ConverseServerMessage(
+            audio_clear=vox_pb2.ConversationAudioClear(response_id=event.response_id),
+        )
     if isinstance(event, ConvResponseDoneEvent):
-        return vox_pb2.ConverseServerMessage(response_done=vox_pb2.ConversationResponseDone())
+        return vox_pb2.ConverseServerMessage(
+            response_done=vox_pb2.ConversationResponseDone(response_id=event.response_id),
+        )
     if isinstance(event, ConvResponseCancelledEvent):
         return vox_pb2.ConverseServerMessage(
-            response_cancelled=vox_pb2.ConversationResponseCancelled(),
+            response_cancelled=vox_pb2.ConversationResponseCancelled(response_id=event.response_id),
         )
     if isinstance(event, ConvResponseCommittedEvent):
         return vox_pb2.ConverseServerMessage(
-            response_committed=vox_pb2.ConversationResponseCommitted(),
+            response_committed=vox_pb2.ConversationResponseCommitted(response_id=event.response_id),
+        )
+    if isinstance(event, ConvInterruptionDetectedEvent):
+        return vox_pb2.ConverseServerMessage(
+            interruption_detected=vox_pb2.ConversationInterruptionDetected(
+                response_id=event.response_id,
+                vad_active_ms=event.vad_active_ms,
+                partial_transcript=event.partial_transcript or "",
+            ),
+        )
+    if isinstance(event, ConvInterruptionFalsePositiveEvent):
+        return vox_pb2.ConverseServerMessage(
+            interruption_false_positive=vox_pb2.ConversationInterruptionFalsePositive(
+                response_id=event.response_id,
+                vad_active_ms=event.vad_active_ms,
+                partial_transcript=event.partial_transcript or "",
+            ),
+        )
+    if isinstance(event, ConvTurnEouPredictedEvent):
+        return vox_pb2.ConverseServerMessage(
+            turn_eou_predicted=vox_pb2.ConversationTurnEouPredicted(
+                probability=event.probability,
+                threshold=event.threshold,
+                decision=event.decision,
+                action=event.action,
+                delay_ms=event.delay_ms,
+                turn_detector=event.turn_detector,
+                start_ms=event.start_ms,
+                end_ms=event.end_ms,
+            ),
         )
     if isinstance(event, ConvStateChangedEvent):
         return vox_pb2.ConverseServerMessage(

@@ -4,6 +4,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
+from typing import Protocol
 
 import numpy as np
 
@@ -24,6 +25,7 @@ class ConversationTurn:
 
 @dataclass
 class EOUConfig:
+    model: str = "livekit"
     threshold: float = 0.5
     max_context_turns: int = MAX_HISTORY_TURNS
 
@@ -31,6 +33,17 @@ class EOUConfig:
 
 
     max_pending_tokens: int = 60
+
+
+class TurnDetector(Protocol):
+    def token_count(self, text: str) -> int: ...
+
+    def predict(
+        self,
+        turns: list[ConversationTurn],
+        *,
+        max_context_turns: int = MAX_HISTORY_TURNS,
+    ) -> float: ...
 
 
 class EOUModel:
@@ -132,3 +145,123 @@ class EOUModel:
         exp_logits = np.exp(logits - np.max(logits))
         probabilities = exp_logits / exp_logits.sum()
         return float(probabilities[1])
+
+
+class TenTurnDetector:
+    """Optional TEN semantic turn detector.
+
+    TEN returns discrete labels (`finished`, `unfinished`, `wait`). Vox's
+    current endpointing path consumes an EOU probability, so this adapter maps
+    `finished` to 1.0 and the other labels to 0.0. That keeps the first
+    integration conservative: TEN can be tested without changing the state
+    machine semantics yet.
+    """
+
+    MODEL_ID = "TEN-framework/TEN_Turn_Detection"
+
+    _instance: TenTurnDetector | None = None
+    _model = None
+    _tokenizer = None
+    _torch = None
+    _lock = threading.Lock()
+
+    def __new__(cls) -> TenTurnDetector:
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = super().__new__(cls)
+            return cls._instance
+
+    def _ensure_loaded(self) -> None:
+        if TenTurnDetector._model is not None:
+            return
+        with TenTurnDetector._lock:
+            if TenTurnDetector._model is not None:
+                return
+            try:
+                import torch
+                from transformers import AutoModelForCausalLM, AutoTokenizer
+            except ImportError as exc:
+                raise RuntimeError(
+                    "TEN turn detector requires optional dependencies: "
+                    "torch and transformers. Install the vox 'ten-turn' extra."
+                ) from exc
+
+            logger.info("Loading TEN turn detector from %s", self.MODEL_ID)
+            start = time.perf_counter()
+            dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+            tokenizer = AutoTokenizer.from_pretrained(self.MODEL_ID, trust_remote_code=True)
+            model = AutoModelForCausalLM.from_pretrained(
+                self.MODEL_ID,
+                trust_remote_code=True,
+                torch_dtype=dtype,
+            )
+            if torch.cuda.is_available():
+                model = model.cuda()
+            model.eval()
+            TenTurnDetector._torch = torch
+            TenTurnDetector._tokenizer = tokenizer
+            TenTurnDetector._model = model
+            logger.info("TEN turn detector loaded in %.2fs", time.perf_counter() - start)
+
+    def token_count(self, text: str) -> int:
+        if not text:
+            return 0
+        self._ensure_loaded()
+        try:
+            return len(TenTurnDetector._tokenizer.encode(text, add_special_tokens=False))
+        except Exception:
+            logger.exception("TEN tokenizer failed; falling back to char estimate")
+            return max(len(text) // 4, 1)
+
+    def classify(self, turns: list[ConversationTurn], *, max_context_turns: int = MAX_HISTORY_TURNS) -> str:
+        self._ensure_loaded()
+        if not turns:
+            return "unfinished"
+
+        history_limit = max(1, int(max_context_turns or MAX_HISTORY_TURNS))
+        text = "\n".join(f"{turn.role}: {turn.content}" for turn in turns[-history_limit:])
+        messages = [{"role": "user", "content": text}]
+        tokenizer = TenTurnDetector._tokenizer
+        torch = TenTurnDetector._torch
+        model = TenTurnDetector._model
+
+        input_ids = tokenizer.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
+            return_tensors="pt",
+        )
+        if torch.cuda.is_available():
+            input_ids = input_ids.cuda()
+
+        with torch.no_grad():
+            outputs = model.generate(
+                input_ids,
+                max_new_tokens=1,
+                do_sample=False,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        response = outputs[0][input_ids.shape[-1]:]
+        label = tokenizer.decode(response, skip_special_tokens=True).strip().lower()
+        if label in {"finished", "finish", "done"}:
+            return "finished"
+        if label in {"wait", "stop", "pause"}:
+            return "wait"
+        return "unfinished"
+
+    def predict(
+        self,
+        turns: list[ConversationTurn],
+        *,
+        max_context_turns: int = MAX_HISTORY_TURNS,
+    ) -> float:
+        label = self.classify(turns, max_context_turns=max_context_turns)
+        return 1.0 if label == "finished" else 0.0
+
+
+def create_turn_detector(name: str) -> TurnDetector:
+    normalized = (name or "livekit").strip().lower().replace("_", "-")
+    if normalized in {"livekit", "livekit-eou", "eou"}:
+        return EOUModel()
+    if normalized in {"ten", "ten-turn", "ten-turn-detection"}:
+        return TenTurnDetector()
+    raise ValueError(f"unknown turn detector: {name}")

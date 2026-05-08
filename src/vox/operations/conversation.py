@@ -9,8 +9,11 @@ from typing import Any
 
 from vox.conversation import TurnPolicy
 from vox.conversation.session import (
+    WIRE_AUDIO_CLEAR,
     WIRE_AUDIO_DELTA,
     WIRE_ERROR,
+    WIRE_INTERRUPTION_DETECTED,
+    WIRE_INTERRUPTION_FALSE_POSITIVE,
     WIRE_RESPONSE_CANCELLED,
     WIRE_RESPONSE_COMMITTED,
     WIRE_RESPONSE_CREATED,
@@ -19,6 +22,7 @@ from vox.conversation.session import (
     WIRE_SPEECH_STOPPED,
     WIRE_STATE_CHANGED,
     WIRE_TRANSCRIPT_DONE,
+    WIRE_TURN_EOU_PREDICTED,
     ConversationConfig,
     ConversationSession,
 )
@@ -39,6 +43,8 @@ class ConversationSessionConfig:
     voice: str | None = None
     language: str = "en"
     sample_rate: int = TARGET_SAMPLE_RATE
+    vad_backend: str = "silero"
+    turn_detector: str = "livekit"
     policy: TurnPolicy | None = None
 
 
@@ -71,7 +77,7 @@ class ConvTranscriptDoneEvent:
 
 @dataclass(frozen=True)
 class ConvResponseCreatedEvent:
-    pass
+    response_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -79,21 +85,54 @@ class ConvAudioDeltaEvent:
     audio_b64: str
     sample_rate: int
     audio_format: str
+    response_id: str = ""
+    sequence: int = 0
+
+
+@dataclass(frozen=True)
+class ConvAudioClearEvent:
+    response_id: str = ""
 
 
 @dataclass(frozen=True)
 class ConvResponseDoneEvent:
-    pass
+    response_id: str = ""
 
 
 @dataclass(frozen=True)
 class ConvResponseCancelledEvent:
-    pass
+    response_id: str = ""
 
 
 @dataclass(frozen=True)
 class ConvResponseCommittedEvent:
-    pass
+    response_id: str = ""
+
+
+@dataclass(frozen=True)
+class ConvInterruptionDetectedEvent:
+    response_id: str
+    vad_active_ms: int
+    partial_transcript: str | None
+
+
+@dataclass(frozen=True)
+class ConvInterruptionFalsePositiveEvent:
+    response_id: str
+    vad_active_ms: int
+    partial_transcript: str | None
+
+
+@dataclass(frozen=True)
+class ConvTurnEouPredictedEvent:
+    probability: float
+    threshold: float
+    decision: str
+    action: str
+    delay_ms: int
+    turn_detector: str
+    start_ms: int
+    end_ms: int
 
 
 @dataclass(frozen=True)
@@ -119,9 +158,13 @@ ConvEvent = (
     | ConvTranscriptDoneEvent
     | ConvResponseCreatedEvent
     | ConvAudioDeltaEvent
+    | ConvAudioClearEvent
     | ConvResponseDoneEvent
     | ConvResponseCancelledEvent
     | ConvResponseCommittedEvent
+    | ConvInterruptionDetectedEvent
+    | ConvInterruptionFalsePositiveEvent
+    | ConvTurnEouPredictedEvent
     | ConvStateChangedEvent
     | ConvErrorEvent
     | ConvDoneEvent
@@ -144,6 +187,15 @@ def parse_session_update(payload: dict) -> ConversationSessionConfig:
         "min_interrupt_duration_ms",
         "max_endpointing_delay_ms",
         "stable_speaking_min_ms",
+        "false_interruption_timeout_ms",
+        "min_interrupt_words",
+        "partial_interrupts",
+        "dynamic_endpointing",
+        "min_endpointing_delay_ms",
+        "speaking_interrupt_min_duration_ms",
+        "speaking_interrupt_min_words",
+        "self_echo_min_words",
+        "self_echo_min_overlap",
     ):
         if field_name in policy_in:
             policy_kwargs[field_name] = policy_in[field_name]
@@ -155,6 +207,8 @@ def parse_session_update(payload: dict) -> ConversationSessionConfig:
         voice=sess.get("voice"),
         language=sess.get("language", "en") or "en",
         sample_rate=int(sess.get("sample_rate") or TARGET_SAMPLE_RATE),
+        vad_backend=str(sess.get("vad_backend") or sess.get("vad") or "silero"),
+        turn_detector=str(sess.get("turn_detector") or sess.get("eou_model") or "livekit"),
         policy=policy,
     )
 
@@ -181,19 +235,54 @@ def _wire_event_to_session_event(event: dict) -> ConvEvent | None:
             words=tuple(event.get("words") or ()),
         )
     if t == WIRE_RESPONSE_CREATED:
-        return ConvResponseCreatedEvent()
+        return ConvResponseCreatedEvent(response_id=str(event.get("response_id") or ""))
     if t == WIRE_AUDIO_DELTA:
         return ConvAudioDeltaEvent(
             audio_b64=str(event.get("audio") or ""),
             sample_rate=int(event.get("sample_rate") or 0),
             audio_format=str(event.get("audio_format") or "pcm16"),
+            response_id=str(event.get("response_id") or ""),
+            sequence=int(event.get("sequence") or 0),
         )
+    if t == WIRE_AUDIO_CLEAR:
+        return ConvAudioClearEvent(response_id=str(event.get("response_id") or ""))
     if t == WIRE_RESPONSE_DONE:
-        return ConvResponseDoneEvent()
+        return ConvResponseDoneEvent(response_id=str(event.get("response_id") or ""))
     if t == WIRE_RESPONSE_CANCELLED:
-        return ConvResponseCancelledEvent()
+        return ConvResponseCancelledEvent(response_id=str(event.get("response_id") or ""))
     if t == WIRE_RESPONSE_COMMITTED:
-        return ConvResponseCommittedEvent()
+        return ConvResponseCommittedEvent(response_id=str(event.get("response_id") or ""))
+    if t == WIRE_INTERRUPTION_DETECTED:
+        return ConvInterruptionDetectedEvent(
+            response_id=str(event.get("response_id") or ""),
+            vad_active_ms=int(event.get("vad_active_ms") or 0),
+            partial_transcript=(
+                str(event["partial_transcript"])
+                if event.get("partial_transcript") is not None
+                else None
+            ),
+        )
+    if t == WIRE_INTERRUPTION_FALSE_POSITIVE:
+        return ConvInterruptionFalsePositiveEvent(
+            response_id=str(event.get("response_id") or ""),
+            vad_active_ms=int(event.get("vad_active_ms") or 0),
+            partial_transcript=(
+                str(event["partial_transcript"])
+                if event.get("partial_transcript") is not None
+                else None
+            ),
+        )
+    if t == WIRE_TURN_EOU_PREDICTED:
+        return ConvTurnEouPredictedEvent(
+            probability=float(event.get("probability") or 0.0),
+            threshold=float(event.get("threshold") or 0.0),
+            decision=str(event.get("decision") or ""),
+            action=str(event.get("action") or ""),
+            delay_ms=int(event.get("delay_ms") or 0),
+            turn_detector=str(event.get("turn_detector") or ""),
+            start_ms=int(event.get("start_ms") or 0),
+            end_ms=int(event.get("end_ms") or 0),
+        )
     if t == WIRE_STATE_CHANGED:
         return ConvStateChangedEvent(
             state=str(event.get("state", "")),
@@ -228,6 +317,8 @@ class ConversationOrchestrator:
             voice=config.voice,
             language=config.language,
             sample_rate=config.sample_rate,
+            vad_backend=config.vad_backend,
+            turn_detector=config.turn_detector,
             policy=policy,
         )
         self._config = config
@@ -305,6 +396,8 @@ def serialize_session_config(config: ConversationSessionConfig) -> dict:
         "voice": config.voice,
         "language": config.language,
         "sample_rate": config.sample_rate,
+        "vad_backend": config.vad_backend,
+        "turn_detector": config.turn_detector,
         "output_sample_rate": config.sample_rate,
         "output_audio_format": "pcm16",
         "turn_policy": {
@@ -312,5 +405,14 @@ def serialize_session_config(config: ConversationSessionConfig) -> dict:
             "min_interrupt_duration_ms": policy.min_interrupt_duration_ms,
             "max_endpointing_delay_ms": policy.max_endpointing_delay_ms,
             "stable_speaking_min_ms": policy.stable_speaking_min_ms,
+            "false_interruption_timeout_ms": policy.false_interruption_timeout_ms,
+            "min_interrupt_words": policy.min_interrupt_words,
+            "partial_interrupts": policy.partial_interrupts,
+            "dynamic_endpointing": policy.dynamic_endpointing,
+            "min_endpointing_delay_ms": policy.min_endpointing_delay_ms,
+            "speaking_interrupt_min_duration_ms": policy.speaking_interrupt_min_duration_ms,
+            "speaking_interrupt_min_words": policy.speaking_interrupt_min_words,
+            "self_echo_min_words": policy.self_echo_min_words,
+            "self_echo_min_overlap": policy.self_echo_min_overlap,
         },
     }

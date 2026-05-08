@@ -16,12 +16,12 @@ need to change — only the classifier does.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
 import numpy as np
 from numpy.typing import NDArray
-
 
 DEFAULT_INTERRUPT_KEYWORDS_BY_LANG: dict[str, frozenset[str]] = {
     "en": frozenset({"stop", "wait", "hold on", "pause", "cancel", "nevermind", "never mind"}),
@@ -34,6 +34,38 @@ DEFAULT_INTERRUPT_KEYWORDS_BY_LANG: dict[str, frozenset[str]] = {
     "ar": frozenset({"توقف", "انتظر", "إلغاء"}),
     "hi": frozenset({"रुको", "रुकिए", "ठहरो", "रद्द"}),
 }
+
+_WORD_RE = re.compile(r"[a-z0-9']+")
+
+
+def looks_like_self_echo(
+    transcript: str | None,
+    assistant_text: str | None,
+    *,
+    min_words: int = 3,
+    min_overlap: float = 0.7,
+) -> bool:
+    """Return True when mic transcript appears to be leaked assistant playback.
+
+    This is not acoustic echo cancellation. It is a server-side guard for the
+    loudspeaker case where AEC misses and STT transcribes Vox's own TTS.
+    """
+    if not transcript or not assistant_text:
+        return False
+
+    heard = _WORD_RE.findall(transcript.lower())
+    spoken = _WORD_RE.findall(assistant_text.lower())
+    if len(heard) < min_words or len(spoken) < min_words:
+        return False
+
+    spoken_text = " ".join(spoken)
+    heard_text = " ".join(heard)
+    if heard_text in spoken_text:
+        return True
+
+    spoken_set = set(spoken)
+    overlap = sum(1 for word in heard if word in spoken_set) / len(heard)
+    return overlap >= min_overlap
 
 
 @runtime_checkable
@@ -113,6 +145,7 @@ class HeuristicInterruptClassifier:
     tail_check_ms: int = 80
     backchannel_rms_threshold: float = 0.01
     min_real_interrupt_ms: int = 180
+    min_interrupt_words: int = 0
 
 
 
@@ -165,6 +198,11 @@ class HeuristicInterruptClassifier:
 
         if self.should_short_circuit(partial_transcript):
             return True
+
+        if self.min_interrupt_words > 0 and partial_transcript is not None:
+            words = [word for word in partial_transcript.strip().split() if word]
+            if len(words) < self.min_interrupt_words:
+                return False
 
         if audio_since_paused is not None and audio_since_paused.size > 0:
 

@@ -20,11 +20,14 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from vox.logging_context import new_request_id, request_id_var
 from vox.operations.conversation import (
+    ConvAudioClearEvent,
     ConvAudioDeltaEvent,
     ConvDoneEvent,
     ConvErrorEvent,
     ConversationOrchestrator,
     ConvEvent,
+    ConvInterruptionDetectedEvent,
+    ConvInterruptionFalsePositiveEvent,
     ConvResponseCancelledEvent,
     ConvResponseCommittedEvent,
     ConvResponseCreatedEvent,
@@ -34,6 +37,7 @@ from vox.operations.conversation import (
     ConvSpeechStoppedEvent,
     ConvStateChangedEvent,
     ConvTranscriptDoneEvent,
+    ConvTurnEouPredictedEvent,
     parse_session_update,
     serialize_session_config,
 )
@@ -55,6 +59,10 @@ WIRE_AUDIO_DELTA = "response.audio.delta"
 WIRE_RESPONSE_DONE = "response.done"
 WIRE_RESPONSE_CANCELLED = "response.cancelled"
 WIRE_RESPONSE_COMMITTED = "response.committed"
+WIRE_AUDIO_CLEAR = "response.audio.clear"
+WIRE_INTERRUPTION_DETECTED = "interruption.detected"
+WIRE_INTERRUPTION_FALSE_POSITIVE = "interruption.false_positive"
+WIRE_TURN_EOU_PREDICTED = "turn.eou.predicted"
 WIRE_STATE_CHANGED = "turn.state_changed"
 
 
@@ -86,20 +94,50 @@ def _event_to_wire(event: ConvEvent) -> dict | None:
             payload["words"] = list(event.words)
         return payload
     if isinstance(event, ConvResponseCreatedEvent):
-        return {"type": WIRE_RESPONSE_CREATED}
+        return {"type": WIRE_RESPONSE_CREATED, "response_id": event.response_id}
     if isinstance(event, ConvAudioDeltaEvent):
         return {
             "type": WIRE_AUDIO_DELTA,
             "audio": event.audio_b64,
             "sample_rate": event.sample_rate,
             "audio_format": event.audio_format,
+            "response_id": event.response_id,
+            "sequence": event.sequence,
         }
+    if isinstance(event, ConvAudioClearEvent):
+        return {"type": WIRE_AUDIO_CLEAR, "response_id": event.response_id}
     if isinstance(event, ConvResponseDoneEvent):
-        return {"type": WIRE_RESPONSE_DONE}
+        return {"type": WIRE_RESPONSE_DONE, "response_id": event.response_id}
     if isinstance(event, ConvResponseCancelledEvent):
-        return {"type": WIRE_RESPONSE_CANCELLED}
+        return {"type": WIRE_RESPONSE_CANCELLED, "response_id": event.response_id}
     if isinstance(event, ConvResponseCommittedEvent):
-        return {"type": WIRE_RESPONSE_COMMITTED}
+        return {"type": WIRE_RESPONSE_COMMITTED, "response_id": event.response_id}
+    if isinstance(event, ConvInterruptionDetectedEvent):
+        return {
+            "type": WIRE_INTERRUPTION_DETECTED,
+            "response_id": event.response_id,
+            "vad_active_ms": event.vad_active_ms,
+            "partial_transcript": event.partial_transcript,
+        }
+    if isinstance(event, ConvInterruptionFalsePositiveEvent):
+        return {
+            "type": WIRE_INTERRUPTION_FALSE_POSITIVE,
+            "response_id": event.response_id,
+            "vad_active_ms": event.vad_active_ms,
+            "partial_transcript": event.partial_transcript,
+        }
+    if isinstance(event, ConvTurnEouPredictedEvent):
+        return {
+            "type": WIRE_TURN_EOU_PREDICTED,
+            "probability": event.probability,
+            "threshold": event.threshold,
+            "decision": event.decision,
+            "action": event.action,
+            "delay_ms": event.delay_ms,
+            "turn_detector": event.turn_detector,
+            "start_ms": event.start_ms,
+            "end_ms": event.end_ms,
+        }
     if isinstance(event, ConvStateChangedEvent):
         return {
             "type": WIRE_STATE_CHANGED,

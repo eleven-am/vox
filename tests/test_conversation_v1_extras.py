@@ -9,10 +9,7 @@ import numpy as np
 import pytest
 
 from vox.conversation import TurnEvent, TurnEventType, TurnPolicy, TurnState
-from vox.conversation.interrupt import HeuristicInterruptClassifier
 from vox.conversation.session import (
-    WIRE_AUDIO_DELTA,
-    WIRE_RESPONSE_CANCELLED,
     ConversationConfig,
     ConversationSession,
 )
@@ -40,7 +37,7 @@ class ScriptedTTS(TTSAdapter):
 
     async def synthesize(self, text, **_):
         try:
-            for i in range(self._chunks):
+            for _i in range(self._chunks):
                 yield SynthesizeChunk(
                     audio=np.full(1024, 0.01, dtype=np.float32).tobytes(),
                     sample_rate=24_000, is_final=False,
@@ -103,6 +100,8 @@ def _build(**policy_kwargs):
         "min_interrupt_duration_ms": 100,
         "max_endpointing_delay_ms": 500,
         "stable_speaking_min_ms": 150,
+        "speaking_interrupt_min_duration_ms": 0,
+        "speaking_interrupt_min_words": 0,
         **policy_kwargs,
     })
     cfg = ConversationConfig(

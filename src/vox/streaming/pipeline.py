@@ -13,7 +13,7 @@ from numpy.typing import NDArray
 from vox.core.adapter import STTAdapter
 from vox.core.scheduler import Scheduler
 from vox.core.types import TranscribeResult
-from vox.streaming.eou import ConversationTurn, EOUConfig, EOUModel
+from vox.streaming.eou import ConversationTurn, EOUConfig, create_turn_detector
 from vox.streaming.types import (
     SpeechStarted,
     SpeechStopped,
@@ -70,7 +70,7 @@ class StreamPipeline:
         self._scheduler = scheduler
         self._config = config or StreamPipelineConfig()
         self._vad = VADProcessor(config=self._config.vad_config)
-        self._eou_model = EOUModel()
+        self._eou_model = create_turn_detector(self._config.eou_config.model)
         self._conversation_history: list[ConversationTurn] = []
         self._pending_user_text = ""
         self._low_eou_streak = 0

@@ -23,6 +23,12 @@ def _parse_preload_list(value: str | None) -> list[str]:
     return [m.strip() for m in value.split(",") if m.strip()]
 
 
+def _parse_cors_origins(value: str | None) -> list[str]:
+    if not value:
+        return []
+    return [origin.strip() for origin in value.split(",") if origin.strip()]
+
+
 def _env_bool(name: str) -> bool:
     raw = os.environ.get(name, "").strip().lower()
     return raw in ("1", "true", "yes", "on")
@@ -105,6 +111,17 @@ def create_app(
     configure_hf_runtime()
     app = FastAPI(title="Vox", version="0.1.0", lifespan=lifespan)
     app.add_middleware(RequestIdMiddleware)
+    cors_origins = _parse_cors_origins(os.environ.get("VOX_CORS_ORIGINS"))
+    if cors_origins:
+        from fastapi.middleware.cors import CORSMiddleware
+
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=False,
+            allow_methods=["GET", "POST", "OPTIONS"],
+            allow_headers=["authorization", "content-type"],
+        )
 
     if vox_home is None:
         env_home = os.environ.get("VOX_HOME")
@@ -121,7 +138,7 @@ def create_app(
     app.state.preload_models = list(preload_models or [])
     app.state.preload_vad = preload_vad
 
-    from vox.server.routes import bidi, conversation, health, models, stream, synthesize, transcribe, voices
+    from vox.server.routes import bidi, conversation, health, models, rtc, stream, synthesize, transcribe, voices
     app.include_router(health.router)
     app.include_router(models.router)
     app.include_router(transcribe.router)
@@ -130,5 +147,6 @@ def create_app(
     app.include_router(stream.router)
     app.include_router(bidi.router)
     app.include_router(conversation.router)
+    app.include_router(rtc.router)
 
     return app

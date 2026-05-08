@@ -11,13 +11,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from tests.fakes import FakeScheduler
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
 from vox.grpc import vox_pb2
 from vox.grpc.conversation_servicer import ConversationServicer
 from vox.server.routes.conversation import router as conversation_router
-
-from tests.fakes import FakeScheduler
 
 
 class QuickTTS(TTSAdapter):

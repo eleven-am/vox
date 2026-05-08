@@ -28,6 +28,7 @@ from vox.conversation import TurnEvent, TurnEventType, TurnPolicy, TurnState
 from vox.conversation.session import ConversationConfig, ConversationSession
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+from vox.streaming.types import StreamTranscript
 
 
 class LongTTS(TTSAdapter):
@@ -78,6 +79,7 @@ def _build():
             min_interrupt_duration_ms=80,
             max_endpointing_delay_ms=500,
             stable_speaking_min_ms=50,
+            speaking_interrupt_min_duration_ms=80,
         ),
     )
     session = ConversationSession(scheduler=Scheduler(tts), config=cfg, on_event=coll)
@@ -121,6 +123,88 @@ class TestBackchannelRejection:
 
         assert session.state != TurnState.INTERRUPTED
         assert not coll.by_type("response.cancelled")
+        assert coll.by_type("interruption.false_positive")
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_assistant_self_echo_does_not_interrupt(self):
+        """Loudspeaker echo can make STT hear the assistant's own words.
+        Without true client-side AEC, Vox should still reject transcripts that
+        clearly match the active TTS response instead of cancelling itself.
+        """
+        session, coll, _ = _build()
+        await session.start()
+
+        await session.submit_response_text("The appointment is tomorrow at noon.")
+        await asyncio.sleep(0.15)
+        assert session.state == TurnState.SPEAKING
+
+        session._latest_partial = StreamTranscript(
+            text="the appointment is tomorrow",
+            is_partial=True,
+        )
+        session._audio_ring = _voice_signal(0.60, amp=0.15)
+        session._vad_started_at = time.monotonic() - 0.60
+        await session._event_queue.put(TurnEvent(
+            type=TurnEventType.SPEECH_STARTED,
+            payload={"confirm_window_ms": 80},
+        ))
+
+        await asyncio.sleep(0.25)
+
+        assert session.state != TurnState.INTERRUPTED
+        assert not coll.by_type("response.cancelled")
+        assert coll.by_type("interruption.false_positive")
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_short_non_keyword_partial_during_tts_does_not_interrupt(self):
+        session, coll, _ = _build()
+        await session.start()
+
+        await session.submit_response_text("The appointment is tomorrow at noon.")
+        await asyncio.sleep(0.15)
+        assert session.state == TurnState.SPEAKING
+
+        session._latest_partial = StreamTranscript(text="actually", is_partial=True)
+        session._audio_ring = _voice_signal(0.60, amp=0.15)
+        session._vad_started_at = time.monotonic() - 0.60
+        await session._event_queue.put(TurnEvent(
+            type=TurnEventType.SPEECH_STARTED,
+            payload={"confirm_window_ms": 80},
+        ))
+
+        await asyncio.sleep(0.25)
+
+        assert session.state != TurnState.INTERRUPTED
+        assert not coll.by_type("response.cancelled")
+        assert coll.by_type("interruption.false_positive")
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_keyword_partial_during_tts_still_interrupts(self):
+        session, coll, _ = _build()
+        await session.start()
+
+        await session.submit_response_text("The appointment is tomorrow at noon.")
+        await asyncio.sleep(0.15)
+        assert session.state == TurnState.SPEAKING
+
+        session._latest_partial = StreamTranscript(text="stop", is_partial=True)
+        session._audio_ring = _voice_signal(0.60, amp=0.15)
+        session._vad_started_at = time.monotonic() - 0.60
+        await session._event_queue.put(TurnEvent(
+            type=TurnEventType.SPEECH_STARTED,
+            payload={"confirm_window_ms": 80},
+        ))
+
+        await asyncio.sleep(0.25)
+
+        assert session.state == TurnState.INTERRUPTED
+        assert coll.by_type("response.cancelled")
 
         await session.close()
 
@@ -139,6 +223,7 @@ class TestBackchannelRejection:
 
         voice = _voice_signal(0.60, amp=0.15)
         session._audio_ring = voice
+        session._latest_partial = StreamTranscript(text="I need", is_partial=True)
         session._vad_started_at = time.monotonic() - 0.60
         await session._event_queue.put(TurnEvent(
             type=TurnEventType.SPEECH_STARTED,
@@ -226,6 +311,7 @@ class TestMhmmAtRealisticWindow:
 
         voice = _voice_signal(0.40, amp=0.15)
         session._audio_ring = voice
+        session._latest_partial = StreamTranscript(text="stop", is_partial=True)
         session._vad_started_at = time.monotonic() - 0.40
         await session._event_queue.put(TurnEvent(
             type=TurnEventType.SPEECH_STARTED,
@@ -293,6 +379,7 @@ class TestClassifierFailureFallsBackToInterrupt:
         assert session.state == TurnState.SPEAKING
 
         session._vad_started_at = time.monotonic()
+        session._latest_partial = StreamTranscript(text="I need", is_partial=True)
         await session._event_queue.put(TurnEvent(
             type=TurnEventType.SPEECH_STARTED,
             payload={"confirm_window_ms": 80},
