@@ -1,0 +1,89 @@
+name: Publish GHCR image
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build, for example v0.2.41"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/eleven-am/vox
+  PLATFORMS: linux/amd64,linux/arm64
+  GPU_BASE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+
+jobs:
+  publish:
+    name: Build and push
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Resolve tag
+        id: version
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.tag }}"
+          else
+            version="${GITHUB_REF_NAME}"
+          fi
+          case "$version" in
+            v*) ;;
+            *) echo "tag must start with v: $version" >&2; exit 1 ;;
+          esac
+          echo "tag=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.version.outputs.tag }}
+
+      - name: Verify package version matches tag
+        shell: bash
+        run: |
+          app_version="$(sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' pyproject.toml | head -n1)"
+          tag_version="${{ steps.version.outputs.tag }}"
+          tag_version="${tag_version#v}"
+          if [ "$app_version" != "$tag_version" ]; then
+            echo "pyproject.toml version $app_version does not match tag ${{ steps.version.outputs.tag }}" >&2
+            exit 1
+          fi
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          build-args: |
+            BASE_IMAGE=${{ env.GPU_BASE }}
+            VOX_ACCELERATOR=gpu
+            VOX_DEFAULT_DEVICE=auto
+          tags: |
+            ${{ env.IMAGE }}:${{ steps.version.outputs.tag }}
+            ${{ env.IMAGE }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/eleven-am/vox
+            org.opencontainers.image.version=${{ steps.version.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
