@@ -2422,7 +2422,7 @@ wheels = [
 
 [[package]]
 name = "vox-runtime"
-version = "0.2.40"
+version = "0.2.41"
 source = { editable = "." }
 dependencies = [
     { name = "aiortc" },

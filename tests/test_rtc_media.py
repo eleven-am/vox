@@ -3,7 +3,7 @@ import asyncio
 import pytest
 from aiortc.mediastreams import MediaStreamError
 
-from vox.server.rtc_media import RtcAudioOutputTrack
+from vox.server.rtc_media import RtcAudioOutputTrack, pump_input_audio
 
 
 @pytest.mark.asyncio
@@ -33,3 +33,19 @@ async def test_rtc_audio_output_track_stops_on_sentinel():
 
     with pytest.raises(MediaStreamError):
         await track.recv()
+
+
+@pytest.mark.asyncio
+async def test_pump_input_audio_treats_media_stream_error_as_eof():
+    class ClosedTrack:
+        async def recv(self):
+            raise MediaStreamError
+
+    calls = []
+
+    async def ingest(pcm16: bytes, sample_rate: int | None) -> None:
+        calls.append((pcm16, sample_rate))
+
+    await pump_input_audio(ClosedTrack(), ingest)
+
+    assert calls == []

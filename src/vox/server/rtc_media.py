@@ -61,7 +61,10 @@ async def pump_input_audio(
     ingest_pcm16: Callable[[bytes, int | None], Awaitable[None]],
 ) -> None:
     while True:
-        frame = await track.recv()
+        try:
+            frame = await track.recv()
+        except MediaStreamError:
+            return
         pcm16, sample_rate = audio_frame_to_pcm16(frame)
         if pcm16:
             await ingest_pcm16(pcm16, sample_rate)
