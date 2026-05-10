@@ -9,6 +9,7 @@ import av
 import numpy as np
 from aiortc import MediaStreamTrack
 from aiortc.mediastreams import MediaStreamError
+from av.audio.resampler import AudioResampler
 
 
 class RtcAudioOutputTrack(MediaStreamTrack):
@@ -71,6 +72,10 @@ async def pump_input_audio(
 
 
 def audio_frame_to_pcm16(frame: av.AudioFrame) -> tuple[bytes, int]:
-    mono = frame.reformat(format="s16", layout="mono")
-    chunks = [bytes(plane) for plane in mono.planes]
-    return b"".join(chunks), int(mono.sample_rate)
+    sample_rate = int(frame.sample_rate or 48_000)
+    resampler = AudioResampler(format="s16", layout="mono", rate=sample_rate)
+    chunks: list[bytes] = []
+    for mono in resampler.resample(frame):
+        samples = mono.to_ndarray()
+        chunks.append(np.ascontiguousarray(samples.reshape(-1), dtype=np.int16).tobytes())
+    return b"".join(chunks), sample_rate
