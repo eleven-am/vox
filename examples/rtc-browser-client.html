@@ -70,6 +70,49 @@
       flex-wrap: wrap;
       gap: 8px;
     }
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 8px;
+    }
+    .status {
+      border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+      border-radius: 6px;
+      padding: 10px;
+      min-height: 54px;
+    }
+    .status span {
+      display: block;
+      font-size: 12px;
+      color: color-mix(in srgb, CanvasText 68%, transparent);
+    }
+    .status strong {
+      display: block;
+      margin-top: 4px;
+      font-size: 15px;
+    }
+    .timeline {
+      display: grid;
+      gap: 6px;
+      max-height: 220px;
+      overflow: auto;
+    }
+    .timeline div {
+      display: grid;
+      grid-template-columns: 86px 1fr;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: 6px;
+      background: color-mix(in srgb, CanvasText 7%, Canvas);
+      font-size: 12px;
+    }
+    .timeline .warn {
+      background: color-mix(in srgb, Mark 28%, Canvas);
+      color: MarkText;
+    }
+    .timeline .danger {
+      background: color-mix(in srgb, #d92d20 18%, Canvas);
+    }
     pre {
       min-height: 240px;
       max-height: 420px;
@@ -92,20 +135,29 @@
     <section class="grid">
       <label>
         Vox HTTP base
-        <input id="httpBase" value="http://localhost:11435">
+        <input id="httpBase" value="https://vox.horus.maix.ovh">
       </label>
       <label>
         STT model
-        <input id="sttModel" value="fake-stt:1">
+        <input id="sttModel" value="parakeet-stt-onnx:tdt-0.6b-v3">
       </label>
       <label>
         TTS model
-        <input id="ttsModel" value="fake-tts:1">
+        <input id="ttsModel" value="kokoro-tts-onnx:v1.0">
       </label>
       <label>
         Voice
-        <input id="voice" value="default">
+        <input id="voice" value="af_heart">
       </label>
+    </section>
+
+    <section class="status-grid">
+      <div class="status"><span>Peer</span><strong id="peerState">idle</strong></div>
+      <div class="status"><span>ICE</span><strong id="iceState">idle</strong></div>
+      <div class="status"><span>Playback</span><strong id="playbackState">idle</strong></div>
+      <div class="status"><span>Turn</span><strong id="turnState">idle</strong></div>
+      <div class="status"><span>Interruptions</span><strong id="interruptCount">0</strong></div>
+      <div class="status"><span>False positives</span><strong id="falsePositiveCount">0</strong></div>
     </section>
 
     <section>
@@ -119,12 +171,16 @@
     <section>
       <label>
         Assistant text
-        <textarea id="assistantText">Hello. This is Vox speaking over WebRTC.</textarea>
+        <textarea id="assistantText">Hello. This is Vox speaking over WebRTC. I am going to keep talking long enough for you to test barge in. Start speaking over this audio from the loudspeaker and watch whether Vox sends interruption detected, audio clear, response cancelled, and interrupted state events.</textarea>
       </label>
       <div class="actions" style="margin-top: 12px;">
         <button id="sendTextBtn" disabled>Send response</button>
         <button id="cancelBtn" disabled>Cancel response</button>
       </div>
+    </section>
+
+    <section>
+      <div id="timeline" class="timeline"></div>
     </section>
 
     <section>
@@ -144,6 +200,13 @@
     const assistantText = document.querySelector("#assistantText");
     const assistantAudio = document.querySelector("#assistantAudio");
     const logEl = document.querySelector("#log");
+    const timelineEl = document.querySelector("#timeline");
+    const peerStateEl = document.querySelector("#peerState");
+    const iceStateEl = document.querySelector("#iceState");
+    const playbackStateEl = document.querySelector("#playbackState");
+    const turnStateEl = document.querySelector("#turnState");
+    const interruptCountEl = document.querySelector("#interruptCount");
+    const falsePositiveCountEl = document.querySelector("#falsePositiveCount");
 
     let pc = null;
     let controlWs = null;
@@ -151,12 +214,77 @@
     let mediaToken = null;
     let sessionId = null;
     let micStream = null;
+    let remoteStream = null;
     let pendingCandidates = [];
+    let interruptions = 0;
+    let falsePositives = 0;
 
     function log(type, payload) {
       const line = `[${new Date().toISOString()}] ${type} ${JSON.stringify(payload)}`;
       logEl.textContent += `${line}\n`;
       logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setStatus(el, value) {
+      el.textContent = value || "idle";
+    }
+
+    function timeline(type, payload = {}) {
+      const row = document.createElement("div");
+      const important = [
+        "interruption.detected",
+        "response.audio.clear",
+        "response.cancelled",
+        "turn.state_changed"
+      ];
+      if (type === "interruption.false_positive") row.className = "warn";
+      if (important.includes(type)) row.className = "danger";
+      const at = document.createElement("span");
+      at.textContent = new Date().toLocaleTimeString();
+      const text = document.createElement("strong");
+      const suffix = payload.state ? ` ${payload.state}` : payload.response_id ? ` ${payload.response_id}` : "";
+      text.textContent = `${type}${suffix}`;
+      row.append(at, text);
+      timelineEl.prepend(row);
+      while (timelineEl.children.length > 80) timelineEl.lastChild.remove();
+    }
+
+    async function attachAssistantAudio() {
+      if (!remoteStream) return;
+      if (assistantAudio.srcObject !== remoteStream) {
+        assistantAudio.srcObject = remoteStream;
+      }
+      assistantAudio.muted = false;
+      await assistantAudio.play().catch(() => {});
+    }
+
+    function clearAssistantAudio() {
+      assistantAudio.pause();
+      assistantAudio.srcObject = null;
+      setStatus(playbackStateEl, "cleared");
+    }
+
+    function handleWireEvent(event) {
+      const type = event.type || "message";
+      timeline(type, event);
+      if (type === "session.created") setStatus(turnStateEl, "listening");
+      if (type === "response.created") {
+        setStatus(playbackStateEl, "starting");
+        attachAssistantAudio();
+      }
+      if (type === "response.done") setStatus(playbackStateEl, "done");
+      if (type === "response.cancelled") setStatus(playbackStateEl, "cancelled");
+      if (type === "response.audio.clear") clearAssistantAudio();
+      if (type === "interruption.detected") {
+        interruptions += 1;
+        setStatus(interruptCountEl, String(interruptions));
+      }
+      if (type === "interruption.false_positive") {
+        falsePositives += 1;
+        setStatus(falsePositiveCountEl, String(falsePositives));
+        attachAssistantAudio();
+      }
+      if (type === "turn.state_changed") setStatus(turnStateEl, event.state);
     }
 
     function wsBase(httpBase) {
@@ -193,11 +321,14 @@
       const session = await postJson("/v1/rtc/sessions", {});
       sessionId = session.session_id;
       log("session", session);
+      timeline("session", { session_id: sessionId });
 
       pc = new RTCPeerConnection({ iceServers: session.ice_servers });
       pc.ontrack = (event) => {
-        assistantAudio.srcObject = event.streams[0];
+        remoteStream = event.streams[0];
+        assistantAudio.srcObject = remoteStream;
         log("track", { kind: event.track.kind });
+        timeline("track", { kind: event.track.kind });
       };
       pc.onicecandidate = async (event) => {
         const candidate = event.candidate ? event.candidate.toJSON() : null;
@@ -207,8 +338,14 @@
         }
         await postJson(`/v1/rtc/sessions/${sessionId}/candidates`, { candidate }, mediaToken);
       };
-      pc.onconnectionstatechange = () => log("pc.connectionState", { state: pc.connectionState });
-      pc.oniceconnectionstatechange = () => log("pc.iceConnectionState", { state: pc.iceConnectionState });
+      pc.onconnectionstatechange = () => {
+        setStatus(peerStateEl, pc.connectionState);
+        log("pc.connectionState", { state: pc.connectionState });
+      };
+      pc.oniceconnectionstatechange = () => {
+        setStatus(iceStateEl, pc.iceConnectionState);
+        log("pc.iceConnectionState", { state: pc.iceConnectionState });
+      };
 
       micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -232,9 +369,14 @@
       await pc.setRemoteDescription({ type: answer.type, sdp: answer.sdp });
       await flushCandidates();
       log("answer", { session_id: answer.session_id, type: answer.type, events_url: answer.events_url });
+      timeline("answer", { session_id: answer.session_id });
 
       eventSource = new EventSource(`${httpBaseInput.value.replace(/\/$/, "")}${answer.events_url}`);
-      eventSource.onmessage = (event) => log("sse.message", JSON.parse(event.data));
+      eventSource.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+        log("sse.message", payload);
+        handleWireEvent(payload);
+      };
       eventSource.addEventListener("rtc.ice_candidate", async (event) => {
         const payload = JSON.parse(event.data);
         log("sse.ice", payload);
@@ -242,10 +384,17 @@
       });
       eventSource.addEventListener("rtc.connection_state", (event) => log("sse.connection", JSON.parse(event.data)));
       eventSource.addEventListener("rtc.ice_connection_state", (event) => log("sse.ice_connection", JSON.parse(event.data)));
-      eventSource.addEventListener("close", () => log("sse.close", {}));
+      eventSource.addEventListener("close", () => {
+        log("sse.close", {});
+        timeline("sse.close");
+      });
 
       controlWs = new WebSocket(`${wsBase(httpBaseInput.value)}/v1/rtc/sessions/${sessionId}/control`);
-      controlWs.onmessage = (event) => log("control", JSON.parse(event.data));
+      controlWs.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+        log("control", payload);
+        handleWireEvent(payload);
+      };
       controlWs.onopen = () => {
         controlWs.send(JSON.stringify({
           type: "session.update",
@@ -265,7 +414,10 @@
           }
         }));
       };
-      controlWs.onclose = (event) => log("control.close", { code: event.code, reason: event.reason });
+      controlWs.onclose = (event) => {
+        log("control.close", { code: event.code, reason: event.reason });
+        timeline("control.close", { code: event.code });
+      };
 
       disconnectBtn.disabled = false;
       sendTextBtn.disabled = false;
@@ -284,9 +436,14 @@
       controlWs = null;
       pc = null;
       micStream = null;
+      remoteStream = null;
       mediaToken = null;
       sessionId = null;
       pendingCandidates = [];
+      setStatus(peerStateEl, "idle");
+      setStatus(iceStateEl, "idle");
+      setStatus(playbackStateEl, "idle");
+      setStatus(turnStateEl, "idle");
       connectBtn.disabled = false;
     }
 
@@ -297,6 +454,8 @@
     disconnectBtn.addEventListener("click", () => disconnect().catch((error) => log("error", { message: error.message })));
     sendTextBtn.addEventListener("click", () => {
       if (!controlWs || controlWs.readyState !== WebSocket.OPEN) return;
+      attachAssistantAudio();
+      setStatus(playbackStateEl, "requested");
       controlWs.send(JSON.stringify({ type: "response.start" }));
       controlWs.send(JSON.stringify({ type: "response.delta", delta: assistantText.value }));
       controlWs.send(JSON.stringify({ type: "response.commit" }));
