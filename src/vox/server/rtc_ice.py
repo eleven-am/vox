@@ -57,15 +57,13 @@ def patch_aioice_turn_error_code_parser() -> None:
 
 
 def rewrite_private_relay_candidates(sdp: str) -> str:
-    public_host = _public_turn_host_from_env()
-    if not public_host:
+    advertise_addrs = _relay_advertise_addrs_from_env()
+    if not advertise_addrs:
         return sdp
 
-    public_addr = _resolve_public_addr(public_host)
-    lines = [
-        _rewrite_candidate_line(line, public_addr)
-        for line in sdp.splitlines()
-    ]
+    lines: list[str] = []
+    for line in sdp.splitlines():
+        lines.extend(_rewrite_candidate_line(line, advertise_addrs))
     return "\r\n".join(lines) + ("\r\n" if sdp.endswith(("\r\n", "\n")) else "")
 
 
@@ -119,13 +117,16 @@ def _unpack_error_code_compat(data: bytes) -> tuple[int, str]:
     return code_high * 100 + code_low, data[4:].decode("utf8", errors="replace")
 
 
-def _public_turn_host_from_env() -> str | None:
+def _relay_advertise_addrs_from_env() -> list[str]:
     turn_urls = _csv_env("VOX_RTC_TURN_URLS")
+    addrs: list[str] = []
     for url in turn_urls:
         host = _turn_uri_host(url)
         if host:
-            return host
-    return None
+            addr = _resolve_public_addr(host)
+            if addr not in addrs:
+                addrs.append(addr)
+    return addrs
 
 
 def _turn_uri_host(url: str) -> str | None:
@@ -149,16 +150,20 @@ def _resolve_public_addr(host: str) -> str:
         return host
 
 
-def _rewrite_candidate_line(line: str, public_addr: str) -> str:
+def _rewrite_candidate_line(line: str, advertise_addrs: list[str]) -> list[str]:
     if not line.startswith("a=candidate:") or " typ relay" not in line:
-        return line
+        return [line]
 
     parts = line.split()
     if len(parts) < 8 or not _is_private_addr(parts[4]):
-        return line
+        return [line]
 
-    parts[4] = public_addr
-    return " ".join(parts)
+    lines: list[str] = []
+    for addr in advertise_addrs:
+        rewritten = parts.copy()
+        rewritten[4] = addr
+        lines.append(" ".join(rewritten))
+    return lines or [line]
 
 
 def _is_private_addr(value: str) -> bool:

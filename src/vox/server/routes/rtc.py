@@ -101,7 +101,9 @@ async def create_rtc_answer(request: Request, session_id: str) -> dict:
     @pc.on("track")
     def on_track(track) -> None:
         if track.kind == "audio":
-            asyncio.create_task(pump_input_audio(track, lambda pcm, sr: _ingest_media_audio(record, pcm, sr)))
+            task = asyncio.create_task(pump_input_audio(track, lambda pcm, sr: _ingest_media_audio(record, pcm, sr)))
+            record.media_tasks.add(task)
+            task.add_done_callback(record.media_tasks.discard)
 
     await pc.setRemoteDescription(RTCSessionDescription(
         sdp=str(body.get("sdp") or ""),
@@ -273,6 +275,7 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
             await record.audio_output.put(None)
         if record.media_events is not None:
             await record.media_events.put(None)
+        await _cancel_media_tasks(record)
         if record.rtc_peer is not None:
             with suppress(Exception):
                 await record.rtc_peer.close()
@@ -303,6 +306,16 @@ def _rtc_configuration(ice_servers: list[dict]) -> RTCConfiguration:
 async def _emit_media_event(record: RtcSessionRecord, event: dict) -> None:
     if record.media_events is not None:
         await record.media_events.put(event)
+
+
+async def _cancel_media_tasks(record: RtcSessionRecord) -> None:
+    tasks = list(record.media_tasks)
+    if not tasks:
+        return
+    for task in tasks:
+        task.cancel()
+    await asyncio.gather(*tasks, return_exceptions=True)
+    record.media_tasks.clear()
 
 
 async def _ingest_media_audio(record: RtcSessionRecord, pcm16: bytes, sample_rate: int | None) -> None:

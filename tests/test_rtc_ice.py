@@ -134,3 +134,31 @@ def test_private_relay_candidates_are_rewritten_to_public_turn_addr(monkeypatch)
     assert "10.244.0.130 49159 typ relay" not in rewritten
     assert "176.149.222.82 49159 typ relay" in rewritten
     assert "10.244.0.205 42599 typ host" in rewritten
+
+
+def test_private_relay_candidates_are_duplicated_for_all_browser_turn_addrs(monkeypatch):
+    monkeypatch.setenv(
+        "VOX_RTC_TURN_URLS",
+        ",".join([
+            "turn:turn.maix.ovh:3478?transport=udp",
+            "turn:172.198.1.55:3478?transport=udp",
+            "turn:turn.maix.ovh:3478?transport=tcp",
+        ]),
+    )
+    addrs = {
+        "turn.maix.ovh": "176.149.222.82",
+        "172.198.1.55": "172.198.1.55",
+    }
+    monkeypatch.setattr("vox.server.rtc_ice._resolve_public_addr", lambda host: addrs[host])
+    sdp = "\r\n".join([
+        "v=0",
+        "a=candidate:relay 1 udp 16777215 10.244.0.130 49159 typ relay raddr 10.244.0.205 rport 47668",
+        "",
+    ])
+
+    rewritten = rewrite_private_relay_candidates(sdp)
+
+    assert "10.244.0.130 49159 typ relay" not in rewritten
+    assert "176.149.222.82 49159 typ relay" in rewritten
+    assert "172.198.1.55 49159 typ relay" in rewritten
+    assert rewritten.count("49159 typ relay") == 2

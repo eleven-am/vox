@@ -31,10 +31,10 @@
       gap: 6px;
       font-size: 14px;
     }
-    input, textarea, button {
+    input, textarea, button, select {
       font: inherit;
     }
-    input, textarea {
+    input, textarea, select {
       width: 100%;
       box-sizing: border-box;
       padding: 8px 10px;
@@ -149,6 +149,13 @@
         Voice
         <input id="voice" value="af_heart">
       </label>
+      <label>
+        ICE policy
+        <select id="icePolicy">
+          <option value="all">All candidates</option>
+          <option value="relay">TURN relay only</option>
+        </select>
+      </label>
     </section>
 
     <section class="status-grid">
@@ -193,6 +200,7 @@
     const sttModelInput = document.querySelector("#sttModel");
     const ttsModelInput = document.querySelector("#ttsModel");
     const voiceInput = document.querySelector("#voice");
+    const icePolicyInput = document.querySelector("#icePolicy");
     const connectBtn = document.querySelector("#connectBtn");
     const disconnectBtn = document.querySelector("#disconnectBtn");
     const sendTextBtn = document.querySelector("#sendTextBtn");
@@ -242,11 +250,53 @@
       const at = document.createElement("span");
       at.textContent = new Date().toLocaleTimeString();
       const text = document.createElement("strong");
-      const suffix = payload.state ? ` ${payload.state}` : payload.response_id ? ` ${payload.response_id}` : "";
+      const suffix = payload.state
+        ? ` ${payload.state}`
+        : payload.candidateType
+          ? ` ${payload.candidateType}`
+          : payload.response_id
+            ? ` ${payload.response_id}`
+            : "";
       text.textContent = `${type}${suffix}`;
       row.append(at, text);
       timelineEl.prepend(row);
       while (timelineEl.children.length > 80) timelineEl.lastChild.remove();
+    }
+
+    function candidateType(candidate) {
+      if (!candidate) return "end";
+      const text = typeof candidate === "string" ? candidate : candidate.candidate || "";
+      const match = text.match(/\styp\s([a-z0-9]+)/i);
+      return match ? match[1] : "unknown";
+    }
+
+    function countSdpCandidates(sdp) {
+      if (!sdp) return 0;
+      return sdp.split(/\r?\n/).filter((line) => line.startsWith("a=candidate:")).length;
+    }
+
+    async function waitForIceGathering(timeoutMs = 8000) {
+      if (!pc || pc.iceGatheringState === "complete") return { completed: true };
+      return new Promise((resolve) => {
+        const timeout = window.setTimeout(() => {
+          cleanup();
+          resolve({ completed: false, warning: `ICE gathering timed out after ${timeoutMs}ms` });
+        }, timeoutMs);
+
+        function onStateChange() {
+          if (pc && pc.iceGatheringState === "complete") {
+            cleanup();
+            resolve({ completed: true });
+          }
+        }
+
+        function cleanup() {
+          window.clearTimeout(timeout);
+          if (pc) pc.removeEventListener("icegatheringstatechange", onStateChange);
+        }
+
+        pc.addEventListener("icegatheringstatechange", onStateChange);
+      });
     }
 
     async function attachAssistantAudio() {
@@ -323,7 +373,10 @@
       log("session", session);
       timeline("session", { session_id: sessionId });
 
-      pc = new RTCPeerConnection({ iceServers: session.ice_servers });
+      pc = new RTCPeerConnection({
+        iceServers: session.ice_servers,
+        iceTransportPolicy: icePolicyInput.value
+      });
       pc.ontrack = (event) => {
         remoteStream = event.streams[0];
         assistantAudio.srcObject = remoteStream;
@@ -332,11 +385,19 @@
       };
       pc.onicecandidate = async (event) => {
         const candidate = event.candidate ? event.candidate.toJSON() : null;
+        const type = candidateType(candidate);
+        log("local.ice_candidate", { type, candidate });
+        timeline("local.ice_candidate", { candidateType: type });
         if (!mediaToken) {
           pendingCandidates.push(candidate);
           return;
         }
-        await postJson(`/v1/rtc/sessions/${sessionId}/candidates`, { candidate }, mediaToken);
+        try {
+          await postJson(`/v1/rtc/sessions/${sessionId}/candidates`, { candidate }, mediaToken);
+        } catch (error) {
+          log("candidate.error", { message: error.message, type });
+          timeline("candidate.error", { candidateType: type });
+        }
       };
       pc.onconnectionstatechange = () => {
         setStatus(peerStateEl, pc.connectionState);
@@ -345,6 +406,22 @@
       pc.oniceconnectionstatechange = () => {
         setStatus(iceStateEl, pc.iceConnectionState);
         log("pc.iceConnectionState", { state: pc.iceConnectionState });
+      };
+      pc.onicegatheringstatechange = () => {
+        log("pc.iceGatheringState", {
+          state: pc.iceGatheringState,
+          localCandidateCount: countSdpCandidates(pc.localDescription && pc.localDescription.sdp)
+        });
+      };
+      pc.onicecandidateerror = (event) => {
+        log("local.ice_candidate_error", {
+          url: event.url,
+          address: event.address,
+          port: event.port,
+          errorCode: event.errorCode,
+          errorText: event.errorText
+        });
+        timeline("local.ice_candidate_error", { candidateType: event.errorCode || "error" });
       };
 
       micStream = await navigator.mediaDevices.getUserMedia({
@@ -360,9 +437,20 @@
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+      const gatherResult = await waitForIceGathering();
+      const localDescription = pc.localDescription;
+      if (!localDescription || !localDescription.sdp) {
+        throw new Error("Local SDP offer is missing after setLocalDescription");
+      }
+      log("offer.ready", {
+        iceGatheringState: pc.iceGatheringState,
+        localCandidateCount: countSdpCandidates(localDescription.sdp),
+        warning: gatherResult.warning || null
+      });
+      timeline("offer.ready", { candidateType: String(countSdpCandidates(localDescription.sdp)) });
       const answer = await postJson(
         `/v1/rtc/sessions/${sessionId}/offer`,
-        { type: pc.localDescription.type, sdp: pc.localDescription.sdp },
+        { type: localDescription.type, sdp: localDescription.sdp },
         session.client_token
       );
       mediaToken = answer.media_token;

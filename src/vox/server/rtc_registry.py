@@ -4,7 +4,7 @@ import asyncio
 import hashlib
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -22,6 +22,7 @@ class RtcSessionRecord:
     orchestrator: Any | None = None
     media_events: asyncio.Queue[dict | None] | None = None
     audio_output: asyncio.Queue[tuple[bytes, int] | None] | None = None
+    media_tasks: set[asyncio.Task] = field(default_factory=set)
 
 
 class RtcSessionRegistry:
