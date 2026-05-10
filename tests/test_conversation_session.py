@@ -130,6 +130,7 @@ def _build_session(
     adapter: TTSAdapter | None = None,
     policy: TurnPolicy | None = None,
     audio_preprocessor=None,
+    pace_response_done_to_audio: bool = False,
 ) -> tuple[ConversationSession, EventCollector, ScriptedTTSAdapter]:
     tts = adapter or ScriptedTTSAdapter()
     scheduler = MockScheduler(tts)
@@ -143,6 +144,7 @@ def _build_session(
         policy=policy or TurnPolicy(min_interrupt_duration_ms=50, max_endpointing_delay_ms=200),
         interrupt_classifier=_AcceptAllClassifier(),
         audio_preprocessor=audio_preprocessor,
+        pace_response_done_to_audio=pace_response_done_to_audio,
     )
     session = ConversationSession(scheduler=scheduler, config=config, on_event=collector)
     return session, collector, tts
@@ -292,6 +294,38 @@ class TestTTSHappyPath:
         assert "thinking" in states
         assert "speaking" in states
         assert "idle" in states
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_paced_response_done_stays_speaking_until_audio_playout(self):
+        class LongChunkTTS(ScriptedTTSAdapter):
+            async def synthesize(self, text: str, **_kwargs):
+                self.last_text = text
+                self.texts.append(text)
+                audio = np.full(4_800, 0.01, dtype=np.float32).tobytes()
+                yield SynthesizeChunk(audio=audio, sample_rate=24_000, is_final=False)
+                yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
+
+        session, collector, _ = _build_session(
+            adapter=LongChunkTTS(),
+            pace_response_done_to_audio=True,
+        )
+        await session.start()
+
+        await session.submit_response_text("paced reply")
+        await asyncio.sleep(0.05)
+        await _drain_events(session)
+
+        assert collector.by_type(WIRE_AUDIO_DELTA)
+        assert not collector.by_type(WIRE_RESPONSE_DONE)
+        assert session.state == TurnState.SPEAKING
+
+        await asyncio.sleep(0.2)
+        await _drain_events(session)
+
+        assert collector.by_type(WIRE_RESPONSE_DONE)
+        assert session.state == TurnState.IDLE
 
         await session.close()
 

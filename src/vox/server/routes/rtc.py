@@ -182,7 +182,10 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
 
     await websocket.accept()
     scheduler = websocket.app.state.scheduler
-    orchestrator = ConversationOrchestrator(scheduler=scheduler)
+    orchestrator = ConversationOrchestrator(
+        scheduler=scheduler,
+        pace_response_done_to_audio=True,
+    )
     record.orchestrator = orchestrator
 
     async def emit_events() -> None:

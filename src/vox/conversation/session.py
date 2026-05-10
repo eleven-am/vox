@@ -100,6 +100,7 @@ class ConversationConfig:
 
     interrupt_classifier: InterruptClassifier | None = None
     audio_preprocessor: AudioPreprocessor | None = None
+    pace_response_done_to_audio: bool = False
 
     def __post_init__(self) -> None:
         if self.policy is None:
@@ -189,6 +190,7 @@ class ConversationSession:
         self._audio_sequence: int = 0
         self._active_response_id: str | None = None
         self._last_cancelled_response_id: str | None = None
+        self._playout_end_at: float = 0.0
 
 
         self._flutter_cooldown_until: float = 0.0
@@ -534,6 +536,7 @@ class ConversationSession:
         self._response_stream = stream
         self._active_response_id = response_id
         self._last_cancelled_response_id = None
+        self._playout_end_at = 0.0
         self._audio_sequence = 0
         await self._event_queue.put(TurnEvent(type=TurnEventType.RESPONSE_STARTED))
         await self._emit({"type": WIRE_RESPONSE_CREATED, "response_id": response_id})
@@ -584,6 +587,7 @@ class ConversationSession:
                 elif full_text:
                     self._pipeline.add_assistant_turn(full_text)
 
+                await self._wait_for_estimated_playout()
                 await self._event_queue.put(TurnEvent(type=TurnEventType.TTS_COMPLETED))
                 await self._emit({
                     "type": WIRE_RESPONSE_DONE,
@@ -659,6 +663,23 @@ class ConversationSession:
             "response_id": self._active_response_id,
             "sequence": sequence,
         })
+        self._mark_estimated_playout(encoded_audio, output_sample_rate)
+
+    def _mark_estimated_playout(self, pcm16_audio: bytes, sample_rate: int) -> None:
+        if not self._config.pace_response_done_to_audio:
+            return
+        if sample_rate <= 0 or not pcm16_audio:
+            return
+        duration_s = len(pcm16_audio) / float(sample_rate * 2)
+        now = time.monotonic()
+        self._playout_end_at = max(now, self._playout_end_at) + duration_s
+
+    async def _wait_for_estimated_playout(self) -> None:
+        if not self._config.pace_response_done_to_audio:
+            return
+        delay_s = self._playout_end_at - time.monotonic()
+        if delay_s > 0:
+            await asyncio.sleep(delay_s)
 
 
 
@@ -684,10 +705,12 @@ class ConversationSession:
                     "response_id": self._active_response_id,
                     "sequence": sequence,
                 })
+                self._mark_estimated_playout(audio, sample_rate)
 
         elif action.type == TurnActionType.FLUSH_OUTPUT:
             self._pending_audio = []
             self._paused = False
+            self._playout_end_at = 0.0
             await self._emit({
                 "type": WIRE_AUDIO_CLEAR,
                 "response_id": self._active_response_id or self._last_cancelled_response_id,
@@ -706,6 +729,7 @@ class ConversationSession:
                 with suppress(asyncio.CancelledError, Exception):
                     await self._tts_task
             self._tts_task = None
+            self._playout_end_at = 0.0
             if stream is not None and self._active_response_id == stream.response_id:
                 self._active_response_id = None
             self._response_stream = None

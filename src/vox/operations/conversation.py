@@ -296,8 +296,9 @@ def _wire_event_to_session_event(event: dict) -> ConvEvent | None:
 
 class ConversationOrchestrator:
 
-    def __init__(self, *, scheduler: Any) -> None:
+    def __init__(self, *, scheduler: Any, pace_response_done_to_audio: bool = False) -> None:
         self._scheduler = scheduler
+        self._pace_response_done_to_audio = pace_response_done_to_audio
         self._session: ConversationSession | None = None
         self._config: ConversationSessionConfig | None = None
         self._events: asyncio.Queue[ConvEvent] = asyncio.Queue()
@@ -320,6 +321,7 @@ class ConversationOrchestrator:
             vad_backend=config.vad_backend,
             turn_detector=config.turn_detector,
             policy=policy,
+            pace_response_done_to_audio=self._pace_response_done_to_audio,
         )
         self._config = config
         self._session = ConversationSession(

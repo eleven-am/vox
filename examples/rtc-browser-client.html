@@ -362,7 +362,13 @@
       const candidates = pendingCandidates;
       pendingCandidates = [];
       for (const candidate of candidates) {
-        await postJson(`/v1/rtc/sessions/${sessionId}/candidates`, { candidate }, mediaToken);
+        const type = candidateType(candidate);
+        try {
+          await postJson(`/v1/rtc/sessions/${sessionId}/candidates`, { candidate }, mediaToken);
+        } catch (error) {
+          log("candidate.error", { message: error.message, type });
+          timeline("candidate.error", { candidateType: type });
+        }
       }
     }
 
@@ -454,10 +460,10 @@
         session.client_token
       );
       mediaToken = answer.media_token;
-      await pc.setRemoteDescription({ type: answer.type, sdp: answer.sdp });
-      await flushCandidates();
       log("answer", { session_id: answer.session_id, type: answer.type, events_url: answer.events_url });
       timeline("answer", { session_id: answer.session_id });
+      await pc.setRemoteDescription({ type: answer.type, sdp: answer.sdp });
+      await flushCandidates();
 
       eventSource = new EventSource(`${httpBaseInput.value.replace(/\/$/, "")}${answer.events_url}`);
       eventSource.onmessage = (event) => {
