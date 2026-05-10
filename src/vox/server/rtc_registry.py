@@ -19,9 +19,10 @@ class RtcSessionRecord:
     closed: bool = False
     media_token_hash: str = ""
     rtc_peer: Any | None = None
+    audio_output_track: Any | None = None
     orchestrator: Any | None = None
     media_events: asyncio.Queue[dict | None] | None = None
-    audio_output: asyncio.Queue[tuple[bytes, int] | None] | None = None
+    audio_output: asyncio.Queue[Any] | None = None
     media_tasks: set[asyncio.Task] = field(default_factory=set)
 
 

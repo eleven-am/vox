@@ -15,6 +15,7 @@ from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisco
 from fastapi.responses import StreamingResponse
 
 from vox.operations.conversation import (
+    ConvAudioClearEvent,
     ConvAudioDeltaEvent,
     ConvDoneEvent,
     ConversationOrchestrator,
@@ -73,7 +74,8 @@ async def create_rtc_answer(request: Request, session_id: str) -> dict:
     record.rtc_peer = pc
     if record.audio_output is None:
         record.audio_output = asyncio.Queue()
-    pc.addTrack(RtcAudioOutputTrack(record.audio_output))
+    record.audio_output_track = RtcAudioOutputTrack(record.audio_output)
+    pc.addTrack(record.audio_output_track)
 
     @pc.on("connectionstatechange")
     async def on_connectionstatechange() -> None:
@@ -182,9 +184,20 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
 
     await websocket.accept()
     scheduler = websocket.app.state.scheduler
+
+    async def send_rtc_audio(event: ConvAudioDeltaEvent) -> None:
+        if record.audio_output_track is not None:
+            await record.audio_output_track.enqueue(base64.b64decode(event.audio_b64), event.sample_rate)
+
+    async def wait_for_rtc_playout() -> None:
+        if record.audio_output_track is not None:
+            await record.audio_output_track.wait_until_drained()
+
     orchestrator = ConversationOrchestrator(
         scheduler=scheduler,
         pace_response_done_to_audio=True,
+        audio_sink=send_rtc_audio,
+        wait_for_output_playout=wait_for_rtc_playout,
     )
     record.orchestrator = orchestrator
 
@@ -194,6 +207,8 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
                 if record.audio_output is not None:
                     await record.audio_output.put((base64.b64decode(event.audio_b64), event.sample_rate))
                 continue
+            if isinstance(event, ConvAudioClearEvent) and record.audio_output_track is not None:
+                record.audio_output_track.clear()
             wire = _event_to_wire(event)
             if wire is not None:
                 wire.setdefault("session_id", session_id)

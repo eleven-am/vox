@@ -101,6 +101,7 @@ class ConversationConfig:
     interrupt_classifier: InterruptClassifier | None = None
     audio_preprocessor: AudioPreprocessor | None = None
     pace_response_done_to_audio: bool = False
+    wait_for_output_playout: Callable[[], Awaitable[None]] | None = None
 
     def __post_init__(self) -> None:
         if self.policy is None:
@@ -675,6 +676,9 @@ class ConversationSession:
         self._playout_end_at = max(now, self._playout_end_at) + duration_s
 
     async def _wait_for_estimated_playout(self) -> None:
+        if self._config.wait_for_output_playout is not None:
+            await self._config.wait_for_output_playout()
+            return
         if not self._config.pace_response_done_to_audio:
             return
         delay_s = self._playout_end_at - time.monotonic()

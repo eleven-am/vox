@@ -4,6 +4,7 @@ import asyncio
 import fractions
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 
 import av
 import numpy as np
@@ -12,10 +13,18 @@ from aiortc.mediastreams import MediaStreamError
 from av.audio.resampler import AudioResampler
 
 
+@dataclass
+class RtcAudioDrain:
+    future: asyncio.Future[None]
+
+
+RtcAudioQueueItem = tuple[bytes, int] | RtcAudioDrain | None
+
+
 class RtcAudioOutputTrack(MediaStreamTrack):
     kind = "audio"
 
-    def __init__(self, queue: asyncio.Queue[tuple[bytes, int] | None]) -> None:
+    def __init__(self, queue: asyncio.Queue[RtcAudioQueueItem]) -> None:
         super().__init__()
         self._queue = queue
         self._timestamp = 0
@@ -23,11 +32,34 @@ class RtcAudioOutputTrack(MediaStreamTrack):
         self._pending = np.empty(0, dtype=np.int16)
         self._sample_rate = 48_000
 
+    async def enqueue(self, pcm16: bytes, sample_rate: int) -> None:
+        await self._queue.put((pcm16, sample_rate))
+
+    async def wait_until_drained(self) -> None:
+        loop = asyncio.get_running_loop()
+        marker = RtcAudioDrain(loop.create_future())
+        await self._queue.put(marker)
+        await marker.future
+
+    def clear(self) -> None:
+        self._pending = np.empty(0, dtype=np.int16)
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if isinstance(item, RtcAudioDrain) and not item.future.done():
+                item.future.set_result(None)
+
     async def recv(self) -> av.AudioFrame:
         while self._pending.size == 0:
             item = await self._queue.get()
             if item is None:
                 raise MediaStreamError
+            if isinstance(item, RtcAudioDrain):
+                if not item.future.done():
+                    item.future.set_result(None)
+                continue
             pcm16, sample_rate = item
             self._sample_rate = int(sample_rate) or self._sample_rate
             self._pending = np.frombuffer(pcm16, dtype=np.int16)

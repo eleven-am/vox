@@ -330,6 +330,43 @@ class TestTTSHappyPath:
         await session.close()
 
     @pytest.mark.asyncio
+    async def test_response_done_waits_for_output_playout_callback(self):
+        released = asyncio.Event()
+        waiter_entered = asyncio.Event()
+
+        class OneChunkTTS(ScriptedTTSAdapter):
+            async def synthesize(self, text: str, **_kwargs):
+                self.last_text = text
+                self.texts.append(text)
+                audio = np.full(1_024, 0.01, dtype=np.float32).tobytes()
+                yield SynthesizeChunk(audio=audio, sample_rate=24_000, is_final=False)
+                yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
+
+        async def wait_for_output_playout() -> None:
+            waiter_entered.set()
+            await released.wait()
+
+        session, collector, _ = _build_session(adapter=OneChunkTTS())
+        session._config.wait_for_output_playout = wait_for_output_playout
+        await session.start()
+
+        await session.submit_response_text("wait for output")
+        await asyncio.wait_for(waiter_entered.wait(), timeout=1.0)
+        await _drain_events(session)
+
+        assert collector.by_type(WIRE_AUDIO_DELTA)
+        assert not collector.by_type(WIRE_RESPONSE_DONE)
+        assert session.state == TurnState.SPEAKING
+
+        released.set()
+        await _drain_events(session)
+
+        assert collector.by_type(WIRE_RESPONSE_DONE)
+        assert session.state == TurnState.IDLE
+
+        await session.close()
+
+    @pytest.mark.asyncio
     async def test_streamed_response_starts_on_sentence_boundary_before_commit(self):
         session, collector, tts = _build_session()
         await session.start()

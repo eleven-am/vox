@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
@@ -296,9 +296,18 @@ def _wire_event_to_session_event(event: dict) -> ConvEvent | None:
 
 class ConversationOrchestrator:
 
-    def __init__(self, *, scheduler: Any, pace_response_done_to_audio: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        scheduler: Any,
+        pace_response_done_to_audio: bool = False,
+        audio_sink: Callable[[ConvAudioDeltaEvent], Awaitable[None]] | None = None,
+        wait_for_output_playout: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         self._scheduler = scheduler
         self._pace_response_done_to_audio = pace_response_done_to_audio
+        self._audio_sink = audio_sink
+        self._wait_for_output_playout = wait_for_output_playout
         self._session: ConversationSession | None = None
         self._config: ConversationSessionConfig | None = None
         self._events: asyncio.Queue[ConvEvent] = asyncio.Queue()
@@ -322,6 +331,7 @@ class ConversationOrchestrator:
             turn_detector=config.turn_detector,
             policy=policy,
             pace_response_done_to_audio=self._pace_response_done_to_audio,
+            wait_for_output_playout=self._wait_for_output_playout,
         )
         self._config = config
         self._session = ConversationSession(
@@ -386,6 +396,9 @@ class ConversationOrchestrator:
     async def _on_engine_event(self, event: dict) -> None:
         mapped = _wire_event_to_session_event(event)
         if mapped is None:
+            return
+        if self._audio_sink is not None and isinstance(mapped, ConvAudioDeltaEvent):
+            await self._audio_sink(mapped)
             return
         await self._events.put(mapped)
 
