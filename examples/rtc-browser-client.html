@@ -275,30 +275,6 @@
       return sdp.split(/\r?\n/).filter((line) => line.startsWith("a=candidate:")).length;
     }
 
-    async function waitForIceGathering(timeoutMs = 8000) {
-      if (!pc || pc.iceGatheringState === "complete") return { completed: true };
-      return new Promise((resolve) => {
-        const timeout = window.setTimeout(() => {
-          cleanup();
-          resolve({ completed: false, warning: `ICE gathering timed out after ${timeoutMs}ms` });
-        }, timeoutMs);
-
-        function onStateChange() {
-          if (pc && pc.iceGatheringState === "complete") {
-            cleanup();
-            resolve({ completed: true });
-          }
-        }
-
-        function cleanup() {
-          window.clearTimeout(timeout);
-          if (pc) pc.removeEventListener("icegatheringstatechange", onStateChange);
-        }
-
-        pc.addEventListener("icegatheringstatechange", onStateChange);
-      });
-    }
-
     async function attachAssistantAudio() {
       if (!remoteStream) return;
       if (assistantAudio.srcObject !== remoteStream) {
@@ -443,7 +419,6 @@
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      const gatherResult = await waitForIceGathering();
       const localDescription = pc.localDescription;
       if (!localDescription || !localDescription.sdp) {
         throw new Error("Local SDP offer is missing after setLocalDescription");
@@ -451,7 +426,7 @@
       log("offer.ready", {
         iceGatheringState: pc.iceGatheringState,
         localCandidateCount: countSdpCandidates(localDescription.sdp),
-        warning: gatherResult.warning || null
+        trickle: true
       });
       timeline("offer.ready", { candidateType: String(countSdpCandidates(localDescription.sdp)) });
       const answer = await postJson(
