@@ -1,49 +1,87 @@
 from __future__ import annotations
 
-import asyncio
 import json
+from collections.abc import AsyncIterator
 
-import numpy as np
-from aiortc import RTCPeerConnection
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from tests.fakes import FakeScheduler
-from vox.core.adapter import TTSAdapter
-from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+from vox.operations.conversation import (
+    ConvDoneEvent,
+    ConversationSessionConfig,
+    ConvEvent,
+    ConvResponseCommittedEvent,
+    ConvResponseCreatedEvent,
+    ConvResponseDoneEvent,
+    ConvSessionCreatedEvent,
+)
+from vox.server.livekit_config import LiveKitConfig, decode_unverified_livekit_token
+from vox.server.routes import rtc as rtc_routes
 from vox.server.routes.rtc import router as rtc_router
 
 
-class ScriptedTTS(TTSAdapter):
-    def info(self) -> AdapterInfo:
-        return AdapterInfo(
-            name="scripted-tts",
-            type=ModelType.TTS,
-            architectures=("scripted",),
-            default_sample_rate=24_000,
-            supported_formats=(ModelFormat.ONNX,),
-        )
+class FakeLiveKitConversation:
+    def __init__(self, **kwargs) -> None:
+        import asyncio
 
-    def load(self, *a, **k): ...
-    def unload(self): ...
-    @property
-    def is_loaded(self): return True
-    def list_voices(self): return [VoiceInfo(id="default", name="Default")]
+        self.config: ConversationSessionConfig | None = None
+        self.events_queue: asyncio.Queue[ConvEvent] = asyncio.Queue()
+        self.response_counter = 0
+        self.pending_response_id = ""
+        self.text = ""
 
-    async def synthesize(self, text: str, **_):
-        yield SynthesizeChunk(
-            audio=np.full(512, 0.01, dtype=np.float32).tobytes(),
-            sample_rate=24_000,
-            is_final=False,
-        )
-        await asyncio.sleep(0.01)
-        yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
+    async def start_session(self, config: ConversationSessionConfig) -> None:
+        self.config = config
+        await self.events_queue.put(ConvSessionCreatedEvent(config=config))
+
+    async def start_response(self) -> None:
+        self.response_counter += 1
+        self.pending_response_id = f"resp_{self.response_counter}"
+        self.text = ""
+        await self.events_queue.put(ConvResponseCreatedEvent(response_id=self.pending_response_id))
+
+    async def append_response_text(self, text: str) -> None:
+        if not self.pending_response_id:
+            await self.start_response()
+        self.text += text
+
+    async def commit_response(self) -> None:
+        response_id = self.pending_response_id or "resp_1"
+        self.pending_response_id = ""
+        await self.events_queue.put(ConvResponseCommittedEvent(response_id=response_id))
+        await self.events_queue.put(ConvResponseDoneEvent(response_id=response_id))
+
+    async def cancel_response(self) -> None:
+        pass
+
+    async def report_error(self, message: str) -> None:
+        pass
+
+    async def end_of_stream(self) -> None:
+        await self.events_queue.put(ConvDoneEvent())
+
+    async def close(self) -> None:
+        pass
+
+    async def events(self) -> AsyncIterator[ConvEvent]:
+        while True:
+            event = await self.events_queue.get()
+            yield event
+            if isinstance(event, ConvDoneEvent):
+                return
 
 
 def _build_app() -> FastAPI:
     app = FastAPI()
-    app.state.scheduler = FakeScheduler(ScriptedTTS())
+    app.state.scheduler = FakeScheduler()
+    app.state.livekit_config = LiveKitConfig(
+        url="ws://livekit.test",
+        api_key="test-key",
+        api_secret="test-secret",
+        token_ttl_s=120,
+    )
     app.include_router(rtc_router)
     return app
 
@@ -65,97 +103,77 @@ def _drain_until(ws, predicate, max_events: int = 50) -> list[dict]:
     return events
 
 
-async def _make_offer() -> dict:
-    peer = RTCPeerConnection()
-    try:
-        peer.addTransceiver("audio", direction="sendrecv")
-        offer = await peer.createOffer()
-        await peer.setLocalDescription(offer)
-        return {
-            "type": peer.localDescription.type,
-            "sdp": peer.localDescription.sdp,
-        }
-    finally:
-        await peer.close()
-
-
-def test_create_rtc_session_returns_ephemeral_binding():
+def test_create_rtc_session_returns_livekit_join_binding():
     client = TestClient(_build_app())
 
     response = client.post("/v1/rtc/sessions")
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["provider"] == "livekit"
     assert payload["session_id"].startswith("rtc_")
-    assert payload["client_token"].startswith("rtc_client_")
+    assert payload["room"].startswith("vox-")
+    assert payload["livekit_url"] == "ws://livekit.test"
     assert payload["join_token_ttl_seconds"] == 120
-    assert payload["expires_at"]
-    assert payload["ice_servers"] == []
+    assert payload["control_url"] == f"/v1/rtc/sessions/{payload['session_id']}/control"
+    claims = decode_unverified_livekit_token(payload["client_token"])
+    assert claims["iss"] == "test-key"
+    assert claims["sub"] == payload["participant_identity"]
+    assert claims["video"]["room"] == payload["room"]
+    assert claims["video"]["roomJoin"] is True
+    assert claims["video"]["canPublish"] is True
+    assert claims["video"]["canSubscribe"] is True
 
 
-def test_rtc_offer_returns_answer_media_token_and_events_url():
+def test_create_rtc_session_requires_livekit_config(monkeypatch):
+    for key in (
+        "VOX_LIVEKIT_URL",
+        "LIVEKIT_URL",
+        "VOX_LIVEKIT_API_KEY",
+        "LIVEKIT_API_KEY",
+        "VOX_LIVEKIT_API_SECRET",
+        "LIVEKIT_API_SECRET",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    app = FastAPI()
+    app.state.scheduler = FakeScheduler()
+    app.include_router(rtc_router)
+    client = TestClient(app)
+
+    response = client.post("/v1/rtc/sessions")
+
+    assert response.status_code == 503
+    assert "LIVEKIT_URL" in response.json()["detail"]
+
+
+def test_rtc_offer_endpoint_is_gone():
     client = TestClient(_build_app())
     session = client.post("/v1/rtc/sessions").json()
-    offer = asyncio.run(_make_offer())
 
     response = client.post(
         f"/v1/rtc/sessions/{session['session_id']}/offer",
-        json={
-            **offer,
-            "client_token": session["client_token"],
-        },
+        json={"type": "offer", "sdp": "v=0"},
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["session_id"] == session["session_id"]
-    assert payload["media_token"].startswith("rtc_media_")
-    assert payload["events_url"].startswith(f"/v1/rtc/sessions/{session['session_id']}/events?token=rtc_media_")
-    assert payload["type"] == "answer"
-    assert "m=audio" in payload["sdp"]
+    assert response.status_code == 410
+    assert "LiveKit-backed" in response.json()["detail"]
 
 
-def test_rtc_offer_rejects_invalid_client_token():
+def test_rtc_candidate_endpoint_is_gone():
     client = TestClient(_build_app())
     session = client.post("/v1/rtc/sessions").json()
-    offer = asyncio.run(_make_offer())
 
-    response = client.post(
-        f"/v1/rtc/sessions/{session['session_id']}/offer",
-        json={
-            **offer,
-            "client_token": "wrong",
-        },
-    )
-
-    assert response.status_code == 401
-
-
-def test_rtc_candidate_endpoint_accepts_end_of_candidates():
-    client = TestClient(_build_app())
-    session = client.post("/v1/rtc/sessions").json()
-    offer = asyncio.run(_make_offer())
-
-    answer = client.post(
-        f"/v1/rtc/sessions/{session['session_id']}/offer",
-        json={
-            **offer,
-            "client_token": session["client_token"],
-        },
-    ).json()
     response = client.post(
         f"/v1/rtc/sessions/{session['session_id']}/candidates",
-        json={
-            "media_token": answer["media_token"],
-            "candidate": None,
-        },
+        json={"candidate": None},
     )
 
-    assert response.status_code == 200
-    assert response.json() == {"ok": True}
+    assert response.status_code == 410
+    assert "LiveKit handles ICE" in response.json()["detail"]
 
 
-def test_rtc_control_session_update_emits_bound_session_created():
+def test_rtc_control_session_update_emits_bound_session_created(monkeypatch):
+    monkeypatch.setattr(rtc_routes, "LiveKitConversation", FakeLiveKitConversation)
     client = TestClient(_build_app())
     session = client.post("/v1/rtc/sessions").json()
 
@@ -164,6 +182,8 @@ def test_rtc_control_session_update_emits_bound_session_created():
         assert attached == {
             "type": "rtc.session.attached",
             "session_id": session["session_id"],
+            "provider": "livekit",
+            "room": session["room"],
         }
 
         ws.send_json({
@@ -181,7 +201,8 @@ def test_rtc_control_session_update_emits_bound_session_created():
     assert msg["session"]["stt_model"] == "fake-stt:1"
 
 
-def test_rtc_control_drops_audio_delta_events():
+def test_rtc_control_uses_livekit_media_instead_of_audio_delta(monkeypatch):
+    monkeypatch.setattr(rtc_routes, "LiveKitConversation", FakeLiveKitConversation)
     client = TestClient(_build_app())
     session = client.post("/v1/rtc/sessions").json()
 
@@ -203,7 +224,8 @@ def test_rtc_control_drops_audio_delta_events():
     assert all(e.get("session_id") == session["session_id"] for e in events)
 
 
-def test_rtc_control_rejects_audio_append_messages():
+def test_rtc_control_rejects_audio_append_messages(monkeypatch):
+    monkeypatch.setattr(rtc_routes, "LiveKitConversation", FakeLiveKitConversation)
     client = TestClient(_build_app())
     session = client.post("/v1/rtc/sessions").json()
 

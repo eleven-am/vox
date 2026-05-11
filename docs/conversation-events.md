@@ -6,8 +6,8 @@ streaming over WebSocket, gRPC, or Vox-hosted WebRTC.
 The conversation API is agent-facing. The caller owns LLM text generation. Vox
 owns VAD, STT, EOU scoring, turn state, TTS, and interruption signaling. With
 the WebSocket and gRPC APIs the caller also owns microphone capture and playback.
-With the RTC API, Vox owns the browser media connection and the caller owns the
-control stream.
+With the RTC API, Vox now delegates browser media transport to LiveKit and keeps
+the developer-owned control stream.
 
 ## Acoustic Echo Cancellation
 
@@ -56,11 +56,11 @@ default:
 
 ### RTC Session Control
 
-Vox can create short-lived RTC session bindings for browser WebRTC media plus a
-developer-owned control channel. The browser sends microphone audio to Vox over
-WebRTC and receives assistant audio over WebRTC. The developer backend attaches
-to the control WebSocket to configure the conversation and stream assistant text
-into Vox.
+Vox can create short-lived LiveKit room bindings for browser RTC media plus a
+developer-owned control channel. The browser sends microphone audio to LiveKit
+and receives assistant audio from a Vox LiveKit agent. The developer backend
+attaches to the control WebSocket to configure the conversation and stream
+assistant text into Vox.
 
 Create a session:
 
@@ -72,98 +72,23 @@ Response:
 
 ```json
 {
+  "provider": "livekit",
   "session_id": "rtc_...",
-  "client_token": "rtc_client_...",
+  "room": "vox-...",
+  "livekit_url": "wss://livekit.example.com",
+  "client_token": "<livekit browser JWT>",
+  "participant_identity": "rtc_...-browser",
   "expires_at": "2026-05-08T12:34:56+00:00",
   "join_token_ttl_seconds": 120,
-  "ice_servers": [
-    {
-      "urls": ["stun:turn.example.com:3478"]
-    },
-    {
-      "urls": ["turn:turn.example.com:3478?transport=udp", "turns:turn.example.com:5349"],
-      "username": "1760000000",
-      "credential": "<short-lived credential>"
-    }
-  ]
+  "control_url": "/v1/rtc/sessions/rtc_.../control"
 }
 ```
 
-The `client_token` is for the browser/media side and is single-use. Its expiry
-only controls how long the browser has to join; once joined, token expiry should
-not end an active call.
-
-Browser joins with an SDP offer:
-
-```http
-POST /v1/rtc/sessions/{session_id}/offer
-Authorization: Bearer rtc_client_...
-Content-Type: application/json
-```
-
-```json
-{
-  "type": "offer",
-  "sdp": "v=0\r\n..."
-}
-```
-
-The token may also be sent as `client_token` in the JSON body. The response is:
-
-```json
-{
-  "session_id": "rtc_...",
-  "media_token": "rtc_media_...",
-  "events_url": "/v1/rtc/sessions/rtc_.../events?token=rtc_media_...",
-  "type": "answer",
-  "sdp": "v=0\r\n..."
-}
-```
-
-The `media_token` is for media-side follow-up calls only. It is different from
-the single-use `client_token`.
-
-Browser receives Vox-side trickle ICE over Server-Sent Events:
-
-```http
-GET /v1/rtc/sessions/{session_id}/events?token=rtc_media_...
-Accept: text/event-stream
-```
-
-Each SSE message has an `event` matching the payload `type`. Important events:
-
-- `rtc.ice_candidate`: add `candidate` to the browser peer connection. If
-  `candidate` is `null`, call `addIceCandidate(null)` or otherwise mark end of
-  candidates in the browser stack.
-- `rtc.connection_state`: Vox peer connection state changed.
-- `rtc.ice_connection_state`: ICE state changed.
-- `rtc.ice_gathering_state`: Vox ICE gathering state changed.
-
-Browser sends its trickle ICE candidates back to Vox:
-
-```http
-POST /v1/rtc/sessions/{session_id}/candidates
-Authorization: Bearer rtc_media_...
-Content-Type: application/json
-```
-
-```json
-{
-  "candidate": {
-    "candidate": "candidate:...",
-    "sdpMid": "0",
-    "sdpMLineIndex": 0
-  }
-}
-```
-
-At end-of-candidates, send:
-
-```json
-{
-  "candidate": null
-}
-```
+The `client_token` is a LiveKit join token for the browser/media side. Its
+expiry controls how long the browser has to join; once joined, token expiry
+should not end an active call. Vox does not accept browser SDP offers, browser
+ICE candidates, or Vox-side trickle SSE events for LiveKit-backed RTC sessions.
+LiveKit owns that signaling path.
 
 Developer backend attaches to the control-only stream:
 
@@ -174,34 +99,29 @@ ws://localhost:11435/v1/rtc/sessions/{session_id}/control
 This stream accepts `session.update`, `response.start`, `response.delta`,
 `response.commit`, and `response.cancel`. It emits the same conversation events
 as `/v1/conversation`, but it does not emit `response.audio.delta`; assistant
-audio belongs on the WebRTC media path for this session.
+audio belongs on the LiveKit media path for this session.
 
 The expected RTC startup order is:
 
 1. Developer backend creates `POST /v1/rtc/sessions`.
-2. Developer backend gives `session_id`, `client_token`, and `ice_servers` to the
-   browser through its own application protocol.
-3. Browser creates a `RTCPeerConnection`, adds its microphone track with AEC
-   enabled, and posts the SDP offer to `/offer`.
-4. Browser applies Vox's SDP answer.
-5. Browser listens to `events_url` for Vox-side trickle ICE and posts browser ICE
-   candidates to `/candidates`.
-6. Developer backend opens `/control`, sends `session.update`, waits for
+2. Developer backend gives `livekit_url`, `room`, `client_token`, and
+   `session_id` to the browser through its own application protocol.
+3. Browser connects to `livekit_url` with the LiveKit SDK and `client_token`,
+   then publishes its microphone track with AEC enabled.
+4. Developer backend opens `/control`, sends `session.update`, waits for
    `session.created`, and then drives assistant text with `response.delta` and
    `response.commit`.
-7. Vox sends user transcripts and interruption events over `/control`; Vox sends
-   assistant audio over WebRTC.
+5. Vox joins the same LiveKit room as an agent, sends user transcripts and
+   interruption events over `/control`, and sends assistant audio over LiveKit.
 
-ICE servers are configured with environment variables:
+LiveKit is configured with environment variables:
 
 ```text
-VOX_RTC_STUN_URLS=stun:turn.horus:3478
-VOX_RTC_TURN_URLS=turn:turn.horus:3478?transport=udp,turns:turn.horus:5349
-VOX_RTC_TURN_SECRET=<coturn static-auth-secret>
-VOX_RTC_TURN_CREDENTIAL_TTL_SECONDS=3600
+VOX_LIVEKIT_URL=wss://livekit.example.com
+VOX_LIVEKIT_API_KEY=<livekit api key>
+VOX_LIVEKIT_API_SECRET=<livekit api secret>
+VOX_LIVEKIT_TOKEN_TTL_SECONDS=120
 ```
-
-For local-only use, leave these unset and Vox returns `ice_servers: []`.
 
 If a browser app is served from a different origin than Vox, enable CORS
 explicitly:
@@ -211,8 +131,8 @@ VOX_CORS_ORIGINS=http://localhost:8000,https://your-app.example.com
 ```
 
 A minimal native browser client is available at
-`examples/rtc-browser-client.html`. It uses browser WebRTC APIs directly; no npm
-RTC client package is required.
+`examples/rtc-browser-client.html`. It uses the LiveKit browser SDK from a CDN
+for direct testing.
 
 ### WebSocket
 

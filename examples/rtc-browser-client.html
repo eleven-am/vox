@@ -135,7 +135,7 @@
     <section class="grid">
       <label>
         Vox HTTP base
-        <input id="httpBase" value="https://vox.horus.maix.ovh">
+        <input id="httpBase" value="">
       </label>
       <label>
         STT model
@@ -149,18 +149,11 @@
         Voice
         <input id="voice" value="af_heart">
       </label>
-      <label>
-        ICE policy
-        <select id="icePolicy">
-          <option value="all">All candidates</option>
-          <option value="relay">TURN relay only</option>
-        </select>
-      </label>
     </section>
 
     <section class="status-grid">
-      <div class="status"><span>Peer</span><strong id="peerState">idle</strong></div>
-      <div class="status"><span>ICE</span><strong id="iceState">idle</strong></div>
+      <div class="status"><span>LiveKit</span><strong id="peerState">idle</strong></div>
+      <div class="status"><span>Room</span><strong id="iceState">idle</strong></div>
       <div class="status"><span>Playback</span><strong id="playbackState">idle</strong></div>
       <div class="status"><span>Turn</span><strong id="turnState">idle</strong></div>
       <div class="status"><span>Interruptions</span><strong id="interruptCount">0</strong></div>
@@ -195,12 +188,12 @@
     </section>
   </main>
 
+  <script src="https://cdn.jsdelivr.net/npm/livekit-client/dist/livekit-client.umd.min.js"></script>
   <script>
     const httpBaseInput = document.querySelector("#httpBase");
     const sttModelInput = document.querySelector("#sttModel");
     const ttsModelInput = document.querySelector("#ttsModel");
     const voiceInput = document.querySelector("#voice");
-    const icePolicyInput = document.querySelector("#icePolicy");
     const connectBtn = document.querySelector("#connectBtn");
     const disconnectBtn = document.querySelector("#disconnectBtn");
     const sendTextBtn = document.querySelector("#sendTextBtn");
@@ -216,14 +209,13 @@
     const interruptCountEl = document.querySelector("#interruptCount");
     const falsePositiveCountEl = document.querySelector("#falsePositiveCount");
 
-    let pc = null;
+    const isLocalPage = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+    httpBaseInput.value = isLocalPage ? "http://127.0.0.1:11436" : "https://vox.horus.maix.ovh";
+
+    let room = null;
     let controlWs = null;
-    let eventSource = null;
-    let mediaToken = null;
     let sessionId = null;
-    let micStream = null;
-    let remoteStream = null;
-    let pendingCandidates = [];
+    let remoteAudioTrack = null;
     let interruptions = 0;
     let falsePositives = 0;
 
@@ -263,30 +255,20 @@
       while (timelineEl.children.length > 80) timelineEl.lastChild.remove();
     }
 
-    function candidateType(candidate) {
-      if (!candidate) return "end";
-      const text = typeof candidate === "string" ? candidate : candidate.candidate || "";
-      const match = text.match(/\styp\s([a-z0-9]+)/i);
-      return match ? match[1] : "unknown";
-    }
-
-    function countSdpCandidates(sdp) {
-      if (!sdp) return 0;
-      return sdp.split(/\r?\n/).filter((line) => line.startsWith("a=candidate:")).length;
-    }
-
     async function attachAssistantAudio() {
-      if (!remoteStream) return;
-      if (assistantAudio.srcObject !== remoteStream) {
-        assistantAudio.srcObject = remoteStream;
+      if (!remoteAudioTrack) return;
+      try {
+        remoteAudioTrack.attach(assistantAudio);
+      } catch {
+        if (remoteAudioTrack.mediaStreamTrack) {
+          assistantAudio.srcObject = new MediaStream([remoteAudioTrack.mediaStreamTrack]);
+        }
       }
       assistantAudio.muted = false;
       await assistantAudio.play().catch(() => {});
     }
 
     function clearAssistantAudio() {
-      assistantAudio.pause();
-      assistantAudio.srcObject = null;
       setStatus(playbackStateEl, "cleared");
     }
 
@@ -333,138 +315,69 @@
       return response.json();
     }
 
-    async function flushCandidates() {
-      if (!mediaToken) return;
-      const candidates = pendingCandidates;
-      pendingCandidates = [];
-      for (const candidate of candidates) {
-        const type = candidateType(candidate);
-        try {
-          await postJson(`/v1/rtc/sessions/${sessionId}/candidates`, { candidate }, mediaToken);
-        } catch (error) {
-          log("candidate.error", { message: error.message, type });
-          timeline("candidate.error", { candidateType: type });
-        }
-      }
-    }
-
     async function connect() {
       connectBtn.disabled = true;
+      if (!window.LivekitClient) {
+        throw new Error("LiveKit browser SDK failed to load");
+      }
       const session = await postJson("/v1/rtc/sessions", {});
       sessionId = session.session_id;
       log("session", session);
       timeline("session", { session_id: sessionId });
 
-      pc = new RTCPeerConnection({
-        iceServers: session.ice_servers,
-        iceTransportPolicy: icePolicyInput.value
+      const { Room, RoomEvent, Track } = window.LivekitClient;
+      room = new Room({
+        adaptiveStream: true,
+        dynacast: true
       });
-      pc.ontrack = (event) => {
-        remoteStream = event.streams[0];
-        assistantAudio.srcObject = remoteStream;
-        log("track", { kind: event.track.kind });
-        timeline("track", { kind: event.track.kind });
-      };
-      pc.onicecandidate = async (event) => {
-        const candidate = event.candidate ? event.candidate.toJSON() : null;
-        const type = candidateType(candidate);
-        log("local.ice_candidate", { type, candidate });
-        timeline("local.ice_candidate", { candidateType: type });
-        if (!mediaToken) {
-          pendingCandidates.push(candidate);
-          return;
-        }
-        try {
-          await postJson(`/v1/rtc/sessions/${sessionId}/candidates`, { candidate }, mediaToken);
-        } catch (error) {
-          log("candidate.error", { message: error.message, type });
-          timeline("candidate.error", { candidateType: type });
-        }
-      };
-      pc.onconnectionstatechange = () => {
-        setStatus(peerStateEl, pc.connectionState);
-        log("pc.connectionState", { state: pc.connectionState });
-      };
-      pc.oniceconnectionstatechange = () => {
-        setStatus(iceStateEl, pc.iceConnectionState);
-        log("pc.iceConnectionState", { state: pc.iceConnectionState });
-      };
-      pc.onicegatheringstatechange = () => {
-        log("pc.iceGatheringState", {
-          state: pc.iceGatheringState,
-          localCandidateCount: countSdpCandidates(pc.localDescription && pc.localDescription.sdp)
+      room
+        .on(RoomEvent.ConnectionStateChanged, (state) => {
+          setStatus(peerStateEl, state);
+          log("livekit.connection_state", { state });
+        })
+        .on(RoomEvent.Connected, () => {
+          setStatus(iceStateEl, "connected");
+          timeline("livekit.connected", { room: session.room });
+        })
+        .on(RoomEvent.Disconnected, (reason) => {
+          setStatus(iceStateEl, "disconnected");
+          log("livekit.disconnected", { reason });
+          timeline("livekit.disconnected", { reason });
+        })
+        .on(RoomEvent.TrackSubscribed, (track, publication, participant) => {
+          log("livekit.track_subscribed", {
+            kind: track.kind,
+            source: publication.source,
+            participant: participant.identity
+          });
+          timeline("track", { kind: track.kind });
+          if (track.kind === Track.Kind.Audio) {
+            remoteAudioTrack = track;
+            attachAssistantAudio();
+          }
+        })
+        .on(RoomEvent.TrackUnsubscribed, (track) => {
+          if (track === remoteAudioTrack) {
+            track.detach();
+            remoteAudioTrack = null;
+          }
+        })
+        .on(RoomEvent.MediaDevicesError, (error) => {
+          log("livekit.media_devices_error", { message: error.message });
         });
-      };
-      pc.onicecandidateerror = (event) => {
-        log("local.ice_candidate_error", {
-          url: event.url,
-          address: event.address,
-          port: event.port,
-          errorCode: event.errorCode,
-          errorText: event.errorText
-        });
-        timeline("local.ice_candidate_error", { candidateType: event.errorCode || "error" });
-      };
 
-      micStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
+      await room.connect(session.livekit_url, session.client_token, { autoSubscribe: true });
+      await room.localParticipant.setMicrophoneEnabled(true, {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
       });
-      for (const track of micStream.getAudioTracks()) {
-        const settings = track.getSettings ? track.getSettings() : {};
-        log("mic.settings", {
-          echoCancellation: settings.echoCancellation,
-          noiseSuppression: settings.noiseSuppression,
-          autoGainControl: settings.autoGainControl,
-          sampleRate: settings.sampleRate,
-          channelCount: settings.channelCount
-        });
-        pc.addTrack(track, micStream);
+      for (const publication of room.localParticipant.audioTrackPublications.values()) {
+        const track = publication.track && publication.track.mediaStreamTrack;
+        if (track && track.getSettings) {
+          log("mic.settings", track.getSettings());
+        }
       }
-
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      const localDescription = pc.localDescription;
-      if (!localDescription || !localDescription.sdp) {
-        throw new Error("Local SDP offer is missing after setLocalDescription");
-      }
-      log("offer.ready", {
-        iceGatheringState: pc.iceGatheringState,
-        localCandidateCount: countSdpCandidates(localDescription.sdp),
-        trickle: true
-      });
-      timeline("offer.ready", { candidateType: String(countSdpCandidates(localDescription.sdp)) });
-      const answer = await postJson(
-        `/v1/rtc/sessions/${sessionId}/offer`,
-        { type: localDescription.type, sdp: localDescription.sdp },
-        session.client_token
-      );
-      mediaToken = answer.media_token;
-      log("answer", { session_id: answer.session_id, type: answer.type, events_url: answer.events_url });
-      timeline("answer", { session_id: answer.session_id });
-      await pc.setRemoteDescription({ type: answer.type, sdp: answer.sdp });
-      await flushCandidates();
-
-      eventSource = new EventSource(`${httpBaseInput.value.replace(/\/$/, "")}${answer.events_url}`);
-      eventSource.onmessage = (event) => {
-        const payload = JSON.parse(event.data);
-        log("sse.message", payload);
-        handleWireEvent(payload);
-      };
-      eventSource.addEventListener("rtc.ice_candidate", async (event) => {
-        const payload = JSON.parse(event.data);
-        log("sse.ice", payload);
-        await pc.addIceCandidate(payload.candidate);
-      });
-      eventSource.addEventListener("rtc.connection_state", (event) => log("sse.connection", JSON.parse(event.data)));
-      eventSource.addEventListener("rtc.ice_connection_state", (event) => log("sse.ice_connection", JSON.parse(event.data)));
-      eventSource.addEventListener("close", () => {
-        log("sse.close", {});
-        timeline("sse.close");
-      });
 
       controlWs = new WebSocket(`${wsBase(httpBaseInput.value)}/v1/rtc/sessions/${sessionId}/control`);
       controlWs.onmessage = (event) => {
@@ -505,18 +418,13 @@
       sendTextBtn.disabled = true;
       cancelBtn.disabled = true;
       disconnectBtn.disabled = true;
-      if (eventSource) eventSource.close();
       if (controlWs && controlWs.readyState === WebSocket.OPEN) controlWs.close();
-      if (pc) await pc.close();
-      if (micStream) micStream.getTracks().forEach((track) => track.stop());
-      eventSource = null;
+      if (room) await room.disconnect();
       controlWs = null;
-      pc = null;
-      micStream = null;
-      remoteStream = null;
-      mediaToken = null;
+      room = null;
+      remoteAudioTrack = null;
       sessionId = null;
-      pendingCandidates = [];
+      assistantAudio.srcObject = null;
       setStatus(peerStateEl, "idle");
       setStatus(iceStateEl, "idle");
       setStatus(playbackStateEl, "idle");
@@ -531,10 +439,8 @@
     disconnectBtn.addEventListener("click", () => disconnect().catch((error) => log("error", { message: error.message })));
     sendTextBtn.addEventListener("click", () => {
       if (!controlWs || controlWs.readyState !== WebSocket.OPEN) return;
-      clearAssistantAudio();
       attachAssistantAudio();
       setStatus(playbackStateEl, "requested");
-      controlWs.send(JSON.stringify({ type: "response.cancel" }));
       controlWs.send(JSON.stringify({ type: "response.start" }));
       controlWs.send(JSON.stringify({ type: "response.delta", delta: assistantText.value }));
       controlWs.send(JSON.stringify({ type: "response.commit" }));

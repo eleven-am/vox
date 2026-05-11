@@ -25,6 +25,8 @@ dependencies = [
     "lameenc>=1.8.1",
     "opuslib>=3.0.1",
     "aiortc>=1.14.0",
+    "livekit-agents>=1.5.8,<1.6",
+    "livekit-plugins-silero>=1.5.8,<1.6",
 ]
 
 [project.scripts]
