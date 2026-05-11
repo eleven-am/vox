@@ -414,6 +414,14 @@
         }
       });
       for (const track of micStream.getAudioTracks()) {
+        const settings = track.getSettings ? track.getSettings() : {};
+        log("mic.settings", {
+          echoCancellation: settings.echoCancellation,
+          noiseSuppression: settings.noiseSuppression,
+          autoGainControl: settings.autoGainControl,
+          sampleRate: settings.sampleRate,
+          channelCount: settings.channelCount
+        });
         pc.addTrack(track, micStream);
       }
 
@@ -523,8 +531,10 @@
     disconnectBtn.addEventListener("click", () => disconnect().catch((error) => log("error", { message: error.message })));
     sendTextBtn.addEventListener("click", () => {
       if (!controlWs || controlWs.readyState !== WebSocket.OPEN) return;
+      clearAssistantAudio();
       attachAssistantAudio();
       setStatus(playbackStateEl, "requested");
+      controlWs.send(JSON.stringify({ type: "response.cancel" }));
       controlWs.send(JSON.stringify({ type: "response.start" }));
       controlWs.send(JSON.stringify({ type: "response.delta", delta: assistantText.value }));
       controlWs.send(JSON.stringify({ type: "response.commit" }));

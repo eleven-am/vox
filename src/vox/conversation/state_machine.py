@@ -93,7 +93,6 @@ def _on_speech_started_speaking(m: TurnStateMachine, e: TurnEvent) -> tuple[Turn
     if not m.policy.allow_interrupt_while_speaking:
         return None, []
 
-
     confirm_ms = int(e.payload.get("confirm_window_ms", m.policy.min_interrupt_duration_ms))
     return TurnState.PAUSED, [
         act(TurnActionType.PAUSE_OUTPUT),
@@ -181,7 +180,7 @@ def _on_tts_completed_thinking(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnS
 def _on_tts_completed_paused(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
 
 
-    return TurnState.IDLE, [cancel_timer(TimerKey.CONFIRM_INTERRUPT)]
+    return None, []
 
 
 def _on_tts_failed_thinking(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:

@@ -5,17 +5,16 @@ Wires together:
   * Vox's existing streaming pipeline (VAD + STT + EOU)
   * a TTS adapter acquired from the scheduler
   * a timer registry (asyncio tasks)
-  * a pause-buffer for held TTS audio during barge-in confirmation
+  * pause/clear handling during barge-in confirmation
   * an event emitter for client-facing notifications
 
 Concurrency model
 -----------------
 One `asyncio.Task` drives the state machine (`_run_loop`); it is the **only**
 mutator of `_paused`, `_timers`, and `_tts_task`. The audio ingest path and the
-TTS task push into queues/buffers; the main loop pulls from them. There are a
-few small races on `_pending_audio` (TTS task appends while main loop clears)
-that are tolerated: in those paths we cancel TTS immediately afterward, so any
-leaked chunk is discarded when the task unwinds.
+TTS task push work back through the main loop. When output is paused, newly
+generated TTS audio is discarded because the client has already been told to
+clear audible output for that response.
 """
 
 from __future__ import annotations
@@ -129,6 +128,7 @@ class _ResponseStream:
     queue: asyncio.Queue[str | object]
     response_id: str
     committed: bool = False
+    pending_done: bool = False
     text_parts: list[str] = field(default_factory=list)
     heard_parts: list[str] = field(default_factory=list)
 
@@ -589,11 +589,10 @@ class ConversationSession:
                     self._pipeline.add_assistant_turn(full_text)
 
                 await self._wait_for_estimated_playout()
-                await self._event_queue.put(TurnEvent(type=TurnEventType.TTS_COMPLETED))
-                await self._emit({
-                    "type": WIRE_RESPONSE_DONE,
-                    "response_id": stream.response_id,
-                })
+                if self._paused and self._response_stream is stream:
+                    stream.pending_done = True
+                    return
+                await self._complete_response_stream(stream)
         except asyncio.CancelledError:
 
 
@@ -602,10 +601,22 @@ class ConversationSession:
             logger.exception("TTS synthesis failed")
             await self._fail_response(str(exc))
         finally:
-            if self._response_stream is stream:
+            if self._response_stream is stream and not stream.pending_done:
                 self._response_stream = None
-            if self._active_response_id == stream.response_id:
+            if self._active_response_id == stream.response_id and not stream.pending_done:
                 self._active_response_id = None
+
+    async def _complete_response_stream(self, stream: _ResponseStream) -> None:
+        stream.pending_done = False
+        await self._event_queue.put(TurnEvent(type=TurnEventType.TTS_COMPLETED))
+        await self._emit({
+            "type": WIRE_RESPONSE_DONE,
+            "response_id": stream.response_id,
+        })
+        if self._response_stream is stream:
+            self._response_stream = None
+        if self._active_response_id == stream.response_id:
+            self._active_response_id = None
 
     async def _synthesize_text(
         self,
@@ -654,7 +665,6 @@ class ConversationSession:
         self._audio_sequence += 1
         sequence = self._audio_sequence
         if self._paused:
-            self._pending_audio.append((encoded_audio, output_sample_rate, sequence))
             return
         await self._emit({
             "type": WIRE_AUDIO_DELTA,
@@ -692,24 +702,21 @@ class ConversationSession:
     async def _execute(self, action: TurnAction) -> None:
         if action.type == TurnActionType.PAUSE_OUTPUT:
             self._paused = True
+            self._playout_end_at = 0.0
+            await self._emit({
+                "type": WIRE_AUDIO_CLEAR,
+                "response_id": self._active_response_id or self._last_cancelled_response_id,
+            })
 
         elif action.type == TurnActionType.RESUME_OUTPUT:
-            pending, self._pending_audio = self._pending_audio, []
+            stream = self._response_stream
             self._paused = False
 
 
             cooldown_s = self._config.policy.stable_speaking_min_ms / 1000.0
             self._flutter_cooldown_until = time.monotonic() + cooldown_s
-            for audio, sample_rate, sequence in pending:
-                await self._emit({
-                    "type": WIRE_AUDIO_DELTA,
-                    "audio": base64.b64encode(audio).decode("ascii"),
-                    "sample_rate": sample_rate,
-                    "audio_format": "pcm16",
-                    "response_id": self._active_response_id,
-                    "sequence": sequence,
-                })
-                self._mark_estimated_playout(audio, sample_rate)
+            if stream is not None and stream.pending_done:
+                await self._complete_response_stream(stream)
 
         elif action.type == TurnActionType.FLUSH_OUTPUT:
             self._pending_audio = []
@@ -862,7 +869,7 @@ class ConversationSession:
                 payload={"reason": "self_echo"},
             ))
             return
-        if active_assistant_text and not is_interrupt_keyword:
+        if active_assistant_text and not is_interrupt_keyword and partial_transcript is not None:
             words = [
                 word
                 for word in (partial_transcript or "").strip().split()

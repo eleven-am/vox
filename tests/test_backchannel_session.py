@@ -57,6 +57,32 @@ class LongTTS(TTSAdapter):
         yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
 
 
+class BriefTTS(TTSAdapter):
+    """Finishes quickly enough to complete while the session is PAUSED."""
+
+    def info(self) -> AdapterInfo:
+        return AdapterInfo(
+            name="brief-tts", type=ModelType.TTS,
+            architectures=("x",), default_sample_rate=24_000,
+            supported_formats=(ModelFormat.ONNX,),
+        )
+
+    def load(self, *a, **k): ...
+    def unload(self): ...
+    @property
+    def is_loaded(self): return True
+    def list_voices(self): return [VoiceInfo(id="default", name="Default")]
+
+    async def synthesize(self, text, **_):
+        for _ in range(4):
+            yield SynthesizeChunk(
+                audio=np.full(480, 0.01, dtype=np.float32).tobytes(),
+                sample_rate=24_000, is_final=False,
+            )
+            await asyncio.sleep(0.02)
+        yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
+
+
 class Scheduler:
     def __init__(self, adapter): self._a = adapter
     @asynccontextmanager
@@ -235,6 +261,50 @@ class TestBackchannelRejection:
 
         assert session.state == TurnState.INTERRUPTED
         assert coll.by_type("response.cancelled")
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_response_done_is_deferred_until_paused_interrupt_is_decided(self):
+        tts = BriefTTS()
+        coll = Collector()
+        cfg = ConversationConfig(
+            stt_model="x:1", tts_model="y:1", voice="default",
+            language="en",
+            policy=TurnPolicy(
+                min_interrupt_duration_ms=300,
+                max_endpointing_delay_ms=500,
+                stable_speaking_min_ms=50,
+                speaking_interrupt_min_duration_ms=300,
+            ),
+        )
+        session = ConversationSession(scheduler=Scheduler(tts), config=cfg, on_event=coll)
+        await session.start()
+
+        await session.submit_response_text("The assistant is still speaking.")
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if session.state == TurnState.SPEAKING:
+                break
+        assert session.state == TurnState.SPEAKING
+
+        session._audio_ring = _voice_signal(0.60, amp=0.15)
+        session._latest_partial = StreamTranscript(text="I am interrupting you", is_partial=True)
+        session._vad_started_at = time.monotonic() - 0.60
+        await session._event_queue.put(TurnEvent(
+            type=TurnEventType.SPEECH_STARTED,
+            payload={"confirm_window_ms": 300},
+        ))
+        await asyncio.sleep(0.15)
+        assert session.state == TurnState.PAUSED
+        assert coll.by_type("response.audio.clear")
+        assert not coll.by_type("response.done")
+
+        await asyncio.sleep(0.30)
+        assert session.state == TurnState.INTERRUPTED
+        assert coll.by_type("interruption.detected")
+        assert coll.by_type("response.cancelled")
+        assert not coll.by_type("response.done")
 
         await session.close()
 

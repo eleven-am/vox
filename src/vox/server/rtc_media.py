@@ -18,7 +18,12 @@ class RtcAudioDrain:
     future: asyncio.Future[None]
 
 
-RtcAudioQueueItem = tuple[bytes, int] | RtcAudioDrain | None
+@dataclass(frozen=True)
+class RtcAudioClear:
+    pass
+
+
+RtcAudioQueueItem = tuple[bytes, int] | RtcAudioDrain | RtcAudioClear | None
 
 
 class RtcAudioOutputTrack(MediaStreamTrack):
@@ -31,8 +36,10 @@ class RtcAudioOutputTrack(MediaStreamTrack):
         self._start: float | None = None
         self._pending = np.empty(0, dtype=np.int16)
         self._sample_rate = 48_000
+        self._silenced = False
 
     async def enqueue(self, pcm16: bytes, sample_rate: int) -> None:
+        self._silenced = False
         await self._queue.put((pcm16, sample_rate))
 
     async def wait_until_drained(self) -> None:
@@ -43,6 +50,8 @@ class RtcAudioOutputTrack(MediaStreamTrack):
 
     def clear(self) -> None:
         self._pending = np.empty(0, dtype=np.int16)
+        self._silenced = True
+        self._sync_clock()
         while True:
             try:
                 item = self._queue.get_nowait()
@@ -50,17 +59,30 @@ class RtcAudioOutputTrack(MediaStreamTrack):
                 break
             if isinstance(item, RtcAudioDrain) and not item.future.done():
                 item.future.set_result(None)
+        self._queue.put_nowait(RtcAudioClear())
 
     async def recv(self) -> av.AudioFrame:
         while self._pending.size == 0:
-            item = await self._queue.get()
+            if self._silenced:
+                try:
+                    item = self._queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    return await self._silence_frame()
+            else:
+                item = await self._queue.get()
             if item is None:
                 raise MediaStreamError
             if isinstance(item, RtcAudioDrain):
                 if not item.future.done():
                     item.future.set_result(None)
                 continue
+            if isinstance(item, RtcAudioClear):
+                self._pending = np.empty(0, dtype=np.int16)
+                self._silenced = True
+                self._sync_clock()
+                return await self._silence_frame()
             pcm16, sample_rate = item
+            self._silenced = False
             self._sample_rate = int(sample_rate) or self._sample_rate
             self._pending = np.frombuffer(pcm16, dtype=np.int16)
 
@@ -70,6 +92,13 @@ class RtcAudioOutputTrack(MediaStreamTrack):
         if samples.size == 0:
             samples = np.zeros(1, dtype=np.int16)
 
+        return await self._frame(samples)
+
+    async def _silence_frame(self) -> av.AudioFrame:
+        samples_per_frame = max(1, self._sample_rate // 50)
+        return await self._frame(np.zeros(samples_per_frame, dtype=np.int16))
+
+    async def _frame(self, samples: np.ndarray) -> av.AudioFrame:
         await self._pace(samples.size)
 
         frame = av.AudioFrame.from_ndarray(samples.reshape(1, -1), format="s16", layout="mono")
@@ -78,6 +107,9 @@ class RtcAudioOutputTrack(MediaStreamTrack):
         frame.time_base = fractions.Fraction(1, self._sample_rate)
         self._timestamp += samples.size
         return frame
+
+    def _sync_clock(self) -> None:
+        self._start = time.time() - (self._timestamp / self._sample_rate)
 
     async def _pace(self, samples: int) -> None:
         if self._start is None:

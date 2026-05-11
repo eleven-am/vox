@@ -130,6 +130,12 @@ class TestBargeIn:
             TurnActionType.FLUSH_OUTPUT,
         ]
 
+    def test_tts_complete_while_paused_does_not_cancel_confirm_timer(self):
+        m = _machine(TurnState.PAUSED)
+        actions = m.handle(ev(TurnEventType.TTS_COMPLETED))
+        assert m.state == TurnState.PAUSED
+        assert actions == []
+
     def test_brief_cough_resumes_speaking(self):
         """PAUSED + SPEECH_STOPPED before the confirm timer fires → back to SPEAKING."""
         m = _machine(TurnState.SPEAKING)
@@ -155,11 +161,11 @@ class TestBargeIn:
         assert _action_types(actions) == [TurnActionType.CANCEL_TIMER]
 
     def test_tts_completes_naturally_during_pause(self):
-        """Race: TTS stream finished while we were paused. Settle to IDLE."""
+        """Race: TTS stream finished while paused. Keep the interrupt decision alive."""
         m = _machine(TurnState.PAUSED)
         actions = m.handle(ev(TurnEventType.TTS_COMPLETED))
-        assert m.state == TurnState.IDLE
-        assert _action_types(actions) == [TurnActionType.CANCEL_TIMER]
+        assert m.state == TurnState.PAUSED
+        assert actions == []
 
     def test_policy_disables_interrupt_during_speaking(self):
         policy = TurnPolicy(allow_interrupt_while_speaking=False)
