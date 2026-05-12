@@ -44,6 +44,7 @@ from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+legacy_router = APIRouter()
 
 
 def get_rtc_registry(request_or_ws: Request | WebSocket) -> RtcSessionRegistry:
@@ -206,7 +207,7 @@ async def rtc_media_events(request: Request, session_id: str, token: str) -> Str
     return StreamingResponse(stream(), media_type="text/event-stream")
 
 
-@router.websocket("/v1/rtc/sessions/{session_id}/control")
+@legacy_router.websocket("/v1/rtc/sessions/{session_id}/control")
 async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
     registry = get_rtc_registry(websocket)
     record = registry.attach_control(session_id)

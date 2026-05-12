@@ -1372,6 +1372,31 @@ wheels = [
 ]
 
 [[package]]
+name = "pondsocket"
+version = "0.0.1"
+source = { git = "https://github.com/eleven-am/pondsocket.git?subdirectory=python%2Fpondsocket&rev=de834b13f4485c92d5405a0d7f6866cf147aa74d#de834b13f4485c92d5405a0d7f6866cf147aa74d" }
+dependencies = [
+    { name = "pondsocket-common" },
+]
+
+[[package]]
+name = "pondsocket-asgi"
+version = "0.0.1"
+source = { git = "https://github.com/eleven-am/pondsocket.git?subdirectory=python%2Fpondsocket-asgi&rev=de834b13f4485c92d5405a0d7f6866cf147aa74d#de834b13f4485c92d5405a0d7f6866cf147aa74d" }
+dependencies = [
+    { name = "pondsocket" },
+    { name = "pondsocket-common" },
+]
+
+[[package]]
+name = "pondsocket-common"
+version = "0.0.1"
+source = { git = "https://github.com/eleven-am/pondsocket.git?subdirectory=python%2Fpondsocket-common&rev=de834b13f4485c92d5405a0d7f6866cf147aa74d#de834b13f4485c92d5405a0d7f6866cf147aa74d" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[[package]]
 name = "preshed"
 version = "3.0.13"
 source = { registry = "https://pypi.org/simple" }
@@ -2422,7 +2447,7 @@ wheels = [
 
 [[package]]
 name = "vox-runtime"
-version = "0.2.48"
+version = "0.2.50"
 source = { editable = "." }
 dependencies = [
     { name = "aiortc" },
@@ -2436,6 +2461,9 @@ dependencies = [
     { name = "lameenc" },
     { name = "numpy" },
     { name = "opuslib" },
+    { name = "pondsocket" },
+    { name = "pondsocket-asgi" },
+    { name = "pondsocket-common" },
     { name = "protobuf" },
     { name = "pydub" },
     { name = "python-multipart" },
@@ -2480,6 +2508,9 @@ requires-dist = [
     { name = "lameenc", specifier = ">=1.8.1" },
     { name = "numpy", specifier = ">=1.26.0,<2.4" },
     { name = "opuslib", specifier = ">=3.0.1" },
+    { name = "pondsocket", git = "https://github.com/eleven-am/pondsocket.git?subdirectory=python%2Fpondsocket&rev=de834b13f4485c92d5405a0d7f6866cf147aa74d" },
+    { name = "pondsocket-asgi", git = "https://github.com/eleven-am/pondsocket.git?subdirectory=python%2Fpondsocket-asgi&rev=de834b13f4485c92d5405a0d7f6866cf147aa74d" },
+    { name = "pondsocket-common", git = "https://github.com/eleven-am/pondsocket.git?subdirectory=python%2Fpondsocket-common&rev=de834b13f4485c92d5405a0d7f6866cf147aa74d" },
     { name = "protobuf", specifier = ">=4.25.0" },
     { name = "pydub", specifier = ">=0.25.1" },
     { name = "python-multipart", specifier = ">=0.0.18" },

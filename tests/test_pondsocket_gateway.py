@@ -1,0 +1,226 @@
+from __future__ import annotations
+
+import asyncio
+import base64
+import json
+
+import numpy as np
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
+pytest.importorskip("pondsocket")
+pytest.importorskip("pondsocket_asgi")
+
+from tests.fakes import FakeScheduler
+from vox.core.adapter import TTSAdapter
+from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+from vox.server.pondsocket_gateway import install_pondsocket_gateway
+from vox.server.routes.rtc import router as rtc_router
+from vox.server.rtc_registry import RtcSessionRegistry
+
+
+class ScriptedTTS(TTSAdapter):
+    def info(self) -> AdapterInfo:
+        return AdapterInfo(
+            name="scripted-tts",
+            type=ModelType.TTS,
+            architectures=("scripted",),
+            default_sample_rate=24_000,
+            supported_formats=(ModelFormat.ONNX,),
+        )
+
+    def load(self, *a, **k): ...
+    def unload(self): ...
+
+    @property
+    def is_loaded(self):
+        return True
+
+    def list_voices(self):
+        return [VoiceInfo(id="default", name="Default")]
+
+    async def synthesize(self, text: str, **_):
+        yield SynthesizeChunk(
+            audio=np.full(512, 0.01, dtype=np.float32).tobytes(),
+            sample_rate=24_000,
+            is_final=False,
+        )
+        await asyncio.sleep(0.01)
+        yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
+
+
+def _build_app() -> FastAPI:
+    app = FastAPI()
+    app.state.scheduler = FakeScheduler(ScriptedTTS())
+    app.state.rtc_registry = RtcSessionRegistry()
+    app.include_router(rtc_router)
+    assert install_pondsocket_gateway(app)
+    return app
+
+
+def _send_channel_message(ws, *, action: str, channel_name: str, event: str, payload: dict, request_id: str) -> None:
+    ws.send_text(json.dumps({
+        "action": action,
+        "channelName": channel_name,
+        "requestId": request_id,
+        "event": event,
+        "payload": payload,
+    }))
+
+
+def _receive_json(ws) -> dict:
+    payload = ws.receive()
+    assert payload.get("text")
+    return json.loads(payload["text"])
+
+
+def _drain_until(ws, predicate, max_events: int = 50) -> list[dict]:
+    events: list[dict] = []
+    for _ in range(max_events):
+        try:
+            msg = ws.receive()
+        except WebSocketDisconnect:
+            break
+        if msg.get("type") == "websocket.disconnect":
+            break
+        if "text" in msg and msg["text"]:
+            payload = json.loads(msg["text"])
+            events.append(payload)
+            if predicate(payload):
+                break
+    return events
+
+
+def test_pondsocket_conversation_channel_matches_ws_flow():
+    client = TestClient(_build_app())
+
+    with client.websocket_connect("/v1/socket") as ws:
+        connect = _receive_json(ws)
+        assert connect["action"] == "CONNECT"
+        assert connect["event"] == "CONNECTION"
+
+        _send_channel_message(
+            ws,
+            action="JOIN_CHANNEL",
+            channel_name="/conversation/demo",
+            event="join",
+            payload={},
+            request_id="join-conversation",
+        )
+        ack = _receive_json(ws)
+        assert ack["event"] == "ACKNOWLEDGE"
+        assert ack["channelName"] == "/conversation/demo"
+
+        _send_channel_message(
+            ws,
+            action="BROADCAST",
+            channel_name="/conversation/demo",
+            event="session.update",
+            payload={
+                "session": {
+                    "stt_model": "fake-stt:1",
+                    "tts_model": "fake-tts:1",
+                    "voice": "default",
+                    "turn_profile": "browser_default",
+                },
+            },
+            request_id="session-update",
+        )
+        created = _receive_json(ws)
+        assert created["event"] == "session.created"
+        assert created["payload"]["session"]["turn_profile"] == "browser_default"
+
+        _send_channel_message(
+            ws,
+            action="BROADCAST",
+            channel_name="/conversation/demo",
+            event="response.delta",
+            payload={"delta": "hello"},
+            request_id="delta-1",
+        )
+        _send_channel_message(
+            ws,
+            action="BROADCAST",
+            channel_name="/conversation/demo",
+            event="response.commit",
+            payload={},
+            request_id="commit-1",
+        )
+
+        events = _drain_until(ws, lambda e: e.get("event") == "response.done")
+        deltas = [e for e in events if e.get("event") == "response.audio.delta"]
+        assert deltas
+        decoded = base64.b64decode(deltas[0]["payload"]["audio"])
+        assert decoded
+
+
+def test_pondsocket_socket_can_multiplex_conversation_and_rtc_channels():
+    client = TestClient(_build_app())
+    rtc_session = client.post("/v1/rtc/sessions").json()
+
+    with client.websocket_connect("/v1/socket") as ws:
+        _receive_json(ws)
+
+        _send_channel_message(
+            ws,
+            action="JOIN_CHANNEL",
+            channel_name="/conversation/alpha",
+            event="join",
+            payload={},
+            request_id="join-conversation",
+        )
+        conv_ack = _receive_json(ws)
+        assert conv_ack["event"] == "ACKNOWLEDGE"
+        assert conv_ack["channelName"] == "/conversation/alpha"
+
+        _send_channel_message(
+            ws,
+            action="JOIN_CHANNEL",
+            channel_name=f"/rtc/{rtc_session['session_id']}",
+            event="join",
+            payload={},
+            request_id="join-rtc",
+        )
+        rtc_ack = _receive_json(ws)
+        rtc_attached = _receive_json(ws)
+        assert rtc_ack["event"] == "ACKNOWLEDGE"
+        assert rtc_attached["event"] == "rtc.session.attached"
+        assert rtc_attached["payload"]["session_id"] == rtc_session["session_id"]
+
+        _send_channel_message(
+            ws,
+            action="BROADCAST",
+            channel_name=f"/rtc/{rtc_session['session_id']}",
+            event="session.update",
+            payload={
+                "session": {
+                    "stt_model": "fake-stt:1",
+                    "tts_model": "fake-tts:1",
+                    "voice": "default",
+                    "turn_profile": "speakerphone",
+                },
+            },
+            request_id="rtc-session-update",
+        )
+
+        created = _receive_json(ws)
+        assert created["event"] == "session.created"
+        assert created["channelName"] == f"/rtc/{rtc_session['session_id']}"
+        assert created["payload"]["session_id"] == rtc_session["session_id"]
+        assert created["payload"]["session"]["turn_profile"] == "speakerphone"
+
+
+def test_legacy_ws_routes_are_not_mounted():
+    client = TestClient(_build_app())
+    session = client.post("/v1/rtc/sessions").json()
+
+    with pytest.raises(WebSocketDisconnect), client.websocket_connect("/v1/conversation"):
+        pass
+
+    with (
+        pytest.raises(WebSocketDisconnect),
+        client.websocket_connect(f"/v1/rtc/sessions/{session['session_id']}/control"),
+    ):
+        pass

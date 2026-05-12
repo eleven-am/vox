@@ -1,6 +1,6 @@
 [project]
 name = "vox-runtime"
-version = "0.2.49"
+version = "0.2.50"
 description = "Universal local runtime for STT and TTS models"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
@@ -25,6 +25,9 @@ dependencies = [
     "lameenc>=1.8.1",
     "opuslib>=3.0.1",
     "aiortc>=1.14.0",
+    "pondsocket-common @ git+https://github.com/eleven-am/pondsocket.git@de834b13f4485c92d5405a0d7f6866cf147aa74d#subdirectory=python/pondsocket-common",
+    "pondsocket @ git+https://github.com/eleven-am/pondsocket.git@de834b13f4485c92d5405a0d7f6866cf147aa74d#subdirectory=python/pondsocket",
+    "pondsocket-asgi @ git+https://github.com/eleven-am/pondsocket.git@de834b13f4485c92d5405a0d7f6866cf147aa74d#subdirectory=python/pondsocket-asgi",
 ]
 
 [project.scripts]
@@ -57,6 +60,9 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/vox"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.uv]
 default-groups = ["dev"]

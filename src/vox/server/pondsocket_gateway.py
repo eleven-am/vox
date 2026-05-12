@@ -1,0 +1,424 @@
+from __future__ import annotations
+
+import asyncio
+import base64
+import logging
+from contextlib import suppress
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
+from fastapi import APIRouter, FastAPI, WebSocket
+
+from vox.operations.conversation import (
+    ConvAudioClearEvent,
+    ConvAudioDeltaEvent,
+    ConvDoneEvent,
+    ConversationOrchestrator,
+)
+from vox.operations.errors import OperationError, SessionAlreadyConfiguredError
+from vox.server.routes.conversation import (
+    _event_to_wire,
+    _parse_allow_interruptions,
+    parse_session_update,
+)
+from vox.server.routes.rtc import _cancel_media_tasks
+from vox.server.rtc_client_events import parse_client_event_message, send_client_event_to_browser
+from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
+
+if TYPE_CHECKING:
+    from pondsocket import Channel, EventContext, JoinContext, LeaveContext
+
+logger = logging.getLogger(__name__)
+router = APIRouter()
+
+
+@dataclass(slots=True)
+class _ConversationRuntime:
+    channel_name: str
+    session_id: str
+    user_id: str
+    orchestrator: ConversationOrchestrator
+    emit_task: asyncio.Task[None]
+
+
+@dataclass(slots=True)
+class _RtcRuntime:
+    channel_name: str
+    session_id: str
+    user_id: str
+    record: RtcSessionRecord
+    orchestrator: ConversationOrchestrator
+    emit_task: asyncio.Task[None]
+    client_event_task: asyncio.Task[None]
+
+
+def _http_to_ws_close_code(http_code: int) -> int:
+    if 1000 <= http_code <= 4999:
+        return http_code
+    if 100 <= http_code <= 999:
+        return 4000 + http_code
+    return 1008
+
+
+@router.websocket("/v1/socket")
+async def pondsocket_ws(websocket: WebSocket) -> None:
+    pond = getattr(websocket.app.state, "pondsocket", None)
+    if pond is None:
+        await websocket.close(code=4404, reason="PondSocket gateway not enabled")
+        return
+
+    from pondsocket import Event, SystemEntity
+    from pondsocket_asgi._scope import build_incoming_connection
+    from pondsocket_asgi.transport import ASGIWebSocketTransport
+    from pondsocket_common import ServerActions, uuid
+
+    match = pond.match_endpoint("/")
+    if match is None:
+        await websocket.close(code=4404, reason="endpoint not found")
+        return
+
+    endpoint = match.endpoint
+    route = match.route
+    user_id = uuid()
+    incoming = build_incoming_connection(user_id=user_id, scope=websocket.scope, route=route)
+    ctx = await endpoint.request_connection(incoming, user_id=user_id)
+    if ctx.is_declined:
+        code, message = ctx.decline_info
+        await websocket.close(code=_http_to_ws_close_code(code), reason=message)
+        return
+
+    await websocket.accept()
+    transport = ASGIWebSocketTransport(
+        id=ctx.user_id,
+        send=websocket.send,
+        receive=websocket.receive,
+        assigns=ctx.assigns,
+    )
+    await endpoint.register_transport(transport)
+
+    if ctx.pending_reply is not None:
+        name, payload = ctx.pending_reply
+        await transport.send_event(
+            Event(
+                action=ServerActions.SYSTEM.value,
+                channel_name=SystemEntity.GATEWAY.value,
+                request_id=uuid(),
+                event=name,
+                payload=payload,
+            )
+        )
+
+    await transport.wait_until_closed()
+
+
+def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") -> bool:
+    try:
+        from pondsocket import ConnectionContext, PondSocket
+    except ImportError as exc:
+        logger.warning("PondSocket gateway requested but dependency is unavailable: %s", exc)
+        return False
+
+    scheduler = app.state.scheduler
+    rtc_registry: RtcSessionRegistry = app.state.rtc_registry
+    conversation_runtimes: dict[str, _ConversationRuntime] = {}
+    rtc_runtimes: dict[str, _RtcRuntime] = {}
+
+    async def auth(ctx: ConnectionContext) -> None:
+        ctx.accept()
+
+    pond = PondSocket()
+    endpoint = pond.create_endpoint("/", auth)
+
+    async def emit_wire_to_user(channel: Channel, user_id: str, wire: dict[str, Any]) -> None:
+        payload = dict(wire)
+        event_name = str(payload.pop("type"))
+        await channel.broadcast_to(event_name, payload, user_id)
+
+    def payload_as_message(event_name: str, payload: Any) -> dict[str, Any]:
+        if not isinstance(payload, dict):
+            raise ValueError(f"{event_name} requires an object payload")
+        return {"type": event_name, **payload}
+
+    async def reply_error(ctx: EventContext, message: str) -> None:
+        if ctx.has_replied():
+            return
+        with suppress(Exception):
+            await ctx.reply("error", {"message": message})
+
+    async def close_conversation_runtime(runtime: _ConversationRuntime) -> None:
+        await runtime.orchestrator.end_of_stream()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(runtime.emit_task, timeout=5.0)
+        if not runtime.emit_task.done():
+            runtime.emit_task.cancel()
+            with suppress(Exception):
+                await runtime.emit_task
+        await runtime.orchestrator.close()
+
+    async def close_rtc_runtime(runtime: _RtcRuntime) -> None:
+        record = runtime.record
+        await runtime.orchestrator.end_of_stream()
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(runtime.emit_task, timeout=5.0)
+        if not runtime.emit_task.done():
+            runtime.emit_task.cancel()
+            with suppress(Exception):
+                await runtime.emit_task
+        if record.control_events is not None:
+            await record.control_events.put(None)
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(runtime.client_event_task, timeout=5.0)
+        if not runtime.client_event_task.done():
+            runtime.client_event_task.cancel()
+            with suppress(Exception):
+                await runtime.client_event_task
+        await runtime.orchestrator.close()
+        record.orchestrator = None
+        record.data_channel = None
+        if record.audio_output is not None:
+            await record.audio_output.put(None)
+        if record.media_events is not None:
+            await record.media_events.put(None)
+        await _cancel_media_tasks(record)
+        if record.rtc_peer is not None:
+            with suppress(Exception):
+                await record.rtc_peer.close()
+        rtc_registry.detach_control(runtime.session_id)
+        rtc_registry.close(runtime.session_id)
+
+    def conversation_session_id(ctx: JoinContext | EventContext | LeaveContext) -> str:
+        return str(ctx.route.params.get("session_id") or ctx.channel.name.rsplit("/", 1)[-1])
+
+    def rtc_session_id(ctx: JoinContext | EventContext | LeaveContext) -> str:
+        return str(ctx.route.params.get("session_id") or ctx.channel.name.rsplit("/", 1)[-1])
+
+    async def build_conversation_runtime(channel: Channel, user_id: str, session_id: str) -> _ConversationRuntime:
+        orchestrator = ConversationOrchestrator(scheduler=scheduler)
+
+        async def emit_events() -> None:
+            async for event in orchestrator.events():
+                wire = _event_to_wire(event)
+                if wire is not None:
+                    with suppress(Exception):
+                        await emit_wire_to_user(channel, user_id, wire)
+                if isinstance(event, ConvDoneEvent):
+                    return
+
+        emit_task = asyncio.create_task(emit_events())
+        return _ConversationRuntime(
+            channel_name=channel.name,
+            session_id=session_id,
+            user_id=user_id,
+            orchestrator=orchestrator,
+            emit_task=emit_task,
+        )
+
+    async def build_rtc_runtime(
+        channel: Channel,
+        user_id: str,
+        session_id: str,
+        record: RtcSessionRecord,
+    ) -> _RtcRuntime:
+        async def send_rtc_audio(event: ConvAudioDeltaEvent) -> None:
+            if record.audio_output_track is not None:
+                await record.audio_output_track.enqueue(base64.b64decode(event.audio_b64), event.sample_rate)
+
+        async def wait_for_rtc_playout() -> None:
+            if record.audio_output_track is not None:
+                await record.audio_output_track.wait_until_drained()
+
+        orchestrator = ConversationOrchestrator(
+            scheduler=scheduler,
+            pace_response_done_to_audio=True,
+            audio_sink=send_rtc_audio,
+            wait_for_output_playout=wait_for_rtc_playout,
+        )
+        record.orchestrator = orchestrator
+
+        async def emit_events() -> None:
+            async for event in orchestrator.events():
+                if isinstance(event, ConvAudioClearEvent) and record.audio_output_track is not None:
+                    record.audio_output_track.clear()
+                wire = _event_to_wire(event)
+                if wire is not None:
+                    wire.setdefault("session_id", session_id)
+                    with suppress(Exception):
+                        await emit_wire_to_user(channel, user_id, wire)
+                if isinstance(event, ConvDoneEvent):
+                    return
+
+        async def emit_client_events() -> None:
+            if record.control_events is None:
+                return
+            while True:
+                event = await record.control_events.get()
+                if event is None:
+                    return
+                with suppress(Exception):
+                    await emit_wire_to_user(channel, user_id, event)
+
+        emit_task = asyncio.create_task(emit_events())
+        client_event_task = asyncio.create_task(emit_client_events())
+        return _RtcRuntime(
+            channel_name=channel.name,
+            session_id=session_id,
+            user_id=user_id,
+            record=record,
+            orchestrator=orchestrator,
+            emit_task=emit_task,
+            client_event_task=client_event_task,
+        )
+
+    async def on_conversation_join(ctx: JoinContext) -> None:
+        if await ctx.channel.user_count() > 0:
+            await ctx.decline(409, "conversation channel already attached")
+            return
+        session_id = conversation_session_id(ctx)
+        runtime = await build_conversation_runtime(ctx.channel, ctx.transport.get_id(), session_id)
+        conversation_runtimes[ctx.channel.name] = runtime
+        try:
+            await ctx.accept({"session_id": session_id, "kind": "conversation"})
+        except Exception:
+            conversation_runtimes.pop(ctx.channel.name, None)
+            await close_conversation_runtime(runtime)
+            raise
+
+    async def on_conversation_leave(ctx: LeaveContext) -> None:
+        runtime = conversation_runtimes.pop(ctx.channel.name, None)
+        if runtime is not None:
+            await close_conversation_runtime(runtime)
+
+    async def on_conversation_event(ctx: EventContext) -> None:
+        runtime = conversation_runtimes.get(ctx.channel.name)
+        if runtime is None:
+            await reply_error(ctx, "conversation session not attached")
+            return
+        try:
+            message = payload_as_message(ctx.event_name, ctx.get_payload())
+            msg_type = message["type"]
+            if msg_type == "session.update":
+                config = parse_session_update(message)
+                await runtime.orchestrator.start_session(config)
+                return
+
+            if runtime.orchestrator.config is None:
+                await reply_error(ctx, "send session.update first")
+                return
+
+            if msg_type == "input_audio_buffer.append":
+                audio_b64 = message.get("audio")
+                if not audio_b64:
+                    await reply_error(ctx, "audio field required")
+                    return
+                pcm = base64.b64decode(audio_b64)
+                sample_rate = int(message.get("sample_rate", 0)) or None
+                await runtime.orchestrator.ingest_pcm16(pcm, sample_rate=sample_rate)
+            elif msg_type == "response.start":
+                allow_interruptions = _parse_allow_interruptions(message)
+                await runtime.orchestrator.start_response(allow_interruptions=allow_interruptions)
+            elif msg_type == "response.delta":
+                response = message.get("response", {}) or {}
+                text = response.get("delta") or message.get("delta")
+                if not text:
+                    await reply_error(ctx, "response.delta requires 'delta' text")
+                    return
+                allow_interruptions = _parse_allow_interruptions(message)
+                await runtime.orchestrator.append_response_text(text, allow_interruptions=allow_interruptions)
+            elif msg_type == "response.commit":
+                await runtime.orchestrator.commit_response()
+            elif msg_type == "response.cancel":
+                await runtime.orchestrator.cancel_response()
+            else:
+                await reply_error(ctx, f"unknown conversation message type: {msg_type!r}")
+        except (OperationError, SessionAlreadyConfiguredError, ValueError) as exc:
+            await reply_error(ctx, str(exc))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("PondSocket conversation event error")
+            await reply_error(ctx, str(exc))
+
+    async def on_rtc_join(ctx: JoinContext) -> None:
+        if await ctx.channel.user_count() > 0:
+            await ctx.decline(409, "RTC control channel already attached")
+            return
+        session_id = rtc_session_id(ctx)
+        record = rtc_registry.attach_control(session_id)
+        if record is None:
+            await ctx.decline(404, "unknown, expired, or already attached RTC session")
+            return
+        try:
+            runtime = await build_rtc_runtime(ctx.channel, ctx.transport.get_id(), session_id, record)
+        except Exception:
+            rtc_registry.detach_control(session_id)
+            raise
+        rtc_runtimes[ctx.channel.name] = runtime
+        try:
+            await ctx.accept({"session_id": session_id, "kind": "rtc"})
+            await ctx.reply("rtc.session.attached", {"session_id": session_id})
+        except Exception:
+            rtc_runtimes.pop(ctx.channel.name, None)
+            await close_rtc_runtime(runtime)
+            raise
+
+    async def on_rtc_leave(ctx: LeaveContext) -> None:
+        runtime = rtc_runtimes.pop(ctx.channel.name, None)
+        if runtime is not None:
+            await close_rtc_runtime(runtime)
+
+    async def on_rtc_event(ctx: EventContext) -> None:
+        runtime = rtc_runtimes.get(ctx.channel.name)
+        if runtime is None:
+            await reply_error(ctx, "RTC control session not attached")
+            return
+        try:
+            message = payload_as_message(ctx.event_name, ctx.get_payload())
+            msg_type = message["type"]
+            if msg_type == "session.update":
+                config = parse_session_update(message)
+                await runtime.orchestrator.start_session(config)
+                return
+
+            if msg_type == "client.event":
+                event_name, payload = parse_client_event_message(message)
+                send_client_event_to_browser(runtime.record, event_name, payload)
+                return
+
+            if runtime.orchestrator.config is None:
+                await reply_error(ctx, "send session.update first")
+                return
+
+            if msg_type == "response.start":
+                allow_interruptions = _parse_allow_interruptions(message)
+                await runtime.orchestrator.start_response(allow_interruptions=allow_interruptions)
+            elif msg_type == "response.delta":
+                response = message.get("response", {}) or {}
+                text = response.get("delta") or message.get("delta")
+                if not text:
+                    await reply_error(ctx, "response.delta requires 'delta' text")
+                    return
+                allow_interruptions = _parse_allow_interruptions(message)
+                await runtime.orchestrator.append_response_text(text, allow_interruptions=allow_interruptions)
+            elif msg_type == "response.commit":
+                await runtime.orchestrator.commit_response()
+            elif msg_type == "response.cancel":
+                await runtime.orchestrator.cancel_response()
+            else:
+                await reply_error(ctx, f"unknown RTC control message type: {msg_type!r}")
+        except (OperationError, SessionAlreadyConfiguredError, ValueError) as exc:
+            await reply_error(ctx, str(exc))
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("PondSocket RTC control event error")
+            await reply_error(ctx, str(exc))
+
+    conversation_lobby = endpoint.create_channel("/conversation/:session_id", on_conversation_join)
+    conversation_lobby.on_leave(on_conversation_leave)
+    conversation_lobby.on_message("*", on_conversation_event)
+
+    rtc_lobby = endpoint.create_channel("/rtc/:session_id", on_rtc_join)
+    rtc_lobby.on_leave(on_rtc_leave)
+    rtc_lobby.on_message("*", on_rtc_event)
+
+    app.state.pondsocket = pond
+    app.state.pondsocket_mount_path = mount_path
+    app.include_router(router)
+    logger.info("Enabled PondSocket gateway at %s", mount_path)
+    return True

@@ -48,6 +48,7 @@ from vox.operations.errors import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+legacy_router = APIRouter()
 
 
 WIRE_SESSION_CREATED = "session.created"
@@ -149,7 +150,7 @@ def _event_to_wire(event: ConvEvent) -> dict | None:
     return None
 
 
-@router.websocket("/v1/conversation")
+@legacy_router.websocket("/v1/conversation")
 async def conversation_ws(websocket: WebSocket) -> None:
     await websocket.accept()
     scheduler = websocket.app.state.scheduler

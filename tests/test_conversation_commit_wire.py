@@ -3,20 +3,19 @@
 from __future__ import annotations
 
 import asyncio
-import json
 
 import numpy as np
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from starlette.websockets import WebSocketDisconnect
 
 from tests.fakes import FakeScheduler
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
 from vox.grpc import vox_pb2
 from vox.grpc.conversation_servicer import ConversationServicer
-from vox.server.routes.conversation import router as conversation_router
+from vox.server.pondsocket_gateway import install_pondsocket_gateway
+from vox.server.rtc_registry import RtcSessionRegistry
 
 
 class QuickTTS(TTSAdapter):
@@ -50,43 +49,89 @@ class FakeContext:
 def _ws_app() -> FastAPI:
     app = FastAPI()
     app.state.scheduler = DummyScheduler(QuickTTS())
-    app.include_router(conversation_router)
+    app.state.rtc_registry = RtcSessionRegistry()
+    assert install_pondsocket_gateway(app)
     return app
+
+
+def _send_channel_message(ws, *, action: str, channel_name: str, event: str, payload: dict, request_id: str) -> None:
+    ws.send_json({
+        "action": action,
+        "channelName": channel_name,
+        "requestId": request_id,
+        "event": event,
+        "payload": payload,
+    })
+
+
+def _receive_json(ws) -> dict:
+    payload = ws.receive_json()
+    assert isinstance(payload, dict)
+    return payload
 
 
 def _drain_until(ws, predicate, max_events: int = 50) -> list[dict]:
     events: list[dict] = []
     for _ in range(max_events):
-        try:
-            msg = ws.receive()
-        except WebSocketDisconnect:
+        payload = _receive_json(ws)
+        events.append(payload)
+        if predicate(payload):
             break
-        if msg.get("type") == "websocket.disconnect":
-            break
-        if "text" in msg and msg["text"]:
-            payload = json.loads(msg["text"])
-            events.append(payload)
-            if predicate(payload):
-                break
     return events
 
 
 class TestWsCommitWire:
     def test_response_commit_emits_committed_event(self):
         client = TestClient(_ws_app())
-        with client.websocket_connect("/v1/conversation") as ws:
-            ws.send_json({
-                "type": "session.update",
-                "session": {"stt_model": "x:1", "tts_model": "y:1", "voice": "default"},
-            })
-            ws.receive_json()
+        with client.websocket_connect("/v1/socket") as ws:
+            _receive_json(ws)
+            _send_channel_message(
+                ws,
+                action="JOIN_CHANNEL",
+                channel_name="/conversation/commit-wire",
+                event="join",
+                payload={},
+                request_id="join-conversation",
+            )
+            _receive_json(ws)
 
-            ws.send_json({"type": "response.start"})
-            ws.send_json({"type": "response.delta", "delta": "hi there"})
-            ws.send_json({"type": "response.commit"})
+            _send_channel_message(
+                ws,
+                action="BROADCAST",
+                channel_name="/conversation/commit-wire",
+                event="session.update",
+                payload={"session": {"stt_model": "x:1", "tts_model": "y:1", "voice": "default"}},
+                request_id="session-update",
+            )
+            _receive_json(ws)
 
-            events = _drain_until(ws, lambda e: e.get("type") == "response.done")
-            types = [e["type"] for e in events]
+            _send_channel_message(
+                ws,
+                action="BROADCAST",
+                channel_name="/conversation/commit-wire",
+                event="response.start",
+                payload={},
+                request_id="response-start",
+            )
+            _send_channel_message(
+                ws,
+                action="BROADCAST",
+                channel_name="/conversation/commit-wire",
+                event="response.delta",
+                payload={"delta": "hi there"},
+                request_id="response-delta",
+            )
+            _send_channel_message(
+                ws,
+                action="BROADCAST",
+                channel_name="/conversation/commit-wire",
+                event="response.commit",
+                payload={},
+                request_id="response-commit",
+            )
+
+            events = _drain_until(ws, lambda e: e.get("event") == "response.done")
+            types = [e["event"] for e in events]
             assert "response.committed" in types
             assert "response.done" in types
             assert types.index("response.committed") < types.index("response.done")

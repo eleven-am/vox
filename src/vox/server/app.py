@@ -58,6 +58,8 @@ async def _preload_vad() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     grpc_server = None
+    if getattr(app.state, "rtc_registry", None) is None:
+        app.state.rtc_registry = RtcSessionRegistry()
     await app.state.scheduler.start()
     try:
         preload_refs = list(getattr(app.state, "preload_models", []))
@@ -141,7 +143,8 @@ def create_app(
     app.state.preload_models = list(preload_models or [])
     app.state.preload_vad = preload_vad
 
-    from vox.server.routes import bidi, conversation, health, models, rtc, stream, synthesize, transcribe, voices
+    from vox.server.pondsocket_gateway import install_pondsocket_gateway
+    from vox.server.routes import bidi, health, models, rtc, stream, synthesize, transcribe, voices
     app.include_router(health.router)
     app.include_router(models.router)
     app.include_router(transcribe.router)
@@ -149,7 +152,9 @@ def create_app(
     app.include_router(voices.router)
     app.include_router(stream.router)
     app.include_router(bidi.router)
-    app.include_router(conversation.router)
     app.include_router(rtc.router)
+
+    if not install_pondsocket_gateway(app):
+        raise RuntimeError("PondSocket gateway is required but pondsocket and pondsocket-asgi are unavailable")
 
     return app
