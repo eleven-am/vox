@@ -20,9 +20,12 @@ class RtcSessionRecord:
     media_token_hash: str = ""
     rtc_peer: Any | None = None
     audio_output_track: Any | None = None
+    data_channel: Any | None = None
     orchestrator: Any | None = None
     media_events: asyncio.Queue[dict | None] | None = None
+    control_events: asyncio.Queue[dict | None] | None = None
     audio_output: asyncio.Queue[Any] | None = None
+    pending_client_events: list[str] = field(default_factory=list)
     media_tasks: set[asyncio.Task] = field(default_factory=set)
 
 
@@ -52,6 +55,7 @@ class RtcSessionRegistry:
             client_token_hash=self._hash_token(client_token),
             created_at=now,
             expires_at=now + self._join_token_ttl_s,
+            control_events=asyncio.Queue(),
         )
         self._sessions[session_id] = record
         return record, client_token

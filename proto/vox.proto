@@ -297,6 +297,10 @@ service ConversationService {
   rpc Converse(stream ConverseClientMessage) returns (stream ConverseServerMessage);
 }
 
+service RtcService {
+  rpc Control(stream RtcControlClientMessage) returns (stream ConverseServerMessage);
+}
+
 message ConverseClientMessage {
   oneof msg {
     ConversationSessionUpdate session_update = 1;
@@ -309,6 +313,25 @@ message ConverseClientMessage {
   }
   reserved 3;
   reserved "response_create";
+}
+
+message RtcControlClientMessage {
+  oneof msg {
+    RtcControlAttach attach = 1;
+    ConversationSessionUpdate session_update = 2;
+    // field 3 reserved (was ConversationResponseCreate — superseded by start/delta/commit)
+    ConversationResponseCancel response_cancel = 4;
+    ConversationResponseStart response_start = 5;
+    ConversationResponseDelta response_delta = 6;
+    ConversationResponseCommit response_commit = 7;
+    RtcClientEvent client_event = 8;
+  }
+  reserved 3;
+  reserved "response_create";
+}
+
+message RtcControlAttach {
+  string session_id = 1;
 }
 
 message ConverseServerMessage {
@@ -328,7 +351,19 @@ message ConverseServerMessage {
     ConversationInterruptionDetected interruption_detected = 13;
     ConversationInterruptionFalsePositive interruption_false_positive = 14;
     ConversationTurnEouPredicted turn_eou_predicted = 15;
+    RtcSessionAttached rtc_session_attached = 16;
+    RtcClientEvent client_event = 17;
   }
+}
+
+message RtcSessionAttached {
+  string session_id = 1;
+  string provider = 2;
+}
+
+message RtcClientEvent {
+  string event = 1;
+  string payload_json = 2;
 }
 
 message ConversationResponseCommitted {

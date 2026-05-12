@@ -13,6 +13,7 @@ from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.logging_config import configure_logging
 from vox.server.middleware import RequestIdMiddleware
+from vox.server.rtc_registry import RtcSessionRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,7 @@ async def lifespan(app: FastAPI):
                 app.state.store,
                 app.state.registry,
                 app.state.scheduler,
+                app.state.rtc_registry,
                 port=grpc_port,
             )
 
@@ -134,6 +136,7 @@ def create_app(
     app.state.store = store
     app.state.registry = registry
     app.state.scheduler = scheduler
+    app.state.rtc_registry = RtcSessionRegistry()
     app.state.grpc_port = grpc_port
     app.state.preload_models = list(preload_models or [])
     app.state.preload_vad = preload_vad

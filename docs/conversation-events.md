@@ -59,8 +59,12 @@ default:
 Vox can create short-lived RTC session bindings for browser WebRTC media plus a
 developer-owned control channel. The browser sends microphone audio to Vox over
 WebRTC and receives assistant audio over WebRTC. The developer backend attaches
-to the control WebSocket to configure the conversation and stream assistant text
-into Vox.
+to a control stream to configure the conversation and stream assistant text into
+Vox.
+
+RTC sessions can also carry arbitrary JSON application events over a WebRTC data
+channel. Vox relays those JSON payloads between the browser data channel and the
+developer control stream without imposing an application schema.
 
 Create a session:
 
@@ -165,16 +169,37 @@ At end-of-candidates, send:
 }
 ```
 
-Developer backend attaches to the control-only stream:
+Developer backend can attach to the control-only stream over WebSocket:
 
 ```text
 ws://localhost:11435/v1/rtc/sessions/{session_id}/control
 ```
 
 This stream accepts `session.update`, `response.start`, `response.delta`,
-`response.commit`, and `response.cancel`. It emits the same conversation events
-as `/v1/conversation`, but it does not emit `response.audio.delta`; assistant
-audio belongs on the WebRTC media path for this session.
+`response.commit`, `response.cancel`, and `client.event`. It emits the same
+conversation events as `/v1/conversation`, plus `client.event` for browser data
+channel payloads. It does not emit `response.audio.delta`; assistant audio
+belongs on the WebRTC media path for this session.
+
+Developer backends can also attach over gRPC:
+
+```text
+RtcService.Control(stream RtcControlClientMessage) returns (stream ConverseServerMessage)
+```
+
+Expected gRPC control startup:
+
+1. Open the bidi gRPC stream.
+2. Send `RtcControlAttach { session_id }` as the first message.
+3. Wait for `rtc_session_attached`.
+4. Send `session_update`.
+5. Drive `response_start`, `response_delta`, `response_commit`, and
+   `response_cancel` the same way as the WebSocket control stream.
+6. Use `RtcClientEvent.event` plus `RtcClientEvent.payload_json` for
+   application events that should be relayed to the browser data channel.
+
+The RTC gRPC control stream is backend-facing. It is not intended to replace
+browser WebRTC media, and it is not a browser-native transport.
 
 The expected RTC startup order is:
 
@@ -186,11 +211,29 @@ The expected RTC startup order is:
 4. Browser applies Vox's SDP answer.
 5. Browser listens to `events_url` for Vox-side trickle ICE and posts browser ICE
    candidates to `/candidates`.
-6. Developer backend opens `/control`, sends `session.update`, waits for
+6. Developer backend opens `/control` over WebSocket or attaches to
+   `RtcService.Control` over gRPC, sends `session.update`, waits for
    `session.created`, and then drives assistant text with `response.delta` and
    `response.commit`.
 7. Vox sends user transcripts and interruption events over `/control`; Vox sends
    assistant audio over WebRTC.
+
+Optional data channel:
+
+- The browser may create a reliable ordered WebRTC data channel such as
+  `vox-events`.
+- Backend to browser:
+  - WebSocket control: send
+    `{ "type": "client.event", "event": "<name>", "payload": <any JSON> }`
+  - gRPC control: send
+    `RtcClientEvent { event: "<name>", payload_json: "<valid JSON>" }`
+- Browser to backend:
+  - Browser sends JSON text shaped as
+    `{ "event": "<name>", "payload": <any JSON> }` on the WebRTC data channel.
+  - Vox relays that message to the control stream as `client.event`
+    (WebSocket) or `RtcClientEvent` (gRPC).
+- Vox does not define the meaning of `event` names or payload contents. It only
+  requires the transport envelope.
 
 ICE servers are configured with environment variables:
 
@@ -335,6 +378,59 @@ When `response.cancelled` / `response_cancelled` arrives:
 
 `response.audio.clear` is the immediate playback instruction. `response.cancelled` is the response lifecycle instruction. Handle both.
 
+## Speaking Interruption Contract
+
+When assistant TTS is active, treat microphone activity as a two-stage
+interruption check, not as an immediate cancel.
+
+### 1. Candidate interruption
+
+When Vox is in `speaking` and receives `input_audio_buffer.speech_started`, that
+means "possible interruption", not "confirmed interruption".
+
+Client rules:
+
+- Do not stop playback on `input_audio_buffer.speech_started` alone.
+- Do not drop queued audio on `input_audio_buffer.speech_stopped` alone.
+- Do not treat `turn.state_changed: paused` as a playback-clear command.
+- Keep playing until Vox either rejects the candidate or sends
+  `response.audio.clear`.
+
+### 2. Rejected candidate / false positive
+
+If Vox decides the speech candidate was echo, leakage from loudspeakers, a short
+backchannel, or other non-interrupting audio, it emits
+`interruption.false_positive`.
+
+Client rules:
+
+- Do not cancel the active response.
+- Keep or resume normal playback.
+- Do not start a new assistant turn from this event.
+
+### 3. Confirmed interruption
+
+`response.audio.clear` is the authoritative playback-stop command for a real
+barge-in.
+
+Client rules:
+
+- Stop current assistant playback immediately.
+- Drop all queued audio for that `response_id`.
+- Ignore any stale audio chunks for that cleared response.
+- Treat `interruption.detected`, `response.cancelled`, and later state changes as
+  lifecycle/state updates. They are not a substitute for `response.audio.clear`.
+
+The ordering of `response.audio.clear`, `interruption.detected`,
+`response.cancelled`, and nearby `turn.state_changed` events is not the client
+contract. The contract is that `response.audio.clear` is the playback stop
+signal.
+
+### 4. Post-interrupt handoff
+
+After a confirmed interruption, wait for the user transcript and
+`turn.state_changed: thinking` before starting the next assistant response.
+
 ## Server Events
 
 ### `session.created`
@@ -348,7 +444,8 @@ VAD detected user speech.
 Client behavior:
 
 - Show listening/user-speaking UI.
-- If assistant audio is playing, keep playing until Vox either resumes or sends `response.audio.clear`.
+- If assistant audio is playing, treat this as a candidate interruption only.
+- Keep playing until Vox either resumes or sends `response.audio.clear`.
 - Do not locally cancel assistant audio on this event alone. Vox may classify it as a cough or backchannel.
 
 ### `input_audio_buffer.speech_stopped`
@@ -415,7 +512,7 @@ Client behavior:
 
 - On `thinking`: start or continue LLM generation and send response text to Vox.
 - On `speaking`: show assistant-speaking UI.
-- On `paused`: avoid adding local playback latency; Vox may resume or clear soon.
+- On `paused`: do not clear playback locally; Vox may resume or clear soon.
 - On `interrupted`: treat the assistant response as interrupted and prepare for a new user turn.
 
 ### `response.created`
@@ -475,7 +572,9 @@ Payload includes:
 
 Client behavior:
 
-- Expect `response.audio.clear`, `response.cancelled`, and `turn.state_changed: interrupted`.
+- Expect `response.audio.clear` and `response.cancelled` around this event.
+- Do not rely on event ordering here; `response.audio.clear` remains the
+  playback-stop command.
 - Stop upstream LLM generation for that response if it is still producing deltas.
 
 ### `interruption.false_positive`
@@ -492,6 +591,7 @@ Client behavior:
 
 - Do not cancel the assistant response.
 - Continue or resume playback as normal.
+- Treat this as a rejected interruption candidate, not as an error.
 
 ### `response.cancelled`
 
@@ -511,6 +611,28 @@ Client behavior:
 
 - Mark the response complete.
 - Return to idle/ready UI unless another state event says otherwise.
+
+### `client.event`
+
+Generic application JSON relayed between the backend control stream and the RTC
+browser data channel.
+
+Payload includes:
+
+- WebSocket control:
+  - `event`: string event name
+  - `payload`: any valid JSON value
+- gRPC control:
+  - `RtcClientEvent.event`: string event name
+  - `RtcClientEvent.payload_json`: valid JSON document
+
+Client behavior:
+
+- Do not feed this into the conversation state machine.
+- Treat it as an application/UI event lane.
+- Use it for URLs, images, cards, citations, progress messages, tool results, or
+  any other structured app payload.
+- Do not use it for assistant audio transport.
 
 ### `error`
 
@@ -559,6 +681,8 @@ Recommended transitions:
 ## Important Rules
 
 - Do not treat every `speech_started` during TTS as a confirmed interruption. Vox may reject it as a backchannel and resume TTS.
+- Only `response.audio.clear` tells the client to stop playback. `speech_started`,
+  `speech_stopped`, and `turn.state_changed: paused` do not.
 - Run client-side AEC when using loudspeaker playback; Vox should receive the post-AEC mic stream.
 - Do stop playback immediately on `response.audio.clear`.
 - Do stop sending response text on `response.cancelled`.

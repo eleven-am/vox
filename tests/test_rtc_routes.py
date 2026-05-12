@@ -15,6 +15,15 @@ from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk,
 from vox.server.routes.rtc import router as rtc_router
 
 
+class FakeDataChannel:
+    def __init__(self) -> None:
+        self.readyState = "open"
+        self.sent: list[str] = []
+
+    def send(self, message: str) -> None:
+        self.sent.append(message)
+
+
 class ScriptedTTS(TTSAdapter):
     def info(self) -> AdapterInfo:
         return AdapterInfo(
@@ -219,3 +228,54 @@ def test_rtc_control_rejects_audio_append_messages():
 
     assert msg["type"] == "error"
     assert "unknown control message type" in msg["message"]
+
+
+def test_rtc_control_relays_client_event_to_browser_data_channel():
+    client = TestClient(_build_app())
+    session = client.post("/v1/rtc/sessions").json()
+    record = client.app.state.rtc_registry.get(session["session_id"])
+    assert record is not None
+    channel = FakeDataChannel()
+    record.data_channel = channel
+
+    with client.websocket_connect(f"/v1/rtc/sessions/{session['session_id']}/control") as ws:
+        ws.receive_json()
+        ws.send_json({
+            "type": "client.event",
+            "event": "render.url",
+            "payload": {"url": "https://example.com"},
+        })
+
+    assert channel.sent
+    assert json.loads(channel.sent[0]) == {
+        "event": "render.url",
+        "payload": {
+            "url": "https://example.com",
+        },
+    }
+
+
+def test_rtc_control_emits_browser_client_events_to_backend():
+    client = TestClient(_build_app())
+    session = client.post("/v1/rtc/sessions").json()
+    record = client.app.state.rtc_registry.get(session["session_id"])
+    assert record is not None
+    assert record.control_events is not None
+
+    with client.websocket_connect(f"/v1/rtc/sessions/{session['session_id']}/control") as ws:
+        attached = ws.receive_json()
+        assert attached["type"] == "rtc.session.attached"
+        asyncio.run(record.control_events.put({
+            "type": "client.event",
+            "session_id": session["session_id"],
+            "event": "render.image",
+            "payload": {"image": "https://example.com/image.png"},
+        }))
+        msg = ws.receive_json()
+
+    assert msg == {
+        "type": "client.event",
+        "session_id": session["session_id"],
+        "event": "render.image",
+        "payload": {"image": "https://example.com/image.png"},
+    }

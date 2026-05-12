@@ -243,6 +243,7 @@
     <section class="status-grid">
       <div class="status"><span>Peer</span><strong id="peerState">idle</strong></div>
       <div class="status"><span>ICE</span><strong id="iceState">idle</strong></div>
+      <div class="status"><span>Data channel</span><strong id="dataChannelState">idle</strong></div>
       <div class="status"><span>Playback</span><strong id="playbackState">idle</strong></div>
       <div class="status"><span>Turn</span><strong id="turnState">idle</strong></div>
       <div class="status"><span>Browser AEC</span><strong id="aecState">unknown</strong></div>
@@ -268,6 +269,19 @@
         <button id="sendTextBtn" disabled>Send response</button>
         <button id="cancelBtn" disabled>Cancel response</button>
       </div>
+    </section>
+
+    <section>
+      <label>
+        Client event JSON
+        <textarea id="clientEventPayload">{"event":"render.url","payload":{"url":"https://example.com","label":"Example link"}}</textarea>
+      </label>
+      <div class="actions" style="margin-top: 12px;">
+        <button id="sendControlEventBtn" disabled>Send via control</button>
+        <button id="sendDataEventBtn" disabled>Send via data channel</button>
+      </div>
+      <p class="hint">Use the control button to test backend-to-browser relay. Use the data channel button to test browser-to-backend relay.</p>
+      <pre id="dataEventLog"></pre>
     </section>
 
     <section>
@@ -300,12 +314,17 @@
     const disconnectBtn = document.querySelector("#disconnectBtn");
     const sendTextBtn = document.querySelector("#sendTextBtn");
     const cancelBtn = document.querySelector("#cancelBtn");
+    const sendControlEventBtn = document.querySelector("#sendControlEventBtn");
+    const sendDataEventBtn = document.querySelector("#sendDataEventBtn");
     const assistantText = document.querySelector("#assistantText");
+    const clientEventPayload = document.querySelector("#clientEventPayload");
     const assistantAudio = document.querySelector("#assistantAudio");
+    const dataEventLogEl = document.querySelector("#dataEventLog");
     const logEl = document.querySelector("#log");
     const timelineEl = document.querySelector("#timeline");
     const peerStateEl = document.querySelector("#peerState");
     const iceStateEl = document.querySelector("#iceState");
+    const dataChannelStateEl = document.querySelector("#dataChannelState");
     const playbackStateEl = document.querySelector("#playbackState");
     const turnStateEl = document.querySelector("#turnState");
     const aecStateEl = document.querySelector("#aecState");
@@ -318,6 +337,7 @@
 
     let pc = null;
     let controlWs = null;
+    let dataChannel = null;
     let eventSource = null;
     let mediaToken = null;
     let sessionId = null;
@@ -339,6 +359,64 @@
 
     function setStatus(el, value) {
       el.textContent = value || "idle";
+    }
+
+    function appendDataEvent(direction, payload) {
+      const line = `[${new Date().toISOString()}] ${direction} ${JSON.stringify(payload)}`;
+      dataEventLogEl.textContent += `${line}\n`;
+      dataEventLogEl.scrollTop = dataEventLogEl.scrollHeight;
+    }
+
+    function parseClientEventEnvelope() {
+      const parsed = JSON.parse(clientEventPayload.value);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("Client event must be a JSON object");
+      }
+      if (typeof parsed.event !== "string" || !parsed.event.trim()) {
+        throw new Error("Client event requires a non-empty string 'event'");
+      }
+      return {
+        event: parsed.event.trim(),
+        payload: Object.prototype.hasOwnProperty.call(parsed, "payload") ? parsed.payload : null
+      };
+    }
+
+    function bindDataChannel(channel) {
+      dataChannel = channel;
+      setStatus(dataChannelStateEl, channel.readyState || "connecting");
+      log("datachannel.bound", { label: channel.label, readyState: channel.readyState });
+      timeline("datachannel.bound", { state: channel.readyState || "connecting" });
+      sendDataEventBtn.disabled = channel.readyState !== "open";
+      channel.onopen = () => {
+        setStatus(dataChannelStateEl, "open");
+        sendDataEventBtn.disabled = false;
+        log("datachannel.open", { label: channel.label });
+        timeline("datachannel.open", { state: "open" });
+      };
+      channel.onclose = () => {
+        setStatus(dataChannelStateEl, "closed");
+        sendDataEventBtn.disabled = true;
+        log("datachannel.close", { label: channel.label });
+        timeline("datachannel.close", { state: "closed" });
+        if (dataChannel === channel) dataChannel = null;
+      };
+      channel.onerror = () => {
+        log("datachannel.error", { label: channel.label });
+        timeline("datachannel.error", { state: "error" });
+      };
+      channel.onmessage = (event) => {
+        let payload = event.data;
+        if (typeof event.data === "string") {
+          try {
+            payload = JSON.parse(event.data);
+          } catch {
+            payload = { raw: event.data };
+          }
+        }
+        log("datachannel.message", payload);
+        timeline("datachannel.message", {});
+        appendDataEvent("browser<-backend", payload);
+      };
     }
 
     function timeline(type, payload = {}) {
@@ -665,6 +743,12 @@
     function handleWireEvent(event) {
       const type = event.type || "message";
       timeline(type, event);
+      if (type === "client.event") {
+        appendDataEvent("backend<-browser", {
+          event: event.event,
+          payload: Object.prototype.hasOwnProperty.call(event, "payload") ? event.payload : null
+        });
+      }
       if (type === "session.created") setStatus(turnStateEl, "listening");
       if (type === "response.created") {
         setStatus(playbackStateEl, "starting");
@@ -731,11 +815,15 @@
         iceServers: session.ice_servers,
         iceTransportPolicy: icePolicyInput.value
       });
+      bindDataChannel(pc.createDataChannel("vox-events", { ordered: true }));
       pc.ontrack = (event) => {
         remoteStream = event.streams[0];
         assistantAudio.srcObject = remoteStream;
         log("track", { kind: event.track.kind });
         timeline("track", { kind: event.track.kind });
+      };
+      pc.ondatachannel = (event) => {
+        bindDataChannel(event.channel);
       };
       pc.onicecandidate = async (event) => {
         const candidate = event.candidate ? event.candidate.toJSON() : null;
@@ -861,12 +949,15 @@
       disconnectBtn.disabled = false;
       sendTextBtn.disabled = false;
       cancelBtn.disabled = false;
+      sendControlEventBtn.disabled = false;
       applyAudioBtn.disabled = false;
     }
 
     async function disconnect() {
       sendTextBtn.disabled = true;
       cancelBtn.disabled = true;
+      sendControlEventBtn.disabled = true;
+      sendDataEventBtn.disabled = true;
       disconnectBtn.disabled = true;
       applyAudioBtn.disabled = true;
       if (eventSource) eventSource.close();
@@ -876,6 +967,7 @@
       stopMicMeter();
       eventSource = null;
       controlWs = null;
+      dataChannel = null;
       pc = null;
       micStream = null;
       remoteStream = null;
@@ -884,6 +976,7 @@
       pendingCandidates = [];
       setStatus(peerStateEl, "idle");
       setStatus(iceStateEl, "idle");
+      setStatus(dataChannelStateEl, "idle");
       setStatus(playbackStateEl, "idle");
       setStatus(turnStateEl, "idle");
       setStatus(aecStateEl, "unknown");
@@ -921,6 +1014,27 @@
     cancelBtn.addEventListener("click", () => {
       if (controlWs && controlWs.readyState === WebSocket.OPEN) {
         controlWs.send(JSON.stringify({ type: "response.cancel" }));
+      }
+    });
+    sendControlEventBtn.addEventListener("click", () => {
+      if (!controlWs || controlWs.readyState !== WebSocket.OPEN) return;
+      try {
+        const envelope = parseClientEventEnvelope();
+        controlWs.send(JSON.stringify({ type: "client.event", event: envelope.event, payload: envelope.payload }));
+        log("control.client_event.sent", envelope);
+      } catch (error) {
+        log("client_event.error", { message: error.message });
+      }
+    });
+    sendDataEventBtn.addEventListener("click", () => {
+      if (!dataChannel || dataChannel.readyState !== "open") return;
+      try {
+        const envelope = parseClientEventEnvelope();
+        dataChannel.send(JSON.stringify(envelope));
+        appendDataEvent("browser->backend", envelope);
+        log("datachannel.sent", envelope);
+      } catch (error) {
+        log("client_event.error", { message: error.message });
       }
     });
     if (navigator.mediaDevices) {

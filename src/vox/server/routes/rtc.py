@@ -27,6 +27,12 @@ from vox.server.routes.conversation import (
     _send_error,
     parse_session_update,
 )
+from vox.server.rtc_client_events import (
+    emit_client_event_to_control,
+    flush_pending_client_events,
+    parse_client_event_message,
+    send_client_event_to_browser,
+)
 from vox.server.rtc_ice import (
     ice_servers_from_env,
     patch_aioice_turn_error_code_parser,
@@ -111,6 +117,27 @@ async def create_rtc_answer(request: Request, session_id: str) -> dict:
             task = asyncio.create_task(pump_input_audio(track, lambda pcm, sr: _ingest_media_audio(record, pcm, sr)))
             record.media_tasks.add(task)
             task.add_done_callback(record.media_tasks.discard)
+
+    @pc.on("datachannel")
+    def on_datachannel(channel) -> None:
+        record.data_channel = channel
+
+        @channel.on("open")
+        def on_open() -> None:
+            flush_pending_client_events(record)
+
+        @channel.on("close")
+        def on_close() -> None:
+            if record.data_channel is channel:
+                record.data_channel = None
+
+        @channel.on("message")
+        def on_message(message) -> None:
+            task = asyncio.create_task(_handle_data_channel_message(record, session_id, message))
+            record.media_tasks.add(task)
+            task.add_done_callback(record.media_tasks.discard)
+
+        flush_pending_client_events(record)
 
     await pc.setRemoteDescription(RTCSessionDescription(
         sdp=str(body.get("sdp") or ""),
@@ -218,7 +245,18 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
             if isinstance(event, ConvDoneEvent):
                 return
 
+    async def emit_client_events() -> None:
+        if record.control_events is None:
+            return
+        while True:
+            event = await record.control_events.get()
+            if event is None:
+                return
+            with suppress(Exception):
+                await websocket.send_json(event)
+
     emit_task = asyncio.create_task(emit_events())
+    client_event_task = asyncio.create_task(emit_client_events())
 
     try:
         await websocket.send_json({
@@ -252,6 +290,15 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
                     await _send_error(websocket, "session already configured")
                 except OperationError as exc:
                     await _send_error(websocket, str(exc))
+                continue
+
+            if msg_type == "client.event":
+                try:
+                    event_name, payload = parse_client_event_message(msg)
+                except ValueError as exc:
+                    await _send_error(websocket, str(exc))
+                    continue
+                send_client_event_to_browser(record, event_name, payload)
                 continue
 
             if orchestrator.config is None:
@@ -290,8 +337,17 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
             emit_task.cancel()
             with suppress(Exception):
                 await emit_task
+        if record.control_events is not None:
+            await record.control_events.put(None)
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait_for(client_event_task, timeout=5.0)
+        if not client_event_task.done():
+            client_event_task.cancel()
+            with suppress(Exception):
+                await client_event_task
         await orchestrator.close()
         record.orchestrator = None
+        record.data_channel = None
         if record.audio_output is not None:
             await record.audio_output.put(None)
         if record.media_events is not None:
@@ -343,6 +399,31 @@ async def _ingest_media_audio(record: RtcSessionRecord, pcm16: bytes, sample_rat
     orchestrator = record.orchestrator
     if orchestrator is not None and orchestrator.config is not None:
         await orchestrator.ingest_pcm16(pcm16, sample_rate=sample_rate)
+
+
+async def _handle_data_channel_message(record: RtcSessionRecord, session_id: str, message) -> None:
+    if isinstance(message, bytes):
+        try:
+            text = message.decode("utf-8")
+        except UnicodeDecodeError:
+            logger.warning("dropping non-UTF-8 RTC data channel message for %s", session_id)
+            return
+    else:
+        text = str(message)
+
+    try:
+        message_obj = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("dropping non-JSON RTC data channel message for %s", session_id)
+        return
+
+    try:
+        event_name, payload = parse_client_event_message(message_obj)
+    except ValueError:
+        logger.warning("dropping malformed RTC client.event payload for %s", session_id)
+        return
+
+    await emit_client_event_to_control(record, session_id, event_name, payload)
 
 
 def _candidate_events_from_sdp(sdp: str) -> list[dict]:
