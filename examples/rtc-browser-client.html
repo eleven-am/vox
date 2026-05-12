@@ -347,7 +347,10 @@
     const falsePositiveCountEl = document.querySelector("#falsePositiveCount");
 
     let pc = null;
-    let controlWs = null;
+    let controlSocket = null;
+    let controlChannelName = null;
+    let controlJoinRequested = false;
+    let controlJoined = false;
     let dataChannel = null;
     let eventSource = null;
     let mediaToken = null;
@@ -370,6 +373,13 @@
 
     function setStatus(el, value) {
       el.textContent = value || "idle";
+    }
+
+    function nextRequestId() {
+      if (window.crypto && typeof window.crypto.randomUUID === "function") {
+        return window.crypto.randomUUID();
+      }
+      return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     }
 
     function appendDataEvent(direction, payload) {
@@ -751,6 +761,50 @@
       setStatus(playbackStateEl, "cleared");
     }
 
+    function controlMessageToWire(message) {
+      const payload = message && typeof message.payload === "object" && message.payload !== null && !Array.isArray(message.payload)
+        ? message.payload
+        : { payload: message.payload ?? null };
+      return { type: message.event, ...payload };
+    }
+
+    function sendControlSocketEnvelope(action, event, payload = {}) {
+      if (!controlSocket || controlSocket.readyState !== WebSocket.OPEN || !controlJoined || !controlChannelName) {
+        return false;
+      }
+      controlSocket.send(JSON.stringify({
+        action,
+        channelName: controlChannelName,
+        requestId: nextRequestId(),
+        event,
+        payload
+      }));
+      return true;
+    }
+
+    function sendControlMessage(event, payload = {}) {
+      return sendControlSocketEnvelope("BROADCAST", event, payload);
+    }
+
+    function sendControlJoin() {
+      if (
+        !controlSocket
+        || controlSocket.readyState !== WebSocket.OPEN
+        || !controlChannelName
+        || controlJoinRequested
+      ) {
+        return;
+      }
+      controlJoinRequested = true;
+      controlSocket.send(JSON.stringify({
+        action: "JOIN_CHANNEL",
+        channelName: controlChannelName,
+        requestId: nextRequestId(),
+        event: "join",
+        payload: {}
+      }));
+    }
+
     function handleWireEvent(event) {
       const type = event.type || "message";
       timeline(type, event);
@@ -927,34 +981,56 @@
         timeline("sse.close");
       });
 
-      controlWs = new WebSocket(`${wsBase(httpBaseInput.value)}/v1/rtc/sessions/${sessionId}/control`);
-      controlWs.onmessage = (event) => {
+      controlChannelName = `/rtc/${sessionId}`;
+      controlJoined = false;
+      controlJoinRequested = false;
+      controlSocket = new WebSocket(`${wsBase(httpBaseInput.value)}/v1/socket`);
+      controlSocket.onmessage = (event) => {
         const payload = JSON.parse(event.data);
-        log("control", payload);
-        handleWireEvent(payload);
+        log("socket", payload);
+
+        if (payload.action === "CONNECT" && payload.event === "CONNECTION") {
+          timeline("socket.connected");
+          sendControlJoin();
+          return;
+        }
+
+        if (payload.event === "ACKNOWLEDGE" && payload.channelName === controlChannelName) {
+          controlJoined = true;
+          timeline("socket.joined", { state: controlChannelName });
+          sendControlMessage("session.update", {
+            session: {
+              stt_model: sttModelInput.value,
+              tts_model: ttsModelInput.value,
+              voice: voiceInput.value,
+              turn_profile: turnProfileInput.value,
+              vad_backend: "silero",
+              turn_detector: "livekit"
+            }
+          });
+          disconnectBtn.disabled = false;
+          sendTextBtn.disabled = false;
+          cancelBtn.disabled = false;
+          sendControlEventBtn.disabled = false;
+          return;
+        }
+
+        if (payload.channelName === controlChannelName && typeof payload.event === "string") {
+          handleWireEvent(controlMessageToWire(payload));
+        }
       };
-      controlWs.onopen = () => {
-        controlWs.send(JSON.stringify({
-          type: "session.update",
-          session: {
-            stt_model: sttModelInput.value,
-            tts_model: ttsModelInput.value,
-            voice: voiceInput.value,
-            turn_profile: turnProfileInput.value,
-            vad_backend: "silero",
-            turn_detector: "livekit"
-          }
-        }));
+      controlSocket.onopen = () => {
+        log("socket.open", { path: "/v1/socket" });
       };
-      controlWs.onclose = (event) => {
-        log("control.close", { code: event.code, reason: event.reason });
-        timeline("control.close", { code: event.code });
+      controlSocket.onerror = () => {
+        log("socket.error", { path: "/v1/socket" });
+        timeline("socket.error");
+      };
+      controlSocket.onclose = (event) => {
+        log("socket.close", { code: event.code, reason: event.reason });
+        timeline("socket.close", { code: event.code });
       };
 
-      disconnectBtn.disabled = false;
-      sendTextBtn.disabled = false;
-      cancelBtn.disabled = false;
-      sendControlEventBtn.disabled = false;
       applyAudioBtn.disabled = false;
     }
 
@@ -966,12 +1042,15 @@
       disconnectBtn.disabled = true;
       applyAudioBtn.disabled = true;
       if (eventSource) eventSource.close();
-      if (controlWs && controlWs.readyState === WebSocket.OPEN) controlWs.close();
+      if (controlSocket && controlSocket.readyState === WebSocket.OPEN) controlSocket.close();
       if (pc) await pc.close();
       if (micStream) micStream.getTracks().forEach((track) => track.stop());
       stopMicMeter();
       eventSource = null;
-      controlWs = null;
+      controlSocket = null;
+      controlChannelName = null;
+      controlJoinRequested = false;
+      controlJoined = false;
       dataChannel = null;
       pc = null;
       micStream = null;
@@ -1007,25 +1086,28 @@
       suppressLocalAudioPlaybackInput
     ].forEach((input) => input.addEventListener("change", markCustomPreset));
     sendTextBtn.addEventListener("click", () => {
-      if (!controlWs || controlWs.readyState !== WebSocket.OPEN) return;
+      if (!controlJoined) return;
       clearAssistantAudio();
       attachAssistantAudio();
       setStatus(playbackStateEl, "requested");
-      controlWs.send(JSON.stringify({ type: "response.cancel" }));
-      controlWs.send(JSON.stringify({ type: "response.start" }));
-      controlWs.send(JSON.stringify({ type: "response.delta", delta: assistantText.value }));
-      controlWs.send(JSON.stringify({ type: "response.commit" }));
+      sendControlMessage("response.cancel");
+      sendControlMessage("response.start");
+      sendControlMessage("response.delta", { delta: assistantText.value });
+      sendControlMessage("response.commit");
     });
     cancelBtn.addEventListener("click", () => {
-      if (controlWs && controlWs.readyState === WebSocket.OPEN) {
-        controlWs.send(JSON.stringify({ type: "response.cancel" }));
+      if (controlJoined) {
+        sendControlMessage("response.cancel");
       }
     });
     sendControlEventBtn.addEventListener("click", () => {
-      if (!controlWs || controlWs.readyState !== WebSocket.OPEN) return;
+      if (!controlJoined) return;
       try {
         const envelope = parseClientEventEnvelope();
-        controlWs.send(JSON.stringify({ type: "client.event", event: envelope.event, payload: envelope.payload }));
+        sendControlMessage("client.event", {
+          event: envelope.event,
+          payload: envelope.payload
+        });
         log("control.client_event.sent", envelope);
       } catch (error) {
         log("client_event.error", { message: error.message });
