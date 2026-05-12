@@ -156,6 +156,19 @@ def test_pondsocket_conversation_channel_matches_ws_flow():
         assert decoded
 
 
+def test_pondsocket_socket_requires_api_key_when_configured(monkeypatch):
+    monkeypatch.setenv("VOX_API_KEY", "secret")
+    client = TestClient(_build_app())
+
+    with pytest.raises(WebSocketDisconnect), client.websocket_connect("/v1/socket"):
+        pass
+
+    with client.websocket_connect("/v1/socket?api_key=secret") as ws:
+        connect = _receive_json(ws)
+        assert connect["action"] == "CONNECT"
+        assert connect["event"] == "CONNECTION"
+
+
 def test_pondsocket_socket_can_multiplex_conversation_and_rtc_channels():
     client = TestClient(_build_app())
     rtc_session = client.post("/v1/rtc/sessions").json()

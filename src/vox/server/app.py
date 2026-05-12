@@ -124,7 +124,7 @@ def create_app(
             allow_origins=cors_origins,
             allow_credentials=False,
             allow_methods=["GET", "POST", "OPTIONS"],
-            allow_headers=["authorization", "content-type"],
+            allow_headers=["authorization", "content-type", "x-api-key"],
         )
 
     if vox_home is None:

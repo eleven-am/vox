@@ -177,6 +177,10 @@
         <input id="httpBase" value="https://vox.horus.maix.ovh">
       </label>
       <label>
+        Vox API key
+        <input id="apiKey" type="password" autocomplete="off" placeholder="optional unless server requires auth">
+      </label>
+      <label>
         STT model
         <input id="sttModel" value="parakeet-stt-onnx:tdt-0.6b-v3">
       </label>
@@ -305,6 +309,7 @@
 
   <script>
     const httpBaseInput = document.querySelector("#httpBase");
+    const apiKeyInput = document.querySelector("#apiKey");
     const sttModelInput = document.querySelector("#sttModel");
     const ttsModelInput = document.querySelector("#ttsModel");
     const voiceInput = document.querySelector("#voice");
@@ -842,7 +847,8 @@
 
     async function postJson(path, body, token = null) {
       const headers = { "content-type": "application/json" };
-      if (token) headers.authorization = `Bearer ${token}`;
+      const authToken = token || apiKeyInput.value.trim();
+      if (authToken) headers.authorization = `Bearer ${authToken}`;
       const response = await fetch(`${httpBaseInput.value.replace(/\/$/, "")}${path}`, {
         method: "POST",
         headers,
@@ -984,7 +990,9 @@
       controlChannelName = `/rtc/${sessionId}`;
       controlJoined = false;
       controlJoinRequested = false;
-      controlSocket = new WebSocket(`${wsBase(httpBaseInput.value)}/v1/socket`);
+      const socketUrl = new URL(`${wsBase(httpBaseInput.value)}/v1/socket`);
+      if (apiKeyInput.value.trim()) socketUrl.searchParams.set("api_key", apiKeyInput.value.trim());
+      controlSocket = new WebSocket(socketUrl.toString());
       controlSocket.onmessage = (event) => {
         const payload = JSON.parse(event.data);
         log("socket", payload);

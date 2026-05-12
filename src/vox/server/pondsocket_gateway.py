@@ -16,6 +16,7 @@ from vox.operations.conversation import (
     ConversationOrchestrator,
 )
 from vox.operations.errors import OperationError, SessionAlreadyConfiguredError
+from vox.server.auth import configured_api_key, extract_api_key_from_connection, is_api_key_authorized
 from vox.server.routes.conversation import (
     _event_to_wire,
     _parse_allow_interruptions,
@@ -124,7 +125,14 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
     rtc_runtimes: dict[str, _RtcRuntime] = {}
 
     async def auth(ctx: ConnectionContext) -> None:
-        ctx.accept()
+        expected = configured_api_key()
+        if expected is None:
+            ctx.accept()
+            return
+        if is_api_key_authorized(extract_api_key_from_connection(ctx)):
+            ctx.accept()
+            return
+        ctx.decline(401, "missing or invalid API key")
 
     pond = PondSocket()
     endpoint = pond.create_endpoint("/", auth)

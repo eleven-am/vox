@@ -21,6 +21,7 @@ from vox.operations.conversation import (
     ConversationOrchestrator,
 )
 from vox.operations.errors import OperationError, SessionAlreadyConfiguredError
+from vox.server.auth import require_api_key
 from vox.server.routes.conversation import (
     _event_to_wire,
     _parse_allow_interruptions,
@@ -57,6 +58,7 @@ def get_rtc_registry(request_or_ws: Request | WebSocket) -> RtcSessionRegistry:
 
 @router.post("/v1/rtc/sessions")
 async def create_rtc_session(request: Request) -> dict:
+    require_api_key(request)
     registry = get_rtc_registry(request)
     record, client_token = registry.create_session()
     return {

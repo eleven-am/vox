@@ -73,6 +73,22 @@ def test_create_rtc_session_returns_ephemeral_binding():
     assert payload["ice_servers"] == []
 
 
+def test_create_rtc_session_requires_api_key_when_configured(monkeypatch):
+    monkeypatch.setenv("VOX_API_KEY", "secret")
+    client = TestClient(_build_app())
+
+    unauthorized = client.post("/v1/rtc/sessions")
+    assert unauthorized.status_code == 401
+    assert unauthorized.json()["detail"] == "missing or invalid API key"
+
+    authorized = client.post(
+        "/v1/rtc/sessions",
+        headers={"authorization": "Bearer secret"},
+    )
+    assert authorized.status_code == 200
+    assert authorized.json()["session_id"].startswith("rtc_")
+
+
 def test_rtc_offer_returns_answer_media_token_and_events_url():
     client = TestClient(_build_app())
     session = client.post("/v1/rtc/sessions").json()
