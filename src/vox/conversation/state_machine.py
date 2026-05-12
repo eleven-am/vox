@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from vox.conversation.types import (
     TimerKey,
@@ -14,6 +15,11 @@ from vox.conversation.types import (
     cancel_timer,
     start_timer,
 )
+
+_TransitionFn = Callable[
+    ["TurnStateMachine", TurnEvent],
+    tuple["TurnState | None", list[TurnAction]],
+]
 
 logger = logging.getLogger(__name__)
 
@@ -271,7 +277,7 @@ def _on_client_cancel_interrupted(m: TurnStateMachine, e: TurnEvent) -> tuple[Tu
 
 
 
-_TRANSITIONS: dict[tuple[TurnState, TurnEventType], callable] = {
+_TRANSITIONS: dict[tuple[TurnState, TurnEventType], _TransitionFn] = {
 
     (TurnState.IDLE, TurnEventType.SPEECH_STARTED): _on_speech_started_idle,
     (TurnState.LISTENING, TurnEventType.SPEECH_STARTED): _on_speech_started_listening,

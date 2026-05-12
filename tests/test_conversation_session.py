@@ -604,7 +604,7 @@ class TestBargeIn:
         assert session._speech_session is None
 
     @pytest.mark.asyncio
-    async def test_audio_generated_during_pause_is_not_replayed(self):
+    async def test_audio_generated_during_pause_is_buffered_until_resume(self):
         tts = ScriptedTTSAdapter(chunks=20, inter_chunk_delay=0.01)
         session, collector, _ = _build_session(
             adapter=tts,
@@ -632,7 +632,7 @@ class TestBargeIn:
         chunks_while_paused_end = len(collector.by_type(WIRE_AUDIO_DELTA))
         assert chunks_while_paused_end == chunks_while_paused_start,\
             "no audio chunks should be emitted while paused"
-        assert session.pending_audio_count == 0
+        assert session.pending_audio_count > 0
 
 
         await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STOPPED))
@@ -640,7 +640,7 @@ class TestBargeIn:
 
 
         chunks_after_resume = len(collector.by_type(WIRE_AUDIO_DELTA))
-        assert chunks_after_resume >= chunks_while_paused_end
+        assert chunks_after_resume > chunks_while_paused_end
         assert session.pending_audio_count == 0
 
         await session.close()

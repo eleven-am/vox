@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import fractions
+import functools
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -83,7 +84,10 @@ class RtcAudioOutputTrack(MediaStreamTrack):
                 return await self._silence_frame()
             pcm16, sample_rate = item
             self._silenced = False
-            self._sample_rate = int(sample_rate) or self._sample_rate
+            new_rate = int(sample_rate) or self._sample_rate
+            if new_rate != self._sample_rate:
+                self._sample_rate = new_rate
+                self._sync_clock()
             self._pending = np.frombuffer(pcm16, dtype=np.int16)
 
         samples_per_frame = max(1, self._sample_rate // 50)
@@ -137,9 +141,14 @@ async def pump_input_audio(
 
 def audio_frame_to_pcm16(frame: av.AudioFrame) -> tuple[bytes, int]:
     sample_rate = int(frame.sample_rate or 48_000)
-    resampler = AudioResampler(format="s16", layout="mono", rate=sample_rate)
+    resampler = _resampler_for(sample_rate)
     chunks: list[bytes] = []
     for mono in resampler.resample(frame):
         samples = mono.to_ndarray()
         chunks.append(np.ascontiguousarray(samples.reshape(-1), dtype=np.int16).tobytes())
     return b"".join(chunks), sample_rate
+
+
+@functools.lru_cache(maxsize=8)
+def _resampler_for(sample_rate: int) -> AudioResampler:
+    return AudioResampler(format="s16", layout="mono", rate=sample_rate)

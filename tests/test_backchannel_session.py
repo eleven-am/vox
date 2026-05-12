@@ -24,11 +24,11 @@ from contextlib import asynccontextmanager
 import numpy as np
 import pytest
 
-from vox.conversation import TurnEvent, TurnEventType, TurnPolicy, TurnState
+from vox.conversation import TurnAction, TurnActionType, TurnEvent, TurnEventType, TurnPolicy, TurnState
 from vox.conversation.session import ConversationConfig, ConversationSession
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
-from vox.streaming.types import StreamTranscript
+from vox.streaming.types import SpeechStarted, StreamTranscript
 
 
 class LongTTS(TTSAdapter):
@@ -112,9 +112,9 @@ def _build():
     return session, coll, tts
 
 
-def _voice_signal(duration_s: float, amp: float = 0.1, sr: int = 16_000) -> np.ndarray:
+def _voice_signal(duration_s: float, amp: float = 0.1, sr: int = 16_000, freq: float = 220) -> np.ndarray:
     t = np.arange(int(duration_s * sr)) / sr
-    return (amp * np.sin(2 * np.pi * 220 * t)).astype(np.float32)
+    return (amp * np.sin(2 * np.pi * freq * t)).astype(np.float32)
 
 
 class TestBackchannelRejection:
@@ -182,6 +182,128 @@ class TestBackchannelRejection:
         assert session.state != TurnState.INTERRUPTED
         assert not coll.by_type("response.cancelled")
         assert coll.by_type("interruption.false_positive")
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_acoustic_output_echo_is_rejected_before_audio_clear(self):
+        """When mic audio strongly matches recent TTS output, suppress the
+        candidate before PAUSE_OUTPUT clears the audible response.
+        """
+        session, coll, _ = _build()
+        await session.start()
+
+        await session.submit_response_text("The assistant is speaking.")
+        await asyncio.sleep(0.15)
+        assert session.state == TurnState.SPEAKING
+
+        echo = _voice_signal(0.50, amp=0.08, freq=330)
+        session._output_audio_ring = echo.copy()
+        session._audio_ring = echo.copy()
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000))
+        await asyncio.sleep(0.14)
+
+        assert session.state == TurnState.SPEAKING
+        assert coll.by_type("interruption.false_positive")
+        assert not coll.by_type("response.audio.clear")
+        assert not coll.by_type("response.cancelled")
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_non_echo_speech_still_pauses_quickly_during_tts(self):
+        session, coll, _ = _build()
+        await session.start()
+
+        await session.submit_response_text("The assistant is speaking.")
+        await asyncio.sleep(0.15)
+        assert session.state == TurnState.SPEAKING
+
+        session._output_audio_ring = _voice_signal(0.50, amp=0.08, freq=330)
+        session._audio_ring = _voice_signal(0.50, amp=0.15, freq=660)
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000))
+        await asyncio.sleep(0.02)
+
+        assert session.state in {TurnState.PAUSED, TurnState.INTERRUPTED}
+        assert coll.by_type("response.audio.clear")
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_paused_output_buffers_audio_until_false_positive_resume(self):
+        session, coll, _ = _build()
+        session._active_response_id = "resp_1"
+        session._paused = True
+
+        audio = np.full(480, 0.01, dtype=np.float32).tobytes()
+        await session._handle_tts_chunk(audio, 24_000)
+
+        assert session._pending_audio
+        assert not coll.by_type("response.audio.delta")
+
+        await session._execute(TurnAction(TurnActionType.RESUME_OUTPUT))
+
+        assert not session._pending_audio
+        assert coll.by_type("response.audio.delta")
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_preserves_audio_order_when_new_chunks_arrive_mid_flush(self):
+        session, coll, _ = _build()
+        session._active_response_id = "resp_1"
+        session._paused = True
+
+        chunk_a = np.full(480, 0.01, dtype=np.float32).tobytes()
+        chunk_b = np.full(480, 0.02, dtype=np.float32).tobytes()
+        chunk_c = np.full(480, 0.03, dtype=np.float32).tobytes()
+        chunk_d = np.full(480, 0.04, dtype=np.float32).tobytes()
+
+        await session._handle_tts_chunk(chunk_a, 24_000)
+        await session._handle_tts_chunk(chunk_b, 24_000)
+        await session._handle_tts_chunk(chunk_c, 24_000)
+
+        original_emit = session._on_event
+        late_chunk_inserted = False
+
+        async def emit_then_inject_late_chunk(event):
+            nonlocal late_chunk_inserted
+            await original_emit(event)
+            if (
+                not late_chunk_inserted
+                and event.get("type") == "response.audio.delta"
+                and event.get("sequence") == 1
+            ):
+                late_chunk_inserted = True
+                await session._handle_tts_chunk(chunk_d, 24_000)
+
+        session._on_event = emit_then_inject_late_chunk
+
+        await session._execute(TurnAction(TurnActionType.RESUME_OUTPUT))
+
+        assert late_chunk_inserted
+        deltas = coll.by_type("response.audio.delta")
+        sequences = [event["sequence"] for event in deltas]
+        assert sequences == sorted(sequences)
+        assert len(sequences) == 4
+        assert session._paused is False
+        assert not session._pending_audio
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_flush_output_clears_echo_rings(self):
+        session, _, _ = _build()
+
+        session._output_audio_ring = _voice_signal(0.50, amp=0.05, freq=330)
+        session._audio_ring = _voice_signal(0.50, amp=0.05, freq=440)
+
+        await session._execute(TurnAction(TurnActionType.FLUSH_OUTPUT))
+
+        assert session._output_audio_ring.size == 0
+        assert session._audio_ring.size == 0
 
         await session.close()
 
@@ -413,13 +535,9 @@ class TestAudioRingBuffer:
         await session.close()
 
 
-class TestClassifierFailureFallsBackToInterrupt:
+class TestClassifierFailureFallsBackToBackchannel:
     @pytest.mark.asyncio
-    async def test_exception_in_classifier_defaults_to_real_interrupt(self):
-        """If the classifier raises, the session should default to confirming
-        the interrupt (fail-safe: worst case we interrupt when we shouldn't,
-        better than leaving an impossible PAUSED state stuck).
-        """
+    async def test_exception_in_classifier_defaults_to_backchannel(self):
 
         class BrokenClassifier:
             def confirm_window_ms(self, base_ms, eou):
@@ -457,6 +575,7 @@ class TestClassifierFailureFallsBackToInterrupt:
         await asyncio.sleep(0.25)
 
 
-        assert session.state == TurnState.INTERRUPTED
+        assert session.state == TurnState.SPEAKING
+        assert coll.by_type("interruption.false_positive")
 
         await session.close()

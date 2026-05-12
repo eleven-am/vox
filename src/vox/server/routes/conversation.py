@@ -221,7 +221,8 @@ async def conversation_ws(websocket: WebSocket) -> None:
                 await orchestrator.ingest_pcm16(pcm, sample_rate=sample_rate)
 
             elif msg_type == "response.start":
-                await orchestrator.start_response()
+                allow_interruptions = _parse_allow_interruptions(msg)
+                await orchestrator.start_response(allow_interruptions=allow_interruptions)
 
             elif msg_type == "response.delta":
                 response = msg.get("response", {}) or {}
@@ -229,7 +230,8 @@ async def conversation_ws(websocket: WebSocket) -> None:
                 if not text:
                     await _send_error(websocket, "response.delta requires 'delta' text")
                     continue
-                await orchestrator.append_response_text(text)
+                allow_interruptions = _parse_allow_interruptions(msg)
+                await orchestrator.append_response_text(text, allow_interruptions=allow_interruptions)
 
             elif msg_type == "response.commit":
                 await orchestrator.commit_response()
@@ -264,3 +266,12 @@ async def conversation_ws(websocket: WebSocket) -> None:
 async def _send_error(websocket: WebSocket, message: str) -> None:
     with suppress(Exception):
         await websocket.send_json({"type": "error", "message": message})
+
+
+def _parse_allow_interruptions(msg: dict) -> bool:
+    response = msg.get("response")
+    if isinstance(response, dict) and "allow_interruptions" in response:
+        return bool(response["allow_interruptions"])
+    if "allow_interruptions" in msg:
+        return bool(msg["allow_interruptions"])
+    return True

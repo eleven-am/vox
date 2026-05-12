@@ -12,9 +12,11 @@ Concurrency model
 -----------------
 One `asyncio.Task` drives the state machine (`_run_loop`); it is the **only**
 mutator of `_paused`, `_timers`, and `_tts_task`. The audio ingest path and the
-TTS task push work back through the main loop. When output is paused, newly
-generated TTS audio is discarded because the client has already been told to
-clear audible output for that response.
+TTS task push work back through the main loop. When output is paused for an
+unconfirmed barge-in, newly generated TTS audio is held until the candidate is
+confirmed or rejected. The acoustic echo guard runs synchronously when VAD
+fires during SPEAKING, suppressing the SPEECH_STARTED event entirely when the
+mic input strongly correlates with recent TTS output.
 """
 
 from __future__ import annotations
@@ -121,6 +123,12 @@ _RESPONSE_STREAM_END = object()
 
 RESPONSE_STREAM_QUEUE_MAX = 1024
 TRANSCRIPT_CONTINUATION_COMMIT_MS = 1200
+SPEAKING_ECHO_MIN_WINDOW_MS = 120
+SPEAKING_ECHO_COMPARE_WINDOW_MS = 320
+SPEAKING_ECHO_MAX_DELAY_MS = 900
+SPEAKING_ECHO_SEARCH_STEP_MS = 20
+SPEAKING_ECHO_CORRELATION_THRESHOLD = 0.68
+SPEAKING_ECHO_MIN_RMS = 0.002
 
 
 @dataclass
@@ -129,8 +137,47 @@ class _ResponseStream:
     response_id: str
     committed: bool = False
     pending_done: bool = False
+    allow_interruptions: bool = True
+    audio_started: bool = False
     text_parts: list[str] = field(default_factory=list)
     heard_parts: list[str] = field(default_factory=list)
+
+
+def _normalise_for_correlation(audio: np.ndarray) -> np.ndarray | None:
+    if audio.size == 0:
+        return None
+    centred = audio.astype(np.float32, copy=False) - float(np.mean(audio))
+    norm = float(np.linalg.norm(centred))
+    if norm <= 1e-6:
+        return None
+    return centred / norm
+
+
+def _best_recent_correlation(
+    mic_audio: np.ndarray,
+    output_audio: np.ndarray,
+    *,
+    max_delay_ms: int,
+    step_ms: int,
+) -> float:
+    mic = _normalise_for_correlation(mic_audio)
+    if mic is None:
+        return 0.0
+
+    window_samples = mic.size
+    max_delay_samples = max(0, max_delay_ms * TARGET_SAMPLE_RATE // 1000)
+    step_samples = max(1, step_ms * TARGET_SAMPLE_RATE // 1000)
+    best = 0.0
+    for delay in range(0, max_delay_samples + 1, step_samples):
+        end = output_audio.size - delay
+        start = end - window_samples
+        if start < 0:
+            continue
+        segment = _normalise_for_correlation(output_audio[start:end])
+        if segment is None:
+            continue
+        best = max(best, abs(float(np.dot(mic, segment))))
+    return best
 
 
 class ConversationSession:
@@ -195,7 +242,9 @@ class ConversationSession:
 
 
         self._flutter_cooldown_until: float = 0.0
-
+        self._aec_warmup_until: float = 0.0
+        self._agent_speech_active: bool = False
+        self._agent_speech_end_monotonic: float = 0.0
 
         self._last_eou_probability: float | None = None
 
@@ -208,6 +257,8 @@ class ConversationSession:
 
         self._audio_ring: np.ndarray = np.empty(0, dtype=np.float32)
         self._audio_ring_max_samples: int = TARGET_SAMPLE_RATE * 2
+        self._output_audio_ring: np.ndarray = np.empty(0, dtype=np.float32)
+        self._output_audio_ring_max_samples: int = TARGET_SAMPLE_RATE * 3
 
 
 
@@ -287,12 +338,18 @@ class ConversationSession:
 
 
 
+        if self._is_response_uninterruptible():
+            return
+
         if audio.size:
             self._audio_ring = np.concatenate([self._audio_ring, audio])
             if self._audio_ring.size > self._audio_ring_max_samples:
                 self._audio_ring = self._audio_ring[-self._audio_ring_max_samples:]
             if self._speech_session is not None:
                 self._speech_session.append_audio(audio)
+
+        if self._aec_warmup_active():
+            return
 
         try:
             async for stream_event in self._pipeline.process_audio(audio):
@@ -318,22 +375,22 @@ class ConversationSession:
             if partial is not None:
                 await self._forward_stream_event(partial)
 
-    async def submit_response_text(self, text: str) -> None:
+    async def submit_response_text(self, text: str, *, allow_interruptions: bool = True) -> None:
         """Agent delivers the reply text; session kicks off TTS."""
         if self._closed:
             return
-        await self.append_response_text(text)
+        await self.append_response_text(text, allow_interruptions=allow_interruptions)
         await self.commit_response_stream()
 
-    async def start_response_stream(self) -> None:
+    async def start_response_stream(self, *, allow_interruptions: bool = True) -> None:
         if self._closed:
             return
-        await self._ensure_response_stream()
+        await self._ensure_response_stream(allow_interruptions=allow_interruptions)
 
-    async def append_response_text(self, text: str) -> None:
+    async def append_response_text(self, text: str, *, allow_interruptions: bool = True) -> None:
         if self._closed or not text or not text.strip():
             return
-        stream = await self._ensure_response_stream()
+        stream = await self._ensure_response_stream(allow_interruptions=allow_interruptions)
         if stream is None:
             return
         await stream.queue.put(text)
@@ -392,6 +449,8 @@ class ConversationSession:
 
 
     async def _forward_stream_event(self, stream_event) -> None:
+        if self._is_response_uninterruptible():
+            return
         if isinstance(stream_event, SpeechStarted):
             if self._speech_session is not None:
                 self._speech_session.start_speech()
@@ -406,7 +465,6 @@ class ConversationSession:
                     "flutter cooldown active; suppressing SPEECH_STARTED state transition"
                 )
                 return
-            self._vad_started_at = time.monotonic()
             confirm_ms = self._config.interrupt_classifier.confirm_window_ms(
                 self._config.policy.min_interrupt_duration_ms,
                 self._last_eou_probability,
@@ -416,6 +474,19 @@ class ConversationSession:
                     confirm_ms,
                     self._config.policy.speaking_interrupt_min_duration_ms,
                 )
+                if self._looks_like_current_output_echo():
+                    logger.debug("suppressing SPEAKING speech_started as likely assistant echo")
+                    await self._emit({
+                        "type": WIRE_INTERRUPTION_FALSE_POSITIVE,
+                        "response_id": self._active_response_id,
+                        "vad_active_ms": 0,
+                        "partial_transcript": (
+                            self._latest_partial.text if self._latest_partial is not None else None
+                        ),
+                        "reason": "output_echo",
+                    })
+                    return
+            self._vad_started_at = time.monotonic()
             await self._event_queue.put(TurnEvent(
                 type=TurnEventType.SPEECH_STARTED,
                 timestamp_ms=stream_event.timestamp_ms,
@@ -458,6 +529,21 @@ class ConversationSession:
         elif isinstance(stream_event, StreamTranscript):
             self._latest_partial = None
 
+            if self._is_in_self_echo_window():
+                logger.debug(
+                    "dropping final transcript inside agent-speech window "
+                    "(state=%s, agent_speech_active=%s)",
+                    self._sm.state.value,
+                    self._agent_speech_active,
+                )
+                await self._emit({
+                    "type": WIRE_INTERRUPTION_FALSE_POSITIVE,
+                    "response_id": self._active_response_id,
+                    "vad_active_ms": 0,
+                    "partial_transcript": stream_event.text,
+                    "reason": "self_echo_transcript_window",
+                })
+                return
 
             enrich_transcript(stream_event, self._config.language)
 
@@ -517,7 +603,9 @@ class ConversationSession:
 
 
 
-    async def _ensure_response_stream(self) -> _ResponseStream | None:
+    async def _ensure_response_stream(
+        self, *, allow_interruptions: bool = True,
+    ) -> _ResponseStream | None:
         if self._response_stream is not None and not self._response_stream.committed:
             return self._response_stream
         if self._tts_task and not self._tts_task.done():
@@ -533,6 +621,7 @@ class ConversationSession:
         stream = _ResponseStream(
             queue=asyncio.Queue(maxsize=RESPONSE_STREAM_QUEUE_MAX),
             response_id=response_id,
+            allow_interruptions=allow_interruptions,
         )
         self._response_stream = stream
         self._active_response_id = response_id
@@ -608,6 +697,7 @@ class ConversationSession:
 
     async def _complete_response_stream(self, stream: _ResponseStream) -> None:
         stream.pending_done = False
+        self._mark_agent_speech_ended()
         await self._event_queue.put(TurnEvent(type=TurnEventType.TTS_COMPLETED))
         await self._emit({
             "type": WIRE_RESPONSE_DONE,
@@ -665,16 +755,9 @@ class ConversationSession:
         self._audio_sequence += 1
         sequence = self._audio_sequence
         if self._paused:
+            self._pending_audio.append((encoded_audio, output_sample_rate, sequence))
             return
-        await self._emit({
-            "type": WIRE_AUDIO_DELTA,
-            "audio": base64.b64encode(encoded_audio).decode("ascii"),
-            "sample_rate": output_sample_rate,
-            "audio_format": "pcm16",
-            "response_id": self._active_response_id,
-            "sequence": sequence,
-        })
-        self._mark_estimated_playout(encoded_audio, output_sample_rate)
+        await self._emit_output_audio(encoded_audio, output_sample_rate, sequence)
 
     def _mark_estimated_playout(self, pcm16_audio: bytes, sample_rate: int) -> None:
         if not self._config.pace_response_done_to_audio:
@@ -695,6 +778,96 @@ class ConversationSession:
         if delay_s > 0:
             await asyncio.sleep(delay_s)
 
+    async def _emit_output_audio(self, encoded_audio: bytes, sample_rate: int, sequence: int) -> None:
+        stream = self._response_stream
+        if stream is not None and not stream.audio_started:
+            stream.audio_started = True
+            self._arm_aec_warmup()
+            self._mark_agent_speech_started()
+        await self._emit({
+            "type": WIRE_AUDIO_DELTA,
+            "audio": base64.b64encode(encoded_audio).decode("ascii"),
+            "sample_rate": sample_rate,
+            "audio_format": "pcm16",
+            "response_id": self._active_response_id,
+            "sequence": sequence,
+        })
+        self._remember_output_audio(encoded_audio, sample_rate)
+        self._mark_estimated_playout(encoded_audio, sample_rate)
+
+    def _arm_aec_warmup(self) -> None:
+        warmup_ms = self._config.policy.aec_warmup_ms
+        if warmup_ms <= 0:
+            return
+        self._aec_warmup_until = time.monotonic() + warmup_ms / 1000.0
+
+    def _aec_warmup_active(self) -> bool:
+        if self._aec_warmup_until <= 0.0:
+            return False
+        return time.monotonic() < self._aec_warmup_until
+
+    def _is_response_uninterruptible(self) -> bool:
+        stream = self._response_stream
+        if stream is None or stream.allow_interruptions:
+            return False
+        return self._sm.state in {TurnState.THINKING, TurnState.SPEAKING}
+
+    def _mark_agent_speech_started(self) -> None:
+        self._agent_speech_active = True
+
+    def _mark_agent_speech_ended(self) -> None:
+        if self._agent_speech_active:
+            self._agent_speech_end_monotonic = time.monotonic()
+        self._agent_speech_active = False
+
+    def _is_in_self_echo_window(self) -> bool:
+        if self._sm.state not in {TurnState.SPEAKING, TurnState.THINKING}:
+            return False
+        if self._agent_speech_active:
+            return True
+        cooldown_s = self._config.policy.backchannel_end_cooldown_ms / 1000.0
+        if cooldown_s <= 0.0:
+            return False
+        return time.monotonic() < self._agent_speech_end_monotonic + cooldown_s
+
+    def _remember_output_audio(self, encoded_audio: bytes, sample_rate: int) -> None:
+        if sample_rate <= 0 or not encoded_audio:
+            return
+        audio = pcm16_to_float32(encoded_audio)
+        if audio.size == 0:
+            return
+        if sample_rate != TARGET_SAMPLE_RATE:
+            audio = resample_audio(audio, sample_rate, TARGET_SAMPLE_RATE)
+        self._output_audio_ring = np.concatenate([self._output_audio_ring, audio])
+        if self._output_audio_ring.size > self._output_audio_ring_max_samples:
+            self._output_audio_ring = self._output_audio_ring[-self._output_audio_ring_max_samples:]
+
+    def _looks_like_current_output_echo(self) -> bool:
+        min_samples = SPEAKING_ECHO_MIN_WINDOW_MS * TARGET_SAMPLE_RATE // 1000
+        if self._audio_ring.size < min_samples or self._output_audio_ring.size < min_samples:
+            return False
+
+        window_samples = min(
+            self._audio_ring.size,
+            self._output_audio_ring.size,
+            SPEAKING_ECHO_COMPARE_WINDOW_MS * TARGET_SAMPLE_RATE // 1000,
+        )
+        if window_samples < min_samples:
+            return False
+
+        mic = self._audio_ring[-window_samples:]
+        mic_rms = float(np.sqrt(np.mean(mic * mic))) if mic.size else 0.0
+        if mic_rms < SPEAKING_ECHO_MIN_RMS:
+            return False
+
+        best = _best_recent_correlation(
+            mic,
+            self._output_audio_ring,
+            max_delay_ms=SPEAKING_ECHO_MAX_DELAY_MS,
+            step_ms=SPEAKING_ECHO_SEARCH_STEP_MS,
+        )
+        return best >= SPEAKING_ECHO_CORRELATION_THRESHOLD
+
 
 
 
@@ -710,9 +883,12 @@ class ConversationSession:
 
         elif action.type == TurnActionType.RESUME_OUTPUT:
             stream = self._response_stream
+            while self._pending_audio:
+                pending = self._pending_audio
+                self._pending_audio = []
+                for encoded_audio, sample_rate, sequence in pending:
+                    await self._emit_output_audio(encoded_audio, sample_rate, sequence)
             self._paused = False
-
-
             cooldown_s = self._config.policy.stable_speaking_min_ms / 1000.0
             self._flutter_cooldown_until = time.monotonic() + cooldown_s
             if stream is not None and stream.pending_done:
@@ -722,12 +898,15 @@ class ConversationSession:
             self._pending_audio = []
             self._paused = False
             self._playout_end_at = 0.0
+            self._output_audio_ring = np.empty(0, dtype=np.float32)
+            self._audio_ring = np.empty(0, dtype=np.float32)
             await self._emit({
                 "type": WIRE_AUDIO_CLEAR,
                 "response_id": self._active_response_id or self._last_cancelled_response_id,
             })
 
         elif action.type == TurnActionType.STOP_TTS:
+            self._mark_agent_speech_ended()
             stream = self._response_stream
             response_id = stream.response_id if stream is not None else self._active_response_id
             self._last_cancelled_response_id = response_id
@@ -869,6 +1048,25 @@ class ConversationSession:
                 payload={"reason": "self_echo"},
             ))
             return
+        if self._looks_like_current_output_echo():
+            logger.debug(
+                "classifier rejected barge-in as likely acoustic echo "
+                "(vad_active=%dms)",
+                vad_active_ms,
+            )
+            self._vad_started_at = None
+            await self._emit({
+                "type": WIRE_INTERRUPTION_FALSE_POSITIVE,
+                "response_id": self._active_response_id,
+                "vad_active_ms": vad_active_ms,
+                "partial_transcript": partial_transcript,
+                "reason": "output_echo",
+            })
+            await self._event_queue.put(TurnEvent(
+                type=TurnEventType.SPEECH_STOPPED,
+                payload={"reason": "output_echo"},
+            ))
+            return
         if active_assistant_text and not is_interrupt_keyword and partial_transcript is not None:
             words = [
                 word
@@ -907,8 +1105,8 @@ class ConversationSession:
                 TARGET_SAMPLE_RATE,
             )
         except Exception:
-            logger.exception("interrupt classifier raised; defaulting to real interrupt")
-            is_real = True
+            logger.exception("interrupt classifier raised; defaulting to backchannel")
+            is_real = False
 
         if is_real:
             await self._emit({

@@ -38,6 +38,23 @@ async def test_rtc_audio_output_track_stops_on_sentinel():
 
 
 @pytest.mark.asyncio
+async def test_rtc_audio_output_track_resyncs_clock_on_sample_rate_switch():
+    queue = asyncio.Queue()
+    track = RtcAudioOutputTrack(queue)
+    await track.enqueue(np.full(480, 100, dtype=np.int16).tobytes(), 24_000)
+
+    first = await track.recv()
+    assert first.sample_rate == 24_000
+    start_before_switch = track._start
+
+    await track.enqueue(np.full(320, 200, dtype=np.int16).tobytes(), 16_000)
+    second = await track.recv()
+
+    assert second.sample_rate == 16_000
+    assert track._start != start_before_switch
+
+
+@pytest.mark.asyncio
 async def test_rtc_audio_output_clear_drains_queue_and_resets_pacing():
     queue = asyncio.Queue()
     track = RtcAudioOutputTrack(queue)

@@ -21,7 +21,12 @@ from vox.operations.conversation import (
     ConversationOrchestrator,
 )
 from vox.operations.errors import OperationError, SessionAlreadyConfiguredError
-from vox.server.routes.conversation import _event_to_wire, _send_error, parse_session_update
+from vox.server.routes.conversation import (
+    _event_to_wire,
+    _parse_allow_interruptions,
+    _send_error,
+    parse_session_update,
+)
 from vox.server.rtc_ice import (
     ice_servers_from_env,
     patch_aioice_turn_error_code_parser,
@@ -203,10 +208,6 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
 
     async def emit_events() -> None:
         async for event in orchestrator.events():
-            if isinstance(event, ConvAudioDeltaEvent):
-                if record.audio_output is not None:
-                    await record.audio_output.put((base64.b64decode(event.audio_b64), event.sample_rate))
-                continue
             if isinstance(event, ConvAudioClearEvent) and record.audio_output_track is not None:
                 record.audio_output_track.clear()
             wire = _event_to_wire(event)
@@ -258,14 +259,16 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
                 continue
 
             if msg_type == "response.start":
-                await orchestrator.start_response()
+                allow_interruptions = _parse_allow_interruptions(msg)
+                await orchestrator.start_response(allow_interruptions=allow_interruptions)
             elif msg_type == "response.delta":
                 response = msg.get("response", {}) or {}
                 text = response.get("delta") or msg.get("delta")
                 if not text:
                     await _send_error(websocket, "response.delta requires 'delta' text")
                     continue
-                await orchestrator.append_response_text(text)
+                allow_interruptions = _parse_allow_interruptions(msg)
+                await orchestrator.append_response_text(text, allow_interruptions=allow_interruptions)
             elif msg_type == "response.commit":
                 await orchestrator.commit_response()
             elif msg_type == "response.cancel":

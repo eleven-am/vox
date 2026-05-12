@@ -347,15 +347,15 @@ class ConversationOrchestrator:
             raise SessionNotConfiguredError()
         await self._session.ingest_audio(pcm16, sample_rate=sample_rate)
 
-    async def start_response(self) -> None:
+    async def start_response(self, *, allow_interruptions: bool = True) -> None:
         if self._session is None:
             raise SessionNotConfiguredError()
-        await self._session.start_response_stream()
+        await self._session.start_response_stream(allow_interruptions=allow_interruptions)
 
-    async def append_response_text(self, text: str) -> None:
+    async def append_response_text(self, text: str, *, allow_interruptions: bool = True) -> None:
         if self._session is None:
             raise SessionNotConfiguredError()
-        await self._session.append_response_text(text)
+        await self._session.append_response_text(text, allow_interruptions=allow_interruptions)
 
     async def commit_response(self) -> None:
         if self._session is None:
