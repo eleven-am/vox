@@ -398,6 +398,8 @@ class TestUninterruptibleResponse:
 
     @pytest.mark.asyncio
     async def test_default_response_is_interruptible(self):
+        from vox.streaming.types import StreamTranscript
+
         session, coll, _ = _build(aec_warmup_ms=0)
         await session.start()
 
@@ -408,7 +410,16 @@ class TestUninterruptibleResponse:
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000))
         await asyncio.sleep(0.05)
 
-        assert session.state in {TurnState.PAUSED, TurnState.INTERRUPTED}
+        assert session.state == TurnState.SPEAKING
+        assert not coll.by_type("response.audio.clear")
+
+        await session._forward_stream_event(StreamTranscript(
+            text="stop please",
+            is_partial=True,
+        ))
+        await asyncio.sleep(0.05)
+
+        assert session.state == TurnState.INTERRUPTED
         assert coll.by_type("response.audio.clear")
 
         await session.close()

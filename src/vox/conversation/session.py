@@ -490,7 +490,10 @@ class ConversationSession:
             await self._event_queue.put(TurnEvent(
                 type=TurnEventType.SPEECH_STARTED,
                 timestamp_ms=stream_event.timestamp_ms,
-                payload={"confirm_window_ms": confirm_ms},
+                payload={
+                    "confirm_window_ms": confirm_ms,
+                    "defer_output_clear": self._sm.state == TurnState.SPEAKING,
+                },
             ))
         elif isinstance(stream_event, SpeechStopped):
             if self._speech_session is not None:
@@ -508,7 +511,7 @@ class ConversationSession:
         elif isinstance(stream_event, StreamTranscript) and stream_event.is_partial:
             self._latest_partial = stream_event
             if (
-                self._sm.state == TurnState.PAUSED
+                self._sm.state in {TurnState.PAUSED, TurnState.SPEAKING}
                 and self._config.interrupt_classifier.should_short_circuit(stream_event.text)
                 and self._has_active_timer(TimerKey.CONFIRM_INTERRUPT.value)
             ):

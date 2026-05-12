@@ -100,6 +100,8 @@ def _on_speech_started_speaking(m: TurnStateMachine, e: TurnEvent) -> tuple[Turn
         return None, []
 
     confirm_ms = int(e.payload.get("confirm_window_ms", m.policy.min_interrupt_duration_ms))
+    if bool(e.payload.get("defer_output_clear")):
+        return None, [start_timer(TimerKey.CONFIRM_INTERRUPT, confirm_ms)]
     return TurnState.PAUSED, [
         act(TurnActionType.PAUSE_OUTPUT),
         start_timer(TimerKey.CONFIRM_INTERRUPT, confirm_ms),
@@ -120,6 +122,10 @@ def _on_speech_stopped_listening(m: TurnStateMachine, e: TurnEvent) -> tuple[Tur
 
 
     return None, [start_timer(TimerKey.ENDPOINTING, m.policy.max_endpointing_delay_ms)]
+
+
+def _on_speech_stopped_speaking(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
+    return None, [cancel_timer(TimerKey.CONFIRM_INTERRUPT)]
 
 
 def _on_speech_stopped_paused(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
@@ -174,7 +180,7 @@ def _on_tts_audio_started_from_quiet(m: TurnStateMachine, e: TurnEvent) -> tuple
 
 
 def _on_tts_completed_speaking(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
-    return TurnState.IDLE, []
+    return TurnState.IDLE, [cancel_timer(TimerKey.CONFIRM_INTERRUPT)]
 
 
 def _on_tts_completed_thinking(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
@@ -194,7 +200,7 @@ def _on_tts_failed_thinking(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnStat
 
 
 def _on_tts_failed_speaking(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
-    return TurnState.IDLE, []
+    return TurnState.IDLE, [cancel_timer(TimerKey.CONFIRM_INTERRUPT)]
 
 
 def _on_tts_failed_paused(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
@@ -230,6 +236,10 @@ def _on_timer_elapsed_listening(m: TurnStateMachine, e: TurnEvent) -> tuple[Turn
 
 
 def _on_timer_elapsed_paused(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
+    return _on_timer_confirm_interrupt(m, e)
+
+
+def _on_timer_elapsed_speaking(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
     return _on_timer_confirm_interrupt(m, e)
 
 
@@ -288,6 +298,7 @@ _TRANSITIONS: dict[tuple[TurnState, TurnEventType], _TransitionFn] = {
 
 
     (TurnState.LISTENING, TurnEventType.SPEECH_STOPPED): _on_speech_stopped_listening,
+    (TurnState.SPEAKING, TurnEventType.SPEECH_STOPPED): _on_speech_stopped_speaking,
     (TurnState.PAUSED, TurnEventType.SPEECH_STOPPED): _on_speech_stopped_paused,
     (TurnState.INTERRUPTED, TurnEventType.SPEECH_STOPPED): _on_speech_stopped_interrupted,
 
@@ -316,6 +327,7 @@ _TRANSITIONS: dict[tuple[TurnState, TurnEventType], _TransitionFn] = {
 
 
     (TurnState.LISTENING, TurnEventType.TIMER_ELAPSED): _on_timer_elapsed_listening,
+    (TurnState.SPEAKING, TurnEventType.TIMER_ELAPSED): _on_timer_elapsed_speaking,
     (TurnState.PAUSED, TurnEventType.TIMER_ELAPSED): _on_timer_elapsed_paused,
 
 

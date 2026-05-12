@@ -70,6 +70,45 @@
       flex-wrap: wrap;
       gap: 8px;
     }
+    .check-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 8px 12px;
+      align-items: center;
+    }
+    .check-grid label {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 32px;
+    }
+    .check-grid input[type="checkbox"] {
+      width: auto;
+      margin: 0;
+    }
+    .hint {
+      margin: 8px 0 0;
+      color: color-mix(in srgb, CanvasText 65%, transparent);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .meter {
+      display: grid;
+      gap: 6px;
+      min-width: 180px;
+    }
+    .meter-track {
+      height: 8px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: color-mix(in srgb, CanvasText 12%, Canvas);
+    }
+    .meter-fill {
+      width: 0%;
+      height: 100%;
+      background: color-mix(in srgb, Highlight 75%, CanvasText);
+      transition: width 80ms linear;
+    }
     .status-grid {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
@@ -158,11 +197,56 @@
       </label>
     </section>
 
+    <section>
+      <div class="grid">
+        <label>
+          Microphone
+          <select id="micDevice">
+            <option value="">Default microphone</option>
+          </select>
+        </label>
+        <label>
+          Speaker output
+          <select id="outputDevice">
+            <option value="">System default</option>
+          </select>
+        </label>
+        <label>
+          Client audio preset
+          <select id="audioPreset">
+            <option value="voice-aec">Voice AEC</option>
+            <option value="strict-aec">Strict AEC</option>
+            <option value="raw">Raw mic</option>
+            <option value="custom">Custom</option>
+          </select>
+        </label>
+      </div>
+      <div class="check-grid" style="margin-top: 12px;">
+        <label><input id="echoCancellation" type="checkbox" checked> Echo cancellation</label>
+        <label><input id="noiseSuppression" type="checkbox" checked> Noise suppression</label>
+        <label><input id="autoGainControl" type="checkbox" checked> Auto gain control</label>
+        <label><input id="monoInput" type="checkbox" checked> Mono input</label>
+        <label><input id="restrictOwnAudio" type="checkbox"> Restrict own audio</label>
+        <label><input id="suppressLocalAudioPlayback" type="checkbox"> Suppress local playback</label>
+      </div>
+      <div class="actions" style="margin-top: 12px;">
+        <button id="refreshDevicesBtn">Refresh devices</button>
+        <button id="applyAudioBtn" disabled>Reapply mic settings</button>
+      </div>
+      <div class="meter" style="margin-top: 12px;">
+        <span id="micLevelText">Mic level idle</span>
+        <div class="meter-track"><div id="micLevelFill" class="meter-fill"></div></div>
+      </div>
+      <p class="hint" id="audioSupportHint">Browser audio support has not been probed yet.</p>
+    </section>
+
     <section class="status-grid">
       <div class="status"><span>Peer</span><strong id="peerState">idle</strong></div>
       <div class="status"><span>ICE</span><strong id="iceState">idle</strong></div>
       <div class="status"><span>Playback</span><strong id="playbackState">idle</strong></div>
       <div class="status"><span>Turn</span><strong id="turnState">idle</strong></div>
+      <div class="status"><span>Browser AEC</span><strong id="aecState">unknown</strong></div>
+      <div class="status"><span>Mic</span><strong id="micState">idle</strong></div>
       <div class="status"><span>Interruptions</span><strong id="interruptCount">0</strong></div>
       <div class="status"><span>False positives</span><strong id="falsePositiveCount">0</strong></div>
     </section>
@@ -201,6 +285,17 @@
     const ttsModelInput = document.querySelector("#ttsModel");
     const voiceInput = document.querySelector("#voice");
     const icePolicyInput = document.querySelector("#icePolicy");
+    const micDeviceInput = document.querySelector("#micDevice");
+    const outputDeviceInput = document.querySelector("#outputDevice");
+    const audioPresetInput = document.querySelector("#audioPreset");
+    const echoCancellationInput = document.querySelector("#echoCancellation");
+    const noiseSuppressionInput = document.querySelector("#noiseSuppression");
+    const autoGainControlInput = document.querySelector("#autoGainControl");
+    const monoInput = document.querySelector("#monoInput");
+    const restrictOwnAudioInput = document.querySelector("#restrictOwnAudio");
+    const suppressLocalAudioPlaybackInput = document.querySelector("#suppressLocalAudioPlayback");
+    const refreshDevicesBtn = document.querySelector("#refreshDevicesBtn");
+    const applyAudioBtn = document.querySelector("#applyAudioBtn");
     const connectBtn = document.querySelector("#connectBtn");
     const disconnectBtn = document.querySelector("#disconnectBtn");
     const sendTextBtn = document.querySelector("#sendTextBtn");
@@ -213,6 +308,11 @@
     const iceStateEl = document.querySelector("#iceState");
     const playbackStateEl = document.querySelector("#playbackState");
     const turnStateEl = document.querySelector("#turnState");
+    const aecStateEl = document.querySelector("#aecState");
+    const micStateEl = document.querySelector("#micState");
+    const micLevelText = document.querySelector("#micLevelText");
+    const micLevelFill = document.querySelector("#micLevelFill");
+    const audioSupportHint = document.querySelector("#audioSupportHint");
     const interruptCountEl = document.querySelector("#interruptCount");
     const falsePositiveCountEl = document.querySelector("#falsePositiveCount");
 
@@ -226,6 +326,10 @@
     let pendingCandidates = [];
     let interruptions = 0;
     let falsePositives = 0;
+    let audioContext = null;
+    let micMeterTimer = null;
+    let micAnalyser = null;
+    let micMeterData = null;
 
     function log(type, payload) {
       const line = `[${new Date().toISOString()}] ${type} ${JSON.stringify(payload)}`;
@@ -275,11 +379,279 @@
       return sdp.split(/\r?\n/).filter((line) => line.startsWith("a=candidate:")).length;
     }
 
+    function supportedAudioConstraints() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getSupportedConstraints) {
+        return {};
+      }
+      return navigator.mediaDevices.getSupportedConstraints();
+    }
+
+    function setExperimentalControlState() {
+      const supported = supportedAudioConstraints();
+      const items = [
+        [restrictOwnAudioInput, "restrictOwnAudio"],
+        [suppressLocalAudioPlaybackInput, "suppressLocalAudioPlayback"]
+      ];
+      for (const [input, key] of items) {
+        const ok = Boolean(supported[key]);
+        input.disabled = !ok;
+        if (!ok) input.checked = false;
+        input.parentElement.title = ok
+          ? `${key} is exposed by this browser`
+          : `${key} is not exposed by this browser`;
+      }
+      const support = [
+        "echoCancellation",
+        "noiseSuppression",
+        "autoGainControl",
+        "channelCount",
+        "sampleRate",
+        "latency",
+        "restrictOwnAudio",
+        "suppressLocalAudioPlayback"
+      ].filter((key) => supported[key]);
+      audioSupportHint.textContent = support.length
+        ? `Supported audio constraints: ${support.join(", ")}`
+        : "This browser did not report detailed audio constraint support.";
+      log("audio.supported_constraints", supported);
+    }
+
+    function applyPreset(value) {
+      if (value === "raw") {
+        echoCancellationInput.checked = false;
+        noiseSuppressionInput.checked = false;
+        autoGainControlInput.checked = false;
+        monoInput.checked = false;
+        restrictOwnAudioInput.checked = false;
+        suppressLocalAudioPlaybackInput.checked = false;
+      } else if (value === "strict-aec") {
+        echoCancellationInput.checked = true;
+        noiseSuppressionInput.checked = true;
+        autoGainControlInput.checked = false;
+        monoInput.checked = true;
+        restrictOwnAudioInput.checked = !restrictOwnAudioInput.disabled;
+        suppressLocalAudioPlaybackInput.checked = !suppressLocalAudioPlaybackInput.disabled;
+      } else if (value === "voice-aec") {
+        echoCancellationInput.checked = true;
+        noiseSuppressionInput.checked = true;
+        autoGainControlInput.checked = true;
+        monoInput.checked = true;
+        restrictOwnAudioInput.checked = false;
+        suppressLocalAudioPlaybackInput.checked = false;
+      }
+    }
+
+    function markCustomPreset() {
+      audioPresetInput.value = "custom";
+    }
+
+    function setSelectOptions(select, devices, fallbackLabel) {
+      const previous = select.value;
+      select.replaceChildren();
+      const fallback = document.createElement("option");
+      fallback.value = "";
+      fallback.textContent = fallbackLabel;
+      select.append(fallback);
+      for (const device of devices) {
+        const option = document.createElement("option");
+        option.value = device.deviceId;
+        option.textContent = device.label || `${fallbackLabel} ${select.options.length}`;
+        select.append(option);
+      }
+      if ([...select.options].some((option) => option.value === previous)) {
+        select.value = previous;
+      }
+    }
+
+    async function refreshDevices() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+        log("devices.error", { message: "mediaDevices.enumerateDevices is unavailable" });
+        return;
+      }
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      setSelectOptions(
+        micDeviceInput,
+        devices.filter((device) => device.kind === "audioinput"),
+        "Default microphone"
+      );
+      setSelectOptions(
+        outputDeviceInput,
+        devices.filter((device) => device.kind === "audiooutput"),
+        "System default"
+      );
+      outputDeviceInput.disabled = typeof assistantAudio.setSinkId !== "function";
+      log("devices", {
+        audioinput: devices.filter((device) => device.kind === "audioinput").length,
+        audiooutput: devices.filter((device) => device.kind === "audiooutput").length,
+        setSinkId: typeof assistantAudio.setSinkId === "function"
+      });
+    }
+
+    function buildAudioConstraints() {
+      const supported = supportedAudioConstraints();
+      const audio = {};
+      if (micDeviceInput.value) {
+        audio.deviceId = { exact: micDeviceInput.value };
+      }
+      if (supported.echoCancellation || "echoCancellation" in supported) {
+        audio.echoCancellation = echoCancellationInput.checked;
+      }
+      if (supported.noiseSuppression || "noiseSuppression" in supported) {
+        audio.noiseSuppression = noiseSuppressionInput.checked;
+      }
+      if (supported.autoGainControl || "autoGainControl" in supported) {
+        audio.autoGainControl = autoGainControlInput.checked;
+      }
+      if (monoInput.checked && supported.channelCount) {
+        audio.channelCount = { ideal: 1 };
+      }
+      if (supported.sampleRate) {
+        audio.sampleRate = { ideal: 48000 };
+      }
+      if (supported.latency) {
+        audio.latency = { ideal: 0.02 };
+      }
+      if (restrictOwnAudioInput.checked && supported.restrictOwnAudio) {
+        audio.restrictOwnAudio = true;
+      }
+      if (suppressLocalAudioPlaybackInput.checked && supported.suppressLocalAudioPlayback) {
+        audio.suppressLocalAudioPlayback = true;
+      }
+      return audio;
+    }
+
+    function summarizeMicSettings(track) {
+      const settings = track && track.getSettings ? track.getSettings() : {};
+      return {
+        deviceId: settings.deviceId,
+        echoCancellation: settings.echoCancellation,
+        noiseSuppression: settings.noiseSuppression,
+        autoGainControl: settings.autoGainControl,
+        restrictOwnAudio: settings.restrictOwnAudio,
+        suppressLocalAudioPlayback: settings.suppressLocalAudioPlayback,
+        sampleRate: settings.sampleRate,
+        channelCount: settings.channelCount,
+        latency: settings.latency
+      };
+    }
+
+    function updateMicStatus(track) {
+      const settings = summarizeMicSettings(track);
+      const capabilities = track && track.getCapabilities ? track.getCapabilities() : {};
+      const aec = settings.echoCancellation === undefined
+        ? "unknown"
+        : settings.echoCancellation
+          ? "on"
+          : "off";
+      setStatus(aecStateEl, aec);
+      const rate = settings.sampleRate ? `${settings.sampleRate}Hz` : "active";
+      const channels = settings.channelCount ? `${settings.channelCount}ch` : "";
+      setStatus(micStateEl, `${rate}${channels ? ` ${channels}` : ""}`);
+      log("mic.settings", settings);
+      log("mic.capabilities", capabilities);
+    }
+
+    async function openMicStream() {
+      const constraints = { audio: buildAudioConstraints() };
+      log("mic.constraints", constraints);
+      try {
+        return await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (error) {
+        log("mic.constraints_failed", {
+          message: error.message,
+          name: error.name,
+          fallback: true
+        });
+        const fallbackAudio = {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          channelCount: { ideal: 1 }
+        };
+        if (micDeviceInput.value) {
+          fallbackAudio.deviceId = { exact: micDeviceInput.value };
+        }
+        const fallback = { audio: fallbackAudio };
+        log("mic.constraints", fallback);
+        return navigator.mediaDevices.getUserMedia(fallback);
+      }
+    }
+
+    function stopMicMeter() {
+      if (micMeterTimer) clearInterval(micMeterTimer);
+      micMeterTimer = null;
+      micAnalyser = null;
+      micMeterData = null;
+      if (audioContext) {
+        audioContext.close().catch(() => {});
+      }
+      audioContext = null;
+      micLevelFill.style.width = "0%";
+      micLevelText.textContent = "Mic level idle";
+    }
+
+    function startMicMeter(stream) {
+      stopMicMeter();
+      if (!stream || !window.AudioContext && !window.webkitAudioContext) return;
+      const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+      audioContext = new AudioContextCtor();
+      const source = audioContext.createMediaStreamSource(stream);
+      micAnalyser = audioContext.createAnalyser();
+      micAnalyser.fftSize = 1024;
+      micMeterData = new Float32Array(micAnalyser.fftSize);
+      source.connect(micAnalyser);
+      micMeterTimer = setInterval(() => {
+        if (!micAnalyser || !micMeterData) return;
+        micAnalyser.getFloatTimeDomainData(micMeterData);
+        let sum = 0;
+        for (const sample of micMeterData) sum += sample * sample;
+        const rms = Math.sqrt(sum / micMeterData.length);
+        const db = rms > 0 ? 20 * Math.log10(rms) : -100;
+        const pct = Math.max(0, Math.min(100, (db + 70) * 2.2));
+        micLevelFill.style.width = `${pct}%`;
+        micLevelText.textContent = `Mic level ${db.toFixed(1)} dBFS`;
+      }, 100);
+    }
+
+    async function applyOutputDevice() {
+      if (typeof assistantAudio.setSinkId !== "function") {
+        log("speaker.output", { supported: false });
+        return;
+      }
+      await assistantAudio.setSinkId(outputDeviceInput.value || "");
+      log("speaker.output", {
+        supported: true,
+        sinkId: outputDeviceInput.value || "default"
+      });
+    }
+
+    async function replaceMicStream() {
+      if (!pc) return;
+      const nextStream = await openMicStream();
+      const nextTrack = nextStream.getAudioTracks()[0];
+      if (!nextTrack) {
+        nextStream.getTracks().forEach((track) => track.stop());
+        throw new Error("No audio track returned from getUserMedia");
+      }
+      const sender = pc.getSenders().find((item) => item.track && item.track.kind === "audio");
+      if (sender) {
+        await sender.replaceTrack(nextTrack);
+      } else {
+        pc.addTrack(nextTrack, nextStream);
+      }
+      if (micStream) micStream.getTracks().forEach((track) => track.stop());
+      micStream = nextStream;
+      updateMicStatus(nextTrack);
+      startMicMeter(micStream);
+      await refreshDevices();
+    }
+
     async function attachAssistantAudio() {
       if (!remoteStream) return;
       if (assistantAudio.srcObject !== remoteStream) {
         assistantAudio.srcObject = remoteStream;
       }
+      await applyOutputDevice().catch((error) => log("speaker.output_error", { message: error.message }));
       assistantAudio.muted = false;
       await assistantAudio.play().catch(() => {});
     }
@@ -406,24 +778,14 @@
         timeline("local.ice_candidate_error", { candidateType: event.errorCode || "error" });
       };
 
-      micStream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        }
-      });
+      micStream = await openMicStream();
       for (const track of micStream.getAudioTracks()) {
-        const settings = track.getSettings ? track.getSettings() : {};
-        log("mic.settings", {
-          echoCancellation: settings.echoCancellation,
-          noiseSuppression: settings.noiseSuppression,
-          autoGainControl: settings.autoGainControl,
-          sampleRate: settings.sampleRate,
-          channelCount: settings.channelCount
-        });
+        updateMicStatus(track);
         pc.addTrack(track, micStream);
       }
+      startMicMeter(micStream);
+      await refreshDevices();
+      await applyOutputDevice().catch((error) => log("speaker.output_error", { message: error.message }));
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
@@ -499,16 +861,19 @@
       disconnectBtn.disabled = false;
       sendTextBtn.disabled = false;
       cancelBtn.disabled = false;
+      applyAudioBtn.disabled = false;
     }
 
     async function disconnect() {
       sendTextBtn.disabled = true;
       cancelBtn.disabled = true;
       disconnectBtn.disabled = true;
+      applyAudioBtn.disabled = true;
       if (eventSource) eventSource.close();
       if (controlWs && controlWs.readyState === WebSocket.OPEN) controlWs.close();
       if (pc) await pc.close();
       if (micStream) micStream.getTracks().forEach((track) => track.stop());
+      stopMicMeter();
       eventSource = null;
       controlWs = null;
       pc = null;
@@ -521,6 +886,8 @@
       setStatus(iceStateEl, "idle");
       setStatus(playbackStateEl, "idle");
       setStatus(turnStateEl, "idle");
+      setStatus(aecStateEl, "unknown");
+      setStatus(micStateEl, "idle");
       connectBtn.disabled = false;
     }
 
@@ -529,6 +896,18 @@
       connectBtn.disabled = false;
     }));
     disconnectBtn.addEventListener("click", () => disconnect().catch((error) => log("error", { message: error.message })));
+    refreshDevicesBtn.addEventListener("click", () => refreshDevices().catch((error) => log("devices.error", { message: error.message })));
+    applyAudioBtn.addEventListener("click", () => replaceMicStream().catch((error) => log("mic.apply_error", { message: error.message })));
+    outputDeviceInput.addEventListener("change", () => applyOutputDevice().catch((error) => log("speaker.output_error", { message: error.message })));
+    audioPresetInput.addEventListener("change", () => applyPreset(audioPresetInput.value));
+    [
+      echoCancellationInput,
+      noiseSuppressionInput,
+      autoGainControlInput,
+      monoInput,
+      restrictOwnAudioInput,
+      suppressLocalAudioPlaybackInput
+    ].forEach((input) => input.addEventListener("change", markCustomPreset));
     sendTextBtn.addEventListener("click", () => {
       if (!controlWs || controlWs.readyState !== WebSocket.OPEN) return;
       clearAssistantAudio();
@@ -544,6 +923,13 @@
         controlWs.send(JSON.stringify({ type: "response.cancel" }));
       }
     });
+    if (navigator.mediaDevices) {
+      navigator.mediaDevices.addEventListener("devicechange", () => {
+        refreshDevices().catch((error) => log("devices.error", { message: error.message }));
+      });
+    }
+    setExperimentalControlState();
+    refreshDevices().catch((error) => log("devices.error", { message: error.message }));
   </script>
 </body>
 </html>

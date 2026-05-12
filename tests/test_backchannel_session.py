@@ -226,8 +226,37 @@ class TestBackchannelRejection:
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000))
         await asyncio.sleep(0.02)
 
-        assert session.state in {TurnState.PAUSED, TurnState.INTERRUPTED}
+        assert session.state == TurnState.SPEAKING
+        assert not coll.by_type("response.audio.clear")
+
+        await asyncio.sleep(0.20)
+
+        assert session.state in {TurnState.PAUSED, TurnState.INTERRUPTED, TurnState.IDLE}
         assert coll.by_type("response.audio.clear")
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_backchannel_candidate_does_not_clear_before_false_positive_gate(self):
+        session, coll, _ = _build()
+        await session.start()
+
+        await session.submit_response_text("The assistant is speaking.")
+        await asyncio.sleep(0.15)
+        assert session.state == TurnState.SPEAKING
+
+        voice = _voice_signal(0.10, amp=0.08, freq=330)
+        silence = np.zeros(int(0.30 * 16_000), dtype=np.float32)
+        session._output_audio_ring = _voice_signal(0.50, amp=0.08, freq=440)
+        session._audio_ring = np.concatenate([voice, silence])
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000))
+        await asyncio.sleep(0.20)
+
+        assert session.state == TurnState.SPEAKING
+        assert coll.by_type("interruption.false_positive")
+        assert not coll.by_type("response.audio.clear")
+        assert not coll.by_type("response.cancelled")
 
         await session.close()
 
