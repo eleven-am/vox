@@ -512,23 +512,15 @@ class ConversationSession:
             self._latest_partial = stream_event
             if (
                 self._sm.state in {TurnState.PAUSED, TurnState.SPEAKING}
-                and self._config.interrupt_classifier.should_short_circuit(stream_event.text)
-                and self._has_active_timer(TimerKey.CONFIRM_INTERRUPT.value)
+                and self._active_response_id is not None
+                and self._has_recent_interrupt_context()
+                and (
+                    self._config.interrupt_classifier.should_short_circuit(stream_event.text)
+                    or self._has_strong_partial_interrupt_evidence(stream_event)
+                )
             ):
-                vad_active_ms = 0
-                if self._vad_started_at is not None:
-                    vad_active_ms = max(0, int((time.monotonic() - self._vad_started_at) * 1000))
-                await self._emit({
-                    "type": WIRE_INTERRUPTION_DETECTED,
-                    "response_id": self._active_response_id,
-                    "vad_active_ms": vad_active_ms,
-                    "partial_transcript": stream_event.text,
-                })
-                await self._cancel_timer(TimerKey.CONFIRM_INTERRUPT.value)
-                await self._event_queue.put(TurnEvent(
-                    type=TurnEventType.TIMER_ELAPSED,
-                    payload={"key": TimerKey.CONFIRM_INTERRUPT.value},
-                ))
+                await self._confirm_interrupt_from_partial(stream_event)
+                return
         elif isinstance(stream_event, StreamTranscript):
             self._latest_partial = None
 
@@ -965,6 +957,96 @@ class ConversationSession:
         task = self._timers.get(key)
         return task is not None and not task.done()
 
+    def _active_assistant_text(self) -> str:
+        if self._response_stream is None:
+            return ""
+        return " ".join(
+            part.strip()
+            for part in (
+                self._response_stream.heard_parts
+                or self._response_stream.text_parts
+            )
+            if part.strip()
+        )
+
+    @staticmethod
+    def _word_count(text: str | None) -> int:
+        if not text:
+            return 0
+        return len([word for word in text.strip().split() if word])
+
+    @staticmethod
+    def _transcript_duration_ms(transcript: StreamTranscript | None) -> int:
+        if transcript is None:
+            return 0
+        if transcript.audio_duration_ms > 0:
+            return int(transcript.audio_duration_ms)
+        if transcript.end_ms > transcript.start_ms:
+            return int(transcript.end_ms - transcript.start_ms)
+        return 0
+
+    def _current_interrupt_vad_ms(self) -> int:
+        vad_active_ms = 0
+        if self._vad_started_at is not None:
+            vad_active_ms = max(0, int((time.monotonic() - self._vad_started_at) * 1000))
+        if self._latest_partial is not None:
+            vad_active_ms = max(vad_active_ms, self._transcript_duration_ms(self._latest_partial))
+        return vad_active_ms
+
+    def _has_recent_interrupt_context(self) -> bool:
+        if self._has_active_timer(TimerKey.CONFIRM_INTERRUPT.value):
+            return True
+        if self._vad_started_at is not None:
+            return True
+        if self._last_speech_stopped_at is None:
+            return False
+        age_ms = max(0, int((time.monotonic() - self._last_speech_stopped_at) * 1000))
+        return age_ms <= self._config.policy.false_interruption_timeout_ms
+
+    def _has_strong_partial_interrupt_evidence(
+        self,
+        transcript: StreamTranscript | None,
+        *,
+        assistant_text: str | None = None,
+    ) -> bool:
+        if transcript is None:
+            return False
+        text = transcript.text.strip()
+        if not text:
+            return False
+        if assistant_text is None:
+            assistant_text = self._active_assistant_text()
+        if assistant_text and looks_like_self_echo(
+            text,
+            assistant_text,
+            min_words=self._config.policy.self_echo_min_words,
+            min_overlap=self._config.policy.self_echo_min_overlap,
+        ):
+            return False
+        if self._word_count(text) < self._config.policy.speaking_interrupt_min_words:
+            return False
+        duration_ms = self._transcript_duration_ms(transcript)
+        if duration_ms > 0 and duration_ms < self._config.policy.min_interrupt_duration_ms:
+            return False
+        return True
+
+    async def _confirm_interrupt_from_partial(self, transcript: StreamTranscript) -> None:
+        vad_active_ms = max(
+            self._current_interrupt_vad_ms(),
+            self._transcript_duration_ms(transcript),
+        )
+        await self._emit({
+            "type": WIRE_INTERRUPTION_DETECTED,
+            "response_id": self._active_response_id,
+            "vad_active_ms": vad_active_ms,
+            "partial_transcript": transcript.text,
+        })
+        await self._cancel_timer(TimerKey.CONFIRM_INTERRUPT.value)
+        await self._event_queue.put(TurnEvent(
+            type=TurnEventType.TIMER_ELAPSED,
+            payload={"key": TimerKey.CONFIRM_INTERRUPT.value},
+        ))
+
     def _transcript_commit_delay_ms(self) -> int:
         if self._config.policy.dynamic_endpointing and self._recent_endpoint_pauses_ms:
             avg_pause = sum(self._recent_endpoint_pauses_ms) / len(self._recent_endpoint_pauses_ms)
@@ -1011,19 +1093,9 @@ class ConversationSession:
             )
             audio_tail = self._audio_ring[-tail_samples:]
 
-        partial_transcript = (
-            self._latest_partial.text if self._latest_partial is not None else None
-        )
-        active_assistant_text = ""
-        if self._response_stream is not None:
-            active_assistant_text = " ".join(
-                part.strip()
-                for part in (
-                    self._response_stream.heard_parts
-                    or self._response_stream.text_parts
-                )
-                if part.strip()
-            )
+        partial = self._latest_partial
+        partial_transcript = partial.text if partial is not None else None
+        active_assistant_text = self._active_assistant_text()
 
         is_interrupt_keyword = self._config.interrupt_classifier.should_short_circuit(
             partial_transcript
@@ -1069,6 +1141,19 @@ class ConversationSession:
                 type=TurnEventType.SPEECH_STOPPED,
                 payload={"reason": "output_echo"},
             ))
+            return
+        if active_assistant_text and self._has_strong_partial_interrupt_evidence(
+            partial,
+            assistant_text=active_assistant_text,
+        ):
+            logger.debug(
+                "classifier confirmed barge-in from partial transcript evidence "
+                "(words=%d, duration=%dms, vad_active=%dms)",
+                self._word_count(partial_transcript),
+                self._transcript_duration_ms(partial),
+                vad_active_ms,
+            )
+            await self._confirm_interrupt_from_partial(partial)
             return
         if active_assistant_text and not is_interrupt_keyword and partial_transcript is not None:
             words = [

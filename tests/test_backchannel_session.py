@@ -28,7 +28,7 @@ from vox.conversation import TurnAction, TurnActionType, TurnEvent, TurnEventTyp
 from vox.conversation.session import ConversationConfig, ConversationSession
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
-from vox.streaming.types import SpeechStarted, StreamTranscript
+from vox.streaming.types import SpeechStarted, SpeechStopped, StreamTranscript
 
 
 class LongTTS(TTSAdapter):
@@ -416,6 +416,76 @@ class TestBackchannelRejection:
         await session.close()
 
     @pytest.mark.asyncio
+    async def test_meaningful_partial_overrides_quiet_tail_during_tts(self):
+        session, coll, _ = _build()
+        await session.start()
+
+        await session.submit_response_text("The assistant is speaking.")
+        await asyncio.sleep(0.15)
+        assert session.state == TurnState.SPEAKING
+
+        voice = _voice_signal(0.22, amp=0.12, freq=300)
+        silence = np.zeros(int(0.30 * 16_000), dtype=np.float32)
+        session._audio_ring = np.concatenate([voice, silence])
+        session._latest_partial = StreamTranscript(
+            text="Can you hear me?",
+            is_partial=True,
+            start_ms=0,
+            end_ms=920,
+            audio_duration_ms=920,
+        )
+        session._vad_started_at = time.monotonic() - 0.55
+
+        await session._event_queue.put(TurnEvent(
+            type=TurnEventType.SPEECH_STARTED,
+            payload={"confirm_window_ms": 80},
+        ))
+
+        await asyncio.sleep(0.25)
+
+        assert session.state == TurnState.INTERRUPTED
+        assert coll.by_type("interruption.detected")
+        assert coll.by_type("response.cancelled")
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_late_meaningful_partial_can_retro_confirm_interrupt(self):
+        session, coll, _ = _build()
+        await session.start()
+
+        await session.submit_response_text("The assistant is speaking.")
+        await asyncio.sleep(0.15)
+        assert session.state == TurnState.SPEAKING
+
+        voice = _voice_signal(0.10, amp=0.08, freq=330)
+        silence = np.zeros(int(0.30 * 16_000), dtype=np.float32)
+        session._audio_ring = np.concatenate([voice, silence])
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000))
+        await asyncio.sleep(0.20)
+
+        assert session.state == TurnState.SPEAKING
+        assert coll.by_type("interruption.false_positive")
+
+        await session._forward_stream_event(SpeechStopped(timestamp_ms=1320))
+
+        await session._forward_stream_event(StreamTranscript(
+            text="I'm talking, I'm talking.",
+            is_partial=True,
+            start_ms=0,
+            end_ms=1260,
+            audio_duration_ms=1260,
+        ))
+        await asyncio.sleep(0.05)
+
+        assert session.state == TurnState.INTERRUPTED
+        assert coll.by_type("interruption.detected")
+        assert coll.by_type("response.cancelled")
+
+        await session.close()
+
+    @pytest.mark.asyncio
     async def test_response_done_is_deferred_until_paused_interrupt_is_decided(self):
         tts = BriefTTS()
         coll = Collector()
@@ -596,7 +666,7 @@ class TestClassifierFailureFallsBackToBackchannel:
         assert session.state == TurnState.SPEAKING
 
         session._vad_started_at = time.monotonic()
-        session._latest_partial = StreamTranscript(text="I need", is_partial=True)
+        session._latest_partial = StreamTranscript(text="actually", is_partial=True)
         await session._event_queue.put(TurnEvent(
             type=TurnEventType.SPEECH_STARTED,
             payload={"confirm_window_ms": 80},
