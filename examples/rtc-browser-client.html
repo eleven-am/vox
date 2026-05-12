@@ -195,6 +195,16 @@
           <option value="relay">TURN relay only</option>
         </select>
       </label>
+      <label>
+        Turn profile
+        <select id="turnProfile">
+          <option value="default">default</option>
+          <option value="browser_default" selected>browser_default</option>
+          <option value="headset">headset</option>
+          <option value="speakerphone">speakerphone</option>
+          <option value="noisy_room">noisy_room</option>
+        </select>
+      </label>
     </section>
 
     <section>
@@ -299,6 +309,7 @@
     const ttsModelInput = document.querySelector("#ttsModel");
     const voiceInput = document.querySelector("#voice");
     const icePolicyInput = document.querySelector("#icePolicy");
+    const turnProfileInput = document.querySelector("#turnProfile");
     const micDeviceInput = document.querySelector("#micDevice");
     const outputDeviceInput = document.querySelector("#outputDevice");
     const audioPresetInput = document.querySelector("#audioPreset");
@@ -929,15 +940,9 @@
             stt_model: sttModelInput.value,
             tts_model: ttsModelInput.value,
             voice: voiceInput.value,
+            turn_profile: turnProfileInput.value,
             vad_backend: "silero",
-            turn_detector: "livekit",
-            turn_policy: {
-              allow_interrupt_while_speaking: true,
-              partial_interrupts: true,
-              dynamic_endpointing: true,
-              speaking_interrupt_min_duration_ms: 500,
-              speaking_interrupt_min_words: 2
-            }
+            turn_detector: "livekit"
           }
         }));
       };

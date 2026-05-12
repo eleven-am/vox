@@ -181,6 +181,7 @@ def test_rtc_control_session_update_emits_bound_session_created():
                 "stt_model": "fake-stt:1",
                 "tts_model": "fake-tts:1",
                 "voice": "default",
+                "turn_profile": "browser_default",
             },
         })
         msg = ws.receive_json()
@@ -188,6 +189,7 @@ def test_rtc_control_session_update_emits_bound_session_created():
     assert msg["type"] == "session.created"
     assert msg["session_id"] == session["session_id"]
     assert msg["session"]["stt_model"] == "fake-stt:1"
+    assert msg["session"]["turn_profile"] == "browser_default"
 
 
 def test_rtc_control_drops_audio_delta_events():

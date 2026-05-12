@@ -87,8 +87,9 @@ class TurnAction:
 class TurnPolicy:
     """Tunable thresholds for turn-taking decisions.
 
-    Defaults are conservative and language-neutral. Callers should override via
-    session config when they know their acoustic environment.
+    Defaults are conservative and language-neutral. Prefer selecting a
+    server-owned turn profile and only overriding individual fields when a
+    caller has a concrete acoustic reason to diverge.
     """
 
 

@@ -36,6 +36,7 @@ from vox.conversation.interrupt import (
     InterruptClassifier,
     looks_like_self_echo,
 )
+from vox.conversation.profiles import DEFAULT_TURN_PROFILE, resolve_turn_profile
 from vox.conversation.state_machine import TurnStateMachine
 from vox.conversation.text_buffer import StreamingTextBuffer, split_for_tts
 from vox.conversation.types import (
@@ -96,6 +97,7 @@ class ConversationConfig:
     language: str = "en"
     sample_rate: int = TARGET_SAMPLE_RATE
     policy: TurnPolicy = None  # type: ignore[assignment]
+    turn_profile: str = DEFAULT_TURN_PROFILE
     vad_backend: str = "silero"
     turn_detector: str = "livekit"
 
@@ -105,8 +107,9 @@ class ConversationConfig:
     wait_for_output_playout: Callable[[], Awaitable[None]] | None = None
 
     def __post_init__(self) -> None:
+        self.turn_profile, profile_policy = resolve_turn_profile(self.turn_profile)
         if self.policy is None:
-            self.policy = TurnPolicy()
+            self.policy = profile_policy
         if self.interrupt_classifier is None:
             self.interrupt_classifier = HeuristicInterruptClassifier(
                 language=self.language,

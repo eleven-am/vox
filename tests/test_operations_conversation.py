@@ -110,6 +110,51 @@ def test_parse_session_update_accepts_turn_policy_overrides():
     assert config.policy.self_echo_min_overlap == pytest.approx(0.8)
 
 
+def test_parse_session_update_applies_turn_profile_defaults():
+    config = parse_session_update({
+        "session": {
+            "stt_model": "x:1",
+            "tts_model": "y:1",
+            "turn_profile": "headset",
+        },
+    })
+    assert config.turn_profile == "headset"
+    assert config.policy is not None
+    assert config.policy.min_interrupt_duration_ms == 180
+    assert config.policy.speaking_interrupt_min_words == 1
+    assert config.policy.aec_warmup_ms == 250
+
+
+def test_parse_session_update_allows_profile_with_explicit_overrides():
+    config = parse_session_update({
+        "session": {
+            "stt_model": "x:1",
+            "tts_model": "y:1",
+            "turn_profile": "speakerphone",
+            "turn_policy": {
+                "speaking_interrupt_min_words": 4,
+                "aec_warmup_ms": 600,
+            },
+        },
+    })
+    assert config.turn_profile == "speakerphone"
+    assert config.policy is not None
+    assert config.policy.speaking_interrupt_min_words == 4
+    assert config.policy.aec_warmup_ms == 600
+    assert config.policy.backchannel_end_cooldown_ms == 1800
+
+
+def test_parse_session_update_rejects_unknown_turn_profile():
+    with pytest.raises(InvalidConfigError):
+        parse_session_update({
+            "session": {
+                "stt_model": "x:1",
+                "tts_model": "y:1",
+                "turn_profile": "spaceship",
+            },
+        })
+
+
 def test_serialize_session_config_round_trip_includes_policy_and_audio_format():
     config = parse_session_update({
         "session": {"stt_model": "x:1", "tts_model": "y:1", "sample_rate": 48_000},
@@ -119,11 +164,14 @@ def test_serialize_session_config_round_trip_includes_policy_and_audio_format():
     assert payload["tts_model"] == "y:1"
     assert payload["output_audio_format"] == "pcm16"
     assert payload["output_sample_rate"] == 48_000
+    assert payload["turn_profile"] == "default"
     assert payload["turn_policy"]["min_interrupt_duration_ms"] > 0
     assert payload["turn_policy"]["speaking_interrupt_min_duration_ms"] == 500
     assert payload["turn_policy"]["speaking_interrupt_min_words"] == 2
     assert payload["turn_policy"]["self_echo_min_words"] == 3
     assert payload["turn_policy"]["self_echo_min_overlap"] == pytest.approx(0.7)
+    assert payload["turn_policy"]["aec_warmup_ms"] == 750
+    assert payload["turn_policy"]["backchannel_end_cooldown_ms"] == 1500
 
 
 def test_audio_clear_wire_event_maps_to_operation_event():

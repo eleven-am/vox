@@ -324,6 +324,54 @@ tested against your own audio before becoming a default.
 Experimental values such as `ten-turn` are intended for benchmarking heavier
 semantic models, not for low-resource default deployments.
 
+## Turn Profiles
+
+Vox now supports server-owned turn profiles so callers can choose an acoustic
+mode without copying threshold bundles into every client.
+
+Supported profile names:
+
+- `default`
+- `browser_default`
+- `headset`
+- `speakerphone`
+- `noisy_room`
+
+Aliases accepted by the API:
+
+- `browser` -> `browser_default`
+- `web` -> `browser_default`
+- `headphones` -> `headset`
+- `speaker` -> `speakerphone`
+- `loudspeaker` -> `speakerphone`
+
+Use `turn_profile` on `session.update` / `session_update`:
+
+```json
+{
+  "type": "session.update",
+  "session": {
+    "stt_model": "parakeet-stt-onnx:tdt-0.6b-v3",
+    "tts_model": "kokoro-tts-onnx:v1.0",
+    "voice": "af_heart",
+    "turn_profile": "speakerphone"
+  }
+}
+```
+
+The returned `session.created` / `session_created` event includes both the
+resolved `turn_profile` and the fully resolved `turn_policy`.
+
+Recommended usage:
+
+- choose a profile first
+- only send `turn_policy` overrides when you have a concrete reason to diverge
+- prefer `browser_default` for generic browser/WebRTC clients
+- prefer `headset` when speaker leakage is minimal
+- prefer `speakerphone` for loudspeaker tests and open-air playback
+- prefer `noisy_room` when false starts are more expensive than a little extra
+  interruption latency
+
 Example audio append:
 
 ```json

@@ -14,6 +14,7 @@ from collections.abc import AsyncIterator
 from contextlib import suppress
 
 from vox.conversation import TurnPolicy
+from vox.conversation.profiles import DEFAULT_TURN_PROFILE, resolve_turn_policy
 from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
@@ -59,67 +60,36 @@ def _pb_to_config(update: vox_pb2.ConversationSessionUpdate) -> ConversationSess
     if not update.tts_model:
         raise InvalidConfigError("session_update requires tts_model")
 
-    default_policy = TurnPolicy()
     has_policy = update.HasField("policy")
     policy_pb = update.policy
-    policy = TurnPolicy(
-        allow_interrupt_while_speaking=(
-            policy_pb.allow_interrupt_while_speaking
-            if has_policy
-            else default_policy.allow_interrupt_while_speaking
-        ),
-        min_interrupt_duration_ms=(
-            policy_pb.min_interrupt_duration_ms
-            or default_policy.min_interrupt_duration_ms
-        ),
-        max_endpointing_delay_ms=(
-            policy_pb.max_endpointing_delay_ms
-            or default_policy.max_endpointing_delay_ms
-        ),
-        stable_speaking_min_ms=(
-            policy_pb.stable_speaking_min_ms
-            or default_policy.stable_speaking_min_ms
-        ),
-        false_interruption_timeout_ms=(
-            policy_pb.false_interruption_timeout_ms
-            or default_policy.false_interruption_timeout_ms
-        ),
-        min_interrupt_words=(
-            policy_pb.min_interrupt_words
-            if has_policy
-            else default_policy.min_interrupt_words
-        ),
-        partial_interrupts=(
-            policy_pb.partial_interrupts
-            if has_policy
-            else default_policy.partial_interrupts
-        ),
-        dynamic_endpointing=(
-            policy_pb.dynamic_endpointing
-            if has_policy
-            else default_policy.dynamic_endpointing
-        ),
-        min_endpointing_delay_ms=(
-            policy_pb.min_endpointing_delay_ms
-            or default_policy.min_endpointing_delay_ms
-        ),
-        speaking_interrupt_min_duration_ms=(
-            policy_pb.speaking_interrupt_min_duration_ms
-            or default_policy.speaking_interrupt_min_duration_ms
-        ),
-        speaking_interrupt_min_words=(
-            policy_pb.speaking_interrupt_min_words
-            or default_policy.speaking_interrupt_min_words
-        ),
-        self_echo_min_words=(
-            policy_pb.self_echo_min_words
-            or default_policy.self_echo_min_words
-        ),
-        self_echo_min_overlap=(
-            policy_pb.self_echo_min_overlap
-            or default_policy.self_echo_min_overlap
-        ),
-    )
+    policy_overrides: dict[str, int | float | bool] = {}
+    if has_policy:
+        for field_name in (
+            "allow_interrupt_while_speaking",
+            "min_interrupt_duration_ms",
+            "max_endpointing_delay_ms",
+            "stable_speaking_min_ms",
+            "false_interruption_timeout_ms",
+            "min_interrupt_words",
+            "partial_interrupts",
+            "dynamic_endpointing",
+            "min_endpointing_delay_ms",
+            "speaking_interrupt_min_duration_ms",
+            "speaking_interrupt_min_words",
+            "self_echo_min_words",
+            "self_echo_min_overlap",
+            "aec_warmup_ms",
+            "backchannel_end_cooldown_ms",
+        ):
+            if policy_pb.HasField(field_name):
+                policy_overrides[field_name] = getattr(policy_pb, field_name)
+    try:
+        turn_profile, policy = resolve_turn_policy(
+            update.turn_profile or DEFAULT_TURN_PROFILE,
+            policy_overrides,
+        )
+    except ValueError as exc:
+        raise InvalidConfigError(str(exc)) from exc
 
     return ConversationSessionConfig(
         stt_model=update.stt_model,
@@ -127,6 +97,7 @@ def _pb_to_config(update: vox_pb2.ConversationSessionUpdate) -> ConversationSess
         voice=update.voice or None,
         language=update.language or "en",
         sample_rate=update.sample_rate or TARGET_SAMPLE_RATE,
+        turn_profile=turn_profile,
         vad_backend=update.vad_backend or "silero",
         turn_detector=update.turn_detector or "livekit",
         policy=policy,
@@ -139,8 +110,27 @@ def _error_pb(message: str) -> vox_pb2.ConverseServerMessage:
 
 def _event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage | None:
     if isinstance(event, ConvSessionCreatedEvent):
+        policy = event.config.policy or TurnPolicy()
+        session_created = vox_pb2.ConversationSessionCreated(
+            turn_profile=event.config.turn_profile,
+        )
+        session_created.policy.allow_interrupt_while_speaking = policy.allow_interrupt_while_speaking
+        session_created.policy.min_interrupt_duration_ms = policy.min_interrupt_duration_ms
+        session_created.policy.max_endpointing_delay_ms = policy.max_endpointing_delay_ms
+        session_created.policy.stable_speaking_min_ms = policy.stable_speaking_min_ms
+        session_created.policy.false_interruption_timeout_ms = policy.false_interruption_timeout_ms
+        session_created.policy.min_interrupt_words = policy.min_interrupt_words
+        session_created.policy.partial_interrupts = policy.partial_interrupts
+        session_created.policy.dynamic_endpointing = policy.dynamic_endpointing
+        session_created.policy.min_endpointing_delay_ms = policy.min_endpointing_delay_ms
+        session_created.policy.speaking_interrupt_min_duration_ms = policy.speaking_interrupt_min_duration_ms
+        session_created.policy.speaking_interrupt_min_words = policy.speaking_interrupt_min_words
+        session_created.policy.self_echo_min_words = policy.self_echo_min_words
+        session_created.policy.self_echo_min_overlap = policy.self_echo_min_overlap
+        session_created.policy.aec_warmup_ms = policy.aec_warmup_ms
+        session_created.policy.backchannel_end_cooldown_ms = policy.backchannel_end_cooldown_ms
         return vox_pb2.ConverseServerMessage(
-            session_created=vox_pb2.ConversationSessionCreated(),
+            session_created=session_created,
         )
     if isinstance(event, ConvSpeechStartedEvent):
         return vox_pb2.ConverseServerMessage(

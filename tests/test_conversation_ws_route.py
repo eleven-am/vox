@@ -85,12 +85,14 @@ class TestSessionUpdateWireMapping:
                     "tts_model": "fake-tts:1",
                     "voice": "default",
                     "language": "en",
+                    "turn_profile": "speakerphone",
                 },
             })
             msg = ws.receive_json()
             assert msg["type"] == "session.created"
             assert msg["session"]["stt_model"] == "fake-stt:1"
             assert msg["session"]["output_audio_format"] == "pcm16"
+            assert msg["session"]["turn_profile"] == "speakerphone"
 
     def test_missing_stt_model_emits_wire_error(self):
         client = TestClient(_build_app())

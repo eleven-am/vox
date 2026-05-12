@@ -152,7 +152,9 @@ async def test_rtc_grpc_session_update_emits_session_created():
     )
 
     assert any(m.WhichOneof("msg") == "rtc_session_attached" for m in out)
-    assert any(m.WhichOneof("msg") == "session_created" for m in out)
+    created = next(m.session_created for m in out if m.WhichOneof("msg") == "session_created")
+    assert created.turn_profile == "default"
+    assert created.policy.aec_warmup_ms == 750
 
 
 @pytest.mark.asyncio

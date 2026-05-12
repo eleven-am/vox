@@ -465,8 +465,32 @@ class ConverseClientMessage(_message.Message):
     response_commit: ConversationResponseCommit
     def __init__(self, session_update: _Optional[_Union[ConversationSessionUpdate, _Mapping]] = ..., audio_append: _Optional[_Union[ConversationAudioAppend, _Mapping]] = ..., response_cancel: _Optional[_Union[ConversationResponseCancel, _Mapping]] = ..., response_start: _Optional[_Union[ConversationResponseStart, _Mapping]] = ..., response_delta: _Optional[_Union[ConversationResponseDelta, _Mapping]] = ..., response_commit: _Optional[_Union[ConversationResponseCommit, _Mapping]] = ...) -> None: ...
 
+class RtcControlClientMessage(_message.Message):
+    __slots__ = ("attach", "session_update", "response_cancel", "response_start", "response_delta", "response_commit", "client_event")
+    ATTACH_FIELD_NUMBER: _ClassVar[int]
+    SESSION_UPDATE_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_CANCEL_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_START_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_DELTA_FIELD_NUMBER: _ClassVar[int]
+    RESPONSE_COMMIT_FIELD_NUMBER: _ClassVar[int]
+    CLIENT_EVENT_FIELD_NUMBER: _ClassVar[int]
+    attach: RtcControlAttach
+    session_update: ConversationSessionUpdate
+    response_cancel: ConversationResponseCancel
+    response_start: ConversationResponseStart
+    response_delta: ConversationResponseDelta
+    response_commit: ConversationResponseCommit
+    client_event: RtcClientEvent
+    def __init__(self, attach: _Optional[_Union[RtcControlAttach, _Mapping]] = ..., session_update: _Optional[_Union[ConversationSessionUpdate, _Mapping]] = ..., response_cancel: _Optional[_Union[ConversationResponseCancel, _Mapping]] = ..., response_start: _Optional[_Union[ConversationResponseStart, _Mapping]] = ..., response_delta: _Optional[_Union[ConversationResponseDelta, _Mapping]] = ..., response_commit: _Optional[_Union[ConversationResponseCommit, _Mapping]] = ..., client_event: _Optional[_Union[RtcClientEvent, _Mapping]] = ...) -> None: ...
+
+class RtcControlAttach(_message.Message):
+    __slots__ = ("session_id",)
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    def __init__(self, session_id: _Optional[str] = ...) -> None: ...
+
 class ConverseServerMessage(_message.Message):
-    __slots__ = ("session_created", "speech_started", "speech_stopped", "transcript_done", "response_created", "audio_delta", "response_done", "response_cancelled", "state_changed", "error", "response_committed", "audio_clear", "interruption_detected", "interruption_false_positive", "turn_eou_predicted")
+    __slots__ = ("session_created", "speech_started", "speech_stopped", "transcript_done", "response_created", "audio_delta", "response_done", "response_cancelled", "state_changed", "error", "response_committed", "audio_clear", "interruption_detected", "interruption_false_positive", "turn_eou_predicted", "rtc_session_attached", "client_event")
     SESSION_CREATED_FIELD_NUMBER: _ClassVar[int]
     SPEECH_STARTED_FIELD_NUMBER: _ClassVar[int]
     SPEECH_STOPPED_FIELD_NUMBER: _ClassVar[int]
@@ -482,6 +506,8 @@ class ConverseServerMessage(_message.Message):
     INTERRUPTION_DETECTED_FIELD_NUMBER: _ClassVar[int]
     INTERRUPTION_FALSE_POSITIVE_FIELD_NUMBER: _ClassVar[int]
     TURN_EOU_PREDICTED_FIELD_NUMBER: _ClassVar[int]
+    RTC_SESSION_ATTACHED_FIELD_NUMBER: _ClassVar[int]
+    CLIENT_EVENT_FIELD_NUMBER: _ClassVar[int]
     session_created: ConversationSessionCreated
     speech_started: ConversationSpeechStarted
     speech_stopped: ConversationSpeechStopped
@@ -497,7 +523,25 @@ class ConverseServerMessage(_message.Message):
     interruption_detected: ConversationInterruptionDetected
     interruption_false_positive: ConversationInterruptionFalsePositive
     turn_eou_predicted: ConversationTurnEouPredicted
-    def __init__(self, session_created: _Optional[_Union[ConversationSessionCreated, _Mapping]] = ..., speech_started: _Optional[_Union[ConversationSpeechStarted, _Mapping]] = ..., speech_stopped: _Optional[_Union[ConversationSpeechStopped, _Mapping]] = ..., transcript_done: _Optional[_Union[ConversationTranscriptDone, _Mapping]] = ..., response_created: _Optional[_Union[ConversationResponseCreated, _Mapping]] = ..., audio_delta: _Optional[_Union[ConversationAudioDelta, _Mapping]] = ..., response_done: _Optional[_Union[ConversationResponseDone, _Mapping]] = ..., response_cancelled: _Optional[_Union[ConversationResponseCancelled, _Mapping]] = ..., state_changed: _Optional[_Union[ConversationStateChanged, _Mapping]] = ..., error: _Optional[_Union[ConversationError, _Mapping]] = ..., response_committed: _Optional[_Union[ConversationResponseCommitted, _Mapping]] = ..., audio_clear: _Optional[_Union[ConversationAudioClear, _Mapping]] = ..., interruption_detected: _Optional[_Union[ConversationInterruptionDetected, _Mapping]] = ..., interruption_false_positive: _Optional[_Union[ConversationInterruptionFalsePositive, _Mapping]] = ..., turn_eou_predicted: _Optional[_Union[ConversationTurnEouPredicted, _Mapping]] = ...) -> None: ...
+    rtc_session_attached: RtcSessionAttached
+    client_event: RtcClientEvent
+    def __init__(self, session_created: _Optional[_Union[ConversationSessionCreated, _Mapping]] = ..., speech_started: _Optional[_Union[ConversationSpeechStarted, _Mapping]] = ..., speech_stopped: _Optional[_Union[ConversationSpeechStopped, _Mapping]] = ..., transcript_done: _Optional[_Union[ConversationTranscriptDone, _Mapping]] = ..., response_created: _Optional[_Union[ConversationResponseCreated, _Mapping]] = ..., audio_delta: _Optional[_Union[ConversationAudioDelta, _Mapping]] = ..., response_done: _Optional[_Union[ConversationResponseDone, _Mapping]] = ..., response_cancelled: _Optional[_Union[ConversationResponseCancelled, _Mapping]] = ..., state_changed: _Optional[_Union[ConversationStateChanged, _Mapping]] = ..., error: _Optional[_Union[ConversationError, _Mapping]] = ..., response_committed: _Optional[_Union[ConversationResponseCommitted, _Mapping]] = ..., audio_clear: _Optional[_Union[ConversationAudioClear, _Mapping]] = ..., interruption_detected: _Optional[_Union[ConversationInterruptionDetected, _Mapping]] = ..., interruption_false_positive: _Optional[_Union[ConversationInterruptionFalsePositive, _Mapping]] = ..., turn_eou_predicted: _Optional[_Union[ConversationTurnEouPredicted, _Mapping]] = ..., rtc_session_attached: _Optional[_Union[RtcSessionAttached, _Mapping]] = ..., client_event: _Optional[_Union[RtcClientEvent, _Mapping]] = ...) -> None: ...
+
+class RtcSessionAttached(_message.Message):
+    __slots__ = ("session_id", "provider")
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    PROVIDER_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    provider: str
+    def __init__(self, session_id: _Optional[str] = ..., provider: _Optional[str] = ...) -> None: ...
+
+class RtcClientEvent(_message.Message):
+    __slots__ = ("event", "payload_json")
+    EVENT_FIELD_NUMBER: _ClassVar[int]
+    PAYLOAD_JSON_FIELD_NUMBER: _ClassVar[int]
+    event: str
+    payload_json: str
+    def __init__(self, event: _Optional[str] = ..., payload_json: _Optional[str] = ...) -> None: ...
 
 class ConversationResponseCommitted(_message.Message):
     __slots__ = ("response_id",)
@@ -506,7 +550,7 @@ class ConversationResponseCommitted(_message.Message):
     def __init__(self, response_id: _Optional[str] = ...) -> None: ...
 
 class ConversationTurnPolicy(_message.Message):
-    __slots__ = ("allow_interrupt_while_speaking", "min_interrupt_duration_ms", "max_endpointing_delay_ms", "stable_speaking_min_ms", "false_interruption_timeout_ms", "min_interrupt_words", "partial_interrupts", "dynamic_endpointing", "min_endpointing_delay_ms", "speaking_interrupt_min_duration_ms", "speaking_interrupt_min_words", "self_echo_min_words", "self_echo_min_overlap")
+    __slots__ = ("allow_interrupt_while_speaking", "min_interrupt_duration_ms", "max_endpointing_delay_ms", "stable_speaking_min_ms", "false_interruption_timeout_ms", "min_interrupt_words", "partial_interrupts", "dynamic_endpointing", "min_endpointing_delay_ms", "speaking_interrupt_min_duration_ms", "speaking_interrupt_min_words", "self_echo_min_words", "self_echo_min_overlap", "aec_warmup_ms", "backchannel_end_cooldown_ms")
     ALLOW_INTERRUPT_WHILE_SPEAKING_FIELD_NUMBER: _ClassVar[int]
     MIN_INTERRUPT_DURATION_MS_FIELD_NUMBER: _ClassVar[int]
     MAX_ENDPOINTING_DELAY_MS_FIELD_NUMBER: _ClassVar[int]
@@ -520,6 +564,8 @@ class ConversationTurnPolicy(_message.Message):
     SPEAKING_INTERRUPT_MIN_WORDS_FIELD_NUMBER: _ClassVar[int]
     SELF_ECHO_MIN_WORDS_FIELD_NUMBER: _ClassVar[int]
     SELF_ECHO_MIN_OVERLAP_FIELD_NUMBER: _ClassVar[int]
+    AEC_WARMUP_MS_FIELD_NUMBER: _ClassVar[int]
+    BACKCHANNEL_END_COOLDOWN_MS_FIELD_NUMBER: _ClassVar[int]
     allow_interrupt_while_speaking: bool
     min_interrupt_duration_ms: int
     max_endpointing_delay_ms: int
@@ -533,10 +579,12 @@ class ConversationTurnPolicy(_message.Message):
     speaking_interrupt_min_words: int
     self_echo_min_words: int
     self_echo_min_overlap: float
-    def __init__(self, allow_interrupt_while_speaking: bool = ..., min_interrupt_duration_ms: _Optional[int] = ..., max_endpointing_delay_ms: _Optional[int] = ..., stable_speaking_min_ms: _Optional[int] = ..., false_interruption_timeout_ms: _Optional[int] = ..., min_interrupt_words: _Optional[int] = ..., partial_interrupts: bool = ..., dynamic_endpointing: bool = ..., min_endpointing_delay_ms: _Optional[int] = ..., speaking_interrupt_min_duration_ms: _Optional[int] = ..., speaking_interrupt_min_words: _Optional[int] = ..., self_echo_min_words: _Optional[int] = ..., self_echo_min_overlap: _Optional[float] = ...) -> None: ...
+    aec_warmup_ms: int
+    backchannel_end_cooldown_ms: int
+    def __init__(self, allow_interrupt_while_speaking: bool = ..., min_interrupt_duration_ms: _Optional[int] = ..., max_endpointing_delay_ms: _Optional[int] = ..., stable_speaking_min_ms: _Optional[int] = ..., false_interruption_timeout_ms: _Optional[int] = ..., min_interrupt_words: _Optional[int] = ..., partial_interrupts: bool = ..., dynamic_endpointing: bool = ..., min_endpointing_delay_ms: _Optional[int] = ..., speaking_interrupt_min_duration_ms: _Optional[int] = ..., speaking_interrupt_min_words: _Optional[int] = ..., self_echo_min_words: _Optional[int] = ..., self_echo_min_overlap: _Optional[float] = ..., aec_warmup_ms: _Optional[int] = ..., backchannel_end_cooldown_ms: _Optional[int] = ...) -> None: ...
 
 class ConversationSessionUpdate(_message.Message):
-    __slots__ = ("stt_model", "tts_model", "voice", "language", "sample_rate", "policy", "vad_backend", "turn_detector")
+    __slots__ = ("stt_model", "tts_model", "voice", "language", "sample_rate", "policy", "vad_backend", "turn_detector", "turn_profile")
     STT_MODEL_FIELD_NUMBER: _ClassVar[int]
     TTS_MODEL_FIELD_NUMBER: _ClassVar[int]
     VOICE_FIELD_NUMBER: _ClassVar[int]
@@ -545,6 +593,7 @@ class ConversationSessionUpdate(_message.Message):
     POLICY_FIELD_NUMBER: _ClassVar[int]
     VAD_BACKEND_FIELD_NUMBER: _ClassVar[int]
     TURN_DETECTOR_FIELD_NUMBER: _ClassVar[int]
+    TURN_PROFILE_FIELD_NUMBER: _ClassVar[int]
     stt_model: str
     tts_model: str
     voice: str
@@ -553,7 +602,8 @@ class ConversationSessionUpdate(_message.Message):
     policy: ConversationTurnPolicy
     vad_backend: str
     turn_detector: str
-    def __init__(self, stt_model: _Optional[str] = ..., tts_model: _Optional[str] = ..., voice: _Optional[str] = ..., language: _Optional[str] = ..., sample_rate: _Optional[int] = ..., policy: _Optional[_Union[ConversationTurnPolicy, _Mapping]] = ..., vad_backend: _Optional[str] = ..., turn_detector: _Optional[str] = ...) -> None: ...
+    turn_profile: str
+    def __init__(self, stt_model: _Optional[str] = ..., tts_model: _Optional[str] = ..., voice: _Optional[str] = ..., language: _Optional[str] = ..., sample_rate: _Optional[int] = ..., policy: _Optional[_Union[ConversationTurnPolicy, _Mapping]] = ..., vad_backend: _Optional[str] = ..., turn_detector: _Optional[str] = ..., turn_profile: _Optional[str] = ...) -> None: ...
 
 class ConversationAudioAppend(_message.Message):
     __slots__ = ("pcm16", "sample_rate")
@@ -582,8 +632,12 @@ class ConversationResponseCancel(_message.Message):
     def __init__(self) -> None: ...
 
 class ConversationSessionCreated(_message.Message):
-    __slots__ = ()
-    def __init__(self) -> None: ...
+    __slots__ = ("turn_profile", "policy")
+    TURN_PROFILE_FIELD_NUMBER: _ClassVar[int]
+    POLICY_FIELD_NUMBER: _ClassVar[int]
+    turn_profile: str
+    policy: ConversationTurnPolicy
+    def __init__(self, turn_profile: _Optional[str] = ..., policy: _Optional[_Union[ConversationTurnPolicy, _Mapping]] = ...) -> None: ...
 
 class ConversationSpeechStarted(_message.Message):
     __slots__ = ("timestamp_ms",)

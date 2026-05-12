@@ -100,7 +100,9 @@ async def test_session_update_proto_maps_to_session_created_pb():
         )],
         predicate=lambda m: m.WhichOneof("msg") == "session_created",
     )
-    assert any(m.WhichOneof("msg") == "session_created" for m in out)
+    created = next(m.session_created for m in out if m.WhichOneof("msg") == "session_created")
+    assert created.turn_profile == "default"
+    assert created.policy.min_interrupt_duration_ms == 250
 
 
 def test_session_update_proto_preserves_backend_selection():
@@ -113,6 +115,19 @@ def test_session_update_proto_preserves_backend_selection():
 
     assert config.vad_backend == "ten-vad"
     assert config.turn_detector == "ten-turn"
+
+
+def test_session_update_proto_applies_turn_profile_defaults():
+    config = _pb_to_config(vox_pb2.ConversationSessionUpdate(
+        stt_model="x:1",
+        tts_model="y:1",
+        turn_profile="speakerphone",
+    ))
+
+    assert config.turn_profile == "speakerphone"
+    assert config.policy is not None
+    assert config.policy.aec_warmup_ms == 1100
+    assert config.policy.self_echo_min_overlap == pytest.approx(0.82)
 
 
 def test_session_update_proto_preserves_speaking_interrupt_policy():
@@ -132,6 +147,24 @@ def test_session_update_proto_preserves_speaking_interrupt_policy():
     assert config.policy.speaking_interrupt_min_words == 3
     assert config.policy.self_echo_min_words == 4
     assert config.policy.self_echo_min_overlap == pytest.approx(0.8)
+
+
+def test_session_update_proto_preserves_profile_defaults_when_overriding_one_field():
+    config = _pb_to_config(vox_pb2.ConversationSessionUpdate(
+        stt_model="x:1",
+        tts_model="y:1",
+        turn_profile="headset",
+        policy=vox_pb2.ConversationTurnPolicy(
+            speaking_interrupt_min_duration_ms=300,
+        ),
+    ))
+
+    assert config.turn_profile == "headset"
+    assert config.policy is not None
+    assert config.policy.speaking_interrupt_min_duration_ms == 300
+    assert config.policy.partial_interrupts is True
+    assert config.policy.dynamic_endpointing is True
+    assert config.policy.aec_warmup_ms == 250
 
 
 def test_turn_eou_predicted_event_maps_to_proto():

@@ -8,6 +8,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from vox.conversation import TurnPolicy
+from vox.conversation.profiles import (
+    DEFAULT_TURN_PROFILE,
+    resolve_turn_policy,
+)
 from vox.conversation.session import (
     WIRE_AUDIO_CLEAR,
     WIRE_AUDIO_DELTA,
@@ -43,6 +47,7 @@ class ConversationSessionConfig:
     voice: str | None = None
     language: str = "en"
     sample_rate: int = TARGET_SAMPLE_RATE
+    turn_profile: str = DEFAULT_TURN_PROFILE
     vad_backend: str = "silero"
     turn_detector: str = "livekit"
     policy: TurnPolicy | None = None
@@ -180,6 +185,7 @@ def parse_session_update(payload: dict) -> ConversationSessionConfig:
     if not tts_model:
         raise InvalidConfigError("session.update requires 'tts_model'")
 
+    turn_profile = str(sess.get("turn_profile") or sess.get("profile") or DEFAULT_TURN_PROFILE)
     policy_in = sess.get("turn_policy") or sess.get("policy") or {}
     policy_kwargs = {}
     for field_name in (
@@ -196,10 +202,15 @@ def parse_session_update(payload: dict) -> ConversationSessionConfig:
         "speaking_interrupt_min_words",
         "self_echo_min_words",
         "self_echo_min_overlap",
+        "aec_warmup_ms",
+        "backchannel_end_cooldown_ms",
     ):
         if field_name in policy_in:
             policy_kwargs[field_name] = policy_in[field_name]
-    policy = TurnPolicy(**policy_kwargs) if policy_kwargs else TurnPolicy()
+    try:
+        turn_profile, policy = resolve_turn_policy(turn_profile, policy_kwargs)
+    except ValueError as exc:
+        raise InvalidConfigError(str(exc)) from exc
 
     return ConversationSessionConfig(
         stt_model=stt_model,
@@ -207,6 +218,7 @@ def parse_session_update(payload: dict) -> ConversationSessionConfig:
         voice=sess.get("voice"),
         language=sess.get("language", "en") or "en",
         sample_rate=int(sess.get("sample_rate") or TARGET_SAMPLE_RATE),
+        turn_profile=turn_profile,
         vad_backend=str(sess.get("vad_backend") or sess.get("vad") or "silero"),
         turn_detector=str(sess.get("turn_detector") or sess.get("eou_model") or "livekit"),
         policy=policy,
@@ -330,6 +342,7 @@ class ConversationOrchestrator:
             vad_backend=config.vad_backend,
             turn_detector=config.turn_detector,
             policy=policy,
+            turn_profile=config.turn_profile,
             pace_response_done_to_audio=self._pace_response_done_to_audio,
             wait_for_output_playout=self._wait_for_output_playout,
         )
@@ -411,6 +424,7 @@ def serialize_session_config(config: ConversationSessionConfig) -> dict:
         "voice": config.voice,
         "language": config.language,
         "sample_rate": config.sample_rate,
+        "turn_profile": config.turn_profile,
         "vad_backend": config.vad_backend,
         "turn_detector": config.turn_detector,
         "output_sample_rate": config.sample_rate,
@@ -429,5 +443,7 @@ def serialize_session_config(config: ConversationSessionConfig) -> dict:
             "speaking_interrupt_min_words": policy.speaking_interrupt_min_words,
             "self_echo_min_words": policy.self_echo_min_words,
             "self_echo_min_overlap": policy.self_echo_min_overlap,
+            "aec_warmup_ms": policy.aec_warmup_ms,
+            "backchannel_end_cooldown_ms": policy.backchannel_end_cooldown_ms,
         },
     }

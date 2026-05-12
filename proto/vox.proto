@@ -371,19 +371,21 @@ message ConversationResponseCommitted {
 }
 
 message ConversationTurnPolicy {
-  bool allow_interrupt_while_speaking = 1;
-  uint32 min_interrupt_duration_ms = 2;
-  uint32 max_endpointing_delay_ms = 3;
-  uint32 stable_speaking_min_ms = 4;
-  uint32 false_interruption_timeout_ms = 5;
-  uint32 min_interrupt_words = 6;
-  bool partial_interrupts = 7;
-  bool dynamic_endpointing = 8;
-  uint32 min_endpointing_delay_ms = 9;
-  uint32 speaking_interrupt_min_duration_ms = 10;
-  uint32 speaking_interrupt_min_words = 11;
-  uint32 self_echo_min_words = 12;
-  float self_echo_min_overlap = 13;
+  optional bool allow_interrupt_while_speaking = 1;
+  optional uint32 min_interrupt_duration_ms = 2;
+  optional uint32 max_endpointing_delay_ms = 3;
+  optional uint32 stable_speaking_min_ms = 4;
+  optional uint32 false_interruption_timeout_ms = 5;
+  optional uint32 min_interrupt_words = 6;
+  optional bool partial_interrupts = 7;
+  optional bool dynamic_endpointing = 8;
+  optional uint32 min_endpointing_delay_ms = 9;
+  optional uint32 speaking_interrupt_min_duration_ms = 10;
+  optional uint32 speaking_interrupt_min_words = 11;
+  optional uint32 self_echo_min_words = 12;
+  optional float self_echo_min_overlap = 13;
+  optional uint32 aec_warmup_ms = 14;
+  optional uint32 backchannel_end_cooldown_ms = 15;
 }
 
 message ConversationSessionUpdate {
@@ -395,6 +397,7 @@ message ConversationSessionUpdate {
   ConversationTurnPolicy policy = 6;
   string vad_backend = 7;
   string turn_detector = 8;
+  string turn_profile = 9;
 }
 
 message ConversationAudioAppend {
@@ -412,7 +415,10 @@ message ConversationResponseCommit {}
 
 message ConversationResponseCancel {}
 
-message ConversationSessionCreated {}
+message ConversationSessionCreated {
+  string turn_profile = 1;
+  ConversationTurnPolicy policy = 2;
+}
 
 message ConversationSpeechStarted {
   uint32 timestamp_ms = 1;
