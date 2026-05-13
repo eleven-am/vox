@@ -1374,26 +1374,38 @@ wheels = [
 [[package]]
 name = "pondsocket"
 version = "0.0.1"
-source = { git = "https://github.com/eleven-am/pondsocket.git?subdirectory=python%2Fpondsocket&rev=de834b13f4485c92d5405a0d7f6866cf147aa74d#de834b13f4485c92d5405a0d7f6866cf147aa74d" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pondsocket-common" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e1/09/d85dc81dec78e3452f3da7c03e2e7a045f7fd2f0d168fae219d1ea3253b2/pondsocket-0.0.1.tar.gz", hash = "sha256:6f9b1fa764d76e3c887d47a5a37c1f9d2eff54990ecc371a3c12dbc211f00a07", size = 34801, upload-time = "2026-05-12T13:49:41.55Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/29/82/cdecc6dfa669c7276e607c029073f3c5356f6d96b795e00ead8e5b3ee50b/pondsocket-0.0.1-py3-none-any.whl", hash = "sha256:3bcb1819416200b45444121205b6555e1fa93d078bb26f79092422eadd3d3681", size = 33602, upload-time = "2026-05-12T13:49:39.482Z" },
 ]
 
 [[package]]
 name = "pondsocket-asgi"
 version = "0.0.1"
-source = { git = "https://github.com/eleven-am/pondsocket.git?subdirectory=python%2Fpondsocket-asgi&rev=de834b13f4485c92d5405a0d7f6866cf147aa74d#de834b13f4485c92d5405a0d7f6866cf147aa74d" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pondsocket" },
     { name = "pondsocket-common" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/32/c7/8581cd6d7383985c7281a095518e5af21027383c1e9bf73339c4eae7afa0/pondsocket_asgi-0.0.1.tar.gz", hash = "sha256:50e0fb90e403ef5999991ba69d48b7f76b1d0b510b4f0d2d56cbf0a4435dd329", size = 12524, upload-time = "2026-05-13T16:36:00.895Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/70/48/bf819afc088063dd81fb333ba54607c6d952375854f3aefdae072a171f22/pondsocket_asgi-0.0.1-py3-none-any.whl", hash = "sha256:62f8d99036c05a866119549b741a05e8e9f0024c107b67d7fb484a7db47681fc", size = 11401, upload-time = "2026-05-13T16:35:57.853Z" },
 ]
 
 [[package]]
 name = "pondsocket-common"
 version = "0.0.1"
-source = { git = "https://github.com/eleven-am/pondsocket.git?subdirectory=python%2Fpondsocket-common&rev=de834b13f4485c92d5405a0d7f6866cf147aa74d#de834b13f4485c92d5405a0d7f6866cf147aa74d" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/45/e2/cd218959f2b273c04e088cecd7df61ca468d1c395753474553c68ab9ab18/pondsocket_common-0.0.1.tar.gz", hash = "sha256:f19b33504a7d92aebae5601c1642c2adb30ac5645a84068699f9a812f21cc424", size = 10840, upload-time = "2026-05-12T13:49:40.573Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/33/29/8ed320d5a18615a7b5f8877cef7a7f18f9930f4c0696d5e372fed8db170e/pondsocket_common-0.0.1-py3-none-any.whl", hash = "sha256:970479c65bcbcd6605fd0acdb1455609ec90eae0e9a0992d297778362888afd7", size = 9549, upload-time = "2026-05-12T13:49:39.481Z" },
 ]
 
 [[package]]
@@ -2508,9 +2520,9 @@ requires-dist = [
     { name = "lameenc", specifier = ">=1.8.1" },
     { name = "numpy", specifier = ">=1.26.0,<2.4" },
     { name = "opuslib", specifier = ">=3.0.1" },
-    { name = "pondsocket", git = "https://github.com/eleven-am/pondsocket.git?subdirectory=python%2Fpondsocket&rev=de834b13f4485c92d5405a0d7f6866cf147aa74d" },
-    { name = "pondsocket-asgi", git = "https://github.com/eleven-am/pondsocket.git?subdirectory=python%2Fpondsocket-asgi&rev=de834b13f4485c92d5405a0d7f6866cf147aa74d" },
-    { name = "pondsocket-common", git = "https://github.com/eleven-am/pondsocket.git?subdirectory=python%2Fpondsocket-common&rev=de834b13f4485c92d5405a0d7f6866cf147aa74d" },
+    { name = "pondsocket", specifier = ">=0.0.1,<0.1.0" },
+    { name = "pondsocket-asgi", specifier = ">=0.0.1,<0.1.0" },
+    { name = "pondsocket-common", specifier = ">=0.0.1,<0.1.0" },
     { name = "protobuf", specifier = ">=4.25.0" },
     { name = "pydub", specifier = ">=0.25.1" },
     { name = "python-multipart", specifier = ">=0.0.18" },

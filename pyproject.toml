@@ -25,9 +25,9 @@ dependencies = [
     "lameenc>=1.8.1",
     "opuslib>=3.0.1",
     "aiortc>=1.14.0",
-    "pondsocket-common @ git+https://github.com/eleven-am/pondsocket.git@de834b13f4485c92d5405a0d7f6866cf147aa74d#subdirectory=python/pondsocket-common",
-    "pondsocket @ git+https://github.com/eleven-am/pondsocket.git@de834b13f4485c92d5405a0d7f6866cf147aa74d#subdirectory=python/pondsocket",
-    "pondsocket-asgi @ git+https://github.com/eleven-am/pondsocket.git@de834b13f4485c92d5405a0d7f6866cf147aa74d#subdirectory=python/pondsocket-asgi",
+    "pondsocket-common>=0.0.1,<0.1.0",
+    "pondsocket>=0.0.1,<0.1.0",
+    "pondsocket-asgi>=0.0.1,<0.1.0",
 ]
 
 [project.scripts]
