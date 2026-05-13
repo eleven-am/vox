@@ -6,11 +6,13 @@ import json
 import numpy as np
 import pytest
 
+import vox.grpc.rtc_servicer as rtc_servicer_module
 from tests.fakes import FakeScheduler
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
 from vox.grpc import vox_pb2
 from vox.grpc.rtc_servicer import RtcServicer
+from vox.operations.conversation import ConvAudioClearEvent, ConvDoneEvent
 from vox.server.rtc_registry import RtcSessionRegistry
 
 
@@ -21,6 +23,14 @@ class FakeDataChannel:
 
     def send(self, message: str) -> None:
         self.sent.append(message)
+
+
+class FakeAudioOutputTrack:
+    def __init__(self) -> None:
+        self.cleared = 0
+
+    def clear(self) -> None:
+        self.cleared += 1
 
 
 class ScriptedTTS(TTSAdapter):
@@ -193,6 +203,48 @@ async def test_rtc_grpc_control_drops_audio_delta_events():
     assert out
     assert not any(m.WhichOneof("msg") == "audio_delta" for m in out)
     assert any(m.WhichOneof("msg") == "response_done" for m in out)
+
+
+@pytest.mark.asyncio
+async def test_rtc_grpc_audio_clear_clears_webrtc_output_track(monkeypatch):
+    class ClearOnlyOrchestrator:
+        config = None
+
+        def __init__(self, **_):
+            pass
+
+        async def events(self):
+            yield ConvAudioClearEvent(response_id="resp_1")
+            yield ConvDoneEvent()
+
+        async def end_of_stream(self):
+            pass
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(rtc_servicer_module, "ConversationOrchestrator", ClearOnlyOrchestrator)
+
+    registry = RtcSessionRegistry()
+    record, _ = registry.create_session()
+    track = FakeAudioOutputTrack()
+    record.audio_output_track = track
+    servicer = RtcServicer(
+        scheduler=FakeScheduler(ScriptedTTS()),
+        rtc_registry=registry,
+    )
+
+    out = await _drive_until(
+        servicer,
+        messages=[vox_pb2.RtcControlClientMessage(
+            attach=vox_pb2.RtcControlAttach(session_id=record.session_id),
+        )],
+        predicate=lambda m: m.WhichOneof("msg") == "audio_clear",
+    )
+
+    assert track.cleared == 1
+    clear = next(m.audio_clear for m in out if m.WhichOneof("msg") == "audio_clear")
+    assert clear.response_id == "resp_1"
 
 
 @pytest.mark.asyncio

@@ -17,7 +17,12 @@ from contextlib import suppress
 from vox.core.scheduler import Scheduler
 from vox.grpc import vox_pb2, vox_pb2_grpc
 from vox.grpc.conversation_servicer import _error_pb, _event_to_pb, _pb_to_config
-from vox.operations.conversation import ConvAudioDeltaEvent, ConvDoneEvent, ConversationOrchestrator
+from vox.operations.conversation import (
+    ConvAudioClearEvent,
+    ConvAudioDeltaEvent,
+    ConvDoneEvent,
+    ConversationOrchestrator,
+)
 from vox.operations.errors import OperationError, SessionAlreadyConfiguredError
 from vox.server.rtc_client_events import parse_client_event_message, send_client_event_to_browser
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
@@ -62,6 +67,12 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
             assert orchestrator is not None
             try:
                 async for event in orchestrator.events():
+                    if (
+                        record is not None
+                        and isinstance(event, ConvAudioClearEvent)
+                        and record.audio_output_track is not None
+                    ):
+                        record.audio_output_track.clear()
                     if (
                         record is not None
                         and isinstance(event, ConvAudioDeltaEvent)
