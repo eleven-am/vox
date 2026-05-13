@@ -28,6 +28,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
+from difflib import SequenceMatcher
 
 import numpy as np
 
@@ -132,6 +133,7 @@ SPEAKING_ECHO_MAX_DELAY_MS = 900
 SPEAKING_ECHO_SEARCH_STEP_MS = 20
 SPEAKING_ECHO_CORRELATION_THRESHOLD = 0.68
 SPEAKING_ECHO_MIN_RMS = 0.002
+TRANSCRIPT_REVISION_SIMILARITY = 0.78
 
 
 @dataclass
@@ -181,6 +183,33 @@ def _best_recent_correlation(
             continue
         best = max(best, abs(float(np.dot(mic, segment))))
     return best
+
+
+def _normalise_transcript_text(text: str) -> str:
+    return " ".join(text.strip().casefold().split())
+
+
+def _is_transcript_revision(previous: str, current: str) -> bool:
+    previous_norm = _normalise_transcript_text(previous)
+    current_norm = _normalise_transcript_text(current)
+    if not previous_norm or not current_norm:
+        return False
+    if previous_norm in current_norm or current_norm in previous_norm:
+        return True
+    return (
+        SequenceMatcher(None, previous_norm, current_norm).ratio()
+        >= TRANSCRIPT_REVISION_SIMILARITY
+    )
+
+
+def _append_transcript_text(previous: str, current: str) -> str:
+    previous = previous.strip()
+    current = current.strip()
+    if not previous:
+        return current
+    if not current:
+        return previous
+    return f"{previous} {current}"
 
 
 class ConversationSession:
@@ -255,6 +284,7 @@ class ConversationSession:
         self._vad_started_at: float | None = None
         self._last_speech_stopped_at: float | None = None
         self._recent_endpoint_pauses_ms: list[int] = []
+        self._pending_transcript_done: dict | None = None
 
 
 
@@ -440,6 +470,19 @@ class ConversationSession:
                 except Exception:
                     logger.exception("action %s raised", action.type.value)
 
+            committed_user_turn = (
+                self._sm.state == TurnState.THINKING
+                and prev_state != TurnState.THINKING
+                and event.type in {
+                    TurnEventType.USER_TRANSCRIPT_FINAL,
+                    TurnEventType.TIMER_ELAPSED,
+                }
+            )
+            if committed_user_turn:
+                await self._emit_pending_transcript_done()
+            elif event.type == TurnEventType.CLIENT_CANCEL and self._sm.state == TurnState.IDLE:
+                self._pending_transcript_done = None
+
             if self._sm.state != prev_state:
                 await self._emit({
                     "type": WIRE_STATE_CHANGED,
@@ -571,27 +614,14 @@ class ConversationSession:
                     "start_ms": stream_event.start_ms,
                     "end_ms": stream_event.end_ms,
                 })
-            payload = {
-                "type": WIRE_TRANSCRIPT_DONE,
-                "transcript": stream_event.text,
-                "language": self._config.language,
-                "start_ms": stream_event.start_ms,
-                "end_ms": stream_event.end_ms,
-            }
-            if stream_event.eou_probability is not None:
-                payload["eou_probability"] = stream_event.eou_probability
-            if stream_event.entities:
-                payload["entities"] = stream_event.entities
-            if stream_event.topics:
-                payload["topics"] = stream_event.topics
-            if stream_event.words:
-                payload["words"] = stream_event.words
-            await self._emit(payload)
+            payload = self._transcript_done_payload(stream_event)
+            self._remember_pending_transcript_done(payload)
+            pending_text = str(self._pending_transcript_done.get("transcript", stream_event.text))
 
             await self._event_queue.put(TurnEvent(
                 type=TurnEventType.USER_TRANSCRIPT_FINAL,
                 payload={
-                    "text": stream_event.text,
+                    "text": pending_text,
                     "defer_commit": defer_commit,
                     "commit_delay_ms": commit_delay_ms,
                 },
@@ -960,6 +990,79 @@ class ConversationSession:
         task = self._timers.get(key)
         return task is not None and not task.done()
 
+    def _transcript_done_payload(self, transcript: StreamTranscript) -> dict:
+        payload = {
+            "type": WIRE_TRANSCRIPT_DONE,
+            "transcript": transcript.text,
+            "language": self._config.language,
+            "start_ms": transcript.start_ms,
+            "end_ms": transcript.end_ms,
+        }
+        if transcript.eou_probability is not None:
+            payload["eou_probability"] = transcript.eou_probability
+        if transcript.entities:
+            payload["entities"] = transcript.entities
+        if transcript.topics:
+            payload["topics"] = transcript.topics
+        if transcript.words:
+            payload["words"] = transcript.words
+        return payload
+
+    def _remember_pending_transcript_done(self, payload: dict) -> None:
+        if self._pending_transcript_done is None:
+            self._pending_transcript_done = dict(payload)
+            return
+        self._pending_transcript_done = self._coalesce_transcript_payload(
+            self._pending_transcript_done,
+            payload,
+        )
+
+    def _coalesce_transcript_payload(self, previous: dict, current: dict) -> dict:
+        previous_text = str(previous.get("transcript") or "")
+        current_text = str(current.get("transcript") or "")
+
+        if _is_transcript_revision(previous_text, current_text):
+            previous_norm = _normalise_transcript_text(previous_text)
+            current_norm = _normalise_transcript_text(current_text)
+            if len(current_norm) >= len(previous_norm):
+                return dict(current)
+            return dict(previous)
+
+        merged = dict(current)
+        merged["transcript"] = _append_transcript_text(previous_text, current_text)
+        merged["start_ms"] = int(previous.get("start_ms", current.get("start_ms", 0)) or 0)
+        merged["end_ms"] = max(
+            int(previous.get("end_ms", 0) or 0),
+            int(current.get("end_ms", 0) or 0),
+        )
+
+        if "eou_probability" not in merged and "eou_probability" in previous:
+            merged["eou_probability"] = previous["eou_probability"]
+
+        previous_words = previous.get("words") or []
+        current_words = current.get("words") or []
+        if previous_words or current_words:
+            merged["words"] = [*previous_words, *current_words]
+
+        previous_topics = previous.get("topics") or []
+        current_topics = current.get("topics") or []
+        if previous_topics or current_topics:
+            merged["topics"] = list(dict.fromkeys([*previous_topics, *current_topics]))
+
+        previous_entities = previous.get("entities") or []
+        current_entities = current.get("entities") or []
+        if previous_entities or current_entities:
+            merged["entities"] = [*previous_entities, *current_entities]
+
+        return merged
+
+    async def _emit_pending_transcript_done(self) -> None:
+        payload = self._pending_transcript_done
+        if payload is None:
+            return
+        self._pending_transcript_done = None
+        await self._emit(payload)
+
     def _active_assistant_text(self) -> str:
         if self._response_stream is None:
             return ""
@@ -1029,9 +1132,10 @@ class ConversationSession:
         if self._word_count(text) < self._config.policy.speaking_interrupt_min_words:
             return False
         duration_ms = self._transcript_duration_ms(transcript)
-        if duration_ms > 0 and duration_ms < self._config.policy.min_interrupt_duration_ms:
-            return False
-        return True
+        return not (
+            duration_ms > 0
+            and duration_ms < self._config.policy.min_interrupt_duration_ms
+        )
 
     async def _confirm_interrupt_from_partial(self, transcript: StreamTranscript) -> None:
         vad_active_ms = max(

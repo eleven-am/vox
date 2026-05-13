@@ -33,6 +33,7 @@ from vox.conversation.session import (
     WIRE_RESPONSE_CREATED,
     WIRE_RESPONSE_DONE,
     WIRE_STATE_CHANGED,
+    WIRE_TRANSCRIPT_DONE,
     WIRE_TURN_EOU_PREDICTED,
     ConversationConfig,
     ConversationSession,
@@ -756,7 +757,7 @@ class TestEndpointingFallback:
 
     @pytest.mark.asyncio
     async def test_transcript_after_speech_stop_waits_for_continuation_window(self):
-        session, _, _ = _build_session(
+        session, collector, _ = _build_session(
             policy=TurnPolicy(max_endpointing_delay_ms=3000, min_interrupt_duration_ms=300),
         )
         await session.start()
@@ -777,9 +778,58 @@ class TestEndpointingFallback:
         await asyncio.sleep(0.05)
 
         assert session.state == TurnState.LISTENING
+        assert not collector.by_type(WIRE_TRANSCRIPT_DONE)
 
         await asyncio.sleep(1.25)
+        await _drain_events(session)
         assert session.state == TurnState.THINKING
+        events = collector.by_type(WIRE_TRANSCRIPT_DONE)
+        assert len(events) == 1
+        assert events[0]["transcript"] == "still thinking"
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_deferred_transcripts_coalesce_before_commit(self):
+        session, collector, _ = _build_session(
+            policy=TurnPolicy(
+                max_endpointing_delay_ms=100,
+                min_interrupt_duration_ms=300,
+                dynamic_endpointing=False,
+            ),
+        )
+        await session.start()
+
+        await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
+        await asyncio.sleep(0.01)
+        await session._forward_stream_event(SpeechStopped(timestamp_ms=1200))
+        await asyncio.sleep(0.01)
+
+        await session._forward_stream_event(StreamTranscript(
+            text="Can you tell me?",
+            eou_probability=0.1,
+            start_ms=0,
+            end_ms=1200,
+        ))
+        await asyncio.sleep(0.01)
+        assert session.state == TurnState.LISTENING
+        assert not collector.by_type(WIRE_TRANSCRIPT_DONE)
+
+        await session._forward_stream_event(StreamTranscript(
+            text="What can you tell me?",
+            eou_probability=0.1,
+            start_ms=0,
+            end_ms=1800,
+        ))
+        await asyncio.sleep(0.01)
+        assert session.state == TurnState.LISTENING
+        assert not collector.by_type(WIRE_TRANSCRIPT_DONE)
+
+        await asyncio.sleep(0.12)
+        await _drain_events(session)
+        events = collector.by_type(WIRE_TRANSCRIPT_DONE)
+        assert len(events) == 1
+        assert events[0]["transcript"] == "What can you tell me?"
 
         await session.close()
 
