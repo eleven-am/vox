@@ -226,8 +226,7 @@ async def conversation_ws(websocket: WebSocket) -> None:
                 await orchestrator.start_response(allow_interruptions=allow_interruptions)
 
             elif msg_type == "response.delta":
-                response = msg.get("response", {}) or {}
-                text = response.get("delta") or msg.get("delta")
+                text = _parse_response_text(msg, "delta")
                 if not text:
                     await _send_error(websocket, "response.delta requires 'delta' text")
                     continue
@@ -239,6 +238,14 @@ async def conversation_ws(websocket: WebSocket) -> None:
 
             elif msg_type == "response.cancel":
                 await orchestrator.cancel_response()
+
+            elif msg_type == "response.replace_text":
+                text = _parse_response_text(msg, "text")
+                if not text:
+                    await _send_error(websocket, "response.replace_text requires 'text'")
+                    continue
+                allow_interruptions = _parse_allow_interruptions(msg)
+                await orchestrator.replace_response_text(text, allow_interruptions=allow_interruptions)
 
             else:
                 await _send_error(websocket, f"unknown message type: {msg_type!r}")
@@ -276,3 +283,15 @@ def _parse_allow_interruptions(msg: dict) -> bool:
     if "allow_interruptions" in msg:
         return bool(msg["allow_interruptions"])
     return True
+
+
+def _parse_response_text(msg: dict, preferred_key: str) -> str | None:
+    response = msg.get("response")
+    if isinstance(response, dict):
+        value = response.get(preferred_key) or response.get("text") or response.get("delta")
+        if value is not None:
+            return str(value)
+    value = msg.get(preferred_key) or msg.get("text") or msg.get("delta")
+    if value is None:
+        return None
+    return str(value)

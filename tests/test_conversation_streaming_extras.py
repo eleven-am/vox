@@ -22,6 +22,7 @@ from vox.conversation.session import (
     RESPONSE_STREAM_QUEUE_MAX,
     WIRE_ERROR,
     WIRE_RESPONSE_COMMITTED,
+    WIRE_RESPONSE_CREATED,
     WIRE_RESPONSE_DONE,
     ConversationConfig,
     ConversationSession,
@@ -69,6 +70,29 @@ class BrokenTTS(TTSAdapter):
     async def synthesize(self, text, **_):
         raise RuntimeError("adapter exploded")
         yield  # pragma: no cover
+
+
+class SlowFirstTTS(QuickTTS):
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = False
+        self.texts: list[str] = []
+
+    async def synthesize(self, text, **_):
+        self.texts.append(text)
+        if len(self.texts) == 1:
+            self.started.set()
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                self.cancelled = True
+                raise
+        else:
+            yield SynthesizeChunk(
+                audio=np.zeros(256, dtype=np.float32).tobytes(),
+                sample_rate=24_000, is_final=False,
+            )
+            yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
 
 
 class Collector:
@@ -271,5 +295,35 @@ class TestCommitFeedback:
                 break
 
         assert len(coll.by_type(WIRE_RESPONSE_COMMITTED)) == 1
+
+        await session.close()
+
+
+class TestResponseCancellation:
+    @pytest.mark.asyncio
+    async def test_cancel_waits_for_active_idle_response_before_next_start(self):
+        tts = SlowFirstTTS()
+        session, coll, _ = _build(adapter=tts)
+        await session.start()
+
+        await session.submit_response_text("old response.")
+        await asyncio.wait_for(tts.started.wait(), timeout=1.0)
+
+        await session.cancel_response()
+        assert tts.cancelled
+
+        await session.submit_response_text("new response.")
+        for _ in range(100):
+            await asyncio.sleep(0.01)
+            if coll.by_type(WIRE_RESPONSE_DONE):
+                break
+
+        assert len(coll.by_type(WIRE_RESPONSE_CREATED)) == 2
+        assert [e for e in coll.by_type(WIRE_RESPONSE_DONE) if e.get("response_id") == "resp_2"]
+        assert not [
+            e for e in coll.by_type(WIRE_ERROR)
+            if e.get("message") == "response already in flight"
+        ]
+        assert tts.texts == ["old response.", "new response."]
 
         await session.close()

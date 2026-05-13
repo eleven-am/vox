@@ -25,6 +25,7 @@ from vox.server.auth import require_api_key
 from vox.server.routes.conversation import (
     _event_to_wire,
     _parse_allow_interruptions,
+    _parse_response_text,
     _send_error,
     parse_session_update,
 )
@@ -312,8 +313,7 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
                 allow_interruptions = _parse_allow_interruptions(msg)
                 await orchestrator.start_response(allow_interruptions=allow_interruptions)
             elif msg_type == "response.delta":
-                response = msg.get("response", {}) or {}
-                text = response.get("delta") or msg.get("delta")
+                text = _parse_response_text(msg, "delta")
                 if not text:
                     await _send_error(websocket, "response.delta requires 'delta' text")
                     continue
@@ -323,6 +323,13 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
                 await orchestrator.commit_response()
             elif msg_type == "response.cancel":
                 await orchestrator.cancel_response()
+            elif msg_type == "response.replace_text":
+                text = _parse_response_text(msg, "text")
+                if not text:
+                    await _send_error(websocket, "response.replace_text requires 'text'")
+                    continue
+                allow_interruptions = _parse_allow_interruptions(msg)
+                await orchestrator.replace_response_text(text, allow_interruptions=allow_interruptions)
             else:
                 await _send_error(websocket, f"unknown control message type: {msg_type!r}")
 
@@ -333,7 +340,7 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
         with suppress(Exception):
             await _send_error(websocket, "internal error; closing")
     finally:
-        await orchestrator.end_of_stream()
+        await orchestrator.end_of_stream(flush_response=False)
         with suppress(asyncio.CancelledError):
             await asyncio.wait_for(emit_task, timeout=5.0)
         if not emit_task.done():

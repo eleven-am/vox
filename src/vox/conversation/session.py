@@ -415,6 +415,18 @@ class ConversationSession:
         await self.append_response_text(text, allow_interruptions=allow_interruptions)
         await self.commit_response_stream()
 
+    async def replace_response_text(
+        self,
+        text: str,
+        *,
+        allow_interruptions: bool = True,
+    ) -> None:
+        """Cancel any active response before starting a fresh text response."""
+        if not str(text).strip():
+            return
+        await self.cancel_response()
+        await self.submit_response_text(text, allow_interruptions=allow_interruptions)
+
     async def start_response_stream(self, *, allow_interruptions: bool = True) -> None:
         if self._closed:
             return
@@ -444,7 +456,30 @@ class ConversationSession:
 
     async def cancel_response(self) -> None:
         """Explicit client cancel — orthogonal to barge-in."""
-        await self._event_queue.put(TurnEvent(type=TurnEventType.CLIENT_CANCEL))
+        if self._closed or self._runner is None or self._runner.done():
+            return
+        loop = asyncio.get_running_loop()
+        done = loop.create_future()
+        has_active_response = (
+            self._response_stream is not None
+            or (self._tts_task is not None and not self._tts_task.done())
+        )
+        await self._event_queue.put(TurnEvent(
+            type=TurnEventType.CLIENT_CANCEL,
+            payload={
+                "has_active_response": has_active_response,
+                "_done": done,
+            },
+        ))
+        runner = self._runner
+        if runner is not None and runner is not asyncio.current_task():
+            completed, _ = await asyncio.wait(
+                {done, runner},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if done not in completed:
+                return
+        await done
 
 
 
@@ -458,10 +493,12 @@ class ConversationSession:
                 break
 
             prev_state = self._sm.state
+            done = event.payload.get("_done") if isinstance(event.payload, dict) else None
             try:
                 actions = self._sm.handle(event)
-            except Exception:
+            except Exception as exc:
                 logger.exception("state machine raised on event %s", event)
+                self._resolve_event_future(done, exc)
                 continue
 
             for action in actions:
@@ -490,6 +527,8 @@ class ConversationSession:
                     "previous_state": prev_state.value,
                 })
 
+
+            self._resolve_event_future(done)
 
 
 
@@ -966,6 +1005,15 @@ class ConversationSession:
 
         elif action.type == TurnActionType.CANCEL_TIMER:
             await self._cancel_timer(action.payload["key"])
+
+    @staticmethod
+    def _resolve_event_future(done, exc: BaseException | None = None) -> None:
+        if done is None or not hasattr(done, "done") or done.done():
+            return
+        if exc is not None:
+            done.set_exception(exc)
+            return
+        done.set_result(None)
 
     async def _timer_task(self, key: str, duration_ms: int) -> None:
         try:

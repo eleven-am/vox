@@ -370,6 +370,11 @@ class ConversationOrchestrator:
             raise SessionNotConfiguredError()
         await self._session.append_response_text(text, allow_interruptions=allow_interruptions)
 
+    async def replace_response_text(self, text: str, *, allow_interruptions: bool = True) -> None:
+        if self._session is None:
+            raise SessionNotConfiguredError()
+        await self._session.replace_response_text(text, allow_interruptions=allow_interruptions)
+
     async def commit_response(self) -> None:
         if self._session is None:
             raise SessionNotConfiguredError()
@@ -383,8 +388,8 @@ class ConversationOrchestrator:
     async def report_error(self, message: str) -> None:
         await self._events.put(ConvErrorEvent(message=message))
 
-    async def end_of_stream(self) -> None:
-        if self._session is not None:
+    async def end_of_stream(self, *, flush_response: bool = True) -> None:
+        if self._session is not None and flush_response:
             with suppress(Exception):
                 await self._session.commit_response_stream()
             with suppress(Exception):

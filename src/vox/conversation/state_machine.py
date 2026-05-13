@@ -247,6 +247,12 @@ def _on_timer_elapsed_speaking(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnS
 
 
 def _on_client_cancel_idle(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
+    if e.payload.get("has_active_response"):
+        return None, [
+            act(TurnActionType.STOP_TTS),
+            act(TurnActionType.CANCEL_RESPONSE),
+            act(TurnActionType.FLUSH_OUTPUT),
+        ]
     return None, []
 
 

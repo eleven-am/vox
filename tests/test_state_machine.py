@@ -120,6 +120,15 @@ class TestBargeIn:
         assert timer.payload["key"] == TimerKey.CONFIRM_INTERRUPT.value
         assert timer.payload["duration_ms"] == 250
 
+    def test_speech_during_speaking_can_defer_state_and_audio_clear_until_confirmed(self):
+        m = _machine(TurnState.SPEAKING)
+        actions = m.handle(ev(TurnEventType.SPEECH_STARTED, defer_output_clear=True))
+        assert m.state == TurnState.SPEAKING
+        assert _action_types(actions) == [TurnActionType.START_TIMER]
+        timer = _action_with_payload(actions, TurnActionType.START_TIMER)
+        assert timer.payload["key"] == TimerKey.CONFIRM_INTERRUPT.value
+        assert timer.payload["duration_ms"] == 250
+
     def test_confirm_timer_fires_interrupt(self):
         m = _machine(TurnState.PAUSED)
         actions = m.handle(timer_event(TimerKey.CONFIRM_INTERRUPT))

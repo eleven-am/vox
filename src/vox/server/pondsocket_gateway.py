@@ -20,6 +20,7 @@ from vox.server.auth import configured_api_key, extract_api_key_from_connection,
 from vox.server.routes.conversation import (
     _event_to_wire,
     _parse_allow_interruptions,
+    _parse_response_text,
     parse_session_update,
 )
 from vox.server.routes.rtc import _cancel_media_tasks
@@ -165,7 +166,7 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
 
     async def close_rtc_runtime(runtime: _RtcRuntime) -> None:
         record = runtime.record
-        await runtime.orchestrator.end_of_stream()
+        await runtime.orchestrator.end_of_stream(flush_response=False)
         with suppress(asyncio.CancelledError):
             await asyncio.wait_for(runtime.emit_task, timeout=5.0)
         if not runtime.emit_task.done():
@@ -325,8 +326,7 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
                 allow_interruptions = _parse_allow_interruptions(message)
                 await runtime.orchestrator.start_response(allow_interruptions=allow_interruptions)
             elif msg_type == "response.delta":
-                response = message.get("response", {}) or {}
-                text = response.get("delta") or message.get("delta")
+                text = _parse_response_text(message, "delta")
                 if not text:
                     await reply_error(ctx, "response.delta requires 'delta' text")
                     return
@@ -336,6 +336,13 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
                 await runtime.orchestrator.commit_response()
             elif msg_type == "response.cancel":
                 await runtime.orchestrator.cancel_response()
+            elif msg_type == "response.replace_text":
+                text = _parse_response_text(message, "text")
+                if not text:
+                    await reply_error(ctx, "response.replace_text requires 'text'")
+                    return
+                allow_interruptions = _parse_allow_interruptions(message)
+                await runtime.orchestrator.replace_response_text(text, allow_interruptions=allow_interruptions)
             else:
                 await reply_error(ctx, f"unknown conversation message type: {msg_type!r}")
         except (OperationError, SessionAlreadyConfiguredError, ValueError) as exc:
@@ -398,8 +405,7 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
                 allow_interruptions = _parse_allow_interruptions(message)
                 await runtime.orchestrator.start_response(allow_interruptions=allow_interruptions)
             elif msg_type == "response.delta":
-                response = message.get("response", {}) or {}
-                text = response.get("delta") or message.get("delta")
+                text = _parse_response_text(message, "delta")
                 if not text:
                     await reply_error(ctx, "response.delta requires 'delta' text")
                     return
@@ -409,6 +415,13 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
                 await runtime.orchestrator.commit_response()
             elif msg_type == "response.cancel":
                 await runtime.orchestrator.cancel_response()
+            elif msg_type == "response.replace_text":
+                text = _parse_response_text(message, "text")
+                if not text:
+                    await reply_error(ctx, "response.replace_text requires 'text'")
+                    return
+                allow_interruptions = _parse_allow_interruptions(message)
+                await runtime.orchestrator.replace_response_text(text, allow_interruptions=allow_interruptions)
             else:
                 await reply_error(ctx, f"unknown RTC control message type: {msg_type!r}")
         except (OperationError, SessionAlreadyConfiguredError, ValueError) as exc:

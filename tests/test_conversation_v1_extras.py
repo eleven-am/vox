@@ -170,7 +170,7 @@ class TestAntiFlutterCooldown:
         from vox.streaming.types import SpeechStarted
         await session._forward_stream_event(SpeechStarted(timestamp_ms=100))
         await asyncio.sleep(0.01)
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
 
         await session.close()
 
@@ -231,7 +231,7 @@ class TestEouModulatedConfirmWindow:
         from vox.streaming.types import SpeechStarted
         await session._forward_stream_event(SpeechStarted(timestamp_ms=100))
         await asyncio.sleep(0.01)
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
 
 
 
@@ -260,11 +260,11 @@ class TestEouModulatedConfirmWindow:
         from vox.streaming.types import SpeechStarted
         await session._forward_stream_event(SpeechStarted(timestamp_ms=100))
         await asyncio.sleep(0.01)
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
 
 
         await asyncio.sleep(0.1)
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
 
 
         await asyncio.sleep(0.1)
@@ -286,7 +286,7 @@ class TestEouModulatedConfirmWindow:
         from vox.streaming.types import SpeechStarted
         await session._forward_stream_event(SpeechStarted(timestamp_ms=100))
         await asyncio.sleep(0.01)
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
 
 
         await asyncio.sleep(0.15)
@@ -324,10 +324,10 @@ class TestEouModulatedConfirmWindow:
         from vox.streaming.types import SpeechStarted
         await session._forward_stream_event(SpeechStarted(timestamp_ms=100))
         await asyncio.sleep(0.01)
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
 
 
         await asyncio.sleep(0.1)
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
 
         await session.close()

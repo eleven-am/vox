@@ -273,6 +273,27 @@ async def test_streaming_response_emits_audio_and_done_events():
 
 
 @pytest.mark.asyncio
+async def test_end_of_stream_can_skip_pending_response_flush_for_rtc_shutdown():
+    adapter = ScriptedTTS(chunks=1)
+    orchestrator = ConversationOrchestrator(scheduler=DummyScheduler(adapter))
+    config = parse_session_update({
+        "session": {"stt_model": "x:1", "tts_model": "y:1", "voice": "default"},
+    })
+    await orchestrator.start_session(config)
+    await orchestrator.start_response()
+    await orchestrator.append_response_text("do not synthesize yet")
+
+    await orchestrator.end_of_stream(flush_response=False)
+
+    events: list = []
+    async for event in orchestrator.events():
+        events.append(event)
+    assert isinstance(events[-1], ConvDoneEvent)
+    assert adapter.texts == []
+    await orchestrator.close()
+
+
+@pytest.mark.asyncio
 async def test_report_error_emits_error_event():
     orchestrator = ConversationOrchestrator(scheduler=DummyScheduler(ScriptedTTS()))
     await orchestrator.report_error("boom")

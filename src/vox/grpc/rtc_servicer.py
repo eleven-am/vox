@@ -182,7 +182,7 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                         await out_queue.put(_error_pb(f"unknown control message kind: {kind!r}"))
             finally:
                 if orchestrator is not None:
-                    await orchestrator.end_of_stream()
+                    await orchestrator.end_of_stream(flush_response=False)
                 if emit_task is not None:
                     with suppress(asyncio.CancelledError):
                         await asyncio.wait_for(emit_task, timeout=5.0)
