@@ -8,6 +8,7 @@ from typing import Any
 
 from vox.audio.merger import merge_transcripts
 from vox.audio.pipeline import prepare_for_stt_chunks
+from vox.audio.stt_context import add_stt_leading_context, strip_stt_leading_context
 from vox.core.adapter import STTAdapter
 from vox.core.errors import ModelNotFoundError, VoxError
 from vox.core.ner import annotate
@@ -72,14 +73,22 @@ async def transcribe(
                 raise WrongModelTypeError(model, "STT")
             per_chunk: list[tuple] = []
             for chunk in chunks:
+                audio, leading_context_ms = add_stt_leading_context(
+                    chunk.data,
+                    sample_rate=chunk.sample_rate,
+                )
                 partial = await asyncio.to_thread(
                     adapter.transcribe,
-                    chunk.data,
+                    audio,
                     language=request.language,
                     word_timestamps=request.word_timestamps,
                     temperature=request.temperature,
                 )
-                partial = replace(partial, duration_ms=chunk.duration_ms)
+                partial = strip_stt_leading_context(
+                    partial,
+                    context_ms=leading_context_ms,
+                    duration_ms=chunk.duration_ms,
+                )
                 per_chunk.append((partial, chunk.offset_ms))
             result = merge_transcripts(per_chunk)
     except (WrongModelTypeError, ModelNotFoundError, VoxError):

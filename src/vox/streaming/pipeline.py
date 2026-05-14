@@ -5,21 +5,25 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 from numpy.typing import NDArray
 
+from vox.audio.merger import merge_transcripts
+from vox.audio.stt_context import add_stt_leading_context, strip_stt_leading_context
 from vox.core.adapter import STTAdapter
 from vox.core.scheduler import Scheduler
 from vox.core.types import TranscribeResult
 from vox.streaming.eou import ConversationTurn, EOUConfig, create_turn_detector
 from vox.streaming.types import (
+    TARGET_SAMPLE_RATE,
     SpeechStarted,
     SpeechStopped,
     StreamEvent,
     StreamSessionConfig,
     StreamTranscript,
+    samples_to_ms,
 )
 from vox.streaming.vad import SpeechSegment, VADConfig, VADProcessor
 
@@ -51,6 +55,76 @@ def _segments_and_words(result: TranscribeResult) -> tuple[list[dict] | None, li
     return segments, (all_words or None)
 
 logger = logging.getLogger(__name__)
+
+INTERNAL_SILENCE_SPLIT_MIN_AUDIO_MS = 2_500
+INTERNAL_SILENCE_FRAME_MS = 40
+INTERNAL_SILENCE_MIN_GAP_MS = 350
+INTERNAL_SILENCE_PAD_MS = 120
+INTERNAL_SILENCE_MIN_SPAN_MS = 250
+
+
+def _speech_spans_for_transcription(audio: NDArray[np.float32]) -> list[tuple[int, int]]:
+    if samples_to_ms(audio.size) < INTERNAL_SILENCE_SPLIT_MIN_AUDIO_MS:
+        return [(0, audio.size)]
+
+    frame_samples = max(1, int(INTERNAL_SILENCE_FRAME_MS * TARGET_SAMPLE_RATE / 1000))
+    rms_values: list[float] = []
+    frame_ranges: list[tuple[int, int]] = []
+    for start in range(0, audio.size, frame_samples):
+        end = min(start + frame_samples, audio.size)
+        frame = audio[start:end]
+        if frame.size == 0:
+            continue
+        rms_values.append(float(np.sqrt(np.mean(np.square(frame, dtype=np.float32)))))
+        frame_ranges.append((start, end))
+
+    if not rms_values:
+        return [(0, audio.size)]
+
+    rms = np.asarray(rms_values, dtype=np.float32)
+    peak = float(np.max(rms))
+    if peak < 1e-5:
+        return [(0, audio.size)]
+
+    noise_floor = float(np.percentile(rms, 20))
+    threshold = max(peak * 0.12, noise_floor * 3.0, 1e-4)
+    speech_frames = rms > threshold
+    if not bool(np.any(speech_frames)):
+        return [(0, audio.size)]
+
+    raw_spans: list[tuple[int, int]] = []
+    run_start: int | None = None
+    for index, is_speech in enumerate(speech_frames):
+        if is_speech and run_start is None:
+            run_start = index
+        elif not is_speech and run_start is not None:
+            raw_spans.append((frame_ranges[run_start][0], frame_ranges[index - 1][1]))
+            run_start = None
+    if run_start is not None:
+        raw_spans.append((frame_ranges[run_start][0], frame_ranges[-1][1]))
+
+    if len(raw_spans) <= 1:
+        return [(0, audio.size)]
+
+    min_gap_samples = int(INTERNAL_SILENCE_MIN_GAP_MS * TARGET_SAMPLE_RATE / 1000)
+    min_span_samples = int(INTERNAL_SILENCE_MIN_SPAN_MS * TARGET_SAMPLE_RATE / 1000)
+    merged: list[tuple[int, int]] = []
+    for start, end in raw_spans:
+        if end - start < min_span_samples:
+            continue
+        if merged and start - merged[-1][1] < min_gap_samples:
+            merged[-1] = (merged[-1][0], end)
+        else:
+            merged.append((start, end))
+
+    if len(merged) <= 1:
+        return [(0, audio.size)]
+
+    pad_samples = int(INTERNAL_SILENCE_PAD_MS * TARGET_SAMPLE_RATE / 1000)
+    return [
+        (max(0, start - pad_samples), min(audio.size, end + pad_samples))
+        for start, end in merged
+    ]
 
 
 @dataclass
@@ -131,17 +205,14 @@ class StreamPipeline:
         word_timestamps = self._session_config.include_word_timestamps
 
         start = time.perf_counter()
-        loop = asyncio.get_running_loop()
         async with self._scheduler.acquire(model) as adapter:
             if not isinstance(adapter, STTAdapter):
                 return StreamTranscript()
-            result = await loop.run_in_executor(
-                self._executor,
-                lambda: adapter.transcribe(
-                    segment.audio,
-                    language=language or None,
-                    word_timestamps=word_timestamps,
-                ),
+            result = await self._transcribe_audio_with_context(
+                adapter=adapter,
+                audio=segment.audio,
+                language=language or None,
+                word_timestamps=word_timestamps,
             )
         processing_ms = int((time.perf_counter() - start) * 1000)
         segments, words = _segments_and_words(result)
@@ -169,18 +240,15 @@ class StreamPipeline:
         model = self._session_config.model
 
         start = time.perf_counter()
-        loop = asyncio.get_running_loop()
         async with self._scheduler.acquire(model) as adapter:
             if not isinstance(adapter, STTAdapter):
                 return StreamTranscript()
 
-            result = await loop.run_in_executor(
-                self._executor,
-                lambda: adapter.transcribe(
-                    audio,
-                    language=language or None,
-                    word_timestamps=word_timestamps,
-                ),
+            result = await self._transcribe_audio_with_context(
+                adapter=adapter,
+                audio=audio,
+                language=language or None,
+                word_timestamps=word_timestamps,
             )
         processing_ms = int((time.perf_counter() - start) * 1000)
         segments, words = _segments_and_words(result)
@@ -192,6 +260,72 @@ class StreamPipeline:
             model=model,
             segments=segments,
             words=words,
+        )
+
+    async def _transcribe_audio_with_context(
+        self,
+        *,
+        adapter: STTAdapter,
+        audio: NDArray[np.float32],
+        language: str | None,
+        word_timestamps: bool,
+    ) -> TranscribeResult:
+        loop = asyncio.get_running_loop()
+        spans = _speech_spans_for_transcription(audio)
+        if len(spans) <= 1:
+            return await self._transcribe_audio_span(
+                loop=loop,
+                adapter=adapter,
+                audio=audio,
+                language=language,
+                word_timestamps=word_timestamps,
+            )
+
+        per_span: list[tuple[TranscribeResult, int]] = []
+        for start_sample, end_sample in spans:
+            span_audio = audio[start_sample:end_sample]
+            if span_audio.size == 0:
+                continue
+            partial = await self._transcribe_audio_span(
+                loop=loop,
+                adapter=adapter,
+                audio=span_audio,
+                language=language,
+                word_timestamps=word_timestamps,
+            )
+            if partial.text and partial.text.strip():
+                per_span.append((partial, samples_to_ms(start_sample)))
+
+        if not per_span:
+            return TranscribeResult(text="", language=language, duration_ms=samples_to_ms(audio.size))
+        merged = merge_transcripts(per_span)
+        return replace(merged, duration_ms=samples_to_ms(audio.size))
+
+    async def _transcribe_audio_span(
+        self,
+        *,
+        loop: asyncio.AbstractEventLoop,
+        adapter: STTAdapter,
+        audio: NDArray[np.float32],
+        language: str | None,
+        word_timestamps: bool,
+    ) -> TranscribeResult:
+        audio_with_context, leading_context_ms = add_stt_leading_context(
+            audio,
+            sample_rate=TARGET_SAMPLE_RATE,
+        )
+        result = await loop.run_in_executor(
+            self._executor,
+            lambda: adapter.transcribe(
+                audio_with_context,
+                language=language,
+                word_timestamps=word_timestamps,
+            ),
+        )
+        return strip_stt_leading_context(
+            result,
+            context_ms=leading_context_ms,
+            duration_ms=samples_to_ms(audio.size),
         )
 
     def _add_eou_probability(self, transcript: StreamTranscript) -> StreamTranscript:

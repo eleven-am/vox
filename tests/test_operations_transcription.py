@@ -5,7 +5,11 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
+from tests.fakes import FakeScheduler as DummyScheduler
+from tests.fakes import FakeSTTAdapter as FakeSTT
+from tests.fakes import FakeTTSAdapter as FakeTTS
 from vox.audio.codecs import encode_wav
+from vox.core.types import TranscribeResult, TranscriptSegment, WordTimestamp
 from vox.operations.errors import (
     EmptyAudioError,
     NoDefaultModelError,
@@ -18,12 +22,54 @@ from vox.operations.transcription import (
     transcribe,
 )
 
-from tests.fakes import FakeSTTAdapter as FakeSTT, FakeTTSAdapter as FakeTTS, FakeScheduler as DummyScheduler
-
 
 def _wav_bytes(dur_s: float = 1.0, sr: int = 16_000) -> bytes:
     audio = np.zeros(int(dur_s * sr), dtype=np.float32)
     return encode_wav(audio, sr)
+
+
+def _tone_wav_bytes(dur_s: float = 1.0, sr: int = 16_000) -> bytes:
+    audio = np.full(int(dur_s * sr), 0.25, dtype=np.float32)
+    return encode_wav(audio, sr)
+
+
+class LeadingContextSensitiveSTT(FakeSTT):
+    def __init__(self) -> None:
+        super().__init__()
+        self.last_audio: np.ndarray | None = None
+
+    def transcribe(self, audio, **kwargs) -> TranscribeResult:
+        self.last_audio = audio
+        context_samples = 5 * 16_000
+        has_leading_context = (
+            audio.shape[0] > context_samples
+            and np.allclose(audio[:context_samples], 0)
+            and np.max(np.abs(audio[context_samples:])) > 0
+        )
+        if not has_leading_context:
+            return TranscribeResult(
+                text="kept",
+                language="en",
+                duration_ms=1000,
+                segments=(TranscriptSegment(text="kept", start_ms=0, end_ms=1000),),
+            )
+
+        return TranscribeResult(
+            text="start kept",
+            language="en",
+            duration_ms=6000,
+            segments=(
+                TranscriptSegment(
+                    text="start kept",
+                    start_ms=5000,
+                    end_ms=6000,
+                    words=(
+                        WordTimestamp(word="start", start_ms=5000, end_ms=5400),
+                        WordTimestamp(word="kept", start_ms=5400, end_ms=6000),
+                    ),
+                ),
+            ),
+        )
 
 
 @pytest.mark.asyncio
@@ -56,6 +102,32 @@ async def test_transcribe_passes_kwargs_to_adapter():
         ),
     )
     assert adapter.last_kwargs == {"language": "fr", "word_timestamps": True, "temperature": 0.7}
+
+
+@pytest.mark.asyncio
+async def test_transcribe_adds_leading_context_and_strips_timestamps():
+    adapter = LeadingContextSensitiveSTT()
+    sched = DummyScheduler(adapter)
+    registry = MagicMock()
+
+    bundle = await transcribe(
+        scheduler=sched, registry=registry, store=None,
+        request=TranscriptionRequest(audio=_tone_wav_bytes(), model="fake-stt:latest"),
+    )
+
+    assert bundle.result.text == "start kept"
+    assert bundle.result.duration_ms == 1000
+    assert adapter.last_audio is not None
+    assert adapter.last_audio.shape[0] == 6 * 16_000
+    assert np.allclose(adapter.last_audio[: 5 * 16_000], 0)
+    assert np.max(np.abs(adapter.last_audio[5 * 16_000 :])) > 0
+
+    segment = bundle.result.segments[0]
+    assert (segment.start_ms, segment.end_ms) == (0, 1000)
+    assert [(word.word, word.start_ms, word.end_ms) for word in segment.words] == [
+        ("start", 0, 400),
+        ("kept", 400, 1000),
+    ]
 
 
 @pytest.mark.asyncio

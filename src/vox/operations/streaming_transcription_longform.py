@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 
 from vox.audio.pipeline import prepare_for_stt
+from vox.audio.stt_context import add_stt_leading_context, strip_stt_leading_context
 from vox.core.adapter import STTAdapter
 from vox.operations.defaults import resolve_default_model
 from vox.operations.errors import (
@@ -278,13 +279,22 @@ class LongformTranscriptionSession:
 
         config = self._config
         state = self._state
+        audio, leading_context_ms = add_stt_leading_context(
+            chunk_audio,
+            sample_rate=TARGET_SAMPLE_RATE,
+        )
         start_time = time.perf_counter()
         result = await asyncio.to_thread(
             self._adapter.transcribe,
-            chunk_audio,
+            audio,
             language=config.language,
             word_timestamps=config.word_timestamps,
             temperature=config.temperature,
+        )
+        result = strip_stt_leading_context(
+            result,
+            context_ms=leading_context_ms,
+            duration_ms=samples_to_ms(chunk_audio.size),
         )
         state.processing_ms += int((time.perf_counter() - start_time) * 1000)
         if state.language is None and result.language:
