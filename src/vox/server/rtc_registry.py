@@ -16,6 +16,7 @@ class RtcSessionRecord:
     expires_at: float
     control_attached: bool = False
     browser_attached: bool = False
+    browser_disconnect_emitted: bool = False
     closed: bool = False
     media_token_hash: str = ""
     rtc_peer: Any | None = None

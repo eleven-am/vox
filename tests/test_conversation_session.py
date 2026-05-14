@@ -40,7 +40,7 @@ from vox.conversation.session import (
 )
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
-from vox.streaming.types import SpeechStopped, StreamTranscript
+from vox.streaming.types import SpeechStarted, SpeechStopped, StreamTranscript
 
 
 class ScriptedTTSAdapter(TTSAdapter):
@@ -56,8 +56,10 @@ class ScriptedTTSAdapter(TTSAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="scripted-tts", type=ModelType.TTS,
-            architectures=("scripted",), default_sample_rate=self._sample_rate,
+            name="scripted-tts",
+            type=ModelType.TTS,
+            architectures=("scripted",),
+            default_sample_rate=self._sample_rate,
             supported_formats=(ModelFormat.ONNX,),
         )
 
@@ -65,7 +67,8 @@ class ScriptedTTSAdapter(TTSAdapter):
     def unload(self): ...
 
     @property
-    def is_loaded(self): return True
+    def is_loaded(self):
+        return True
 
     def list_voices(self):
         return [VoiceInfo(id="default", name="Default")]
@@ -101,11 +104,6 @@ class EventCollector:
 
     def states(self) -> list[str]:
         return [e["state"] for e in self.by_type(WIRE_STATE_CHANGED)]
-
-
-
-
-
 
 
 class _AcceptAllClassifier:
@@ -155,15 +153,8 @@ async def _drain_events(session: ConversationSession, max_iterations: int = 20) 
     """Yield control so the event loop can drain pending turn events + actions."""
     for _ in range(max_iterations):
         await asyncio.sleep(0)
-        if session._event_queue.empty() and (
-            session._tts_task is None or session._tts_task.done()
-        ):
+        if session._event_queue.empty() and (session._tts_task is None or session._tts_task.done()):
             break
-
-
-
-
-
 
 
 class TestLifecycle:
@@ -178,12 +169,14 @@ class TestLifecycle:
         session, collector, _ = _build_session()
         await session.start()
 
-        await session._forward_stream_event(StreamTranscript(
-            text="that is all",
-            eou_probability=0.9,
-            start_ms=100,
-            end_ms=600,
-        ))
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="that is all",
+                eou_probability=0.9,
+                start_ms=100,
+                end_ms=600,
+            )
+        )
         await _drain_events(session)
 
         events = collector.by_type(WIRE_TURN_EOU_PREDICTED)
@@ -198,6 +191,64 @@ class TestLifecycle:
 
         await session.close()
         assert session._runner.done()
+
+    @pytest.mark.asyncio
+    async def test_final_transcripts_coalesce_during_endpointing_window(self):
+        session, collector, _ = _build_session()
+        await session.start()
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=0))
+        await _drain_events(session)
+        await session._forward_stream_event(SpeechStopped(timestamp_ms=1000))
+        await _drain_events(session)
+
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="first part",
+                eou_probability=0.9,
+                start_ms=0,
+                end_ms=1000,
+            )
+        )
+        await _drain_events(session)
+
+        assert not collector.by_type(WIRE_TRANSCRIPT_DONE)
+        assert collector.by_type(WIRE_TURN_EOU_PREDICTED)[-1]["action"] == "wait"
+        assert session.state == TurnState.LISTENING
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1300))
+        await _drain_events(session)
+        await session._forward_stream_event(SpeechStopped(timestamp_ms=2200))
+        await _drain_events(session)
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="second part",
+                eou_probability=0.9,
+                start_ms=1300,
+                end_ms=2200,
+            )
+        )
+        await _drain_events(session)
+
+        assert not collector.by_type(WIRE_TRANSCRIPT_DONE)
+
+        await session._cancel_timer(TimerKey.ENDPOINTING.value)
+        await session._event_queue.put(
+            TurnEvent(
+                type=TurnEventType.TIMER_ELAPSED,
+                payload={"key": TimerKey.ENDPOINTING.value},
+            )
+        )
+        await _drain_events(session)
+
+        completed = collector.by_type(WIRE_TRANSCRIPT_DONE)
+        assert len(completed) == 1
+        assert completed[0]["transcript"] == "first part second part"
+        assert completed[0]["start_ms"] == 0
+        assert completed[0]["end_ms"] == 2200
+        assert session.state == TurnState.THINKING
+
+        await session.close()
 
     @pytest.mark.asyncio
     async def test_state_starts_idle(self):
@@ -232,13 +283,30 @@ class TestLifecycle:
 
         await session.close()
 
+    @pytest.mark.asyncio
+    async def test_speech_start_chunk_is_kept_for_partials(self):
+        session, _, _ = _build_session()
+
+        async def fake_process_audio(audio: np.ndarray):
+            yield SpeechStarted(timestamp_ms=0)
+
+        session._pipeline.process_audio = fake_process_audio  # type: ignore[method-assign]
+
+        await session.start()
+        pcm = (np.ones(1600, dtype=np.int16) * 1000).tobytes()
+        await session.ingest_audio(pcm, 16_000)
+
+        assert session._speech_session is not None
+        assert session._speech_session.get_buffer_length() == 1600
+
+        await session.close()
+
 
 class TestTTSHappyPath:
     @pytest.mark.asyncio
     async def test_submit_response_emits_audio_and_done(self):
         session, collector, tts = _build_session()
         await session.start()
-
 
         await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
         await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
@@ -410,16 +478,13 @@ class TestBargeIn:
         await _drain_events(session)
         await session.submit_response_text("long reply")
 
-
         await asyncio.sleep(0.05)
         assert session.state == TurnState.SPEAKING
-
 
         session._latest_partial = StreamTranscript(text="I need", is_partial=True)
         await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
         await asyncio.sleep(0.01)
         assert session.state == TurnState.PAUSED
-
 
         await asyncio.sleep(0.1)
         await _drain_events(session)
@@ -446,7 +511,6 @@ class TestBargeIn:
         await session.submit_response_text("long reply")
         await asyncio.sleep(0.05)
         assert session.state == TurnState.SPEAKING
-
 
         await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
         await asyncio.sleep(0.01)
@@ -489,17 +553,21 @@ class TestBargeIn:
         await asyncio.sleep(0.05)
         assert session.state == TurnState.SPEAKING
 
-        await session._event_queue.put(TurnEvent(
-            type=TurnEventType.SPEECH_STARTED,
-            payload={"confirm_window_ms": 500},
-        ))
+        await session._event_queue.put(
+            TurnEvent(
+                type=TurnEventType.SPEECH_STARTED,
+                payload={"confirm_window_ms": 500},
+            )
+        )
         await asyncio.sleep(0.01)
         assert session.state == TurnState.PAUSED
 
-        await session._forward_stream_event(StreamTranscript(
-            text="please stop talking",
-            is_partial=True,
-        ))
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="please stop talking",
+                is_partial=True,
+            )
+        )
 
         await asyncio.sleep(0.01)
         await _drain_events(session)
@@ -557,10 +625,12 @@ class TestBargeIn:
         session = ConversationSession(scheduler=scheduler, config=config, on_event=collector)
         await session.start()
 
-        await session._forward_stream_event(StreamTranscript(
-            text="please stop talking",
-            is_partial=True,
-        ))
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="please stop talking",
+                is_partial=True,
+            )
+        )
 
         assert session._latest_partial is not None
         assert session._latest_partial.text == "please stop talking"
@@ -621,7 +691,6 @@ class TestBargeIn:
         chunks_before_pause = len(collector.by_type(WIRE_AUDIO_DELTA))
         assert chunks_before_pause >= 1
 
-
         await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
         await asyncio.sleep(0.05)
 
@@ -631,14 +700,11 @@ class TestBargeIn:
 
         await asyncio.sleep(0.05)
         chunks_while_paused_end = len(collector.by_type(WIRE_AUDIO_DELTA))
-        assert chunks_while_paused_end == chunks_while_paused_start,\
-            "no audio chunks should be emitted while paused"
+        assert chunks_while_paused_end == chunks_while_paused_start, "no audio chunks should be emitted while paused"
         assert session.pending_audio_count > 0
-
 
         await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STOPPED))
         await asyncio.sleep(0.05)
-
 
         chunks_after_resume = len(collector.by_type(WIRE_AUDIO_DELTA))
         assert chunks_after_resume > chunks_while_paused_end
@@ -738,7 +804,6 @@ class TestEndpointingFallback:
     @pytest.mark.asyncio
     async def test_endpointing_timer_forces_turn_end(self):
 
-
         session, collector, _ = _build_session(
             policy=TurnPolicy(max_endpointing_delay_ms=50, min_interrupt_duration_ms=300),
         )
@@ -770,11 +835,13 @@ class TestEndpointingFallback:
         await asyncio.sleep(0.01)
         assert TimerKey.ENDPOINTING.value in session._timers
 
-        await session._forward_stream_event(StreamTranscript(
-            text="still thinking",
-            start_ms=0,
-            end_ms=2400,
-        ))
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="still thinking",
+                start_ms=0,
+                end_ms=2400,
+            )
+        )
         await asyncio.sleep(0.05)
 
         assert session.state == TurnState.LISTENING
@@ -805,22 +872,26 @@ class TestEndpointingFallback:
         await session._forward_stream_event(SpeechStopped(timestamp_ms=1200))
         await asyncio.sleep(0.01)
 
-        await session._forward_stream_event(StreamTranscript(
-            text="Can you tell me?",
-            eou_probability=0.1,
-            start_ms=0,
-            end_ms=1200,
-        ))
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="Can you tell me?",
+                eou_probability=0.1,
+                start_ms=0,
+                end_ms=1200,
+            )
+        )
         await asyncio.sleep(0.01)
         assert session.state == TurnState.LISTENING
         assert not collector.by_type(WIRE_TRANSCRIPT_DONE)
 
-        await session._forward_stream_event(StreamTranscript(
-            text="What can you tell me?",
-            eou_probability=0.1,
-            start_ms=0,
-            end_ms=1800,
-        ))
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="What can you tell me?",
+                eou_probability=0.1,
+                start_ms=0,
+                end_ms=1800,
+            )
+        )
         await asyncio.sleep(0.01)
         assert session.state == TurnState.LISTENING
         assert not collector.by_type(WIRE_TRANSCRIPT_DONE)
@@ -846,7 +917,7 @@ class TestEndpointingFallback:
         assert session._transcript_commit_delay_ms() == 1250
 
         session._recent_endpoint_pauses_ms = [100]
-        assert session._transcript_commit_delay_ms() == 400
+        assert session._transcript_commit_delay_ms() == 1200
 
 
 class TestAssistantTurnInEouHistory:
@@ -859,12 +930,10 @@ class TestAssistantTurnInEouHistory:
         await session.submit_response_text("hello from the bot")
         await asyncio.sleep(0.05)
 
-
         history = session._pipeline._conversation_history
-        assert any(
-            turn.role == "assistant" and "hello from the bot" in turn.content
-            for turn in history
-        ), f"assistant turn not found; history={history}"
+        assert any(turn.role == "assistant" and "hello from the bot" in turn.content for turn in history), (
+            f"assistant turn not found; history={history}"
+        )
 
         await session.close()
 

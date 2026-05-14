@@ -1,5 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+
+import pytest
+
+from vox.server.routes.rtc import _handle_data_channel_message
+from vox.server.rtc_client_events import (
+    WIRE_BROWSER_EVENT,
+    WIRE_RTC_CLIENT_DISCONNECTED,
+    emit_client_disconnected_to_control,
+)
 from vox.server.rtc_registry import RtcSessionRegistry
 
 
@@ -61,3 +71,60 @@ def test_control_attach_is_exclusive():
 
     registry.detach_control(record.session_id)
     assert registry.attach_control(record.session_id, now=1001.0) is record
+
+
+@pytest.mark.asyncio
+async def test_client_disconnect_control_event_is_deduped():
+    registry = RtcSessionRegistry()
+    record, _ = registry.create_session(now=1000.0)
+
+    await emit_client_disconnected_to_control(
+        record,
+        record.session_id,
+        reason="peer_connection_closed",
+        connection_state="closed",
+        ice_connection_state="closed",
+        data_channel_state="closed",
+    )
+    await emit_client_disconnected_to_control(
+        record,
+        record.session_id,
+        reason="ice_connection_failed",
+        connection_state="failed",
+        ice_connection_state="failed",
+    )
+
+    assert record.control_events is not None
+    event = await asyncio.wait_for(record.control_events.get(), timeout=0.1)
+
+    assert event == {
+        "type": WIRE_RTC_CLIENT_DISCONNECTED,
+        "session_id": record.session_id,
+        "reason": "peer_connection_closed",
+        "connection_state": "closed",
+        "ice_connection_state": "closed",
+        "data_channel_state": "closed",
+    }
+    assert record.control_events.empty()
+
+
+@pytest.mark.asyncio
+async def test_data_channel_message_emits_browser_event_to_control():
+    registry = RtcSessionRegistry()
+    record, _ = registry.create_session(now=1000.0)
+
+    await _handle_data_channel_message(
+        record,
+        record.session_id,
+        '{"event":"ui.select","payload":{"id":"choice-a"}}',
+    )
+
+    assert record.control_events is not None
+    event = await asyncio.wait_for(record.control_events.get(), timeout=0.1)
+
+    assert event == {
+        "type": WIRE_BROWSER_EVENT,
+        "session_id": record.session_id,
+        "event": "ui.select",
+        "payload": {"id": "choice-a"},
+    }

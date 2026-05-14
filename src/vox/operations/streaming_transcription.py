@@ -80,18 +80,10 @@ class DoneEvent:
     pass
 
 
-SessionEvent = (
-    SessionReadyEvent
-    | SpeechStartedEvent
-    | SpeechStoppedEvent
-    | TranscriptEvent
-    | ErrorEvent
-    | DoneEvent
-)
+SessionEvent = SessionReadyEvent | SpeechStartedEvent | SpeechStoppedEvent | TranscriptEvent | ErrorEvent | DoneEvent
 
 
 class StreamingTranscriptionSession:
-
     def __init__(
         self,
         *,
@@ -146,11 +138,13 @@ class StreamingTranscriptionSession:
         self._partial_service = PartialTranscriptService(
             transcribe_async_fn=self._pipeline.transcribe_async,
         )
-        await self._events.put(SessionReadyEvent(
-            model=model,
-            language=session_config.language,
-            sample_rate=session_config.sample_rate,
-        ))
+        await self._events.put(
+            SessionReadyEvent(
+                model=model,
+                language=session_config.language,
+                sample_rate=session_config.sample_rate,
+            )
+        )
 
     async def submit_pcm16(self, pcm16: bytes, sample_rate: int | None = None) -> None:
         if self._pipeline is None or self._session_config is None:
@@ -247,17 +241,18 @@ class StreamingTranscriptionSession:
             raise SessionNotConfiguredError()
         if audio.size == 0:
             return
-        self._session.append_audio(audio)
         try:
             async for stream_event in self._pipeline.process_audio(audio):
                 self._dispatch_stream_event(stream_event)
         except Exception as exc:
             await self._events.put(ErrorEvent(message=str(exc)))
             return
+        self._session.append_audio(audio)
         if self._session.is_active() and self._session_config.partials:
             try:
                 transcript = await self._partial_service.generate_partial_async(
-                    self._session, self._session_config,
+                    self._session,
+                    self._session_config,
                 )
                 if transcript:
                     await self._events.put(TranscriptEvent(transcript=transcript))

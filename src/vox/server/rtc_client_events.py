@@ -7,6 +7,8 @@ from typing import Any
 from vox.server.rtc_registry import RtcSessionRecord
 
 WIRE_CLIENT_EVENT = "client.event"
+WIRE_BROWSER_EVENT = "browser.event"
+WIRE_RTC_CLIENT_DISCONNECTED = "rtc.client.disconnected"
 
 
 def parse_client_event_message(message: Any) -> tuple[str, Any]:
@@ -34,6 +36,71 @@ def client_event_wire(session_id: str, event_name: str, payload: Any) -> dict:
     }
 
 
+def browser_event_wire(session_id: str, event_name: str, payload: Any) -> dict:
+    return {
+        "type": WIRE_BROWSER_EVENT,
+        "session_id": session_id,
+        "event": event_name,
+        "payload": payload,
+    }
+
+
+def control_event_as_client_event(event: dict) -> tuple[str, Any]:
+    event_type = event.get("type")
+    if event_type == WIRE_CLIENT_EVENT:
+        return parse_client_event_message(event)
+    if not isinstance(event_type, str) or not event_type.strip():
+        raise ValueError("control event requires a non-empty string 'type'")
+    return event_type.strip(), {key: value for key, value in event.items() if key != "type"}
+
+
+def client_disconnected_wire(
+    session_id: str,
+    *,
+    reason: str,
+    connection_state: str | None = None,
+    ice_connection_state: str | None = None,
+    data_channel_state: str | None = None,
+) -> dict:
+    payload = {
+        "type": WIRE_RTC_CLIENT_DISCONNECTED,
+        "session_id": session_id,
+        "reason": reason,
+    }
+    if connection_state is not None:
+        payload["connection_state"] = connection_state
+    if ice_connection_state is not None:
+        payload["ice_connection_state"] = ice_connection_state
+    if data_channel_state is not None:
+        payload["data_channel_state"] = data_channel_state
+    return payload
+
+
+async def emit_client_disconnected_to_control(
+    record: RtcSessionRecord,
+    session_id: str,
+    *,
+    reason: str,
+    connection_state: str | None = None,
+    ice_connection_state: str | None = None,
+    data_channel_state: str | None = None,
+) -> None:
+    if record.browser_disconnect_emitted:
+        return
+    record.browser_disconnect_emitted = True
+    if record.control_events is None:
+        return
+    await record.control_events.put(
+        client_disconnected_wire(
+            session_id,
+            reason=reason,
+            connection_state=connection_state,
+            ice_connection_state=ice_connection_state,
+            data_channel_state=data_channel_state,
+        )
+    )
+
+
 def _data_channel_is_open(record: RtcSessionRecord) -> bool:
     channel = record.data_channel
     return channel is not None and getattr(channel, "readyState", None) == "open"
@@ -57,7 +124,7 @@ def flush_pending_client_events(record: RtcSessionRecord) -> None:
             record.data_channel.send(raw)
 
 
-async def emit_client_event_to_control(
+async def emit_browser_event_to_control(
     record: RtcSessionRecord,
     session_id: str,
     event_name: str,
@@ -65,4 +132,4 @@ async def emit_client_event_to_control(
 ) -> None:
     if record.control_events is None:
         return
-    await record.control_events.put(client_event_wire(session_id, event_name, payload))
+    await record.control_events.put(browser_event_wire(session_id, event_name, payload))

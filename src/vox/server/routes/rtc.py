@@ -30,7 +30,8 @@ from vox.server.routes.conversation import (
     parse_session_update,
 )
 from vox.server.rtc_client_events import (
-    emit_client_event_to_control,
+    emit_browser_event_to_control,
+    emit_client_disconnected_to_control,
     flush_pending_client_events,
     parse_client_event_message,
     send_client_event_to_browser,
@@ -94,26 +95,52 @@ async def create_rtc_answer(request: Request, session_id: str) -> dict:
 
     @pc.on("connectionstatechange")
     async def on_connectionstatechange() -> None:
-        await _emit_media_event(record, {
-            "type": "rtc.connection_state",
-            "state": pc.connectionState,
-        })
+        await _emit_media_event(
+            record,
+            {
+                "type": "rtc.connection_state",
+                "state": pc.connectionState,
+            },
+        )
         if pc.connectionState in {"closed", "failed"}:
+            await emit_client_disconnected_to_control(
+                record,
+                session_id,
+                reason=f"peer_connection_{pc.connectionState}",
+                connection_state=pc.connectionState,
+                ice_connection_state=pc.iceConnectionState,
+                data_channel_state=getattr(record.data_channel, "readyState", None),
+            )
             registry.close(session_id)
 
     @pc.on("iceconnectionstatechange")
     async def on_iceconnectionstatechange() -> None:
-        await _emit_media_event(record, {
-            "type": "rtc.ice_connection_state",
-            "state": pc.iceConnectionState,
-        })
+        await _emit_media_event(
+            record,
+            {
+                "type": "rtc.ice_connection_state",
+                "state": pc.iceConnectionState,
+            },
+        )
+        if pc.iceConnectionState == "failed":
+            await emit_client_disconnected_to_control(
+                record,
+                session_id,
+                reason="ice_connection_failed",
+                connection_state=pc.connectionState,
+                ice_connection_state=pc.iceConnectionState,
+                data_channel_state=getattr(record.data_channel, "readyState", None),
+            )
 
     @pc.on("icegatheringstatechange")
     async def on_icegatheringstatechange() -> None:
-        await _emit_media_event(record, {
-            "type": "rtc.ice_gathering_state",
-            "state": pc.iceGatheringState,
-        })
+        await _emit_media_event(
+            record,
+            {
+                "type": "rtc.ice_gathering_state",
+                "state": pc.iceGatheringState,
+            },
+        )
 
     @pc.on("track")
     def on_track(track) -> None:
@@ -134,6 +161,18 @@ async def create_rtc_answer(request: Request, session_id: str) -> dict:
         def on_close() -> None:
             if record.data_channel is channel:
                 record.data_channel = None
+            task = asyncio.create_task(
+                emit_client_disconnected_to_control(
+                    record,
+                    session_id,
+                    reason="data_channel_closed",
+                    connection_state=pc.connectionState,
+                    ice_connection_state=pc.iceConnectionState,
+                    data_channel_state=getattr(channel, "readyState", None),
+                )
+            )
+            record.media_tasks.add(task)
+            task.add_done_callback(record.media_tasks.discard)
 
         @channel.on("message")
         def on_message(message) -> None:
@@ -143,10 +182,12 @@ async def create_rtc_answer(request: Request, session_id: str) -> dict:
 
         flush_pending_client_events(record)
 
-    await pc.setRemoteDescription(RTCSessionDescription(
-        sdp=str(body.get("sdp") or ""),
-        type=str(body.get("type") or "offer"),
-    ))
+    await pc.setRemoteDescription(
+        RTCSessionDescription(
+            sdp=str(body.get("sdp") or ""),
+            type=str(body.get("type") or "offer"),
+        )
+    )
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
     answer_sdp = rewrite_private_relay_candidates(pc.localDescription.sdp)
@@ -263,10 +304,12 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
     client_event_task = asyncio.create_task(emit_client_events())
 
     try:
-        await websocket.send_json({
-            "type": "rtc.session.attached",
-            "session_id": session_id,
-        })
+        await websocket.send_json(
+            {
+                "type": "rtc.session.attached",
+                "session_id": session_id,
+            }
+        )
         while True:
             raw = await websocket.receive()
             if raw.get("type") == "websocket.disconnect":
@@ -380,14 +423,16 @@ def _bearer_token(request: Request) -> str | None:
 
 
 def _rtc_configuration(ice_servers: list[dict]) -> RTCConfiguration:
-    return RTCConfiguration(iceServers=[
-        RTCIceServer(
-            urls=server["urls"],
-            username=server.get("username"),
-            credential=server.get("credential"),
-        )
-        for server in ice_servers
-    ])
+    return RTCConfiguration(
+        iceServers=[
+            RTCIceServer(
+                urls=server["urls"],
+                username=server.get("username"),
+                credential=server.get("credential"),
+            )
+            for server in ice_servers
+        ]
+    )
 
 
 async def _emit_media_event(record: RtcSessionRecord, event: dict) -> None:
@@ -430,10 +475,10 @@ async def _handle_data_channel_message(record: RtcSessionRecord, session_id: str
     try:
         event_name, payload = parse_client_event_message(message_obj)
     except ValueError:
-        logger.warning("dropping malformed RTC client.event payload for %s", session_id)
+        logger.warning("dropping malformed RTC browser.event payload for %s", session_id)
         return
 
-    await emit_client_event_to_control(record, session_id, event_name, payload)
+    await emit_browser_event_to_control(record, session_id, event_name, payload)
 
 
 def _candidate_events_from_sdp(sdp: str) -> list[dict]:
@@ -446,12 +491,14 @@ def _candidate_events_from_sdp(sdp: str) -> list[dict]:
         elif line.startswith("a=mid:"):
             current_mid = line.removeprefix("a=mid:")
         elif line.startswith("a=candidate:"):
-            events.append({
-                "type": "rtc.ice_candidate",
-                "candidate": {
-                    "candidate": line.removeprefix("a="),
-                    "sdpMid": current_mid,
-                    "sdpMLineIndex": current_mline if current_mline >= 0 else None,
-                },
-            })
+            events.append(
+                {
+                    "type": "rtc.ice_candidate",
+                    "candidate": {
+                        "candidate": line.removeprefix("a="),
+                        "sdpMid": current_mid,
+                        "sdpMLineIndex": current_mline if current_mline >= 0 else None,
+                    },
+                }
+            )
     return events

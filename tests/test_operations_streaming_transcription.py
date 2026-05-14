@@ -28,6 +28,7 @@ from vox.operations.streaming_transcription import (
     StreamingTranscriptionSession,
     TranscriptEvent,
 )
+from vox.streaming.types import SpeechStarted
 
 
 class FakeSTTAdapter(STTAdapter):
@@ -37,8 +38,10 @@ class FakeSTTAdapter(STTAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="fake-stt", type=ModelType.STT,
-            architectures=("fake",), default_sample_rate=16_000,
+            name="fake-stt",
+            type=ModelType.STT,
+            architectures=("fake",),
+            default_sample_rate=16_000,
             supported_formats=(ModelFormat.ONNX,),
         )
 
@@ -52,11 +55,10 @@ class FakeSTTAdapter(STTAdapter):
     def transcribe(self, audio, **kwargs) -> TranscribeResult:
         self.calls += 1
         return TranscribeResult(
-            text=self._text, language=kwargs.get("language") or "en",
+            text=self._text,
+            language=kwargs.get("language") or "en",
             duration_ms=int(len(audio) / 16_000 * 1000),
-            segments=(
-                TranscriptSegment(text=self._text, start_ms=0, end_ms=200),
-            ),
+            segments=(TranscriptSegment(text=self._text, start_ms=0, end_ms=200),),
         )
 
 
@@ -201,6 +203,28 @@ async def test_end_of_stream_flushes_remaining_audio_through_transcribe():
     transcripts = [e for e in events if isinstance(e, TranscriptEvent)]
     assert any(t.transcript.text == "final transcript" for t in transcripts)
     assert adapter.calls >= 1
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_speech_start_chunk_is_kept_in_active_buffer():
+    session = StreamingTranscriptionSession(
+        scheduler=FakeScheduler(FakeSTTAdapter()),
+        registry=_make_registry(default_stt="m:1"),
+        store=_make_store(),
+    )
+    await session.configure(StreamingTranscriptionConfig())
+
+    async def fake_process_audio(audio):
+        yield SpeechStarted(timestamp_ms=0)
+
+    assert session._pipeline is not None
+    session._pipeline.process_audio = fake_process_audio  # type: ignore[method-assign]
+
+    pcm16 = (np.ones(1600, dtype=np.int16) * 1000).tobytes()
+    await session.submit_pcm16(pcm16, sample_rate=16_000)
+
+    assert session._session.get_buffer_length() == 1600
     await session.close()
 
 

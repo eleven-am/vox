@@ -24,7 +24,7 @@ from vox.operations.conversation import (
     ConversationOrchestrator,
 )
 from vox.operations.errors import OperationError, SessionAlreadyConfiguredError
-from vox.server.rtc_client_events import parse_client_event_message, send_client_event_to_browser
+from vox.server.rtc_client_events import control_event_as_client_event, send_client_event_to_browser
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 
 logger = logging.getLogger(__name__)
@@ -95,13 +95,15 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                 event = await record.control_events.get()
                 if event is None:
                     return
-                event_name, payload = parse_client_event_message(event)
-                await out_queue.put(vox_pb2.ConverseServerMessage(
-                    client_event=vox_pb2.RtcClientEvent(
-                        event=event_name,
-                        payload_json=json.dumps(payload),
-                    ),
-                ))
+                event_name, payload = control_event_as_client_event(event)
+                await out_queue.put(
+                    vox_pb2.ConverseServerMessage(
+                        client_event=vox_pb2.RtcClientEvent(
+                            event=event_name,
+                            payload_json=json.dumps(payload),
+                        ),
+                    )
+                )
 
         async def drain_client() -> None:
             nonlocal record, orchestrator, session_id
@@ -120,9 +122,11 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                         session_id = client_msg.attach.session_id
                         record = self._rtc_registry.attach_control(session_id)
                         if record is None:
-                            await out_queue.put(_error_pb(
-                                "unknown, expired, or already attached RTC session",
-                            ))
+                            await out_queue.put(
+                                _error_pb(
+                                    "unknown, expired, or already attached RTC session",
+                                )
+                            )
                             break
                         orchestrator = ConversationOrchestrator(
                             scheduler=self._scheduler,
@@ -131,12 +135,14 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                             wait_for_output_playout=wait_for_rtc_playout,
                         )
                         record.orchestrator = orchestrator
-                        await out_queue.put(vox_pb2.ConverseServerMessage(
-                            rtc_session_attached=vox_pb2.RtcSessionAttached(
-                                session_id=session_id,
-                                provider="webrtc",
-                            ),
-                        ))
+                        await out_queue.put(
+                            vox_pb2.ConverseServerMessage(
+                                rtc_session_attached=vox_pb2.RtcSessionAttached(
+                                    session_id=session_id,
+                                    provider="webrtc",
+                                ),
+                            )
+                        )
                         emit_task = asyncio.create_task(pump_events())
                         client_event_task = asyncio.create_task(pump_client_events())
                         continue

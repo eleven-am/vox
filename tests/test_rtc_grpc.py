@@ -49,8 +49,11 @@ class ScriptedTTS(TTSAdapter):
     def load(self, *a, **k): ...
     def unload(self): ...
     @property
-    def is_loaded(self): return True
-    def list_voices(self): return [VoiceInfo(id="default", name="Default")]
+    def is_loaded(self):
+        return True
+
+    def list_voices(self):
+        return [VoiceInfo(id="default", name="Default")]
 
     async def synthesize(self, text: str, **_):
         for _ in range(self._chunks):
@@ -124,9 +127,11 @@ async def test_rtc_grpc_attach_emits_attached_event():
 
     out = await _drive_until(
         servicer,
-        messages=[vox_pb2.RtcControlClientMessage(
-            attach=vox_pb2.RtcControlAttach(session_id=record.session_id),
-        )],
+        messages=[
+            vox_pb2.RtcControlClientMessage(
+                attach=vox_pb2.RtcControlAttach(session_id=record.session_id),
+            )
+        ],
         predicate=lambda m: m.WhichOneof("msg") == "rtc_session_attached",
     )
 
@@ -236,9 +241,11 @@ async def test_rtc_grpc_audio_clear_clears_webrtc_output_track(monkeypatch):
 
     out = await _drive_until(
         servicer,
-        messages=[vox_pb2.RtcControlClientMessage(
-            attach=vox_pb2.RtcControlAttach(session_id=record.session_id),
-        )],
+        messages=[
+            vox_pb2.RtcControlClientMessage(
+                attach=vox_pb2.RtcControlAttach(session_id=record.session_id),
+            )
+        ],
         predicate=lambda m: m.WhichOneof("msg") == "audio_clear",
     )
 
@@ -257,12 +264,14 @@ async def test_rtc_grpc_requires_attach_first():
 
     out = await _drive_until(
         servicer,
-        messages=[vox_pb2.RtcControlClientMessage(
-            session_update=vox_pb2.ConversationSessionUpdate(
-                stt_model="x:1",
-                tts_model="y:1",
-            ),
-        )],
+        messages=[
+            vox_pb2.RtcControlClientMessage(
+                session_update=vox_pb2.ConversationSessionUpdate(
+                    stt_model="x:1",
+                    tts_model="y:1",
+                ),
+            )
+        ],
         predicate=lambda m: m.WhichOneof("msg") == "error",
     )
 
@@ -279,9 +288,11 @@ async def test_rtc_grpc_rejects_unknown_session():
 
     out = await _drive_until(
         servicer,
-        messages=[vox_pb2.RtcControlClientMessage(
-            attach=vox_pb2.RtcControlAttach(session_id="rtc_missing"),
-        )],
+        messages=[
+            vox_pb2.RtcControlClientMessage(
+                attach=vox_pb2.RtcControlAttach(session_id="rtc_missing"),
+            )
+        ],
         predicate=lambda m: m.WhichOneof("msg") == "error",
     )
 
@@ -325,7 +336,7 @@ async def test_rtc_grpc_relays_client_event_to_browser_data_channel():
 
 
 @pytest.mark.asyncio
-async def test_rtc_grpc_emits_browser_client_events_to_backend():
+async def test_rtc_grpc_emits_browser_events_to_backend():
     registry = RtcSessionRegistry()
     record, _ = registry.create_session()
     servicer = RtcServicer(
@@ -337,25 +348,33 @@ async def test_rtc_grpc_emits_browser_client_events_to_backend():
         while not record.control_attached:
             await asyncio.sleep(0.005)
         assert record.control_events is not None
-        await record.control_events.put({
-            "type": "client.event",
-            "session_id": record.session_id,
-            "event": "render.card",
-            "payload": {"card": {"title": "Example"}},
-        })
+        await record.control_events.put(
+            {
+                "type": "browser.event",
+                "session_id": record.session_id,
+                "event": "ui.select",
+                "payload": {"id": "choice-a"},
+            }
+        )
 
     task = asyncio.create_task(enqueue_browser_event())
     try:
         out = await _drive_until(
             servicer,
-            messages=[vox_pb2.RtcControlClientMessage(
-                attach=vox_pb2.RtcControlAttach(session_id=record.session_id),
-            )],
+            messages=[
+                vox_pb2.RtcControlClientMessage(
+                    attach=vox_pb2.RtcControlAttach(session_id=record.session_id),
+                )
+            ],
             predicate=lambda m: m.WhichOneof("msg") == "client_event",
         )
     finally:
         await task
 
     evt = next(m for m in out if m.WhichOneof("msg") == "client_event")
-    assert evt.client_event.event == "render.card"
-    assert json.loads(evt.client_event.payload_json) == {"card": {"title": "Example"}}
+    assert evt.client_event.event == "browser.event"
+    assert json.loads(evt.client_event.payload_json) == {
+        "session_id": record.session_id,
+        "event": "ui.select",
+        "payload": {"id": "choice-a"},
+    }
