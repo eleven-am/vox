@@ -29,6 +29,7 @@ class VADConfig:
     continue_threshold: float = 0.4
     min_silence_duration_ms: int = 1000
     speech_pad_ms: int = 100
+    speech_pre_roll_ms: int = 300
     min_speech_duration_ms: int = 250
     min_audio_duration_ms: int = 500
     max_utterance_ms: int = 15_000
@@ -252,8 +253,12 @@ class VADProcessor:
             if speech_ts is None:
                 return None, None
 
-            self.state.audio_start_ms = (
+            detected_start_ms = (
                 self._duration_ms() - window_duration_ms + (speech_ts["start"] // MS_PER_SAMPLE)
+            )
+            self.state.audio_start_ms = max(
+                0,
+                detected_start_ms - max(0, int(self.config.speech_pre_roll_ms)),
             )
             self.state.active = True
             return SpeechStarted(timestamp_ms=self.state.audio_start_ms), None

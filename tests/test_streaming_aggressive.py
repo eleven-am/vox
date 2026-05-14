@@ -272,6 +272,7 @@ class TestVADConfigDefaults:
         assert config.continue_threshold == 0.4
         assert config.min_silence_duration_ms == 1000
         assert config.speech_pad_ms == 100
+        assert config.speech_pre_roll_ms == 300
         assert config.min_speech_duration_ms == 250
         assert config.min_audio_duration_ms == 500
         assert config.max_utterance_ms == 15000
@@ -280,6 +281,32 @@ class TestVADConfigDefaults:
         config = VADConfig(start_threshold=0.8, max_utterance_ms=30000)
         assert config.start_threshold == 0.8
         assert config.max_utterance_ms == 30000
+
+    def test_pre_roll_keeps_audio_before_detected_speech_start(self):
+        class DelayedStartVAD:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def get_speech_timestamps(self, audio, **kwargs):
+                self.calls += 1
+                if self.calls == 1:
+                    return [{"start": 8_000, "end": 15_000}]
+                return []
+
+        processor = VADProcessor(config=VADConfig(speech_pre_roll_ms=300))
+        processor._vad_model = DelayedStartVAD()
+
+        speech = np.ones(16_000, dtype=np.float32)
+        started, segment = processor.append(speech)
+        assert isinstance(started, SpeechStarted)
+        assert started.timestamp_ms == 200
+        assert segment is None
+
+        stopped, segment = processor.append(np.zeros(16_000, dtype=np.float32))
+        assert isinstance(stopped, SpeechStopped)
+        assert segment is not None
+        assert segment.start_ms == 200
+        assert len(segment.audio) == 27_200
 
 
 class TestVADState:
