@@ -338,6 +338,84 @@ def test_kokoro_patches_float_speed_runtime(tmp_path: Path):
     assert adapter._kokoro.sess.last_run["speed"].dtype == np.float32
 
 
+def test_kokoro_safe_phoneme_splitter_never_emits_empty_or_oversized():
+    _install_fake_modules()
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    from vox_kokoro.adapter import _split_phonemes_safely
+
+    phonemes = ("a" * 120) + ". " + ("b" * 73) + "! " + ("c " * 80)
+
+    chunks = _split_phonemes_safely(phonemes, max_phonemes=50)
+
+    assert chunks
+    assert all(chunks)
+    assert all(len(chunk) <= 50 for chunk in chunks)
+    assert "".join(chunk.replace(" ", "") for chunk in chunks).replace(".", "").replace("!", "") == (
+        ("a" * 120) + ("b" * 73) + ("c" * 80)
+    )
+
+
+def test_kokoro_load_patches_safe_phoneme_splitter(tmp_path: Path):
+    _install_fake_modules()
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    model_dir = tmp_path / "kokoro"
+    (model_dir / "onnx").mkdir(parents=True)
+    (model_dir / "voices").mkdir(parents=True)
+    (model_dir / "onnx" / "model.onnx").write_bytes(b"onnx")
+    np.arange(512, dtype=np.float32).tofile(model_dir / "voices" / "af_heart.bin")
+
+    from vox_kokoro.adapter import KokoroAdapter
+
+    adapter = KokoroAdapter()
+    adapter.load(str(model_dir), "cpu")
+
+    chunks = adapter._kokoro._split_phonemes("a" * 1200)
+
+    assert chunks
+    assert all(chunks)
+    assert all(len(chunk) <= 480 for chunk in chunks)
+
+
+def test_kokoro_float_speed_skips_empty_phoneme_batches(tmp_path: Path):
+    fake_ort = _install_fake_modules()
+    fake_ort.InferenceSession = MagicMock(
+        return_value=_FakeSession(
+            model_path="fake-model.onnx",
+            inputs=[
+                _FakeInput("input_ids", "tensor(int64)"),
+                _FakeInput("style", "tensor(float)"),
+                _FakeInput("speed", "tensor(float)"),
+            ],
+        )
+    )
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    model_dir = tmp_path / "kokoro"
+    (model_dir / "onnx").mkdir(parents=True)
+    (model_dir / "voices").mkdir(parents=True)
+    (model_dir / "onnx" / "model.onnx").write_bytes(b"onnx")
+    np.arange(512, dtype=np.float32).tofile(model_dir / "voices" / "af_heart.bin")
+
+    from vox_kokoro.adapter import KokoroAdapter
+
+    adapter = KokoroAdapter()
+    adapter.load(str(model_dir), "cpu")
+
+    result_audio, sample_rate = adapter._kokoro._create_audio("   ", np.zeros((8, 1, 256), dtype=np.float32), 1.25)
+
+    assert sample_rate == 24000
+    assert result_audio.size == 0
+    assert not hasattr(adapter._kokoro.sess, "last_run")
+
+
 def test_kokoro_float_speed_prefers_named_audio_output(tmp_path: Path):
     fake_ort = _install_fake_modules()
     fake_ort.InferenceSession = MagicMock(

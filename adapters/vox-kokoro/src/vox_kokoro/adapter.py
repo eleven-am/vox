@@ -3,6 +3,7 @@ from __future__ import annotations
 import errno
 import logging
 import platform
+import re
 import shutil
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -28,6 +29,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 _PHONEMIZER_LOGGER = logging.getLogger("phonemizer")
 _PHONEMIZER_LOGGER.setLevel(logging.ERROR)
+_KOKORO_DEFAULT_MAX_PHONEMES = 510
+_KOKORO_SAFE_PHONEME_LIMIT = 480
+_KOKORO_PUNCTUATION = ".,!?;:。！？；，、"
 
 
 def _normalize_language(language: str | None, voice_id: str) -> str:
@@ -56,6 +60,75 @@ def _select_audio_output(session: InferenceSession, outputs: list[Any]) -> np.nd
     if candidates:
         return max(candidates, key=lambda item: item[0])[1]
     return np.asarray(outputs[0], dtype=np.float32)
+
+
+def _kokoro_max_phonemes() -> int:
+    try:
+        from kokoro_onnx.config import MAX_PHONEME_LENGTH
+    except Exception:
+        return _KOKORO_DEFAULT_MAX_PHONEMES
+    return int(MAX_PHONEME_LENGTH)
+
+
+def _effective_kokoro_phoneme_limit() -> int:
+    return max(1, min(_KOKORO_SAFE_PHONEME_LIMIT, _kokoro_max_phonemes()))
+
+
+def _split_long_phoneme_part(part: str, max_phonemes: int) -> list[str]:
+    remaining = part.strip()
+    chunks: list[str] = []
+    while len(remaining) > max_phonemes:
+        split_at = remaining.rfind(" ", 0, max_phonemes + 1)
+        if split_at <= 0:
+            split_at = max_phonemes
+        chunk = remaining[:split_at].strip()
+        if chunk:
+            chunks.append(chunk)
+        remaining = remaining[split_at:].strip()
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
+
+def _split_phonemes_safely(phonemes: str, *, max_phonemes: int | None = None) -> list[str]:
+    text = str(phonemes or "").strip()
+    if not text:
+        return []
+
+    limit = max(1, int(max_phonemes or _effective_kokoro_phoneme_limit()))
+    pieces = re.split(f"([{re.escape(_KOKORO_PUNCTUATION)}])", text)
+    chunks: list[str] = []
+    current = ""
+
+    for piece in pieces:
+        piece = piece.strip()
+        if not piece:
+            continue
+
+        if len(piece) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(_split_long_phoneme_part(piece, limit))
+            continue
+
+        if piece in _KOKORO_PUNCTUATION and not current and chunks and len(chunks[-1]) + len(piece) <= limit:
+            chunks[-1] = f"{chunks[-1]}{piece}"
+            continue
+
+        separator = "" if piece in _KOKORO_PUNCTUATION or not current else " "
+        candidate = f"{current}{separator}{piece}"
+        if len(candidate) > limit:
+            if current:
+                chunks.append(current)
+            current = piece
+        else:
+            current = candidate
+
+    if current:
+        chunks.append(current)
+
+    return chunks
 
 
 def _patch_phonemizer_compat() -> None:
@@ -141,6 +214,7 @@ def _patch_phonemizer_compat() -> None:
         _phonemize_quietly._vox_patched = True
         Tokenizer.phonemize = _phonemize_quietly
 
+
 def _get_onnx_providers(device: str) -> tuple[list[tuple[str, dict]], str]:
     """Choose ONNX execution providers based on *device* and platform."""
     available = get_available_providers()
@@ -193,10 +267,6 @@ class KokoroAdapter(TTSAdapter):
     def __init__(self) -> None:
         self._kokoro: Kokoro | None = None
         self._device: str = "cpu"
-
-
-
-
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
@@ -282,6 +352,12 @@ class KokoroAdapter(TTSAdapter):
         if self._kokoro is None:
             return
 
+        existing_splitter = getattr(self._kokoro, "_split_phonemes", None)
+        existing_func = getattr(existing_splitter, "__func__", existing_splitter)
+        if not getattr(existing_func, "_vox_patched", False):
+            logger.info("Patching Kokoro runtime for safe phoneme batching")
+            self._kokoro._split_phonemes = MethodType(_split_phonemes_for_kokoro, self._kokoro)
+
         input_types = {
             input_meta.name: input_meta.type
             for input_meta in self._kokoro.sess.get_inputs()
@@ -323,8 +399,11 @@ class KokoroAdapter(TTSAdapter):
         async for audio_chunk, _token in self._kokoro.create_stream(
             text, voice_id, lang=lang, speed=speed, trim=False
         ):
+            audio_array = np.asarray(audio_chunk, dtype=np.float32)
+            if audio_array.size == 0:
+                continue
             yield SynthesizeChunk(
-                audio=audio_chunk.astype(np.float32).tobytes(),
+                audio=audio_array.tobytes(),
                 sample_rate=SAMPLE_RATE,
                 is_final=False,
             )
@@ -346,8 +425,24 @@ class KokoroAdapter(TTSAdapter):
         return 330 * 1024 * 1024
 
 
+def _split_phonemes_for_kokoro(self, phonemes: str) -> list[str]:
+    return _split_phonemes_safely(phonemes)
+
+
+_split_phonemes_for_kokoro._vox_patched = True
+
+
 def _create_audio_float_speed(self, phonemes: str, voice: np.ndarray, speed: float) -> tuple[np.ndarray, int]:
+    phonemes = str(phonemes or "").strip()
+    if not phonemes:
+        logger.debug("Skipping empty Kokoro phoneme batch")
+        return np.empty(0, dtype=np.float32), SAMPLE_RATE
+
     tokens = np.array(self.tokenizer.tokenize(phonemes), dtype=np.int64)
+    if tokens.size == 0:
+        logger.debug("Skipping token-empty Kokoro phoneme batch")
+        return np.empty(0, dtype=np.float32), SAMPLE_RATE
+
     voice = voice[len(tokens)]
     padded_tokens = np.array([[0, *tokens.tolist(), 0]], dtype=np.int64)
     inputs = {
