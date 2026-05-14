@@ -78,6 +78,26 @@ async def test_rtc_audio_output_clear_drains_queue_and_resets_pacing():
 
 
 @pytest.mark.asyncio
+async def test_rtc_audio_output_track_fills_tts_gaps_with_paced_silence():
+    queue = asyncio.Queue()
+    track = RtcAudioOutputTrack(queue)
+    await track.enqueue(np.full(320, 1000, dtype=np.int16).tobytes(), 16_000)
+
+    first = await track.recv()
+    assert np.all(first.to_ndarray() == 1000)
+
+    silence = await asyncio.wait_for(track.recv(), timeout=0.1)
+    assert silence.samples == 320
+    assert silence.pts == 320
+    assert np.all(silence.to_ndarray() == 0)
+
+    await track.enqueue(np.full(320, 2000, dtype=np.int16).tobytes(), 16_000)
+    resumed = await asyncio.wait_for(track.recv(), timeout=0.1)
+    assert resumed.pts == 640
+    assert np.all(resumed.to_ndarray() == 2000)
+
+
+@pytest.mark.asyncio
 async def test_pump_input_audio_treats_media_stream_error_as_eof():
     class ClosedTrack:
         async def recv(self):

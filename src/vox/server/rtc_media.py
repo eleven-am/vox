@@ -64,13 +64,13 @@ class RtcAudioOutputTrack(MediaStreamTrack):
 
     async def recv(self) -> av.AudioFrame:
         while self._pending.size == 0:
-            if self._silenced:
+            if self._start is None and not self._silenced:
+                item = await self._queue.get()
+            else:
                 try:
                     item = self._queue.get_nowait()
                 except asyncio.QueueEmpty:
                     return await self._silence_frame()
-            else:
-                item = await self._queue.get()
             if item is None:
                 raise MediaStreamError
             if isinstance(item, RtcAudioDrain):
@@ -121,6 +121,9 @@ class RtcAudioOutputTrack(MediaStreamTrack):
             return
         target_time = self._start + (self._timestamp / self._sample_rate)
         wait = target_time - time.time()
+        if wait < -0.1:
+            self._sync_clock()
+            return
         if wait > 0:
             await asyncio.sleep(wait)
 
