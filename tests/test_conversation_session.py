@@ -251,6 +251,84 @@ class TestLifecycle:
         await session.close()
 
     @pytest.mark.asyncio
+    async def test_sparse_final_transcript_uses_richer_confirmed_partial_text(self):
+        session, collector, _ = _build_session()
+        await session.start()
+
+        assert session._speech_session is not None
+        session._speech_session.start_speech()
+        session._speech_session.update_partial(
+            8700,
+            [
+                "Um,",
+                "I",
+                "am",
+                "taking",
+                "long",
+                "pauses,",
+                "just",
+                "to",
+                "see",
+                "if",
+                "you",
+                "know",
+                "the",
+                "system",
+                "works",
+                "with",
+                "everything",
+                "I'm",
+                "saying.",
+            ],
+        )
+        session._speech_session.stop_speech()
+
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="I am See If you know the system works. Same.",
+                eou_probability=0.9,
+                start_ms=2356,
+                end_ms=11100,
+                audio_duration_ms=8744,
+            )
+        )
+        await _drain_events(session)
+
+        completed = collector.by_type(WIRE_TRANSCRIPT_DONE)
+        assert len(completed) == 1
+        assert "taking long pauses" in completed[0]["transcript"]
+        assert completed[0]["transcript"] != "I am See If you know the system works. Same."
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_final_transcript_kept_when_partials_are_not_materially_richer(self):
+        session, collector, _ = _build_session()
+        await session.start()
+
+        assert session._speech_session is not None
+        session._speech_session.start_speech()
+        session._speech_session.update_partial(500, ["Yeah."])
+        session._speech_session.stop_speech()
+
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="Yeah.",
+                eou_probability=0.9,
+                start_ms=0,
+                end_ms=500,
+                audio_duration_ms=500,
+            )
+        )
+        await _drain_events(session)
+
+        completed = collector.by_type(WIRE_TRANSCRIPT_DONE)
+        assert len(completed) == 1
+        assert completed[0]["transcript"] == "Yeah."
+
+        await session.close()
+
+    @pytest.mark.asyncio
     async def test_state_starts_idle(self):
         session, _, _ = _build_session()
         assert session.state == TurnState.IDLE

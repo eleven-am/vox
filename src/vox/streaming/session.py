@@ -61,3 +61,7 @@ class SpeechSession:
     def get_partial_state(self) -> tuple[int, list[str]]:
         with self.lock:
             return self.last_partial_ms, list(self.confirmed_words)
+
+    def get_confirmed_text(self) -> str:
+        with self.lock:
+            return " ".join(word for word in self.confirmed_words if word).strip()

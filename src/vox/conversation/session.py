@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import re
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -122,6 +123,10 @@ _RESPONSE_STREAM_END = object()
 
 RESPONSE_STREAM_QUEUE_MAX = 1024
 TRANSCRIPT_CONTINUATION_COMMIT_MS = 1200
+TRANSCRIPT_PARTIAL_RESCUE_MIN_AUDIO_MS = 2500
+TRANSCRIPT_PARTIAL_RESCUE_MIN_WORDS = 4
+TRANSCRIPT_PARTIAL_RESCUE_MIN_EXTRA_WORDS = 3
+TRANSCRIPT_PARTIAL_RESCUE_RATIO = 1.35
 SPEAKING_ECHO_MIN_WINDOW_MS = 120
 SPEAKING_ECHO_COMPARE_WINDOW_MS = 320
 SPEAKING_ECHO_MAX_DELAY_MS = 900
@@ -129,6 +134,7 @@ SPEAKING_ECHO_SEARCH_STEP_MS = 20
 SPEAKING_ECHO_CORRELATION_THRESHOLD = 0.68
 SPEAKING_ECHO_MIN_RMS = 0.002
 TRANSCRIPT_REVISION_SIMILARITY = 0.78
+TRANSCRIPT_TOKEN_RE = re.compile(r"[\w']+", re.UNICODE)
 
 
 @dataclass
@@ -202,6 +208,56 @@ def _append_transcript_text(previous: str, current: str) -> str:
     if not current:
         return previous
     return f"{previous} {current}"
+
+
+def _transcript_tokens(text: str) -> list[str]:
+    return [match.group(0).casefold() for match in TRANSCRIPT_TOKEN_RE.finditer(text)]
+
+
+def _tokens_are_subsequence(needle: list[str], haystack: list[str]) -> bool:
+    if not needle:
+        return True
+    pos = 0
+    for token in haystack:
+        if token == needle[pos]:
+            pos += 1
+            if pos == len(needle):
+                return True
+    return False
+
+
+def _transcript_duration_ms(transcript: StreamTranscript) -> int:
+    if transcript.audio_duration_ms > 0:
+        return transcript.audio_duration_ms
+    if transcript.end_ms > transcript.start_ms:
+        return transcript.end_ms - transcript.start_ms
+    return 0
+
+
+def _should_rescue_final_with_partials(
+    *,
+    partial_text: str,
+    final_text: str,
+    audio_duration_ms: int,
+) -> bool:
+    if audio_duration_ms < TRANSCRIPT_PARTIAL_RESCUE_MIN_AUDIO_MS:
+        return False
+
+    partial_tokens = _transcript_tokens(partial_text)
+    final_tokens = _transcript_tokens(final_text)
+    if len(partial_tokens) < TRANSCRIPT_PARTIAL_RESCUE_MIN_WORDS:
+        return False
+    if not final_tokens:
+        return True
+
+    extra_words = len(partial_tokens) - len(final_tokens)
+    if extra_words < TRANSCRIPT_PARTIAL_RESCUE_MIN_EXTRA_WORDS:
+        return False
+
+    if _tokens_are_subsequence(final_tokens, partial_tokens):
+        return True
+
+    return len(partial_tokens) / max(len(final_tokens), 1) >= TRANSCRIPT_PARTIAL_RESCUE_RATIO
 
 
 class ConversationSession:
@@ -607,6 +663,7 @@ class ConversationSession:
                 )
                 return
 
+            self._rescue_sparse_final_transcript(stream_event)
             enrich_transcript(stream_event, self._config.language)
 
             if stream_event.eou_probability is not None:
@@ -629,7 +686,7 @@ class ConversationSession:
                         "probability": float(stream_event.eou_probability),
                         "threshold": eou_threshold,
                         "decision": "complete" if eou_complete else "incomplete",
-                            "action": "wait" if defer_commit else "commit",
+                        "action": "wait" if defer_commit else "commit",
                         "delay_ms": commit_delay_ms,
                         "turn_detector": self._config.turn_detector,
                         "start_ms": stream_event.start_ms,
@@ -650,6 +707,30 @@ class ConversationSession:
                     },
                 )
             )
+
+    def _rescue_sparse_final_transcript(self, transcript: StreamTranscript) -> None:
+        if self._speech_session is None:
+            return
+
+        partial_text = self._speech_session.get_confirmed_text()
+        if not _should_rescue_final_with_partials(
+            partial_text=partial_text,
+            final_text=transcript.text,
+            audio_duration_ms=_transcript_duration_ms(transcript),
+        ):
+            return
+
+        logger.info(
+            "rescued sparse final transcript from partials final_words=%d partial_words=%d duration_ms=%d",
+            len(_transcript_tokens(transcript.text)),
+            len(_transcript_tokens(partial_text)),
+            _transcript_duration_ms(transcript),
+        )
+        transcript.text = partial_text
+        transcript.segments = None
+        transcript.words = None
+        transcript.entities = None
+        transcript.topics = None
 
     async def _ensure_response_stream(
         self,
