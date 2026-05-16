@@ -24,7 +24,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
-import re
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -123,10 +122,6 @@ _RESPONSE_STREAM_END = object()
 
 RESPONSE_STREAM_QUEUE_MAX = 1024
 TRANSCRIPT_CONTINUATION_COMMIT_MS = 1200
-TRANSCRIPT_PARTIAL_RESCUE_MIN_AUDIO_MS = 2500
-TRANSCRIPT_PARTIAL_RESCUE_MIN_WORDS = 4
-TRANSCRIPT_PARTIAL_RESCUE_MIN_EXTRA_WORDS = 3
-TRANSCRIPT_PARTIAL_RESCUE_RATIO = 1.35
 SPEAKING_ECHO_MIN_WINDOW_MS = 120
 SPEAKING_ECHO_COMPARE_WINDOW_MS = 320
 SPEAKING_ECHO_MAX_DELAY_MS = 900
@@ -134,7 +129,6 @@ SPEAKING_ECHO_SEARCH_STEP_MS = 20
 SPEAKING_ECHO_CORRELATION_THRESHOLD = 0.68
 SPEAKING_ECHO_MIN_RMS = 0.002
 TRANSCRIPT_REVISION_SIMILARITY = 0.78
-TRANSCRIPT_TOKEN_RE = re.compile(r"[\w']+", re.UNICODE)
 
 
 @dataclass
@@ -208,88 +202,6 @@ def _append_transcript_text(previous: str, current: str) -> str:
     if not current:
         return previous
     return f"{previous} {current}"
-
-
-def _transcript_tokens(text: str) -> list[str]:
-    return [match.group(0).casefold() for match in TRANSCRIPT_TOKEN_RE.finditer(text)]
-
-
-def _transcript_token_matches(text: str) -> list[re.Match[str]]:
-    return list(TRANSCRIPT_TOKEN_RE.finditer(text))
-
-
-def _tokens_are_subsequence(needle: list[str], haystack: list[str]) -> bool:
-    if not needle:
-        return True
-    pos = 0
-    for token in haystack:
-        if token == needle[pos]:
-            pos += 1
-            if pos == len(needle):
-                return True
-    return False
-
-
-def _transcript_duration_ms(transcript: StreamTranscript) -> int:
-    if transcript.audio_duration_ms > 0:
-        return transcript.audio_duration_ms
-    if transcript.end_ms > transcript.start_ms:
-        return transcript.end_ms - transcript.start_ms
-    return 0
-
-
-def _should_rescue_final_with_partials(
-    *,
-    partial_text: str,
-    final_text: str,
-    audio_duration_ms: int,
-) -> bool:
-    if audio_duration_ms < TRANSCRIPT_PARTIAL_RESCUE_MIN_AUDIO_MS:
-        return False
-
-    partial_tokens = _transcript_tokens(partial_text)
-    final_tokens = _transcript_tokens(final_text)
-    if len(partial_tokens) < TRANSCRIPT_PARTIAL_RESCUE_MIN_WORDS:
-        return False
-    if not final_tokens:
-        return True
-
-    extra_words = len(partial_tokens) - len(final_tokens)
-    if extra_words < TRANSCRIPT_PARTIAL_RESCUE_MIN_EXTRA_WORDS:
-        return False
-
-    if _tokens_are_subsequence(final_tokens, partial_tokens):
-        return True
-
-    return len(partial_tokens) / max(len(final_tokens), 1) >= TRANSCRIPT_PARTIAL_RESCUE_RATIO
-
-
-def _merge_partial_tail_into_final(*, partial_text: str, final_text: str) -> str | None:
-    """Append a confirmed partial tail when the final STT pass dropped it.
-
-    Parakeet can sometimes return a later final span that overlaps the start of
-    a richer partial window but omits the partial's tail. In that case prefer
-    the final wording for the overlap and append only the missing partial suffix.
-    """
-    partial_matches = _transcript_token_matches(partial_text)
-    final_matches = _transcript_token_matches(final_text)
-    if len(partial_matches) < TRANSCRIPT_PARTIAL_RESCUE_MIN_WORDS or len(final_matches) < 2:
-        return None
-
-    partial_tokens = [match.group(0).casefold() for match in partial_matches]
-    final_tokens = [match.group(0).casefold() for match in final_matches]
-    max_overlap = min(len(partial_tokens) - 1, len(final_tokens))
-    for overlap in range(max_overlap, 1, -1):
-        if final_tokens[-overlap:] != partial_tokens[:overlap]:
-            continue
-        tail = partial_text[partial_matches[overlap].start() :].strip()
-        if not tail:
-            return None
-        merged = _append_transcript_text(final_text, tail)
-        if _normalise_transcript_text(merged) == _normalise_transcript_text(final_text):
-            return None
-        return merged
-    return None
 
 
 class ConversationSession:
@@ -695,7 +607,6 @@ class ConversationSession:
                 )
                 return
 
-            self._rescue_sparse_final_transcript(stream_event)
             enrich_transcript(stream_event, self._config.language)
 
             if stream_event.eou_probability is not None:
@@ -739,48 +650,6 @@ class ConversationSession:
                     },
                 )
             )
-
-    def _rescue_sparse_final_transcript(self, transcript: StreamTranscript) -> None:
-        if self._speech_session is None:
-            return
-
-        partial_text = self._speech_session.get_confirmed_text()
-        merged_text = _merge_partial_tail_into_final(
-            partial_text=partial_text,
-            final_text=transcript.text,
-        )
-        if merged_text is not None:
-            logger.info(
-                "merged missing partial tail into final transcript final_words=%d partial_words=%d merged_words=%d",
-                len(_transcript_tokens(transcript.text)),
-                len(_transcript_tokens(partial_text)),
-                len(_transcript_tokens(merged_text)),
-            )
-            transcript.text = merged_text
-            transcript.segments = None
-            transcript.words = None
-            transcript.entities = None
-            transcript.topics = None
-            return
-
-        if not _should_rescue_final_with_partials(
-            partial_text=partial_text,
-            final_text=transcript.text,
-            audio_duration_ms=_transcript_duration_ms(transcript),
-        ):
-            return
-
-        logger.info(
-            "rescued sparse final transcript from partials final_words=%d partial_words=%d duration_ms=%d",
-            len(_transcript_tokens(transcript.text)),
-            len(_transcript_tokens(partial_text)),
-            _transcript_duration_ms(transcript),
-        )
-        transcript.text = partial_text
-        transcript.segments = None
-        transcript.words = None
-        transcript.entities = None
-        transcript.topics = None
 
     async def _ensure_response_stream(
         self,

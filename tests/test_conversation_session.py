@@ -251,7 +251,7 @@ class TestLifecycle:
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_sparse_final_transcript_uses_richer_confirmed_partial_text(self):
+    async def test_final_transcript_is_not_rewritten_by_partials(self):
         session, collector, _ = _build_session()
         await session.start()
 
@@ -296,8 +296,7 @@ class TestLifecycle:
 
         completed = collector.by_type(WIRE_TRANSCRIPT_DONE)
         assert len(completed) == 1
-        assert "taking long pauses" in completed[0]["transcript"]
-        assert completed[0]["transcript"] != "I am See If you know the system works. Same."
+        assert completed[0]["transcript"] == "I am See If you know the system works. Same."
 
         await session.close()
 
@@ -325,36 +324,6 @@ class TestLifecycle:
         completed = collector.by_type(WIRE_TRANSCRIPT_DONE)
         assert len(completed) == 1
         assert completed[0]["transcript"] == "Yeah."
-
-        await session.close()
-
-    @pytest.mark.asyncio
-    async def test_final_transcript_merges_missing_partial_tail(self):
-        session, collector, _ = _build_session()
-        await session.start()
-
-        assert session._speech_session is not None
-        session._speech_session.start_speech()
-        session._speech_session.update_partial(
-            8000,
-            ["The", "uh", "uh", "Uh", "uh", "cool."],
-        )
-        session._speech_session.stop_speech()
-
-        await session._forward_stream_event(
-            StreamTranscript(
-                text="About the uh uh",
-                eou_probability=0.9,
-                start_ms=0,
-                end_ms=8039,
-                audio_duration_ms=8039,
-            )
-        )
-        await _drain_events(session)
-
-        completed = collector.by_type(WIRE_TRANSCRIPT_DONE)
-        assert len(completed) == 1
-        assert completed[0]["transcript"] == "About the uh uh Uh uh cool."
 
         await session.close()
 
