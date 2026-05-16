@@ -214,6 +214,10 @@ def _transcript_tokens(text: str) -> list[str]:
     return [match.group(0).casefold() for match in TRANSCRIPT_TOKEN_RE.finditer(text)]
 
 
+def _transcript_token_matches(text: str) -> list[re.Match[str]]:
+    return list(TRANSCRIPT_TOKEN_RE.finditer(text))
+
+
 def _tokens_are_subsequence(needle: list[str], haystack: list[str]) -> bool:
     if not needle:
         return True
@@ -258,6 +262,34 @@ def _should_rescue_final_with_partials(
         return True
 
     return len(partial_tokens) / max(len(final_tokens), 1) >= TRANSCRIPT_PARTIAL_RESCUE_RATIO
+
+
+def _merge_partial_tail_into_final(*, partial_text: str, final_text: str) -> str | None:
+    """Append a confirmed partial tail when the final STT pass dropped it.
+
+    Parakeet can sometimes return a later final span that overlaps the start of
+    a richer partial window but omits the partial's tail. In that case prefer
+    the final wording for the overlap and append only the missing partial suffix.
+    """
+    partial_matches = _transcript_token_matches(partial_text)
+    final_matches = _transcript_token_matches(final_text)
+    if len(partial_matches) < TRANSCRIPT_PARTIAL_RESCUE_MIN_WORDS or len(final_matches) < 2:
+        return None
+
+    partial_tokens = [match.group(0).casefold() for match in partial_matches]
+    final_tokens = [match.group(0).casefold() for match in final_matches]
+    max_overlap = min(len(partial_tokens) - 1, len(final_tokens))
+    for overlap in range(max_overlap, 1, -1):
+        if final_tokens[-overlap:] != partial_tokens[:overlap]:
+            continue
+        tail = partial_text[partial_matches[overlap].start() :].strip()
+        if not tail:
+            return None
+        merged = _append_transcript_text(final_text, tail)
+        if _normalise_transcript_text(merged) == _normalise_transcript_text(final_text):
+            return None
+        return merged
+    return None
 
 
 class ConversationSession:
@@ -713,6 +745,24 @@ class ConversationSession:
             return
 
         partial_text = self._speech_session.get_confirmed_text()
+        merged_text = _merge_partial_tail_into_final(
+            partial_text=partial_text,
+            final_text=transcript.text,
+        )
+        if merged_text is not None:
+            logger.info(
+                "merged missing partial tail into final transcript final_words=%d partial_words=%d merged_words=%d",
+                len(_transcript_tokens(transcript.text)),
+                len(_transcript_tokens(partial_text)),
+                len(_transcript_tokens(merged_text)),
+            )
+            transcript.text = merged_text
+            transcript.segments = None
+            transcript.words = None
+            transcript.entities = None
+            transcript.topics = None
+            return
+
         if not _should_rescue_final_with_partials(
             partial_text=partial_text,
             final_text=transcript.text,

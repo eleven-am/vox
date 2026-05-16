@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable
-from typing import Callable
+import re
+from collections.abc import Awaitable, Callable
 
 import numpy as np
 from numpy.typing import NDArray
@@ -13,19 +13,47 @@ from vox.streaming.types import TARGET_SAMPLE_RATE, StreamSessionConfig, StreamT
 logger = logging.getLogger(__name__)
 
 PARTIAL_OVERLAP_MS = 300
+WORD_TOKEN_RE = re.compile(r"[\w']+", re.UNICODE)
 
 AsyncTranscribeFn = Callable[..., Awaitable[StreamTranscript]]
 
 
+def _normalise_word(word: str) -> str:
+    match = WORD_TOKEN_RE.search(word.casefold())
+    if match is None:
+        return word.strip().casefold()
+    return match.group(0).strip("'")
+
+
 def deduplicate_words(text: str, confirmed_words: list[str]) -> tuple[str, list[str]]:
     words = [w for w in text.strip().split() if w]
+    word_keys = [_normalise_word(w) for w in words]
+    confirmed_keys = [_normalise_word(w) for w in confirmed_words]
     overlap = 0
     max_overlap = min(len(words), len(confirmed_words))
     for i in range(max_overlap, 0, -1):
-        if [w.lower() for w in confirmed_words[-i:]] == [w.lower() for w in words[:i]]:
+        if confirmed_keys[-i:] == word_keys[:i]:
             overlap = i
             break
-    new_words = words[overlap:]
+
+    start = overlap
+    if overlap == 0 and words and confirmed_words:
+        # Rolling STT revisions sometimes prepend a small filler word before
+        # repeating the previous suffix: "Well what you're..." after
+        # "...what you're...". Match that repeated suffix inside the new text
+        # and append only the truly new tail.
+        best_end = 0
+        for new_start in range(1, len(words)):
+            max_len = min(len(confirmed_words), len(words) - new_start)
+            for length in range(max_len, 1, -1):
+                if confirmed_keys[-length:] == word_keys[new_start : new_start + length]:
+                    best_end = max(best_end, new_start + length)
+                    break
+            if best_end:
+                break
+        start = best_end
+
+    new_words = words[start:]
     if new_words:
         confirmed_words.extend(new_words)
     return " ".join(new_words), confirmed_words

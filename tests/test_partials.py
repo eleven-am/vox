@@ -230,3 +230,33 @@ class TestDeduplicateWords:
         new_text, words = deduplicate_words("world foo bar", ["hello", "world"])
         assert new_text == "foo bar"
         assert words == ["hello", "world", "foo", "bar"]
+
+    def test_revision_with_leading_filler_keeps_only_new_tail(self):
+        confirmed = ["Three", "steps.", "So", "what", "you're", "trying", "to", "tell", "me."]
+        new_text, words = deduplicate_words(
+            "Well what you're trying to tell me now, because",
+            confirmed,
+        )
+        assert new_text == "now, because"
+        assert words == [
+            "Three",
+            "steps.",
+            "So",
+            "what",
+            "you're",
+            "trying",
+            "to",
+            "tell",
+            "me.",
+            "now,",
+            "because",
+        ]
+
+    def test_revision_overlap_with_quote_prefix_keeps_only_new_tail(self):
+        confirmed = ["tell", "me", "now", "because", "you're", "rambling", "a", "lot", "and"]
+        new_text, words = deduplicate_words(
+            "'Cause you're rambling a lot and I'm not sure",
+            confirmed,
+        )
+        assert new_text == "I'm not sure"
+        assert words[-3:] == ["I'm", "not", "sure"]
