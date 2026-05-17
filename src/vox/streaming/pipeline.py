@@ -61,6 +61,26 @@ INTERNAL_SILENCE_FRAME_MS = 40
 INTERNAL_SILENCE_MIN_GAP_MS = 350
 INTERNAL_SILENCE_PAD_MS = 120
 INTERNAL_SILENCE_MIN_SPAN_MS = 250
+SPARSE_FINAL_TRANSCRIPT_MIN_AUDIO_MS = 2_500
+SPARSE_FINAL_TRANSCRIPT_MAX_WORDS = 2
+
+
+def _transcript_word_count(text: str) -> int:
+    return len([word for word in text.strip().split() if word])
+
+
+def _transcript_score(result: TranscribeResult) -> int:
+    text = (result.text or "").strip()
+    return len(text) + (_transcript_word_count(text) * 8)
+
+
+def _is_sparse_final_transcript(result: TranscribeResult, *, duration_ms: int) -> bool:
+    text = (result.text or "").strip()
+    if not text:
+        return True
+    if duration_ms < SPARSE_FINAL_TRANSCRIPT_MIN_AUDIO_MS:
+        return False
+    return _transcript_word_count(text) <= SPARSE_FINAL_TRANSCRIPT_MAX_WORDS
 
 
 def _speech_spans_for_transcription(audio: NDArray[np.float32]) -> list[tuple[int, int]]:
@@ -275,15 +295,19 @@ class StreamPipeline:
         word_timestamps: bool,
     ) -> TranscribeResult:
         loop = asyncio.get_running_loop()
+        duration_ms = samples_to_ms(audio.size)
+
+        whole = await self._transcribe_audio_span(
+            loop=loop,
+            adapter=adapter,
+            audio=audio,
+            language=language,
+            word_timestamps=word_timestamps,
+        )
+
         spans = _speech_spans_for_transcription(audio)
-        if len(spans) <= 1:
-            return await self._transcribe_audio_span(
-                loop=loop,
-                adapter=adapter,
-                audio=audio,
-                language=language,
-                word_timestamps=word_timestamps,
-            )
+        if len(spans) <= 1 or not _is_sparse_final_transcript(whole, duration_ms=duration_ms):
+            return replace(whole, duration_ms=duration_ms)
 
         per_span: list[tuple[TranscribeResult, int]] = []
         for start_sample, end_sample in spans:
@@ -301,9 +325,20 @@ class StreamPipeline:
                 per_span.append((partial, samples_to_ms(start_sample)))
 
         if not per_span:
-            return TranscribeResult(text="", language=language, duration_ms=samples_to_ms(audio.size))
+            return replace(whole, duration_ms=duration_ms)
         merged = merge_transcripts(per_span)
-        return replace(merged, duration_ms=samples_to_ms(audio.size))
+        merged = replace(merged, duration_ms=duration_ms)
+        if _transcript_score(merged) > _transcript_score(whole):
+            logger.info(
+                "rescued sparse final transcript from silence-split spans "
+                "whole_words=%d merged_words=%d audio_ms=%d spans=%d",
+                _transcript_word_count(whole.text or ""),
+                _transcript_word_count(merged.text or ""),
+                duration_ms,
+                len(spans),
+            )
+            return merged
+        return replace(whole, duration_ms=duration_ms)
 
     async def _transcribe_audio_span(
         self,

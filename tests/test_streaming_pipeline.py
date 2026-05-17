@@ -48,6 +48,42 @@ class GapSensitiveSTTAdapter(STTAdapter):
         )
 
 
+class WholeUtteranceSTTAdapter(STTAdapter):
+    def __init__(self) -> None:
+        self.calls: list[np.ndarray] = []
+
+    def info(self) -> AdapterInfo:
+        return AdapterInfo(
+            name="whole-utterance-stt",
+            type=ModelType.STT,
+            architectures=("fake",),
+            default_sample_rate=TARGET_SAMPLE_RATE,
+            supported_formats=(ModelFormat.ONNX,),
+        )
+
+    def load(self, *a: Any, **k: Any) -> None: ...
+    def unload(self) -> None: ...
+
+    @property
+    def is_loaded(self) -> bool:
+        return True
+
+    def transcribe(self, audio, **kwargs) -> TranscribeResult:
+        self.calls.append(audio.copy())
+        payload = _without_leading_context(audio)
+        if _has_internal_silence_gap(payload):
+            text = "just to hold my waist from behind and he turns me over"
+        else:
+            text = "tail fragment"
+        duration_ms = int(payload.size / TARGET_SAMPLE_RATE * 1000)
+        return TranscribeResult(
+            text=text,
+            language=kwargs.get("language") or "en",
+            duration_ms=duration_ms,
+            segments=(TranscriptSegment(text=text, start_ms=0, end_ms=duration_ms),),
+        )
+
+
 class FakeScheduler:
     def __init__(self, adapter: STTAdapter) -> None:
         self._adapter = adapter
@@ -79,7 +115,32 @@ def _has_internal_silence_gap(audio: np.ndarray) -> bool:
 
 
 @pytest.mark.asyncio
-async def test_transcribe_segment_splits_clear_internal_silence_gap():
+async def test_transcribe_segment_prefers_complete_whole_utterance_over_gap_spans():
+    adapter = WholeUtteranceSTTAdapter()
+    pipeline = StreamPipeline(scheduler=FakeScheduler(adapter))
+    pipeline.configure(StreamSessionConfig(model="m:1", language="en"))
+
+    first = np.full(int(0.8 * TARGET_SAMPLE_RATE), 0.25, dtype=np.float32)
+    gap = np.zeros(int(0.9 * TARGET_SAMPLE_RATE), dtype=np.float32)
+    second = np.full(int(1.3 * TARGET_SAMPLE_RATE), 0.5, dtype=np.float32)
+    audio = np.concatenate([first, gap, second])
+
+    transcript = await pipeline._transcribe_segment(
+        SpeechSegment(audio=audio, start_ms=0, end_ms=3000)
+    )
+
+    assert transcript.text == "just to hold my waist from behind and he turns me over"
+    assert transcript.start_ms == 0
+    assert transcript.end_ms == 3000
+    assert transcript.audio_duration_ms == 3000
+    assert len(adapter.calls) == 1
+    assert np.allclose(adapter.calls[0][: 5 * TARGET_SAMPLE_RATE], 0)
+
+    pipeline.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_transcribe_segment_splits_clear_internal_silence_gap_when_whole_is_sparse():
     adapter = GapSensitiveSTTAdapter()
     pipeline = StreamPipeline(scheduler=FakeScheduler(adapter))
     pipeline.configure(StreamSessionConfig(model="m:1", language="en"))
@@ -97,7 +158,7 @@ async def test_transcribe_segment_splits_clear_internal_silence_gap():
     assert transcript.start_ms == 0
     assert transcript.end_ms == 3000
     assert transcript.audio_duration_ms == 3000
-    assert len(adapter.calls) == 2
+    assert len(adapter.calls) == 3
     assert all(np.allclose(call[: 5 * TARGET_SAMPLE_RATE], 0) for call in adapter.calls)
 
     pipeline.shutdown()
@@ -120,7 +181,7 @@ async def test_transcribe_segment_splits_long_silence_gap_inside_one_vad_segment
 
     assert transcript.text == "Yeah. second phrase"
     assert transcript.audio_duration_ms == 4100
-    assert len(adapter.calls) == 2
+    assert len(adapter.calls) == 3
 
     first_transcript = await pipeline._transcribe_segment(
         SpeechSegment(audio=first, start_ms=0, end_ms=800)
