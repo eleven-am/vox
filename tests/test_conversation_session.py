@@ -934,6 +934,63 @@ class TestEndpointingFallback:
         await session.close()
 
     @pytest.mark.asyncio
+    async def test_endpointing_waits_for_pending_final_transcript(self):
+        session, collector, _ = _build_session(
+            policy=TurnPolicy(
+                max_endpointing_delay_ms=50,
+                min_interrupt_duration_ms=300,
+                dynamic_endpointing=False,
+            ),
+        )
+        await session.start()
+
+        await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
+        await asyncio.sleep(0.01)
+        await session._forward_stream_event(SpeechStopped(timestamp_ms=1200, expects_transcript=True))
+
+        await asyncio.sleep(0.08)
+        await _drain_events(session)
+
+        assert session.state == TurnState.LISTENING
+        assert not collector.by_type(WIRE_TRANSCRIPT_DONE)
+
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="still working on the transcript",
+                eou_probability=0.9,
+                start_ms=0,
+                end_ms=1200,
+            )
+        )
+        await asyncio.sleep(0.08)
+        await _drain_events(session)
+
+        events = collector.by_type(WIRE_TRANSCRIPT_DONE)
+        assert len(events) == 1
+        assert events[0]["transcript"] == "still working on the transcript"
+        assert session.state == TurnState.THINKING
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_endpointing_does_not_wait_when_no_transcript_is_expected(self):
+        session, collector, _ = _build_session(
+            policy=TurnPolicy(max_endpointing_delay_ms=50, min_interrupt_duration_ms=300),
+        )
+        await session.start()
+
+        await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
+        await asyncio.sleep(0.01)
+        await session._forward_stream_event(SpeechStopped(timestamp_ms=1200, expects_transcript=False))
+        await asyncio.sleep(0.08)
+        await _drain_events(session)
+
+        assert session.state == TurnState.THINKING
+        assert not collector.by_type(WIRE_TRANSCRIPT_DONE)
+
+        await session.close()
+
+    @pytest.mark.asyncio
     async def test_deferred_transcripts_coalesce_before_commit(self):
         session, collector, _ = _build_session(
             policy=TurnPolicy(

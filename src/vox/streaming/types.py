@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Literal
+from dataclasses import dataclass
 
 TARGET_SAMPLE_RATE = 16_000
 MS_PER_SAMPLE = TARGET_SAMPLE_RATE // 1000
@@ -31,6 +30,7 @@ class SpeechStarted:
 @dataclass
 class SpeechStopped:
     timestamp_ms: int = 0
+    expects_transcript: bool = True
 
 
 @dataclass

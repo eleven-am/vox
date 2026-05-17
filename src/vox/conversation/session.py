@@ -122,6 +122,7 @@ _RESPONSE_STREAM_END = object()
 
 RESPONSE_STREAM_QUEUE_MAX = 1024
 TRANSCRIPT_CONTINUATION_COMMIT_MS = 1200
+TRANSCRIPT_PENDING_STT_RECHECK_MS = 100
 SPEAKING_ECHO_MIN_WINDOW_MS = 120
 SPEAKING_ECHO_COMPARE_WINDOW_MS = 320
 SPEAKING_ECHO_MAX_DELAY_MS = 900
@@ -271,6 +272,8 @@ class ConversationSession:
 
         self._vad_started_at: float | None = None
         self._last_speech_stopped_at: float | None = None
+        self._awaiting_final_transcript: bool = False
+        self._awaiting_final_transcript_started_at: float = 0.0
         self._recent_endpoint_pauses_ms: list[int] = []
         self._pending_transcript_done: dict | None = None
 
@@ -363,6 +366,8 @@ class ConversationSession:
                 await self._forward_stream_event(stream_event)
         except Exception as exc:
             logger.exception("pipeline.process_audio raised")
+            self._awaiting_final_transcript = False
+            self._awaiting_final_transcript_started_at = 0.0
             await self._emit({"type": WIRE_ERROR, "message": str(exc)})
             return
 
@@ -469,6 +474,13 @@ class ConversationSession:
 
             prev_state = self._sm.state
             done = event.payload.get("_done") if isinstance(event.payload, dict) else None
+            if self._should_wait_for_final_transcript(event):
+                await self._start_timer(
+                    TimerKey.ENDPOINTING.value,
+                    TRANSCRIPT_PENDING_STT_RECHECK_MS,
+                )
+                self._resolve_event_future(done)
+                continue
             try:
                 actions = self._sm.handle(event)
             except Exception as exc:
@@ -560,6 +572,9 @@ class ConversationSession:
         elif isinstance(stream_event, SpeechStopped):
             if self._speech_session is not None:
                 self._speech_session.stop_speech()
+            if stream_event.expects_transcript:
+                self._awaiting_final_transcript = True
+                self._awaiting_final_transcript_started_at = time.monotonic()
             self._vad_started_at = None
             self._last_speech_stopped_at = time.monotonic()
             await self._emit(
@@ -589,6 +604,8 @@ class ConversationSession:
                 return
         elif isinstance(stream_event, StreamTranscript):
             self._latest_partial = None
+            self._awaiting_final_transcript = False
+            self._awaiting_final_transcript_started_at = 0.0
 
             if self._is_in_self_echo_window():
                 logger.debug(
@@ -639,6 +656,10 @@ class ConversationSession:
             payload = self._transcript_done_payload(stream_event)
             self._remember_pending_transcript_done(payload)
             pending_text = str(self._pending_transcript_done.get("transcript", stream_event.text))
+
+            if self._sm.state == TurnState.THINKING:
+                await self._emit_pending_transcript_done()
+                return
 
             await self._event_queue.put(
                 TurnEvent(
@@ -988,8 +1009,7 @@ class ConversationSession:
         elif action.type == TurnActionType.START_TIMER:
             key = action.payload["key"]
             duration_ms = int(action.payload["duration_ms"])
-            await self._cancel_timer(key)
-            self._timers[key] = asyncio.create_task(self._timer_task(key, duration_ms))
+            await self._start_timer(key, duration_ms)
 
         elif action.type == TurnActionType.CANCEL_TIMER:
             await self._cancel_timer(action.payload["key"])
@@ -1027,6 +1047,10 @@ class ConversationSession:
     def _has_active_timer(self, key: str) -> bool:
         task = self._timers.get(key)
         return task is not None and not task.done()
+
+    async def _start_timer(self, key: str, duration_ms: int) -> None:
+        await self._cancel_timer(key)
+        self._timers[key] = asyncio.create_task(self._timer_task(key, duration_ms))
 
     def _transcript_done_payload(self, transcript: StreamTranscript) -> dict:
         payload = {
@@ -1388,6 +1412,22 @@ class ConversationSession:
             task.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await task
+
+    def _should_wait_for_final_transcript(self, event: TurnEvent) -> bool:
+        if event.type != TurnEventType.TIMER_ELAPSED:
+            return False
+        if event.payload.get("key") != TimerKey.ENDPOINTING.value:
+            return False
+        if not self._awaiting_final_transcript:
+            return False
+        if self._awaiting_final_transcript_started_at <= 0.0:
+            return True
+        max_wait_ms = max(
+            self._config.policy.max_endpointing_delay_ms,
+            TRANSCRIPT_CONTINUATION_COMMIT_MS,
+        )
+        waited_ms = int((time.monotonic() - self._awaiting_final_transcript_started_at) * 1000)
+        return waited_ms < max_wait_ms
 
     async def _emit(self, event: dict) -> None:
         if self._closed:

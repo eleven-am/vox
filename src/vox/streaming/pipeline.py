@@ -182,9 +182,13 @@ class StreamPipeline:
             yield event
 
         if isinstance(event, SpeechStopped):
-            yield event
+            has_segment = segment is not None and len(segment.audio) > 0
+            yield SpeechStopped(
+                timestamp_ms=event.timestamp_ms,
+                expects_transcript=has_segment,
+            )
 
-            if segment is not None and len(segment.audio) > 0:
+            if has_segment:
                 transcript = await self._transcribe_segment(segment)
                 if not transcript.text or not transcript.text.strip():
                     return
