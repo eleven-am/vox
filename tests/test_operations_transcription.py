@@ -72,6 +72,28 @@ class LeadingContextSensitiveSTT(FakeSTT):
         )
 
 
+class LeadingContextHurtsSTT(FakeSTT):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def transcribe(self, audio, **kwargs) -> TranscribeResult:
+        self.calls += 1
+        context_samples = 5 * 16_000
+        has_leading_context = (
+            audio.shape[0] > context_samples
+            and np.allclose(audio[:context_samples], 0)
+            and np.max(np.abs(audio[context_samples:])) > 0
+        )
+        text = "middle only" if has_leading_context else "beginning middle only"
+        return TranscribeResult(
+            text=text,
+            language="en",
+            duration_ms=int(audio.shape[0] / 16_000 * 1000),
+            segments=(TranscriptSegment(text=text, start_ms=0, end_ms=1000),),
+        )
+
+
 @pytest.mark.asyncio
 async def test_transcribe_returns_bundle_with_processing_ms():
     adapter = FakeSTT()
@@ -128,6 +150,21 @@ async def test_transcribe_adds_leading_context_and_strips_timestamps():
         ("start", 0, 400),
         ("kept", 400, 1000),
     ]
+
+
+@pytest.mark.asyncio
+async def test_transcribe_onset_guard_keeps_direct_result_when_padding_hurts():
+    adapter = LeadingContextHurtsSTT()
+    sched = DummyScheduler(adapter)
+    registry = MagicMock()
+
+    bundle = await transcribe(
+        scheduler=sched, registry=registry, store=None,
+        request=TranscriptionRequest(audio=_tone_wav_bytes(), model="fake-stt:latest"),
+    )
+
+    assert bundle.result.text == "beginning middle only"
+    assert adapter.calls == 2
 
 
 @pytest.mark.asyncio
