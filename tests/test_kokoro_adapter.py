@@ -4,6 +4,8 @@ import asyncio
 import errno
 import shutil
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -40,6 +42,38 @@ class _FakeSession:
     def run(self, outputs, inputs):
         self.last_run = inputs
         return self._run_outputs
+
+
+class _BlockingSession(_FakeSession):
+    def __init__(self):
+        super().__init__(
+            inputs=[
+                _FakeInput("input_ids", "tensor(int64)"),
+                _FakeInput("style", "tensor(float)"),
+                _FakeInput("speed", "tensor(float)"),
+            ],
+            outputs=[_FakeOutput("waveform")],
+            run_outputs=[np.array([0.0, 0.25, -0.25], dtype=np.float32)],
+        )
+        self.active = 0
+        self.max_active = 0
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.lock = threading.Lock()
+
+    def run(self, outputs, inputs):
+        with self.lock:
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            first = self.max_active == 1
+        if first:
+            self.entered.set()
+            assert self.release.wait(timeout=1.0)
+        try:
+            return super().run(outputs, inputs)
+        finally:
+            with self.lock:
+                self.active -= 1
 
 
 class _FakeKokoro:
@@ -401,6 +435,38 @@ def test_kokoro_patches_float_speed_runtime(tmp_path: Path):
     assert sample_rate == 24000
     assert result_audio.shape == (3,)
     assert adapter._kokoro.sess.last_run["speed"].dtype == np.float32
+
+
+def test_kokoro_float_speed_runtime_serializes_internal_batch_threads():
+    _install_fake_modules()
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    from vox_kokoro.adapter import _create_audio_float_speed
+
+    session = _BlockingSession()
+    kokoro = SimpleNamespace(
+        tokenizer=_FakeTokenizer(),
+        sess=session,
+        _vox_onnx_lock=threading.Lock(),
+    )
+    voice = np.zeros((32, 1, 256), dtype=np.float32)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(_create_audio_float_speed, kokoro, "abc", voice, 1.0)
+        assert session.entered.wait(timeout=1.0)
+        second = executor.submit(_create_audio_float_speed, kokoro, "def", voice, 1.0)
+        session.release.set()
+
+        first_audio, first_rate = first.result(timeout=1.0)
+        second_audio, second_rate = second.result(timeout=1.0)
+
+    assert session.max_active == 1
+    assert first_rate == 24000
+    assert second_rate == 24000
+    assert first_audio.shape == (3,)
+    assert second_audio.shape == (3,)
 
 
 def test_kokoro_safe_phoneme_splitter_never_emits_empty_or_oversized():

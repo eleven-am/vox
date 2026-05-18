@@ -6,6 +6,7 @@ import logging
 import platform
 import re
 import shutil
+import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
 from types import MethodType
@@ -33,6 +34,7 @@ _PHONEMIZER_LOGGER.setLevel(logging.ERROR)
 _KOKORO_DEFAULT_MAX_PHONEMES = 510
 _KOKORO_SAFE_PHONEME_LIMIT = 480
 _KOKORO_PUNCTUATION = ".,!?;:。！？；，、"
+_KOKORO_ONNX_LOCK_ATTR = "_vox_onnx_lock"
 
 
 def _normalize_language(language: str | None, voice_id: str) -> str:
@@ -61,6 +63,14 @@ def _select_audio_output(session: InferenceSession, outputs: list[Any]) -> np.nd
     if candidates:
         return max(candidates, key=lambda item: item[0])[1]
     return np.asarray(outputs[0], dtype=np.float32)
+
+
+def _ensure_kokoro_onnx_lock(kokoro: Any) -> threading.Lock:
+    lock = getattr(kokoro, _KOKORO_ONNX_LOCK_ATTR, None)
+    if lock is None:
+        lock = threading.Lock()
+        setattr(kokoro, _KOKORO_ONNX_LOCK_ATTR, lock)
+    return lock
 
 
 def _kokoro_max_phonemes() -> int:
@@ -354,6 +364,8 @@ class KokoroAdapter(TTSAdapter):
         if self._kokoro is None:
             return
 
+        _ensure_kokoro_onnx_lock(self._kokoro)
+
         existing_splitter = getattr(self._kokoro, "_split_phonemes", None)
         existing_func = getattr(existing_splitter, "__func__", existing_splitter)
         if not getattr(existing_func, "_vox_patched", False):
@@ -365,7 +377,7 @@ class KokoroAdapter(TTSAdapter):
             for input_meta in self._kokoro.sess.get_inputs()
         }
         if input_types.get("input_ids") and input_types.get("speed") == "tensor(float)":
-            logger.info("Patching Kokoro runtime for float speed input")
+            logger.info("Patching Kokoro runtime for serialized float-speed ONNX inference")
             self._kokoro._create_audio = MethodType(_create_audio_float_speed, self._kokoro)
 
     def unload(self) -> None:
@@ -453,7 +465,9 @@ def _create_audio_float_speed(self, phonemes: str, voice: np.ndarray, speed: flo
         "style": np.array(voice, dtype=np.float32),
         "speed": np.array([speed], dtype=np.float32),
     }
-    outputs = self.sess.run(None, inputs)
+    lock = _ensure_kokoro_onnx_lock(self)
+    with lock:
+        outputs = self.sess.run(None, inputs)
     audio = _select_audio_output(self.sess, outputs)
     logger.info(
         "kokoro_create_audio phonemes=%d tokens=%d audio_samples=%d outputs=%s",
