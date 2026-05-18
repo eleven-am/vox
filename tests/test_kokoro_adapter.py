@@ -66,6 +66,28 @@ class _FakeKokoro:
         return list(self.voices.keys())
 
 
+class _BlockingFakeKokoro(_FakeKokoro):
+    def __init__(self):
+        super().__init__()
+        self.entered = 0
+        self.max_active = 0
+        self._active = 0
+        self.first_entered = asyncio.Event()
+        self.release_first = asyncio.Event()
+
+    async def create_stream(self, text, voice, *, lang, speed, trim=True):
+        self.entered += 1
+        self._active += 1
+        self.max_active = max(self.max_active, self._active)
+        if self.entered == 1:
+            self.first_entered.set()
+            await self.release_first.wait()
+        try:
+            yield np.array([float(self.entered)], dtype=np.float32), 24000
+        finally:
+            self._active -= 1
+
+
 class _FakeTokenizer:
     def __init__(self, *args, **kwargs):
         self.args = args
@@ -302,6 +324,49 @@ def test_kokoro_synthesize_normalizes_generic_english(tmp_path: Path):
 
     assert len(chunks) == 2
     assert adapter._kokoro.stream_calls[0]["lang"] == "en-us"
+
+
+def test_kokoro_synthesize_serializes_concurrent_streams(tmp_path: Path):
+    _install_fake_modules()
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    model_dir = tmp_path / "kokoro"
+    (model_dir / "onnx").mkdir(parents=True)
+    (model_dir / "voices").mkdir(parents=True)
+    (model_dir / "onnx" / "model.onnx").write_bytes(b"onnx")
+    np.arange(512, dtype=np.float32).tofile(model_dir / "voices" / "af_heart.bin")
+
+    from vox_kokoro.adapter import KokoroAdapter
+
+    adapter = KokoroAdapter()
+    adapter.load(str(model_dir), "cpu")
+    kokoro = _BlockingFakeKokoro()
+    adapter._kokoro = kokoro
+
+    async def _collect(text: str):
+        return [chunk async for chunk in adapter.synthesize(text, voice="af_heart")]
+
+    async def _run():
+        first = asyncio.create_task(_collect("first"))
+        await asyncio.wait_for(kokoro.first_entered.wait(), timeout=1.0)
+        second = asyncio.create_task(_collect("second"))
+        await asyncio.sleep(0)
+
+        assert kokoro.entered == 1
+        assert kokoro.max_active == 1
+
+        kokoro.release_first.set()
+        first_chunks, second_chunks = await asyncio.gather(first, second)
+        return first_chunks, second_chunks
+
+    first_chunks, second_chunks = asyncio.run(_run())
+
+    assert kokoro.entered == 2
+    assert kokoro.max_active == 1
+    assert first_chunks[-1].is_final is True
+    assert second_chunks[-1].is_final is True
 
 
 def test_kokoro_patches_float_speed_runtime(tmp_path: Path):

@@ -1118,11 +1118,25 @@ class ConversationSession:
 
         return merged
 
+    def _log_transcript_done_payload(self, payload: dict) -> None:
+        logger.info(
+            "conversation final transcript emitted text=%r start_ms=%s end_ms=%s "
+            "eou_probability=%s topics=%d entities=%d words=%d",
+            str(payload.get("transcript") or ""),
+            payload.get("start_ms"),
+            payload.get("end_ms"),
+            payload.get("eou_probability"),
+            len(payload.get("topics") or ()),
+            len(payload.get("entities") or ()),
+            len(payload.get("words") or ()),
+        )
+
     async def _emit_pending_transcript_done(self) -> None:
         payload = self._pending_transcript_done
         if payload is None:
             return
         self._pending_transcript_done = None
+        self._log_transcript_done_payload(payload)
         await self._emit(payload)
 
     def _active_assistant_text(self) -> str:

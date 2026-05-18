@@ -10,6 +10,7 @@ These tests don't use real STT/TTS models. Instead, we:
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import numpy as np
 import pytest
@@ -191,6 +192,37 @@ class TestLifecycle:
 
         await session.close()
         assert session._runner.done()
+
+    @pytest.mark.asyncio
+    async def test_final_transcript_logs_client_facing_payload(self, caplog):
+        session, collector, _ = _build_session()
+        await session.start()
+
+        caplog.set_level(logging.INFO, logger="vox.conversation.session")
+
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="client facing final text",
+                eou_probability=0.9,
+                start_ms=100,
+                end_ms=900,
+            )
+        )
+        await _drain_events(session)
+
+        completed = collector.by_type(WIRE_TRANSCRIPT_DONE)
+        assert len(completed) == 1
+        assert completed[0]["transcript"] == "client facing final text"
+        assert any(
+            record.name == "vox.conversation.session"
+            and "conversation final transcript emitted" in record.message
+            and "client facing final text" in record.message
+            and "start_ms=100" in record.message
+            and "end_ms=900" in record.message
+            for record in caplog.records
+        )
+
+        await session.close()
 
     @pytest.mark.asyncio
     async def test_final_transcripts_coalesce_during_endpointing_window(self):

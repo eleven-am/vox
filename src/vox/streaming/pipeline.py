@@ -74,13 +74,22 @@ def _transcript_score(result: TranscribeResult) -> int:
     return len(text) + (_transcript_word_count(text) * 8)
 
 
-def _is_sparse_final_transcript(result: TranscribeResult, *, duration_ms: int) -> bool:
+def _is_sparse_transcript(result: TranscribeResult, *, duration_ms: int) -> bool:
     text = (result.text or "").strip()
     if not text:
         return True
     if duration_ms < SPARSE_FINAL_TRANSCRIPT_MIN_AUDIO_MS:
         return False
     return _transcript_word_count(text) <= SPARSE_FINAL_TRANSCRIPT_MAX_WORDS
+
+
+def _should_rescue_with_silence_spans(
+    result: TranscribeResult,
+    *,
+    duration_ms: int,
+    spans: list[tuple[int, int]],
+) -> bool:
+    return len(spans) > 1 and _is_sparse_transcript(result, duration_ms=duration_ms)
 
 
 def _speech_spans_for_transcription(audio: NDArray[np.float32]) -> list[tuple[int, int]]:
@@ -306,9 +315,43 @@ class StreamPipeline:
         )
 
         spans = _speech_spans_for_transcription(audio)
-        if len(spans) <= 1 or not _is_sparse_final_transcript(whole, duration_ms=duration_ms):
+        if not _should_rescue_with_silence_spans(whole, duration_ms=duration_ms, spans=spans):
             return replace(whole, duration_ms=duration_ms)
 
+        merged = await self._transcribe_silence_spans(
+            loop=loop,
+            adapter=adapter,
+            audio=audio,
+            spans=spans,
+            language=language,
+            word_timestamps=word_timestamps,
+        )
+        if merged is None:
+            return replace(whole, duration_ms=duration_ms)
+        merged = replace(merged, duration_ms=duration_ms)
+        if _transcript_score(merged) <= _transcript_score(whole):
+            return replace(whole, duration_ms=duration_ms)
+
+        logger.info(
+            "rescued sparse final transcript from silence-split spans "
+            "whole_words=%d merged_words=%d audio_ms=%d spans=%d",
+            _transcript_word_count(whole.text or ""),
+            _transcript_word_count(merged.text or ""),
+            duration_ms,
+            len(spans),
+        )
+        return merged
+
+    async def _transcribe_silence_spans(
+        self,
+        *,
+        loop: asyncio.AbstractEventLoop,
+        adapter: STTAdapter,
+        audio: NDArray[np.float32],
+        spans: list[tuple[int, int]],
+        language: str | None,
+        word_timestamps: bool,
+    ) -> TranscribeResult | None:
         per_span: list[tuple[TranscribeResult, int]] = []
         for start_sample, end_sample in spans:
             span_audio = audio[start_sample:end_sample]
@@ -325,20 +368,8 @@ class StreamPipeline:
                 per_span.append((partial, samples_to_ms(start_sample)))
 
         if not per_span:
-            return replace(whole, duration_ms=duration_ms)
-        merged = merge_transcripts(per_span)
-        merged = replace(merged, duration_ms=duration_ms)
-        if _transcript_score(merged) > _transcript_score(whole):
-            logger.info(
-                "rescued sparse final transcript from silence-split spans "
-                "whole_words=%d merged_words=%d audio_ms=%d spans=%d",
-                _transcript_word_count(whole.text or ""),
-                _transcript_word_count(merged.text or ""),
-                duration_ms,
-                len(spans),
-            )
-            return merged
-        return replace(whole, duration_ms=duration_ms)
+            return None
+        return merge_transcripts(per_span)
 
     async def _transcribe_audio_span(
         self,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import errno
 import logging
 import platform
@@ -267,6 +268,7 @@ class KokoroAdapter(TTSAdapter):
     def __init__(self) -> None:
         self._kokoro: Kokoro | None = None
         self._device: str = "cpu"
+        self._synthesize_lock = asyncio.Lock()
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
@@ -396,17 +398,18 @@ class KokoroAdapter(TTSAdapter):
 
         lang = _normalize_language(language, voice_id)
 
-        async for audio_chunk, _token in self._kokoro.create_stream(
-            text, voice_id, lang=lang, speed=speed, trim=False
-        ):
-            audio_array = np.asarray(audio_chunk, dtype=np.float32)
-            if audio_array.size == 0:
-                continue
-            yield SynthesizeChunk(
-                audio=audio_array.tobytes(),
-                sample_rate=SAMPLE_RATE,
-                is_final=False,
-            )
+        async with self._synthesize_lock:
+            async for audio_chunk, _token in self._kokoro.create_stream(
+                text, voice_id, lang=lang, speed=speed, trim=False
+            ):
+                audio_array = np.asarray(audio_chunk, dtype=np.float32)
+                if audio_array.size == 0:
+                    continue
+                yield SynthesizeChunk(
+                    audio=audio_array.tobytes(),
+                    sample_rate=SAMPLE_RATE,
+                    is_final=False,
+                )
 
 
         yield SynthesizeChunk(
