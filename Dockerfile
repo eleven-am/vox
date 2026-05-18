@@ -98,13 +98,6 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         kokoro-onnx==0.4.9 \
         onnx-asr[hub]==0.11.0
 
-RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,source=adapters/vox-kokoro,target=adapters/vox-kokoro \
-    --mount=type=bind,source=adapters/vox-parakeet,target=adapters/vox-parakeet \
-    uv pip install --python .venv/bin/python --no-deps \
-        ./adapters/vox-kokoro \
-        ./adapters/vox-parakeet
-
 FROM ${BASE_IMAGE} AS runtime
 
 LABEL org.opencontainers.image.source="https://github.com/eleven-am/vox"
