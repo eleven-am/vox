@@ -6,6 +6,8 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
+from tests.fakes import FakeScheduler as DummyScheduler
+from tests.fakes import FakeSTTAdapter as FakeSTT
 from vox.audio.codecs import encode_wav
 from vox.core.adapter import TTSAdapter
 from vox.core.cloned_voices import create_stored_voice
@@ -26,11 +28,10 @@ from vox.operations.errors import (
 from vox.operations.synthesis import (
     SynthesisRequest,
     synthesize_full,
+    synthesize_incremental,
     synthesize_raw,
     synthesize_stream,
 )
-
-from tests.fakes import FakeSTTAdapter as FakeSTT, FakeScheduler as DummyScheduler
 
 
 class FakeTTS(TTSAdapter):
@@ -62,6 +63,23 @@ class FakeTTS(TTSAdapter):
             audio=np.full(2048, 0.0, dtype=np.float32).tobytes(),
             sample_rate=24_000, is_final=False,
         )
+        yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
+
+
+class MultiChunkTTS(FakeTTS):
+    def __init__(self, chunks: int = 3):
+        super().__init__()
+        self.chunks = chunks
+
+    async def synthesize(self, text, **kwargs):
+        self.last_kwargs = kwargs
+        self.calls.append(text)
+        for idx in range(self.chunks):
+            yield SynthesizeChunk(
+                audio=np.full(256, idx / 10, dtype=np.float32).tobytes(),
+                sample_rate=24_000,
+                is_final=False,
+            )
         yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
 
 
@@ -145,6 +163,52 @@ async def test_synthesize_stream_yields_encoded_chunks(tmp_path: Path):
     chunks = [chunk async for chunk in iterator]
     assert len(chunks) >= 1
     assert chunks[0][:4] == b"RIFF"
+
+
+@pytest.mark.asyncio
+async def test_synthesize_incremental_wav_streams_single_header_and_pcm_chunks(tmp_path: Path):
+    adapter = MultiChunkTTS(chunks=3)
+    sched = DummyScheduler(adapter)
+    store = BlobStore(root=tmp_path)
+    registry = MagicMock()
+
+    iterator = await synthesize_incremental(
+        scheduler=sched,
+        registry=registry,
+        store=store,
+        request=SynthesisRequest(input="hello", model="fake-tts:latest", response_format="wav"),
+    )
+    chunks = [chunk async for chunk in iterator]
+
+    assert len(chunks) == 4
+    assert chunks[0][:4] == b"RIFF"
+    assert chunks[0][8:12] == b"WAVE"
+    assert chunks[0].count(b"RIFF") == 1
+    assert all(chunk[:4] != b"RIFF" for chunk in chunks[1:])
+    assert sum(len(chunk) for chunk in chunks[1:]) == 3 * 256 * 2
+
+
+@pytest.mark.asyncio
+async def test_synthesize_incremental_does_not_concatenate_chunks(tmp_path: Path, monkeypatch):
+    adapter = MultiChunkTTS(chunks=2)
+    sched = DummyScheduler(adapter)
+    store = BlobStore(root=tmp_path)
+    registry = MagicMock()
+
+    def _explode(*_args, **_kwargs):
+        raise AssertionError("incremental synthesis must not concatenate all audio")
+
+    monkeypatch.setattr(np, "concatenate", _explode)
+    iterator = await synthesize_incremental(
+        scheduler=sched,
+        registry=registry,
+        store=store,
+        request=SynthesisRequest(input="hello", model="fake-tts:latest", response_format="pcm"),
+    )
+    chunks = [chunk async for chunk in iterator]
+
+    assert len(chunks) == 2
+    assert all(chunk for chunk in chunks)
 
 
 @pytest.mark.asyncio

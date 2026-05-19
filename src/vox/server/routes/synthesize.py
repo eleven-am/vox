@@ -21,8 +21,10 @@ from vox.operations.errors import (
 )
 from vox.operations.synthesis import (
     SynthesisRequest,
+    preflight_synthesis,
     stream_content_type,
     synthesize_full,
+    synthesize_incremental,
     synthesize_stream,
 )
 
@@ -100,9 +102,18 @@ async def synthesize(req: SynthesizeRequest, request: Request):
 
 
 async def _full_response(scheduler, registry, store, op_req: SynthesisRequest):
-    bundle = await synthesize_full(
-        scheduler=scheduler, registry=registry, store=store, request=op_req,
-    )
+    if op_req.response_format.lower() in {"wav", "pcm", "mp3"}:
+        await preflight_synthesis(scheduler=scheduler, registry=registry, store=store, request=op_req)
+        iterator = await synthesize_incremental(
+            scheduler=scheduler, registry=registry, store=store, request=op_req,
+        )
+        return StreamingResponse(
+            iterator,
+            media_type=stream_content_type(op_req.response_format),
+            headers={"Content-Disposition": f"attachment; filename=speech.{op_req.response_format}"},
+        )
+
+    bundle = await synthesize_full(scheduler=scheduler, registry=registry, store=store, request=op_req)
     return StreamingResponse(
         iter([bundle.audio]),
         media_type=bundle.content_type,

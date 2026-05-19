@@ -8,6 +8,7 @@ from typing import Any
 
 import numpy as np
 
+from vox.audio.codecs import encode_pcm, encode_wav_stream_header
 from vox.audio.pipeline import get_content_type, prepare_for_output
 from vox.conversation.text_buffer import split_for_tts
 from vox.core.adapter import TTSAdapter
@@ -134,6 +135,21 @@ async def synthesize_full(
     )
 
 
+async def preflight_synthesis(
+    *,
+    scheduler: Any,
+    registry: Any,
+    store: Any,
+    request: SynthesisRequest,
+) -> None:
+    model = _resolve_model(registry, store, request.model)
+    _validate_input(request.input)
+    async with scheduler.acquire(model) as adapter:
+        if not isinstance(adapter, TTSAdapter):
+            raise WrongModelTypeError(model, "TTS")
+        resolve_voice_request(adapter, store, request.voice, request.language)
+
+
 async def synthesize_stream(
     *,
     scheduler: Any,
@@ -164,6 +180,115 @@ async def synthesize_stream(
                     if audio_data.size > 0:
                         encoded, _ = prepare_for_output(audio_data, chunk.sample_rate, request.response_format)
                         yield encoded
+
+    return _gen()
+
+
+def supports_incremental_output(response_format: str) -> bool:
+    return response_format.lower() in {"wav", "pcm", "mp3"}
+
+
+async def synthesize_incremental(
+    *,
+    scheduler: Any,
+    registry: Any,
+    store: Any,
+    request: SynthesisRequest,
+) -> AsyncIterator[bytes]:
+    model = _resolve_model(registry, store, request.model)
+    _validate_input(request.input)
+    fmt = request.response_format.lower()
+
+    if not supports_incremental_output(fmt):
+        bundle = await synthesize_full(
+            scheduler=scheduler,
+            registry=registry,
+            store=store,
+            request=request,
+        )
+
+        async def _single() -> AsyncIterator[bytes]:
+            yield bundle.audio
+
+        return _single()
+
+    async def _gen() -> AsyncIterator[bytes]:
+        start_time = time.perf_counter()
+        audio_samples = 0
+        sample_rate = 0
+        yielded_audio = False
+        wav_header_sent = False
+        mp3_encoder = None
+
+        try:
+            async with scheduler.acquire(model) as adapter:
+                if not isinstance(adapter, TTSAdapter):
+                    raise WrongModelTypeError(model, "TTS")
+                voice, language, reference_audio, reference_text = resolve_voice_request(
+                    adapter, store, request.voice, request.language
+                )
+                for text_chunk in _split_for_adapter(request.input, adapter):
+                    async for chunk in adapter.synthesize(
+                        text_chunk,
+                        voice=voice,
+                        speed=request.speed,
+                        language=language,
+                        reference_audio=reference_audio,
+                        reference_text=reference_text,
+                    ):
+                        audio_data = np.frombuffer(chunk.audio, dtype=np.float32)
+                        if sample_rate <= 0:
+                            sample_rate = chunk.sample_rate
+                        if audio_data.size <= 0:
+                            continue
+
+                        yielded_audio = True
+                        audio_samples += int(audio_data.size)
+
+                        if fmt == "wav":
+                            if not wav_header_sent:
+                                yield encode_wav_stream_header(chunk.sample_rate)
+                                wav_header_sent = True
+                            yield encode_pcm(audio_data)
+                        elif fmt == "pcm":
+                            yield encode_pcm(audio_data)
+                        elif fmt == "mp3":
+                            if mp3_encoder is None:
+                                import lameenc
+
+                                mp3_encoder = lameenc.Encoder()
+                                mp3_encoder.set_bit_rate(128)
+                                mp3_encoder.set_in_sample_rate(chunk.sample_rate)
+                                mp3_encoder.set_channels(1)
+                                mp3_encoder.set_quality(2)
+                            encoded = mp3_encoder.encode(encode_pcm(audio_data))
+                            if encoded:
+                                yield bytes(encoded)
+
+                if mp3_encoder is not None:
+                    tail = mp3_encoder.flush()
+                    if tail:
+                        yield bytes(tail)
+
+                if not yielded_audio:
+                    raise NoAudioGeneratedError()
+        except (WrongModelTypeError, NoAudioGeneratedError, ModelNotFoundError, VoxError):
+            raise
+        except Exception:
+            logger.exception(f"Synthesis failed for model {model}")
+            raise
+        finally:
+            if yielded_audio:
+                processing_ms = int((time.perf_counter() - start_time) * 1000)
+                audio_ms = int(1000 * audio_samples / max(sample_rate, 1))
+                logger.info(
+                    "synthesize_streamed %s chars=%d audio_ms=%d processing_ms=%d format=%s",
+                    model,
+                    len(request.input or ""),
+                    audio_ms,
+                    processing_ms,
+                    request.response_format,
+                )
 
     return _gen()
 

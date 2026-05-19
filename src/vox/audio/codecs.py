@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import logging
+import struct
 
 import numpy as np
 import soundfile as sf
@@ -66,6 +67,28 @@ def encode_wav(audio: NDArray[np.float32], sample_rate: int) -> bytes:
     buf = io.BytesIO()
     sf.write(buf, audio, samplerate=sample_rate, format="WAV", subtype="FLOAT")
     return buf.getvalue()
+
+
+def encode_wav_stream_header(sample_rate: int, *, channels: int = 1) -> bytes:
+    """Return a PCM16 WAV header suitable for streaming an unknown data length.
+
+    Standard RIFF/WAV stores file sizes in the header, which is impossible to know
+    before TTS has finished. Many streaming clients accept the conventional
+    0xFFFFFFFF placeholder sizes and consume audio until EOF.
+    """
+    byte_rate = sample_rate * channels * 2
+    block_align = channels * 2
+    return b"".join(
+        [
+            b"RIFF",
+            struct.pack("<I", 0xFFFFFFFF),
+            b"WAVE",
+            b"fmt ",
+            struct.pack("<IHHIIHH", 16, 1, channels, sample_rate, byte_rate, block_align, 16),
+            b"data",
+            struct.pack("<I", 0xFFFFFFFF),
+        ]
+    )
 
 
 def encode_flac(audio: NDArray[np.float32], sample_rate: int) -> bytes:
