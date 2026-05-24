@@ -247,6 +247,38 @@ class TestTranscribeMapping:
             {"word": "world", "start": 0.5, "end": 1.0},
         ]
 
+    def test_verbose_json_accepts_json_encoded_timestamp_granularities(self):
+        client = self._client()
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("a.wav", io.BytesIO(_wav_bytes()), "audio/wav")},
+            data={
+                "model": "test-stt:latest",
+                "response_format": "verbose_json",
+                "timestamp_granularities": '["word","segment"]',
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["segments"][0]["start"] == 0.0
+        assert body["words"][0] == {"word": "hello", "start": 0.0, "end": 0.5}
+
+    def test_verbose_json_accepts_comma_separated_timestamp_granularities(self):
+        client = self._client()
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("a.wav", io.BytesIO(_wav_bytes()), "audio/wav")},
+            data={
+                "model": "test-stt:latest",
+                "response_format": "verbose_json",
+                "timestamp_granularities": "word,segment",
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["segments"][0]["end"] == 1.0
+        assert body["words"][1] == {"word": "world", "start": 0.5, "end": 1.0}
+
     def test_octet_stream_upload_allows_decoder_autodetection(self):
         assert _mime_to_format("application/octet-stream") is None
 

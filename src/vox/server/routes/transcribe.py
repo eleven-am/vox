@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import asdict
 
@@ -142,12 +143,21 @@ def _words_payload(result) -> list[dict]:
 
 async def _timestamp_granularities(request: Request) -> set[str]:
     form = await request.form()
-    values = [
-        str(value).lower()
-        for key in ("timestamp_granularities", "timestamp_granularities[]")
-        for value in form.getlist(key)
-        if str(value).strip()
-    ]
+    values: list[str] = []
+    for key in ("timestamp_granularities", "timestamp_granularities[]"):
+        for value in form.getlist(key):
+            raw = str(value).strip()
+            if not raw:
+                continue
+            if raw.startswith("["):
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, list):
+                    values.extend(str(item).strip().lower() for item in parsed if str(item).strip())
+                    continue
+            values.extend(part.strip().lower() for part in raw.split(",") if part.strip())
     if not values:
         return {"segment"}
     return set(values)
