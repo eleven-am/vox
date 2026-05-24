@@ -187,11 +187,36 @@ class TestV1TranscriptionsTransport:
         resp = client.post(
             "/v1/audio/transcriptions",
             files={"file": ("a.wav", io.BytesIO(_wav_bytes()), "audio/wav")},
+            data={
+                "model": "fake-stt:latest",
+                "response_format": "verbose_json",
+                "timestamp_granularities[]": ["word", "segment"],
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["duration"] == 1.2
+        assert body["segments"][0]["id"] == 0
+        assert body["segments"][0]["start"] == 0.0
+        assert body["segments"][0]["end"] == 1.3
+        assert body["segments"][0]["tokens"] == []
+        assert "start_ms" not in body["segments"][0]
+        assert "words" not in body["segments"][0]
+        assert body["words"][0] == {"word": "Alice", "start": 0.0, "end": 0.5}
+
+    def test_verbose_json_defaults_to_segment_granularity(self, tmp_path: Path):
+        client = TestClient(_build_app(store=BlobStore(root=tmp_path), stt=_FakeSTT()))
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("a.wav", io.BytesIO(_wav_bytes()), "audio/wav")},
             data={"model": "fake-stt:latest", "response_format": "verbose_json"},
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert body["segments"][0]["words"][0]["word"] == "Alice"
+        assert "segments" in body
+        assert "words" not in body
+        assert body["segments"][0]["start"] == 0.0
+        assert body["segments"][0]["end"] == 1.3
 
     def test_text_format_returns_plain(self, tmp_path: Path):
         client = TestClient(_build_app(store=BlobStore(root=tmp_path), stt=_FakeSTT()))

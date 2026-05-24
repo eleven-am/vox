@@ -218,7 +218,37 @@ class TestTranscribeMapping:
         )
         assert resp.status_code == 200
         body = resp.json()
-        assert "segments" in body and "duration_ms" in body and "processing_ms" in body
+        assert "segments" in body and "duration" in body and "processing_ms" in body
+        assert body["duration"] == 1.0
+        assert body["segments"][0]["id"] == 0
+        assert body["segments"][0]["start"] == 0.0
+        assert body["segments"][0]["end"] == 1.0
+        assert body["segments"][0]["tokens"] == []
+        assert "duration_ms" not in body
+        assert "start_ms" not in body["segments"][0]
+        assert "words" not in body
+
+    def test_verbose_json_word_granularity_returns_top_level_words(self):
+        client = self._client()
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("a.wav", io.BytesIO(_wav_bytes()), "audio/wav")},
+            data={
+                "model": "test-stt:latest",
+                "response_format": "verbose_json",
+                "timestamp_granularities[]": "word",
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "segments" not in body
+        assert body["words"] == [
+            {"word": "hello", "start": 0.0, "end": 0.5},
+            {"word": "world", "start": 0.5, "end": 1.0},
+        ]
+
+    def test_octet_stream_upload_allows_decoder_autodetection(self):
+        assert _mime_to_format("application/octet-stream") is None
 
     def test_model_not_found_maps_to_404(self):
         client = self._client()

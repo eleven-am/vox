@@ -22,7 +22,12 @@ router = APIRouter()
 def _mime_to_format(content_type: str | None) -> str | None:
     if not content_type:
         return None
-    fmt = content_type.split("/")[-1].lower()
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    if media_type in {"application/octet-stream", "binary/octet-stream"}:
+        return None
+    if "/" not in media_type:
+        return media_type or None
+    fmt = media_type.split("/")[-1].lower()
     replacements = {"mpeg": "mp3", "x-wav": "wav", "x-flac": "flac", "ogg": "ogg", "webm": "webm"}
     return replacements.get(fmt, fmt)
 
@@ -78,12 +83,18 @@ async def _run_transcribe(
     return bundle.result, bundle.processing_ms, bundle.entities, bundle.topics
 
 
+def _ms_to_seconds(value: int | None) -> float:
+    if value is None:
+        return 0.0
+    return value / 1000.0
+
+
 def _rich_payload(result, processing_ms: int, entities, topics) -> dict:
     response = {
         "model": result.model,
         "text": result.text,
         "language": result.language,
-        "duration_ms": result.duration_ms,
+        "duration": _ms_to_seconds(result.duration_ms),
         "processing_ms": processing_ms,
     }
     if entities:
@@ -93,19 +104,53 @@ def _rich_payload(result, processing_ms: int, entities, topics) -> dict:
     return response
 
 
+def _word_payload(word) -> dict:
+    return {
+        "word": word.word,
+        "start": _ms_to_seconds(word.start_ms),
+        "end": _ms_to_seconds(word.end_ms),
+    }
+
+
 def _segments_payload(result) -> list[dict]:
+    segments: list[dict] = []
+    for idx, segment in enumerate(result.segments):
+        segments.append(
+            {
+                "id": idx,
+                "seek": segment.start_ms or 0,
+                "start": _ms_to_seconds(segment.start_ms),
+                "end": _ms_to_seconds(segment.end_ms),
+                "text": segment.text,
+                "tokens": [],
+                "temperature": 0.0,
+                "avg_logprob": 0.0,
+                "compression_ratio": 0.0,
+                "no_speech_prob": 0.0,
+            }
+        )
+    return segments
+
+
+def _words_payload(result) -> list[dict]:
     return [
-        {
-            "text": s.text,
-            "start_ms": s.start_ms,
-            "end_ms": s.end_ms,
-            "words": [
-                {"word": w.word, "start_ms": w.start_ms, "end_ms": w.end_ms, "confidence": w.confidence}
-                for w in s.words
-            ] if s.words else [],
-        }
-        for s in result.segments
+        _word_payload(word)
+        for segment in result.segments
+        for word in segment.words
     ]
+
+
+async def _timestamp_granularities(request: Request) -> set[str]:
+    form = await request.form()
+    values = [
+        str(value).lower()
+        for key in ("timestamp_granularities", "timestamp_granularities[]")
+        for value in form.getlist(key)
+        if str(value).strip()
+    ]
+    if not values:
+        return {"segment"}
+    return set(values)
 
 
 @router.post("/v1/audio/transcriptions")
@@ -118,9 +163,10 @@ async def openai_transcribe(
     temperature: float = Form(0.0),  # noqa: B008
 ):
     verbose = response_format == "verbose_json"
+    granularities = await _timestamp_granularities(request) if verbose else set()
     result, processing_ms, entities, topics = await _run_transcribe(
         request=request, file=file, model=model, language=language,
-        word_timestamps=verbose, temperature=temperature, annotate_text=verbose,
+        word_timestamps="word" in granularities, temperature=temperature, annotate_text=verbose,
     )
 
     if response_format == "text":
@@ -128,7 +174,10 @@ async def openai_transcribe(
 
     if verbose:
         response = _rich_payload(result, processing_ms, entities, topics)
-        response["segments"] = _segments_payload(result)
+        if "segment" in granularities:
+            response["segments"] = _segments_payload(result)
+        if "word" in granularities:
+            response["words"] = _words_payload(result)
         return response
 
     return {"text": result.text}
