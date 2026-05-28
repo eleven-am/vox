@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import tempfile
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,10 @@ logger = logging.getLogger(__name__)
 
 PARAKEET_SAMPLE_RATE = 16_000
 DEFAULT_MODEL_ID = "nemo-parakeet-tdt-0.6b-v3"
+VOICED_EMPTY_RELOAD_THRESHOLD = 3
+VOICED_EMPTY_MIN_DURATION_MS = 1_000
+VOICED_EMPTY_MIN_PEAK = 0.02
+VOICED_EMPTY_MIN_RMS = 0.003
 
 _ENGLISH_LANGUAGE_CODES = frozenset({
     "en",
@@ -172,10 +177,11 @@ class ParakeetAdapter(STTAdapter):
         self._loaded = False
         self._model_id: str = DEFAULT_MODEL_ID
         self._device: str = "cpu"
-
-
-
-
+        self._lock = threading.RLock()
+        self._load_model_path: str | None = None
+        self._load_device: str = "cpu"
+        self._load_source: str | None = None
+        self._consecutive_voiced_empty = 0
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
@@ -191,14 +197,23 @@ class ParakeetAdapter(STTAdapter):
         )
 
     def load(self, model_path: str, device: str, **kwargs: Any) -> None:
-        if self._loaded:
-            return
+        with self._lock:
+            if self._loaded:
+                return
 
-        providers, resolved_device = _get_providers(device)
+            source = kwargs.pop("_source", None)
+            self._load_model_path = model_path
+            self._load_device = device
+            self._load_source = source
+            self._load_locked()
+
+    def _load_locked(self) -> None:
+        if self._load_model_path is None:
+            raise RuntimeError("Parakeet load path is not configured")
+
+        providers, resolved_device = _get_providers(self._load_device)
         self._device = resolved_device
-        source = kwargs.pop("_source", None)
-        self._model_id, local_dir = _resolve_model_spec(model_path, source)
-
+        self._model_id, local_dir = _resolve_model_spec(self._load_model_path, self._load_source)
         logger.info("Loading Parakeet ONNX model: %s", self._model_id)
         start = time.perf_counter()
 
@@ -212,11 +227,24 @@ class ParakeetAdapter(STTAdapter):
         elapsed = time.perf_counter() - start
         logger.info("Parakeet model loaded in %.2fs", elapsed)
         self._loaded = True
+        self._consecutive_voiced_empty = 0
 
-    def unload(self) -> None:
+    def _reload_locked(self) -> None:
+        logger.warning(
+            "Reloading Parakeet model after %d consecutive voiced empty transcriptions",
+            self._consecutive_voiced_empty,
+        )
         self._model = None
         self._model_with_ts = None
         self._loaded = False
+        self._load_locked()
+
+    def unload(self) -> None:
+        with self._lock:
+            self._model = None
+            self._model_with_ts = None
+            self._loaded = False
+            self._consecutive_voiced_empty = 0
         logger.info("Parakeet adapter unloaded")
 
     @property
@@ -244,47 +272,29 @@ class ParakeetAdapter(STTAdapter):
 
         audio_duration_ms = int(len(audio) / PARAKEET_SAMPLE_RATE * 1000)
 
-
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             sf.write(tmp.name, audio, PARAKEET_SAMPLE_RATE)
             temp_path = Path(tmp.name)
 
         try:
-            if word_timestamps:
-                result = self._model_with_ts.recognize(str(temp_path))
-                text = result.text
-                words = _tokens_to_words(result.tokens, result.timestamps)
-                word_ts = tuple(
-                    WordTimestamp(
-                        word=w.word,
-                        start_ms=int(w.start * 1000),
-                        end_ms=int(w.end * 1000),
+            with self._lock:
+                text, segments = self._recognize_locked(
+                    temp_path,
+                    audio_duration_ms=audio_duration_ms,
+                    word_timestamps=word_timestamps,
+                )
+                text = text.strip() if text else ""
+                if self._should_reload_after_empty_locked(
+                    audio,
+                    text=text,
+                    audio_duration_ms=audio_duration_ms,
+                ):
+                    self._reload_locked()
+                    text, segments = self._recognize_locked(
+                        temp_path,
+                        audio_duration_ms=audio_duration_ms,
+                        word_timestamps=word_timestamps,
                     )
-                    for w in words
-                )
-                segments = (
-                    (TranscriptSegment(
-                        text=text,
-                        start_ms=0,
-                        end_ms=audio_duration_ms,
-                        words=word_ts,
-                        language="en",
-                    ),)
-                    if text
-                    else ()
-                )
-            else:
-                text = self._model.recognize(str(temp_path))
-                segments = (
-                    (TranscriptSegment(
-                        text=text,
-                        start_ms=0,
-                        end_ms=audio_duration_ms,
-                        language="en",
-                    ),)
-                    if text
-                    else ()
-                )
         finally:
             temp_path.unlink(missing_ok=True)
 
@@ -303,6 +313,92 @@ class ParakeetAdapter(STTAdapter):
             model=self._model_id,
         )
 
+    def _recognize_locked(
+        self,
+        temp_path: Path,
+        *,
+        audio_duration_ms: int,
+        word_timestamps: bool,
+    ) -> tuple[str, tuple[TranscriptSegment, ...]]:
+        if not self._loaded or self._model is None:
+            raise RuntimeError("Parakeet model is not loaded — call load() first")
+
+        if word_timestamps:
+            if self._model_with_ts is None:
+                raise RuntimeError("Parakeet timestamp model is not loaded")
+            result = self._model_with_ts.recognize(str(temp_path))
+            text = (result.text or "").strip()
+            words = _tokens_to_words(result.tokens, result.timestamps)
+            word_ts = tuple(
+                WordTimestamp(
+                    word=w.word,
+                    start_ms=int(w.start * 1000),
+                    end_ms=int(w.end * 1000),
+                )
+                for w in words
+            )
+            segments = (
+                (TranscriptSegment(
+                    text=text,
+                    start_ms=0,
+                    end_ms=audio_duration_ms,
+                    words=word_ts,
+                    language="en",
+                ),)
+                if text
+                else ()
+            )
+            return text, segments
+
+        text = (self._model.recognize(str(temp_path)) or "").strip()
+        segments = (
+            (TranscriptSegment(
+                text=text,
+                start_ms=0,
+                end_ms=audio_duration_ms,
+                language="en",
+            ),)
+            if text
+            else ()
+        )
+        return text, segments
+
+    def _should_reload_after_empty_locked(
+        self,
+        audio: NDArray[np.float32],
+        *,
+        text: str,
+        audio_duration_ms: int,
+    ) -> bool:
+        if text:
+            self._consecutive_voiced_empty = 0
+            return False
+
+        if audio_duration_ms < VOICED_EMPTY_MIN_DURATION_MS or not _looks_voiced(audio):
+            return False
+
+        self._consecutive_voiced_empty += 1
+        logger.warning(
+            "Parakeet returned an empty transcript for voiced %dms audio (%d/%d)",
+            audio_duration_ms,
+            self._consecutive_voiced_empty,
+            VOICED_EMPTY_RELOAD_THRESHOLD,
+        )
+        return self._consecutive_voiced_empty >= VOICED_EMPTY_RELOAD_THRESHOLD
+
     def estimate_vram_bytes(self, **kwargs: Any) -> int:
         model_id = kwargs.get("_source") or kwargs.get("model_id") or self._model_id or DEFAULT_MODEL_ID
         return _estimate_vram(_normalize_model_id(str(model_id)))
+
+
+def _looks_voiced(audio: NDArray[np.float32]) -> bool:
+    if audio.size == 0:
+        return False
+
+    finite_audio = audio[np.isfinite(audio)]
+    if finite_audio.size == 0:
+        return False
+
+    peak = float(np.max(np.abs(finite_audio)))
+    rms = float(np.sqrt(np.mean(np.square(finite_audio, dtype=np.float64))))
+    return peak >= VOICED_EMPTY_MIN_PEAK and rms >= VOICED_EMPTY_MIN_RMS
