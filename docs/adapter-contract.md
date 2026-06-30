@@ -5,6 +5,10 @@ runtime dependencies, and Docker images. The goal is to keep the base Vox
 runtime small, generic, and model-agnostic while still allowing each model
 family to bring the dependencies it needs.
 
+For dependency pinning, `--upgrade`, verification, and repair rules inside
+`$VOX_HOME/runtime/<runtime-name>`, see
+[the adapter runtime dependency policy](adapter-runtime-dependency-policy.md).
+
 ## Terms
 
 - **`vox-runtime`**: the core Vox package published as `vox-runtime`.
@@ -196,4 +200,3 @@ New adapters should follow these rules:
 6. Do not require changes to the base Vox image for a new model family.
 7. Add tests for package metadata, import safety, runtime bootstrap, and adapter
    capability metadata.
-

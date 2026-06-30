@@ -102,9 +102,6 @@ def _ensure_runtime_dependencies() -> None:
 
     adapter_root = _runtime_target_dir()
     sentinel = adapter_root / _RUNTIME_SENTINEL
-    if sentinel.is_file():
-        return
-
     logger.info("Installing Whisper runtime dependencies into %s", adapter_root)
     adapter_root.mkdir(parents=True, exist_ok=True)
     if not install_target_runtime_requirements(

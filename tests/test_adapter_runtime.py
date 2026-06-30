@@ -139,3 +139,40 @@ def test_ensure_target_runtime_raises_when_installers_cannot_load_module(tmp_pat
             install_runner=runner,
             module_probe=lambda _import_name: False,
         )
+
+
+def test_install_target_runtime_requirements_can_disable_upgrade(tmp_path):
+    calls: list[list[str]] = []
+
+    def runner(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    assert adapter_runtime.install_target_runtime_requirements(
+        tmp_path / "runtime",
+        ["nemo-toolkit[asr]"],
+        upgrade=False,
+        install_runner=runner,
+    )
+
+    assert "--upgrade" not in calls[0]
+    assert calls[0][-1] == "nemo-toolkit[asr]"
+
+
+def test_install_target_runtime_requirements_rejects_success_without_expected_paths(tmp_path):
+    calls: list[list[str]] = []
+    missing_package = tmp_path / "runtime" / "transformers"
+
+    def runner(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    assert not adapter_runtime.install_target_runtime_requirements(
+        tmp_path / "runtime",
+        ["transformers==4.57.6"],
+        expected_paths=[missing_package],
+        install_runner=runner,
+    )
+
+    assert calls[0][:2] == ["uv", "pip"]
+    assert calls[1][:3] == [sys.executable, "-m", "pip"]

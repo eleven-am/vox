@@ -123,6 +123,33 @@ class TestWhisperAdapterInfo:
             assert str(target_dir) in install_cmd
             assert sys.path[0] == str(target_dir)
 
+    def test_bootstrap_repairs_stale_runtime_sentinel(self, tmp_path: Path):
+        fw_module, model_cls = _mock_faster_whisper_module()
+        model_cls.return_value = MagicMock()
+        ct2_module = _mock_ctranslate2(cuda_count=1)
+        runtime_dir = tmp_path / "runtime" / "whisper"
+        runtime_dir.mkdir(parents=True)
+        (runtime_dir / ".vox-whisper-runtime-ready").touch()
+
+        def _install_side_effect(*_args, **_kwargs):
+            sys.modules["faster_whisper"] = fw_module
+            sys.modules["ctranslate2"] = ct2_module
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with (
+            patch.dict("sys.modules", {"torch": _mock_torch()}),
+            patch.dict(os.environ, {"VOX_HOME": str(tmp_path)}),
+            patch("vox_whisper.adapter.importlib.util.find_spec", return_value=None),
+            patch("vox_whisper.adapter.subprocess.run", side_effect=_install_side_effect) as subprocess_run,
+        ):
+            from vox_whisper.adapter import WhisperAdapter
+
+            adapter = WhisperAdapter()
+            adapter.load("local-model", "cuda", _source="Systran/faster-whisper-large-v3")
+
+            subprocess_run.assert_called_once()
+            assert adapter.is_loaded is True
+
     def test_load_falls_back_to_cpu_when_ct2_cuda_runtime_is_missing(self):
         torch_mock = _mock_torch(cuda_available=True)
         fw_module, model_cls = _mock_faster_whisper_module()
