@@ -402,6 +402,8 @@ my-model = "my_package.adapter:MyAdapter"
 
 Add a JSON file to [vox-registry](https://github.com/eleven-am/vox-registry) so `vox pull` can find it.
 
+For the package/runtime boundary, see [the adapter contract](docs/adapter-contract.md).
+
 ## Project structure
 
 ```
