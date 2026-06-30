@@ -243,7 +243,7 @@ def test_prime_lightning_imports_attaches_utilities_modules(monkeypatch: pytest.
     assert lightning_utilities.imports is lightning_imports
 
 
-def test_install_nemo_runtime_bootstraps_pip_when_uv_install_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_install_nemo_runtime_uses_pip_when_uv_install_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     sys.modules.pop("vox_parakeet", None)
     sys.modules.pop("vox_parakeet.nemo_adapter", None)
 
@@ -256,7 +256,7 @@ def test_install_nemo_runtime_bootstraps_pip_when_uv_install_fails(tmp_path: Pat
         mock.stderr = ""
         mock.stdout = ""
         calls.append(cmd)
-        if cmd[0] == "/usr/bin/uv":
+        if cmd[0] == "uv":
             mock.returncode = 1
             mock.stderr = "uv failed"
         else:
@@ -264,18 +264,15 @@ def test_install_nemo_runtime_bootstraps_pip_when_uv_install_fails(tmp_path: Pat
         return mock
 
     monkeypatch.setattr(module, "_runtime_target_dir", lambda: tmp_path / "runtime")
-    monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/bin/uv")
-    monkeypatch.setattr(module.importlib.util, "find_spec", lambda name: None if name == "pip" else object())
     monkeypatch.setattr(module.subprocess, "run", fake_run)
 
     module._install_nemo_runtime()
 
-    assert calls[0][:5] == ["/usr/bin/uv", "pip", "install", "--python", sys.executable]
+    assert calls[0][:5] == ["uv", "pip", "install", "--python", sys.executable]
     assert "--target" in calls[0]
     assert "nemo-toolkit[asr]" in calls[0]
-    assert calls[1][:3] == [sys.executable, "-m", "ensurepip"]
-    assert calls[2][:4] == [sys.executable, "-m", "pip", "install"]
-    assert "--target" in calls[2]
+    assert calls[1][:4] == [sys.executable, "-m", "pip", "install"]
+    assert "--target" in calls[1]
     assert (tmp_path / "runtime" / ".vox-parakeet-nemo-runtime-ready").is_file()
 
 
@@ -292,18 +289,25 @@ def test_install_nemo_runtime_uses_pip_when_uv_is_missing(tmp_path: Path, monkey
         mock.stderr = ""
         mock.stdout = ""
         calls.append(cmd)
+        if cmd[0] == "uv":
+            raise FileNotFoundError("uv")
         mock.returncode = 0
         return mock
 
     monkeypatch.setattr(module, "_runtime_target_dir", lambda: tmp_path / "runtime")
-    monkeypatch.setattr(module.shutil, "which", lambda name: None)
-    monkeypatch.setattr(module.importlib.util, "find_spec", lambda name: object())
     monkeypatch.setattr(module.subprocess, "run", fake_run)
 
     module._install_nemo_runtime()
 
-    assert calls == [
-        [sys.executable, "-m", "pip", "install", "--target", str(tmp_path / "runtime"), "nemo-toolkit[asr]"]
+    assert calls[0][:2] == ["uv", "pip"]
+    assert calls[1] == [
+        sys.executable,
+        "-m",
+        "pip",
+        "install",
+        "--target",
+        str(tmp_path / "runtime"),
+        "nemo-toolkit[asr]",
     ]
     assert (tmp_path / "runtime" / ".vox-parakeet-nemo-runtime-ready").is_file()
 

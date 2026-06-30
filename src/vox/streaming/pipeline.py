@@ -11,7 +11,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from vox.audio.merger import merge_transcripts
-from vox.audio.stt_context import add_stt_leading_context, strip_stt_leading_context
+from vox.audio.stt_runner import run_stt_with_leading_context
 from vox.core.adapter import STTAdapter
 from vox.core.scheduler import Scheduler
 from vox.core.types import TranscribeResult
@@ -246,6 +246,7 @@ class StreamPipeline:
                 audio=segment.audio,
                 language=language or None,
                 word_timestamps=word_timestamps,
+                temperature=self._session_config.temperature,
             )
         processing_ms = int((time.perf_counter() - start) * 1000)
         segments, words = _segments_and_words(result)
@@ -282,6 +283,7 @@ class StreamPipeline:
                 audio=audio,
                 language=language or None,
                 word_timestamps=word_timestamps,
+                temperature=self._session_config.temperature,
             )
         processing_ms = int((time.perf_counter() - start) * 1000)
         segments, words = _segments_and_words(result)
@@ -302,16 +304,16 @@ class StreamPipeline:
         audio: NDArray[np.float32],
         language: str | None,
         word_timestamps: bool,
+        temperature: float,
     ) -> TranscribeResult:
-        loop = asyncio.get_running_loop()
         duration_ms = samples_to_ms(audio.size)
 
         whole = await self._transcribe_audio_span(
-            loop=loop,
             adapter=adapter,
             audio=audio,
             language=language,
             word_timestamps=word_timestamps,
+            temperature=temperature,
         )
 
         spans = _speech_spans_for_transcription(audio)
@@ -319,12 +321,12 @@ class StreamPipeline:
             return replace(whole, duration_ms=duration_ms)
 
         merged = await self._transcribe_silence_spans(
-            loop=loop,
             adapter=adapter,
             audio=audio,
             spans=spans,
             language=language,
             word_timestamps=word_timestamps,
+            temperature=temperature,
         )
         if merged is None:
             return replace(whole, duration_ms=duration_ms)
@@ -345,12 +347,12 @@ class StreamPipeline:
     async def _transcribe_silence_spans(
         self,
         *,
-        loop: asyncio.AbstractEventLoop,
         adapter: STTAdapter,
         audio: NDArray[np.float32],
         spans: list[tuple[int, int]],
         language: str | None,
         word_timestamps: bool,
+        temperature: float,
     ) -> TranscribeResult | None:
         per_span: list[tuple[TranscribeResult, int]] = []
         for start_sample, end_sample in spans:
@@ -358,11 +360,11 @@ class StreamPipeline:
             if span_audio.size == 0:
                 continue
             partial = await self._transcribe_audio_span(
-                loop=loop,
                 adapter=adapter,
                 audio=span_audio,
                 language=language,
                 word_timestamps=word_timestamps,
+                temperature=temperature,
             )
             if partial.text and partial.text.strip():
                 per_span.append((partial, samples_to_ms(start_sample)))
@@ -374,28 +376,21 @@ class StreamPipeline:
     async def _transcribe_audio_span(
         self,
         *,
-        loop: asyncio.AbstractEventLoop,
         adapter: STTAdapter,
         audio: NDArray[np.float32],
         language: str | None,
         word_timestamps: bool,
+        temperature: float,
     ) -> TranscribeResult:
-        audio_with_context, leading_context_ms = add_stt_leading_context(
+        return await run_stt_with_leading_context(
+            adapter,
             audio,
             sample_rate=TARGET_SAMPLE_RATE,
-        )
-        result = await loop.run_in_executor(
-            self._executor,
-            lambda: adapter.transcribe(
-                audio_with_context,
-                language=language,
-                word_timestamps=word_timestamps,
-            ),
-        )
-        return strip_stt_leading_context(
-            result,
-            context_ms=leading_context_ms,
             duration_ms=samples_to_ms(audio.size),
+            language=language,
+            word_timestamps=word_timestamps,
+            temperature=temperature,
+            executor=self._executor,
         )
 
     def _add_eou_probability(self, transcript: StreamTranscript) -> StreamTranscript:

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib.util
 import logging
-import os
 import subprocess
 import sys
 import time
@@ -14,6 +13,13 @@ import torch
 from numpy.typing import NDArray
 
 from vox.core.adapter import STTAdapter
+from vox.core.adapter_runtime import (
+    activate_runtime_path,
+    install_target_runtime_requirements,
+)
+from vox.core.adapter_runtime import (
+    runtime_root as vox_runtime_root,
+)
 from vox.core.types import (
     AdapterInfo,
     ModelFormat,
@@ -31,8 +37,6 @@ _RUNTIME_DEPENDENCIES = (
     "faster-whisper>=1.2.1,<2.0.0",
     "ctranslate2>=4.7.1,<5.0.0",
 )
-_VOX_HOME_ENV = "VOX_HOME"
-
 _VRAM_ESTIMATES: dict[str, int] = {
     "large-v3-turbo": 2_500_000_000,
     "large-v3": 4_000_000_000,
@@ -73,19 +77,13 @@ def _adapter_root() -> Path:
 
 
 def _runtime_target_dir() -> Path:
-    env_home = os.environ.get(_VOX_HOME_ENV)
-    vox_home = Path(env_home) if env_home else Path.home() / ".vox"
-    return vox_home / "runtime" / "whisper"
+    return vox_runtime_root() / "whisper"
 
 
 def _activate_runtime_path() -> None:
     runtime_dir = _runtime_target_dir()
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    runtime_path = str(runtime_dir)
-    if runtime_path in sys.path:
-        sys.path.remove(runtime_path)
-    sys.path.insert(0, runtime_path)
-    importlib.invalidate_caches()
+    activate_runtime_path(runtime_dir, root=runtime_dir.parent)
 
 
 def _runtime_module_available(name: str) -> bool:
@@ -109,23 +107,22 @@ def _ensure_runtime_dependencies() -> None:
 
     logger.info("Installing Whisper runtime dependencies into %s", adapter_root)
     adapter_root.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "uv",
-        "pip",
-        "install",
-        "--python",
-        sys.executable,
-        "--target",
-        str(adapter_root),
-        *_RUNTIME_DEPENDENCIES,
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-    if result.returncode != 0:
+    if not install_target_runtime_requirements(
+        adapter_root,
+        _RUNTIME_DEPENDENCIES,
+        upgrade=False,
+        timeout=600,
+        install_runner=_run_install_command,
+        context="Whisper runtime install",
+    ):
         raise RuntimeError(
-            "Failed to install Whisper runtime dependencies: "
-            f"{result.stderr.strip() or result.stdout.strip()}"
+            "Failed to install Whisper runtime dependencies"
         )
     sentinel.touch()
+
+
+def _run_install_command(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
 class WhisperAdapter(STTAdapter):

@@ -6,7 +6,6 @@ import importlib
 import logging
 import os
 import subprocess
-import sys
 import time
 from collections.abc import AsyncIterator
 from contextlib import contextmanager
@@ -24,6 +23,14 @@ from vox_microsoft._hf_compat import ensure_huggingface_hub_compat
 ensure_huggingface_hub_compat()
 
 from vox.core.adapter import TTSAdapter
+from vox.core.adapter_runtime import (
+    activate_runtime_path,
+    install_target_runtime_requirements,
+    purge_runtime_modules,
+)
+from vox.core.adapter_runtime import (
+    runtime_root as vox_runtime_root,
+)
 from vox.core.types import (
     AdapterInfo,
     ModelFormat,
@@ -121,16 +128,13 @@ def _version_tuple(version: str) -> tuple[int, ...]:
 
 
 def _runtime_root() -> Path:
-    vox_home = Path(os.environ.get("VOX_HOME", str(Path.home() / ".vox")))
-    return vox_home / "runtime" / "vibevoice"
+    return vox_runtime_root() / "vibevoice"
 
 
 def _ensure_runtime_path() -> str:
-    runtime_path = str(_runtime_root())
-    _runtime_root().mkdir(parents=True, exist_ok=True)
-    if runtime_path not in sys.path:
-        sys.path.insert(0, runtime_path)
-    return runtime_path
+    runtime_dir = _runtime_root()
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    return activate_runtime_path(runtime_dir, root=runtime_dir.parent)
 
 
 def _runtime_dist_version(dist_name: str) -> str | None:
@@ -161,27 +165,17 @@ def _runtime_has_package_path(package_name: str) -> bool:
     return any(path.exists() for path in package_paths.get(package_name, [runtime_root / package_name]))
 
 def _clear_runtime_modules() -> None:
-    for module_name in list(sys.modules):
-        if module_name == "vibevoice" or module_name.startswith(
-            (
-                "vibevoice.",
-                "diffusers.",
-                "PIL.",
-                "transformers.",
-                "huggingface_hub.",
-                "accelerate.",
-                "tokenizers.",
-            )
-        ) or module_name in {
+    purge_runtime_modules(
+        (
+            "vibevoice",
             "diffusers",
             "PIL",
             "transformers",
             "huggingface_hub",
             "accelerate",
             "tokenizers",
-        }:
-            sys.modules.pop(module_name, None)
-    importlib.invalidate_caches()
+        )
+    )
 
 
 def _require_runtime() -> None:
@@ -248,56 +242,32 @@ def _bootstrap_runtime() -> None:
     if not packages_to_install:
         return
 
-    installers = [
-        [
-            "uv",
-            "pip",
-            "install",
-            "--python",
-            sys.executable,
-            "--target",
-            runtime_path,
-            "--no-deps",
-        ],
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--target",
-            runtime_path,
-            "--no-deps",
-        ],
-    ]
     for package_name in packages_to_install:
         package_spec = VIBEVOICE_BOOTSTRAP_SPECS[package_name]
-        for installer in installers:
-            cmd = [*installer, package_spec]
-            try:
-                result = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    timeout=600,
-                )
-            except (FileNotFoundError, subprocess.TimeoutExpired):
-                continue
-            if result.returncode == 0 and _runtime_has_package_path(package_name):
-                logger.info(
-                    "Bootstrapped VibeVoice runtime package into %s: %s",
-                    runtime_path,
-                    package_spec,
-                )
-                break
-            logger.warning("%s failed: %s", " ".join(installer), result.stderr)
-        else:
+        if not install_target_runtime_requirements(
+            runtime_path,
+            (package_spec,),
+            no_deps=True,
+            upgrade=False,
+            timeout=600,
+            install_runner=_run_install_command,
+            context="VibeVoice runtime install",
+        ) or not _runtime_has_package_path(package_name):
             raise RuntimeError(
                 f"VibeVoice runtime package is missing and could not be bootstrapped: {package_name}. "
                 "Install the community VibeVoice codebase before pulling or serving this model."
             )
+        logger.info(
+            "Bootstrapped VibeVoice runtime package into %s: %s",
+            runtime_path,
+            package_spec,
+        )
 
     _clear_runtime_modules()
     _ensure_runtime_path()
+
+def _run_install_command(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
 def _prime_runtime(model_id: str) -> None:

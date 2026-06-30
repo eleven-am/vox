@@ -157,10 +157,11 @@ class TestXTTSAdapter:
         with (
             patch("vox_xtts.adapter._runtime_root", return_value=Path("/tmp/vox-xtts-test")),
             patch(
-                "vox_xtts.adapter.importlib.util.find_spec",
+                "vox.core.adapter_runtime.find_spec",
                 side_effect=lambda name: None if name == "pip" else MagicMock(),
             ),
             patch("vox_xtts.adapter.subprocess.run", side_effect=fake_run),
+            patch("vox.core.adapter_runtime.subprocess.run", side_effect=fake_run),
         ):
             module._install_xtts_runtime()
 

@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import importlib
 import logging
-import os
 import subprocess
-import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -12,6 +10,14 @@ from typing import Any
 import numpy as np
 
 from vox.core.adapter import TTSAdapter
+from vox.core.adapter_runtime import (
+    activate_runtime_path,
+    install_target_runtime_requirements,
+    purge_runtime_modules,
+)
+from vox.core.adapter_runtime import (
+    runtime_root as vox_runtime_root,
+)
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
 from vox_kokoro.common import (
     OFFICIAL_VOICE_IDS,
@@ -55,38 +61,17 @@ _RUNTIME_MODULE_NAMES = {
 
 
 def _runtime_root() -> Path:
-    vox_home = Path(os.environ.get("VOX_HOME", str(Path.home() / ".vox")))
-    return vox_home / "runtime" / "kokoro"
-
-
-def _prune_other_runtime_paths(runtime_path: str) -> None:
-    runtime_root = str(_runtime_root().parent)
-    pruned_paths: list[str] = []
-    for path in sys.path:
-        if path == runtime_path:
-            continue
-        if path.startswith(runtime_root):
-            continue
-        pruned_paths.append(path)
-    sys.path[:] = pruned_paths
+    return vox_runtime_root() / "kokoro"
 
 
 def _ensure_runtime_path() -> str:
-    runtime_path = str(_runtime_root())
-    _runtime_root().mkdir(parents=True, exist_ok=True)
-    _prune_other_runtime_paths(runtime_path)
-    if runtime_path in sys.path:
-        sys.path.remove(runtime_path)
-    if runtime_path not in sys.path:
-        sys.path.insert(0, runtime_path)
-    return runtime_path
+    runtime_dir = _runtime_root()
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    return activate_runtime_path(runtime_dir, root=runtime_dir.parent)
 
 
 def _clear_runtime_modules() -> None:
-    for module_name in list(sys.modules):
-        if module_name in _RUNTIME_MODULE_NAMES or module_name.startswith(_RUNTIME_MODULE_PREFIXES):
-            sys.modules.pop(module_name, None)
-    importlib.invalidate_caches()
+    purge_runtime_modules(_RUNTIME_MODULE_NAMES)
 
 
 def _patch_numpy_core() -> None:
@@ -178,54 +163,23 @@ def _install_runtime_requirements(
     no_deps: bool,
     expected_paths: tuple[Path, ...] = (),
 ) -> bool:
-    installers = [
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--target",
-            runtime_path,
-            "--upgrade",
-            *requirements,
-        ],
-        [
-            "uv",
-            "pip",
-            "install",
-            "--python",
-            sys.executable,
-            "--target",
-            runtime_path,
-            "--upgrade",
-            *requirements,
-        ],
-    ]
-    if no_deps:
-        for installer in installers:
-            installer.insert(-len(requirements), "--no-deps")
-    for installer in installers:
-        try:
-            result = subprocess.run(
-                installer,
-                capture_output=True,
-                text=True,
-                timeout=1800,
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            continue
-        if result.returncode == 0:
-            if expected_paths and not all(path.exists() for path in expected_paths):
-                logger.warning(
-                    "Installer reported success but runtime packages were not placed into %s: %s",
-                    runtime_path,
-                    requirements,
-                )
-                continue
-            logger.info("Installed Kokoro runtime requirements into %s: %s", runtime_path, requirements)
-            return True
-        logger.warning("%s failed: %s", " ".join(installer), result.stderr)
-    return False
+    installed = install_target_runtime_requirements(
+        runtime_path,
+        requirements,
+        no_deps=no_deps,
+        timeout=1800,
+        expected_paths=expected_paths,
+        installer_order=("pip", "uv"),
+        install_runner=_run_install_command,
+        context="Kokoro Torch runtime install",
+    )
+    if installed:
+        logger.info("Installed Kokoro runtime requirements into %s: %s", runtime_path, requirements)
+    return installed
+
+
+def _run_install_command(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
 def _spacy_model_installed(runtime_root: Path) -> bool:

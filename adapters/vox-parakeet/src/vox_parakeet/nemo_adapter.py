@@ -3,8 +3,6 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import logging
-import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -17,6 +15,13 @@ import soundfile as sf
 from numpy.typing import NDArray
 
 from vox.core.adapter import STTAdapter
+from vox.core.adapter_runtime import (
+    activate_runtime_path,
+    install_target_runtime_requirements,
+)
+from vox.core.adapter_runtime import (
+    runtime_root as vox_runtime_root,
+)
 from vox.core.types import (
     AdapterInfo,
     ModelFormat,
@@ -33,7 +38,6 @@ DEFAULT_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 DEFAULT_VRAM_BYTES = 2_500_000_000
 _RUNTIME_SENTINEL = ".vox-parakeet-nemo-runtime-ready"
 _RUNTIME_DEPENDENCIES = ("nemo-toolkit[asr]",)
-_VOX_HOME_ENV = "VOX_HOME"
 
 
 
@@ -45,17 +49,13 @@ def _torch_module() -> Any:
 
 
 def _runtime_target_dir() -> Path:
-    env_home = os.environ.get(_VOX_HOME_ENV)
-    vox_home = Path(env_home) if env_home else Path.home() / ".vox"
-    return vox_home / "adapters" / "vox-parakeet" / "runtime"
+    return vox_runtime_root() / "parakeet-nemo"
 
 
 def _ensure_runtime_target_on_path() -> Path:
     runtime_dir = _runtime_target_dir()
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    runtime_dir_str = str(runtime_dir)
-    if runtime_dir_str not in sys.path:
-        sys.path.insert(0, runtime_dir_str)
+    activate_runtime_path(runtime_dir, root=runtime_dir.parent)
     return runtime_dir
 
 
@@ -88,66 +88,28 @@ def _prime_lightning_imports() -> None:
         return
 
 
-def _ensure_pip_available() -> None:
-    if importlib.util.find_spec("pip") is not None:
-        return
-
-    result = subprocess.run(
-        [sys.executable, "-m", "ensurepip", "--default-pip"],
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            "Failed to bootstrap pip for the Parakeet NeMo runtime install. "
-            f"stderr: {result.stderr.strip()}"
-        )
-
-
 def _install_nemo_runtime() -> None:
     runtime_dir = _ensure_runtime_target_on_path()
     sentinel = runtime_dir / _RUNTIME_SENTINEL
     if sentinel.is_file() and _runtime_module_available("nemo.collections.asr"):
         return
 
-    result = None
-    uv_executable = shutil.which("uv")
-    if uv_executable:
-        install_cmd = [
-            uv_executable,
-            "pip",
-            "install",
-            "--python",
-            sys.executable,
-            "--target",
-            str(runtime_dir),
-            *_RUNTIME_DEPENDENCIES,
-        ]
-        result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=1800)
-
-    if result is None or result.returncode != 0:
-        _ensure_pip_available()
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "--target",
-                str(runtime_dir),
-                *_RUNTIME_DEPENDENCIES,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=1800,
-        )
-    if result.returncode != 0:
+    if not install_target_runtime_requirements(
+        runtime_dir,
+        _RUNTIME_DEPENDENCIES,
+        upgrade=False,
+        timeout=1800,
+        install_runner=_run_install_command,
+        context="Parakeet NeMo runtime install",
+    ):
         raise RuntimeError(
-            "Failed to install Parakeet NeMo runtime dependencies. "
-            f"stderr: {result.stderr.strip() or result.stdout.strip()}"
+            "Failed to install Parakeet NeMo runtime dependencies."
         )
     sentinel.touch()
+
+
+def _run_install_command(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
 def _load_asr_model_class() -> Any:

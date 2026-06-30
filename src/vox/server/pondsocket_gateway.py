@@ -10,8 +10,6 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, FastAPI, WebSocket
 
 from vox.operations.conversation import (
-    ConvAudioClearEvent,
-    ConvAudioDeltaEvent,
     ConvDoneEvent,
     ConversationOrchestrator,
 )
@@ -25,6 +23,7 @@ from vox.server.routes.conversation import (
 )
 from vox.server.routes.rtc import _cancel_media_tasks
 from vox.server.rtc_client_events import parse_client_event_message, send_client_event_to_browser
+from vox.server.rtc_conversation import clear_rtc_audio_if_needed, create_rtc_orchestrator
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 
 if TYPE_CHECKING:
@@ -228,26 +227,11 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
         session_id: str,
         record: RtcSessionRecord,
     ) -> _RtcRuntime:
-        async def send_rtc_audio(event: ConvAudioDeltaEvent) -> None:
-            if record.audio_output_track is not None:
-                await record.audio_output_track.enqueue(base64.b64decode(event.audio_b64), event.sample_rate)
-
-        async def wait_for_rtc_playout() -> None:
-            if record.audio_output_track is not None:
-                await record.audio_output_track.wait_until_drained()
-
-        orchestrator = ConversationOrchestrator(
-            scheduler=scheduler,
-            pace_response_done_to_audio=True,
-            audio_sink=send_rtc_audio,
-            wait_for_output_playout=wait_for_rtc_playout,
-        )
-        record.orchestrator = orchestrator
+        orchestrator = create_rtc_orchestrator(scheduler=scheduler, record=record)
 
         async def emit_events() -> None:
             async for event in orchestrator.events():
-                if isinstance(event, ConvAudioClearEvent) and record.audio_output_track is not None:
-                    record.audio_output_track.clear()
+                clear_rtc_audio_if_needed(record, event)
                 wire = _event_to_wire(event)
                 if wire is not None:
                     wire.setdefault("session_id", session_id)

@@ -8,7 +8,6 @@ event signaling for an already-created RTC session.
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -18,13 +17,13 @@ from vox.core.scheduler import Scheduler
 from vox.grpc import vox_pb2, vox_pb2_grpc
 from vox.grpc.conversation_servicer import _error_pb, _event_to_pb, _pb_to_config
 from vox.operations.conversation import (
-    ConvAudioClearEvent,
     ConvAudioDeltaEvent,
     ConvDoneEvent,
     ConversationOrchestrator,
 )
 from vox.operations.errors import OperationError, SessionAlreadyConfiguredError
 from vox.server.rtc_client_events import control_event_as_client_event, send_client_event_to_browser
+from vox.server.rtc_conversation import clear_rtc_audio_if_needed, create_rtc_orchestrator_with
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 
 logger = logging.getLogger(__name__)
@@ -55,24 +54,11 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
         orchestrator: ConversationOrchestrator | None = None
         session_id = ""
 
-        async def send_rtc_audio(event: ConvAudioDeltaEvent) -> None:
-            if record is not None and record.audio_output_track is not None:
-                await record.audio_output_track.enqueue(base64.b64decode(event.audio_b64), event.sample_rate)
-
-        async def wait_for_rtc_playout() -> None:
-            if record is not None and record.audio_output_track is not None:
-                await record.audio_output_track.wait_until_drained()
-
         async def pump_events() -> None:
             assert orchestrator is not None
             try:
                 async for event in orchestrator.events():
-                    if (
-                        record is not None
-                        and isinstance(event, ConvAudioClearEvent)
-                        and record.audio_output_track is not None
-                    ):
-                        record.audio_output_track.clear()
+                    clear_rtc_audio_if_needed(record, event)
                     if (
                         record is not None
                         and isinstance(event, ConvAudioDeltaEvent)
@@ -128,13 +114,11 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                                 )
                             )
                             break
-                        orchestrator = ConversationOrchestrator(
+                        orchestrator = create_rtc_orchestrator_with(
                             scheduler=self._scheduler,
-                            pace_response_done_to_audio=True,
-                            audio_sink=send_rtc_audio,
-                            wait_for_output_playout=wait_for_rtc_playout,
+                            record=record,
+                            orchestrator_cls=ConversationOrchestrator,
                         )
-                        record.orchestrator = orchestrator
                         await out_queue.put(
                             vox_pb2.ConverseServerMessage(
                                 rtc_session_attached=vox_pb2.RtcSessionAttached(

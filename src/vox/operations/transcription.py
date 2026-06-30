@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from dataclasses import dataclass, field, replace
@@ -10,7 +9,7 @@ import numpy as np
 
 from vox.audio.merger import merge_transcripts
 from vox.audio.pipeline import prepare_for_stt_chunks
-from vox.audio.stt_context import add_stt_leading_context, strip_stt_leading_context
+from vox.audio.stt_runner import run_stt, run_stt_with_leading_context
 from vox.core.adapter import STTAdapter
 from vox.core.errors import ModelNotFoundError, VoxError
 from vox.core.ner import annotate
@@ -195,21 +194,14 @@ async def _run_padded_stt(
     word_timestamps: bool,
     temperature: float,
 ) -> TranscribeResult:
-    padded_audio, leading_context_ms = add_stt_leading_context(
+    return await run_stt_with_leading_context(
+        adapter,
         audio,
         sample_rate=sample_rate,
-    )
-    padded = await _run_stt(
-        adapter,
-        padded_audio,
+        duration_ms=duration_ms,
         language=language,
         word_timestamps=word_timestamps,
         temperature=temperature,
-    )
-    return strip_stt_leading_context(
-        padded,
-        context_ms=leading_context_ms,
-        duration_ms=duration_ms,
     )
 
 
@@ -221,8 +213,8 @@ async def _run_stt(
     word_timestamps: bool,
     temperature: float,
 ) -> TranscribeResult:
-    return await asyncio.to_thread(
-        adapter.transcribe,
+    return await run_stt(
+        adapter,
         audio,
         language=language,
         word_timestamps=word_timestamps,

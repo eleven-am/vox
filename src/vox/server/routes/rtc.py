@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 from contextlib import suppress
@@ -15,10 +14,7 @@ from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisco
 from fastapi.responses import StreamingResponse
 
 from vox.operations.conversation import (
-    ConvAudioClearEvent,
-    ConvAudioDeltaEvent,
     ConvDoneEvent,
-    ConversationOrchestrator,
 )
 from vox.operations.errors import OperationError, SessionAlreadyConfiguredError
 from vox.server.auth import require_api_key
@@ -36,6 +32,7 @@ from vox.server.rtc_client_events import (
     parse_client_event_message,
     send_client_event_to_browser,
 )
+from vox.server.rtc_conversation import clear_rtc_audio_if_needed, create_rtc_orchestrator
 from vox.server.rtc_ice import (
     ice_servers_from_env,
     patch_aioice_turn_error_code_parser,
@@ -262,26 +259,11 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
     await websocket.accept()
     scheduler = websocket.app.state.scheduler
 
-    async def send_rtc_audio(event: ConvAudioDeltaEvent) -> None:
-        if record.audio_output_track is not None:
-            await record.audio_output_track.enqueue(base64.b64decode(event.audio_b64), event.sample_rate)
-
-    async def wait_for_rtc_playout() -> None:
-        if record.audio_output_track is not None:
-            await record.audio_output_track.wait_until_drained()
-
-    orchestrator = ConversationOrchestrator(
-        scheduler=scheduler,
-        pace_response_done_to_audio=True,
-        audio_sink=send_rtc_audio,
-        wait_for_output_playout=wait_for_rtc_playout,
-    )
-    record.orchestrator = orchestrator
+    orchestrator = create_rtc_orchestrator(scheduler=scheduler, record=record)
 
     async def emit_events() -> None:
         async for event in orchestrator.events():
-            if isinstance(event, ConvAudioClearEvent) and record.audio_output_track is not None:
-                record.audio_output_track.clear()
+            clear_rtc_audio_if_needed(record, event)
             wire = _event_to_wire(event)
             if wire is not None:
                 wire.setdefault("session_id", session_id)

@@ -16,6 +16,7 @@ from vox.streaming.vad import SpeechSegment
 class GapSensitiveSTTAdapter(STTAdapter):
     def __init__(self) -> None:
         self.calls: list[np.ndarray] = []
+        self.kwargs: list[dict[str, Any]] = []
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
@@ -35,6 +36,7 @@ class GapSensitiveSTTAdapter(STTAdapter):
 
     def transcribe(self, audio, **kwargs) -> TranscribeResult:
         self.calls.append(audio.copy())
+        self.kwargs.append(dict(kwargs))
         payload = _without_leading_context(audio)
         text = "Yeah." if float(np.max(np.abs(payload))) < 0.4 else "second phrase"
         if _has_internal_silence_gap(payload):
@@ -51,6 +53,7 @@ class GapSensitiveSTTAdapter(STTAdapter):
 class WholeUtteranceSTTAdapter(STTAdapter):
     def __init__(self) -> None:
         self.calls: list[np.ndarray] = []
+        self.kwargs: list[dict[str, Any]] = []
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
@@ -70,6 +73,7 @@ class WholeUtteranceSTTAdapter(STTAdapter):
 
     def transcribe(self, audio, **kwargs) -> TranscribeResult:
         self.calls.append(audio.copy())
+        self.kwargs.append(dict(kwargs))
         payload = _without_leading_context(audio)
         if _has_internal_silence_gap(payload):
             text = "just to hold my waist from behind and he turns me over"
@@ -135,6 +139,36 @@ async def test_transcribe_segment_prefers_complete_whole_utterance_over_gap_span
     assert transcript.audio_duration_ms == 3000
     assert len(adapter.calls) == 1
     assert np.allclose(adapter.calls[0][: 5 * TARGET_SAMPLE_RATE], 0)
+
+    pipeline.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_transcribe_segment_passes_session_stt_options_to_every_rescue_call():
+    adapter = GapSensitiveSTTAdapter()
+    pipeline = StreamPipeline(scheduler=FakeScheduler(adapter))
+    pipeline.configure(
+        StreamSessionConfig(
+            model="m:1",
+            language="fr",
+            include_word_timestamps=True,
+            temperature=0.4,
+        )
+    )
+
+    first = np.full(int(0.8 * TARGET_SAMPLE_RATE), 0.25, dtype=np.float32)
+    gap = np.zeros(int(0.9 * TARGET_SAMPLE_RATE), dtype=np.float32)
+    second = np.full(int(1.3 * TARGET_SAMPLE_RATE), 0.5, dtype=np.float32)
+    audio = np.concatenate([first, gap, second])
+
+    await pipeline._transcribe_segment(SpeechSegment(audio=audio, start_ms=0, end_ms=3000))
+
+    assert len(adapter.kwargs) == 3
+    assert adapter.kwargs == [
+        {"language": "fr", "word_timestamps": True, "temperature": 0.4},
+        {"language": "fr", "word_timestamps": True, "temperature": 0.4},
+        {"language": "fr", "word_timestamps": True, "temperature": 0.4},
+    ]
 
     pipeline.shutdown()
 
