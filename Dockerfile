@@ -91,12 +91,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         datasets \
         librosa \
         sentencepiece \
-        colorlog \
-        espeakng-loader \
-        phonemizer-fork && \
-    uv pip install --python .venv/bin/python --no-deps \
-        kokoro-onnx==0.4.9 \
-        onnx-asr[hub]==0.11.0
+        colorlog
 
 FROM ${BASE_IMAGE} AS runtime
 

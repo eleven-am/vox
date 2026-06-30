@@ -183,13 +183,15 @@ model store
   model artifacts and voice data pulled on demand
 ```
 
-At the time this contract was written, some Docker packaging still needs a
-follow-up compliance pass:
+The default Dockerfiles are expected to follow this contract directly: they
+install Vox runtime infrastructure and generic compute/audio primitives, but
+they must not install adapter packages, copy adapter source trees, install
+adapter-owned backend runtimes, or pre-pull model artifacts.
 
-- the default Dockerfile still installs some model-family packages
-- the Spark Dockerfile still copies adapter source trees into the image
-
-Those are compatibility leftovers, not the desired long-term contract.
+Prewarmed images are allowed only as deployment-specific derivative images. A
+prewarmed image may populate adapter/runtime/model storage for a specific
+deployment, but it is not the generic Vox base image and must not be published
+as the default image.
 
 ## Rules For New Adapters
 

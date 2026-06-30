@@ -143,19 +143,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         "cuda-python>=12.3" \
         datasets \
         librosa \
-        mistral-common[audio] \
-        nemo-toolkit[asr] \
         "numpy<2" \
         pillow \
         "protobuf>=6.31.1" \
         sentencepiece \
         "transformers==${TRANSFORMERS_VERSION}" \
-        colorlog \
-        espeakng-loader \
-        phonemizer-fork && \
-    uv pip install --python .venv/bin/python --no-deps \
-        kokoro-onnx==0.4.9 \
-        onnx-asr[hub]==0.11.0
+        colorlog
 
 FROM ${BASE_IMAGE} AS runtime
 
@@ -223,7 +216,6 @@ WORKDIR $HOME/app
 
 COPY --from=uv /uv /bin/uv
 COPY --from=builder --chown=vox:vox /home/vox/app/.venv /home/vox/app/.venv
-COPY --chown=vox:vox adapters /home/vox/app/adapters
 COPY --chmod=755 docker/vox-entrypoint.sh /usr/local/bin/vox-entrypoint.sh
 
 RUN install -d -o vox -g vox \
@@ -237,8 +229,6 @@ RUN install -d -o vox -g vox \
 
 ENV PATH="$HOME/app/.venv/bin:$PATH" \
     VOX_HOME=$HOME/.vox \
-    VOX_BUNDLED_ADAPTERS=$HOME/app/adapters \
-    VOX_ADAPTERS_NO_DEPS=1 \
     VOX_DEVICE=cuda \
     UV_CACHE_DIR=/tmp/uvcache \
     UV_LINK_MODE=copy \
