@@ -1,0 +1,29 @@
+[project]
+name = "vox-chatterbox"
+version = "0.1.0"
+description = "Resemble Chatterbox TTS adapters for Vox"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.11"
+dependencies = [
+    "vox-runtime>=0.2.2",
+    "numpy>=1.26.0,<2.4",
+    "soundfile>=0.13.1",
+]
+
+[tool.vox.adapter]
+import-package = "vox_chatterbox"
+runtime-policy = "target-runtime"
+runtime-names = ["chatterbox"]
+adapter-types = ["tts"]
+
+[project.entry-points."vox.adapters"]
+chatterbox-tts-turbo = "vox_chatterbox.adapter:ChatterboxTurboAdapter"
+chatterbox-tts = "vox_chatterbox.adapter:ChatterboxAdapter"
+chatterbox-tts-multilingual = "vox_chatterbox.adapter:ChatterboxMultilingualAdapter"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vox_chatterbox"]

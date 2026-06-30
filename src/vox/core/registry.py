@@ -201,6 +201,58 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-piper",
         },
     },
+    "chatterbox-tts-turbo": {
+        "0.1.7": {
+            "source": "ResembleAI/chatterbox",
+            "architecture": "chatterbox-turbo",
+            "type": "tts",
+            "adapter": "chatterbox-tts-turbo",
+            "format": "pytorch",
+            "description": "Resemble Chatterbox Turbo — fast neural TTS with voice cloning",
+            "license": "MIT",
+            "parameters": {"sample_rate": 24000},
+            "adapter_package": "vox-chatterbox",
+        },
+    },
+    "chatterbox-tts": {
+        "0.1.7": {
+            "source": "ResembleAI/chatterbox",
+            "architecture": "chatterbox",
+            "type": "tts",
+            "adapter": "chatterbox-tts",
+            "format": "pytorch",
+            "description": "Resemble Chatterbox — expressive neural TTS with voice cloning",
+            "license": "MIT",
+            "parameters": {"sample_rate": 24000},
+            "adapter_package": "vox-chatterbox",
+        },
+    },
+    "chatterbox-tts-multilingual": {
+        "0.1.7": {
+            "source": "ResembleAI/chatterbox",
+            "architecture": "chatterbox-multilingual",
+            "type": "tts",
+            "adapter": "chatterbox-tts-multilingual",
+            "format": "pytorch",
+            "description": "Resemble Chatterbox Multilingual — multilingual voice cloning TTS",
+            "license": "MIT",
+            "parameters": {"sample_rate": 24000},
+            "adapter_package": "vox-chatterbox",
+        },
+    },
+    "indextts-tts-torch": {
+        "2": {
+            "source": "IndexTeam/IndexTTS-2",
+            "architecture": "indextts2",
+            "type": "tts",
+            "adapter": "indextts-tts-torch",
+            "format": "pytorch",
+            "description": "IndexTTS2 — zero-shot voice cloning TTS",
+            "license": "Apache-2.0",
+            "parameters": {"sample_rate": 24000},
+            "adapter_package": "vox-indextts",
+        },
+    },
     "dia-tts-torch": {
         "1.6b": {
             "source": "nari-labs/Dia-1.6B-0626",

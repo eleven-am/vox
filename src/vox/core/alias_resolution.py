@@ -4,7 +4,6 @@ import os
 
 from vox.core.device_placement import runtime_profile_for_alias
 
-
 _IMPLICIT_MODEL_ALIASES: dict[str, dict[str, tuple[str, str]]] = {
     "parakeet": {
         "spark": ("parakeet-stt-nemo", "tdt-0.6b-v3"),
@@ -45,6 +44,26 @@ _IMPLICIT_MODEL_ALIASES: dict[str, dict[str, tuple[str, str]]] = {
     "openvoice-tts": {
         "spark": ("openvoice-tts-torch", "v1"),
         "default": ("openvoice-tts-torch", "v1"),
+    },
+    "chatterbox": {
+        "spark": ("chatterbox-tts-turbo", "0.1.7"),
+        "default": ("chatterbox-tts-turbo", "0.1.7"),
+    },
+    "chatterbox-tts": {
+        "spark": ("chatterbox-tts-turbo", "0.1.7"),
+        "default": ("chatterbox-tts-turbo", "0.1.7"),
+    },
+    "chatterbox-multilingual": {
+        "spark": ("chatterbox-tts-multilingual", "0.1.7"),
+        "default": ("chatterbox-tts-multilingual", "0.1.7"),
+    },
+    "indextts": {
+        "spark": ("indextts-tts-torch", "2"),
+        "default": ("indextts-tts-torch", "2"),
+    },
+    "indextts-tts": {
+        "spark": ("indextts-tts-torch", "2"),
+        "default": ("indextts-tts-torch", "2"),
     },
     "dia": {
         "spark": ("dia-tts-torch", "1.6b"),
@@ -123,7 +142,10 @@ _LEGACY_MODEL_REF_ALIASES: dict[tuple[str, str], tuple[str, str]] = {
 }
 
 _LEGACY_NAME_ALIASES: dict[str, str] = {
+    "chatterbox": "chatterbox-tts-turbo",
+    "chatterbox-multilingual": "chatterbox-tts-multilingual",
     "dia": "dia-tts-torch",
+    "indextts": "indextts-tts-torch",
     "kokoro-torch": "kokoro-tts-torch",
     "openvoice": "openvoice-tts-torch",
     "parakeet-nemo": "parakeet-stt-nemo",

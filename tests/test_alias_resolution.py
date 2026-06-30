@@ -45,6 +45,12 @@ class TestBareNameResolution:
         assert resolve_family_alias("whisper-stt") == ("whisper-stt-ct2", "base.en")
         assert resolve_family_alias("piper") == ("piper-tts-onnx", "en-us-lessac-medium")
         assert resolve_family_alias("openvoice") == ("openvoice-tts-torch", "v1")
+        assert resolve_family_alias("chatterbox") == ("chatterbox-tts-turbo", "0.1.7")
+        assert resolve_family_alias("chatterbox-multilingual") == (
+            "chatterbox-tts-multilingual",
+            "0.1.7",
+        )
+        assert resolve_family_alias("indextts") == ("indextts-tts-torch", "2")
         assert resolve_family_alias("dia") == ("dia-tts-torch", "1.6b")
         assert resolve_family_alias("sesame") == ("sesame-tts-torch", "csm-1b")
         assert resolve_family_alias("speecht5-stt") == ("speecht5-stt-torch", "base")

@@ -322,6 +322,25 @@ class TestAvailableModels:
         assert openvoice["parameters"]["default_voice"] == "en/default"
         assert "checkpoints/base_speakers/EN/config.json" in openvoice["files"]
 
+    def test_chatterbox_catalog_entries_use_chatterbox_adapter_package(self):
+        turbo = CATALOG["chatterbox-tts-turbo"]["0.1.7"]
+        standard = CATALOG["chatterbox-tts"]["0.1.7"]
+        multilingual = CATALOG["chatterbox-tts-multilingual"]["0.1.7"]
+
+        assert turbo["adapter_package"] == "vox-chatterbox"
+        assert turbo["adapter"] == "chatterbox-tts-turbo"
+        assert standard["adapter"] == "chatterbox-tts"
+        assert multilingual["adapter"] == "chatterbox-tts-multilingual"
+        assert multilingual["parameters"]["sample_rate"] == 24_000
+
+    def test_indextts_catalog_entry_uses_indextts_adapter_package(self):
+        indextts = CATALOG["indextts-tts-torch"]["2"]
+
+        assert indextts["adapter_package"] == "vox-indextts"
+        assert indextts["adapter"] == "indextts-tts-torch"
+        assert indextts["format"] == "pytorch"
+        assert indextts["parameters"]["sample_rate"] == 24_000
+
     def test_xtts_catalog_entry_uses_huggingface_repo_id(self):
         xtts = CATALOG["xtts-tts-torch"]["v2"]
 

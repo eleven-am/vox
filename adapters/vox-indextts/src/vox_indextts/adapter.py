@@ -1,0 +1,281 @@
+from __future__ import annotations
+
+import importlib
+import logging
+import subprocess
+import tempfile
+from collections.abc import AsyncIterator, Callable
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import soundfile as sf
+from numpy.typing import NDArray
+
+from vox.core.adapter import TTSAdapter
+from vox.core.adapter_runtime import (
+    activate_runtime_path,
+    install_target_runtime_requirements,
+    purge_runtime_modules,
+)
+from vox.core.adapter_runtime import (
+    runtime_root as vox_runtime_root,
+)
+from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+
+logger = logging.getLogger(__name__)
+
+INDEXTTS_SAMPLE_RATE = 24_000
+INDEXTTS_REPO = "git+https://github.com/index-tts/index-tts.git"
+
+
+def _runtime_root() -> Path:
+    return vox_runtime_root() / "indextts"
+
+
+def _ensure_runtime_path() -> str:
+    runtime_dir = _runtime_root()
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    return activate_runtime_path(runtime_dir, root=runtime_dir.parent)
+
+
+def _run_install_command(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+
+def _install_indextts_runtime() -> None:
+    runtime_path = _ensure_runtime_path()
+    if not install_target_runtime_requirements(
+        runtime_path,
+        (INDEXTTS_REPO,),
+        timeout=1200,
+        install_runner=_run_install_command,
+        context="IndexTTS runtime install",
+    ):
+        raise RuntimeError("Failed to install IndexTTS runtime from GitHub.")
+
+
+def _clear_indextts_modules() -> None:
+    purge_runtime_modules(("indextts",))
+
+
+def _load_indextts_class() -> type[Any]:
+    _ensure_runtime_path()
+    try:
+        module = importlib.import_module("indextts.infer_v2")
+    except ImportError:
+        _install_indextts_runtime()
+        _clear_indextts_modules()
+        module = importlib.import_module("indextts.infer_v2")
+
+    cls = getattr(module, "IndexTTS2", None)
+    if cls is None:
+        raise RuntimeError("IndexTTS runtime is installed, but indextts.infer_v2.IndexTTS2 was not found.")
+    return cls
+
+
+def _voice_path(voice: str | None) -> str | None:
+    if not voice:
+        return None
+    path = Path(voice).expanduser()
+    return str(path) if path.is_file() else None
+
+
+def _write_reference_audio(path: Path, reference_audio: NDArray[np.float32], sample_rate: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sf.write(path, np.asarray(reference_audio, dtype=np.float32), sample_rate)
+
+
+def _read_audio(path: Path) -> tuple[NDArray[np.float32], int]:
+    audio, sample_rate = sf.read(path, dtype="float32", always_2d=False)
+    return np.asarray(audio, dtype=np.float32).reshape(-1), int(sample_rate)
+
+
+def _audio_from_result(result: Any, fallback_path: Path) -> tuple[NDArray[np.float32], int]:
+    if fallback_path.is_file():
+        return _read_audio(fallback_path)
+    if isinstance(result, str | Path):
+        return _read_audio(Path(result))
+    if isinstance(result, dict):
+        for key in ("audio_path", "wav_path", "output_path"):
+            value = result.get(key)
+            if isinstance(value, str | Path):
+                return _read_audio(Path(value))
+        for key in ("audio", "wav", "waveform"):
+            if key in result:
+                return _audio_array(result[key]), INDEXTTS_SAMPLE_RATE
+    if result is not None:
+        return _audio_array(result), INDEXTTS_SAMPLE_RATE
+    raise RuntimeError("IndexTTS produced no audio.")
+
+
+def _audio_array(audio: Any) -> NDArray[np.float32]:
+    if hasattr(audio, "detach"):
+        audio = audio.detach()
+    if hasattr(audio, "cpu"):
+        audio = audio.cpu()
+    if hasattr(audio, "numpy"):
+        audio = audio.numpy()
+    array = np.asarray(audio, dtype=np.float32).reshape(-1)
+    if array.size == 0:
+        raise RuntimeError("IndexTTS produced no audio.")
+    return array
+
+
+def _candidate_model_configs(model_root: Path) -> list[Path]:
+    candidates = [
+        model_root / "config.yaml",
+        model_root / "config.yml",
+        model_root / "indextts2.yaml",
+        model_root / "checkpoints" / "config.yaml",
+    ]
+    return [candidate for candidate in candidates if candidate.is_file()]
+
+
+def _construct_model(cls: type[Any], model_path: Path, device: str) -> Any:
+    cfg_candidates = _candidate_model_configs(model_path)
+    attempts: list[Callable[[], Any]] = []
+    for cfg_path in cfg_candidates:
+        attempts.append(
+            lambda cfg_path=cfg_path: cls(
+                cfg_path=str(cfg_path),
+                model_dir=str(model_path),
+                device=device,
+                use_fp16=device == "cuda",
+                use_cuda_kernel=device == "cuda",
+                use_deepspeed=False,
+            )
+        )
+        attempts.append(lambda cfg_path=cfg_path: cls(cfg_path=str(cfg_path), model_dir=str(model_path), device=device))
+        attempts.append(lambda cfg_path=cfg_path: cls(str(cfg_path), str(model_path), device=device))
+    attempts.extend(
+        [
+            lambda: cls(model_dir=str(model_path), device=device),
+            lambda: cls(str(model_path), device=device),
+            lambda: cls(str(model_path)),
+        ]
+    )
+
+    errors: list[str] = []
+    for attempt in attempts:
+        try:
+            return attempt()
+        except TypeError as exc:
+            errors.append(str(exc))
+
+    raise RuntimeError("Could not initialize IndexTTS2 with the available constructor signatures.") from (
+        TypeError("; ".join(errors)) if errors else None
+    )
+
+
+def _infer_to_file(model: Any, text: str, reference_path: str, output_path: Path) -> Any:
+    attempts: list[Callable[[], Any]] = [
+        lambda: model.infer(spk_audio_prompt=reference_path, text=text, output_path=str(output_path)),
+        lambda: model.infer(audio_prompt=reference_path, text=text, output_path=str(output_path)),
+        lambda: model.infer(text=text, audio_prompt=reference_path, output_path=str(output_path)),
+        lambda: model.infer(reference_path, text, str(output_path)),
+    ]
+    errors: list[str] = []
+    for attempt in attempts:
+        try:
+            return attempt()
+        except TypeError as exc:
+            errors.append(str(exc))
+    raise RuntimeError("Could not call IndexTTS2.infer with the supported adapter signatures.") from TypeError(
+        "; ".join(errors)
+    )
+
+
+class IndexTTSAdapter(TTSAdapter):
+    def __init__(self) -> None:
+        self._model: Any | None = None
+        self._device = "cpu"
+        self._sample_rate = INDEXTTS_SAMPLE_RATE
+
+    def info(self) -> AdapterInfo:
+        return AdapterInfo(
+            name="indextts-tts-torch",
+            type=ModelType.TTS,
+            architectures=("indextts-tts-torch", "indextts2", "indextts"),
+            default_sample_rate=INDEXTTS_SAMPLE_RATE,
+            supported_formats=(ModelFormat.PYTORCH,),
+            supports_streaming=False,
+            supports_voice_cloning=True,
+            supported_languages=("en", "zh"),
+        )
+
+    def load(self, model_path: str, device: str, **kwargs: Any) -> None:
+        if self._model is not None:
+            return
+
+        kwargs.pop("_source", None)
+        self._device = device
+        cls = _load_indextts_class()
+        logger.info("Loading IndexTTS2 runtime from %s (device=%s)", model_path, self._device)
+        self._model = _construct_model(cls, Path(model_path), self._device)
+
+    def unload(self) -> None:
+        self._model = None
+        self._device = "cpu"
+        self._sample_rate = INDEXTTS_SAMPLE_RATE
+
+    @property
+    def is_loaded(self) -> bool:
+        return self._model is not None
+
+    async def synthesize(
+        self,
+        text: str,
+        *,
+        voice: str | None = None,
+        speed: float = 1.0,
+        language: str | None = None,
+        reference_audio: NDArray[np.float32] | None = None,
+        reference_text: str | None = None,
+    ) -> AsyncIterator[SynthesizeChunk]:
+        if self._model is None:
+            raise RuntimeError("IndexTTS model is not loaded — call load() first")
+        if not text or not text.strip():
+            return
+
+        voice_file = _voice_path(voice)
+        if reference_audio is None and voice_file is None:
+            raise ValueError("IndexTTS requires reference_audio or a voice path for speaker cloning.")
+
+        with tempfile.TemporaryDirectory(prefix="vox-indextts-") as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            if reference_audio is not None:
+                ref_path = tmpdir_path / "reference.wav"
+                _write_reference_audio(ref_path, reference_audio, self._sample_rate)
+                reference_path = str(ref_path)
+            else:
+                assert voice_file is not None
+                reference_path = voice_file
+
+            output_path = tmpdir_path / "output.wav"
+            result = _infer_to_file(self._model, text, reference_path, output_path)
+            audio, sample_rate = _audio_from_result(result, output_path)
+
+        chunk_size = sample_rate * 2
+        for i in range(0, len(audio), chunk_size):
+            yield SynthesizeChunk(
+                audio=audio[i:i + chunk_size].tobytes(),
+                sample_rate=sample_rate,
+                is_final=False,
+            )
+
+        yield SynthesizeChunk(audio=b"", sample_rate=sample_rate, is_final=True)
+
+    def list_voices(self) -> list[VoiceInfo]:
+        return [
+            VoiceInfo(
+                id="reference",
+                name="Reference audio",
+                language=None,
+                description="Pass reference_audio or a voice path to clone a speaker.",
+                is_cloned=True,
+            )
+        ]
+
+    def estimate_vram_bytes(self, **kwargs: Any) -> int:
+        return 6_000_000_000
