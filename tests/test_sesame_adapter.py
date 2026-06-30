@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib
+import subprocess
 import sys
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -105,6 +107,34 @@ class TestSesameAdapterInfo:
             adapter = SesameTTSAdapter()
             with pytest.raises(RuntimeError, match="CsmForConditionalGeneration"):
                 adapter.load("sesame/csm-1b", "auto")
+
+    def test_install_runtime_uses_isolated_target_runtime(self, tmp_path: Path):
+        torch = MagicMock()
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with patch.dict("sys.modules", {"torch": torch}):
+            _clear_sesame_modules()
+            import vox_sesame.adapter as module
+
+            runtime_dir = tmp_path / "vox-home" / "runtime" / "sesame"
+            with (
+                patch("vox_sesame.adapter._runtime_root", return_value=runtime_dir),
+                patch("vox_sesame.adapter._runtime_has_csm_support", side_effect=[True]),
+                patch("vox_sesame.adapter.subprocess.run", side_effect=fake_run),
+            ):
+                module._install_sesame_runtime()
+
+        assert calls
+        first = calls[0]
+        assert first[:2] == ["uv", "pip"]
+        assert "--target" in first
+        assert str(runtime_dir) in first
+        assert "transformers>=4.52.1,<5" in first
+        assert "sentencepiece>=0.2.0" in first
 
     def test_estimate_vram(self):
         with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):

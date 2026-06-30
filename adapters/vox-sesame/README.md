@@ -14,8 +14,9 @@ pip install vox-sesame
 
 ## Runtime Dependencies
 
-Sesame currently installs its backend dependencies with the adapter package.
-Model weights still live in Vox model storage, not in the base Vox image.
+Sesame bootstraps its Transformers backend into the isolated target runtime
+`$VOX_HOME/runtime/sesame`. Model weights still live in Vox model storage, not
+in the base Vox image.
 
 ## Use with Vox
 

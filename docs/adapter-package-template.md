@@ -155,7 +155,7 @@ tests in `tests/test_adapter_runtime.py` for behavior in
 | `vox-parakeet` | `mixed` | `parakeet-nemo` | ONNX backend uses package deps; NeMo uses target runtime. |
 | `vox-piper` | `target-runtime` | `piper` | Piper backend installs into target runtime. |
 | `vox-qwen` | `target-runtime` | `qwen-asr`, `qwen-tts` | ASR/TTS use separate target runtimes. |
-| `vox-sesame` | `package-runtime` | none | Backend packages currently install with the adapter package. |
+| `vox-sesame` | `target-runtime` | `sesame` | Transformers CSM runtime installs into target runtime. |
 | `vox-voxtral` | `venv-exception` | `voxtral-stt`, `voxtral-tts` | TTS uses a deliberate venv exception. |
 | `vox-whisper` | `target-runtime` | `whisper` | faster-whisper/CTranslate2 target runtime. |
 | `vox-xtts` | `target-runtime` | `xtts` | Coqui XTTS target runtime. |

@@ -134,3 +134,22 @@ def test_all_adapter_packages_have_valid_vox_entry_points_and_wheel_packages():
         assert wheel_packages == [f"src/{import_package}"], (
             f"{pyproject_path} wheel package should match import-package"
         )
+
+
+def test_externalized_adapter_runtime_dependencies_are_not_package_dependencies():
+    expected_absent = {
+        "vox-dia": ("transformers", "sentencepiece"),
+        "vox-piper": ("piper-tts",),
+        "vox-sesame": ("transformers", "sentencepiece"),
+        "vox-xtts": ("coqui-tts", "torchaudio"),
+    }
+
+    for pyproject_path in _adapter_pyprojects():
+        data = _load_pyproject(pyproject_path)
+        project = data["project"]
+        dependencies = project.get("dependencies", [])
+        forbidden = expected_absent.get(project["name"], ())
+        for package in forbidden:
+            assert not any(dep.split(";", 1)[0].strip().startswith(package) for dep in dependencies), (
+                f"{pyproject_path} should bootstrap {package} into its runtime directory"
+            )

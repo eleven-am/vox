@@ -6,15 +6,14 @@ readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
 dependencies = [
     "vox-runtime>=0.2.2",
-    "transformers>=4.52.1",
     "torch>=2.1.0",
     "numpy>=1.26.0,<2.4",
 ]
 
 [tool.vox.adapter]
 import-package = "vox_sesame"
-runtime-policy = "package-runtime"
-runtime-names = []
+runtime-policy = "target-runtime"
+runtime-names = ["sesame"]
 adapter-types = ["tts"]
 
 [project.entry-points."vox.adapters"]
