@@ -11,6 +11,12 @@ dependencies = [
     "numpy>=1.26.0,<2.4",
 ]
 
+[tool.vox.adapter]
+import-package = "vox_sesame"
+runtime-policy = "package-runtime"
+runtime-names = []
+adapter-types = ["tts"]
+
 [project.entry-points."vox.adapters"]
 sesame-tts-torch = "vox_sesame.adapter:SesameTTSAdapter"
 sesame = "vox_sesame.adapter:SesameTTSAdapter"

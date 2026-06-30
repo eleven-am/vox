@@ -12,6 +12,12 @@ dependencies = [
     "huggingface-hub>=0.25.0",
 ]
 
+[tool.vox.adapter]
+import-package = "vox_kokoro"
+runtime-policy = "package-runtime"
+runtime-names = []
+adapter-types = ["tts"]
+
 [project.entry-points."vox.adapters"]
 kokoro-tts-onnx = "vox_kokoro.adapter:KokoroAdapter"
 kokoro-tts-torch = "vox_kokoro.torch_adapter:KokoroTorchAdapter"

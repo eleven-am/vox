@@ -12,6 +12,11 @@ Sesame CSM TTS adapter package for Vox.
 pip install vox-sesame
 ```
 
+## Runtime Dependencies
+
+Sesame currently installs its backend dependencies with the adapter package.
+Model weights still live in Vox model storage, not in the base Vox image.
+
 ## Use with Vox
 
 ```bash

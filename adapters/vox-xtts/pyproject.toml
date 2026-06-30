@@ -13,6 +13,12 @@ dependencies = [
     "soundfile>=0.13.1",
 ]
 
+[tool.vox.adapter]
+import-package = "vox_xtts"
+runtime-policy = "target-runtime"
+runtime-names = ["xtts"]
+adapter-types = ["tts"]
+
 [project.entry-points."vox.adapters"]
 xtts-tts-torch = "vox_xtts.adapter:XTTSAdapter"
 xtts = "vox_xtts.adapter:XTTSAdapter"

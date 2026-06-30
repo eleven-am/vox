@@ -12,6 +12,11 @@ Whisper STT adapter package for Vox.
 pip install vox-whisper
 ```
 
+## Runtime Dependencies
+
+Whisper bootstraps faster-whisper and CTranslate2 into the isolated target
+runtime `$VOX_HOME/runtime/whisper`.
+
 ## Use with Vox
 
 ```bash

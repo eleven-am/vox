@@ -14,6 +14,11 @@ Microsoft adapter package for Vox.
 pip install vox-microsoft
 ```
 
+## Runtime Dependencies
+
+SpeechT5 currently uses adapter package dependencies. VibeVoice bootstraps its
+heavier backend into `$VOX_HOME/runtime/vibevoice`.
+
 ## Use with Vox
 
 ```bash

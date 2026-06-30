@@ -17,6 +17,12 @@ dependencies = [
     "sentencepiece>=0.2.0",
 ]
 
+[tool.vox.adapter]
+import-package = "vox_microsoft"
+runtime-policy = "mixed"
+runtime-names = ["vibevoice"]
+adapter-types = ["stt", "tts"]
+
 [project.entry-points."vox.adapters"]
 speecht5-stt-torch = "vox_microsoft.speecht5_stt_adapter:SpeechT5STTAdapter"
 speecht5-tts-torch = "vox_microsoft.speecht5_tts_adapter:SpeechT5TTSAdapter"

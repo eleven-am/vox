@@ -13,6 +13,12 @@ Kokoro adapter package for Vox.
 pip install vox-kokoro
 ```
 
+## Runtime Dependencies
+
+Kokoro currently installs its ONNX and Torch backend packages with the adapter
+package. Model weights and voices still live in Vox model storage, not in the
+base Vox image.
+
 ## Use with Vox
 
 ```bash

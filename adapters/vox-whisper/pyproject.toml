@@ -10,6 +10,12 @@ dependencies = [
     "numpy>=1.26.0,<2.4",
 ]
 
+[tool.vox.adapter]
+import-package = "vox_whisper"
+runtime-policy = "target-runtime"
+runtime-names = ["whisper"]
+adapter-types = ["stt"]
+
 [project.entry-points."vox.adapters"]
 whisper-stt-ct2 = "vox_whisper.adapter:WhisperAdapter"
 whisper = "vox_whisper.adapter:WhisperAdapter"

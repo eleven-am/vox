@@ -12,6 +12,11 @@ XTTS-v2 adapter package for Vox.
 pip install vox-xtts
 ```
 
+## Runtime Dependencies
+
+XTTS bootstraps the Coqui runtime into the isolated target runtime
+`$VOX_HOME/runtime/xtts`.
+
 ## Use with Vox
 
 ```bash

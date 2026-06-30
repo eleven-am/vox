@@ -12,6 +12,12 @@ dependencies = [
     "soundfile>=0.13.1",
 ]
 
+[tool.vox.adapter]
+import-package = "vox_openvoice"
+runtime-policy = "target-runtime"
+runtime-names = ["openvoice"]
+adapter-types = ["tts"]
+
 [project.entry-points."vox.adapters"]
 openvoice-tts-torch = "vox_openvoice.adapter:OpenVoiceTTSAdapter"
 openvoice = "vox_openvoice.adapter:OpenVoiceTTSAdapter"

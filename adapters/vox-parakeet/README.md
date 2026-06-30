@@ -13,6 +13,11 @@ Parakeet STT adapter package for Vox.
 pip install vox-parakeet
 ```
 
+## Runtime Dependencies
+
+The ONNX backend is installed with the adapter package. The NeMo backend
+bootstraps into `$VOX_HOME/runtime/parakeet-nemo`.
+
 ## Use with Vox
 
 ```bash

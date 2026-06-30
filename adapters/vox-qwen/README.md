@@ -13,6 +13,11 @@ Qwen speech adapter package for Vox.
 pip install vox-qwen
 ```
 
+## Runtime Dependencies
+
+Qwen ASR and TTS backend packages bootstrap into isolated target runtimes under
+`$VOX_HOME/runtime/qwen-asr` and `$VOX_HOME/runtime/qwen-tts`.
+
 ## Use with Vox
 
 ```bash

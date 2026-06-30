@@ -13,6 +13,12 @@ dependencies = [
     "sentencepiece>=0.2.0",
 ]
 
+[tool.vox.adapter]
+import-package = "vox_dia"
+runtime-policy = "target-runtime"
+runtime-names = ["dia"]
+adapter-types = ["tts"]
+
 [project.entry-points."vox.adapters"]
 dia-tts-torch = "vox_dia.adapter:DiaAdapter"
 dia = "vox_dia.adapter:DiaAdapter"

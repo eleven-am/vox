@@ -8,6 +8,9 @@ family to bring the dependencies it needs.
 For dependency pinning, `--upgrade`, verification, and repair rules inside
 `$VOX_HOME/runtime/<runtime-name>`, see
 [the adapter runtime dependency policy](adapter-runtime-dependency-policy.md).
+For the concrete adapter package layout, `pyproject.toml` metadata, README
+sections, and review checklist, see
+[the adapter package template](adapter-package-template.md).
 
 ## Terms
 
@@ -200,3 +203,5 @@ New adapters should follow these rules:
 6. Do not require changes to the base Vox image for a new model family.
 7. Add tests for package metadata, import safety, runtime bootstrap, and adapter
    capability metadata.
+8. Follow the standard package shape in
+   [the adapter package template](adapter-package-template.md).

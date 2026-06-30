@@ -12,6 +12,12 @@ dependencies = [
     "soundfile>=0.13.1",
 ]
 
+[tool.vox.adapter]
+import-package = "vox_parakeet"
+runtime-policy = "mixed"
+runtime-names = ["parakeet-nemo"]
+adapter-types = ["stt"]
+
 [project.entry-points."vox.adapters"]
 parakeet-stt-onnx = "vox_parakeet.adapter:ParakeetAdapter"
 parakeet-stt-nemo = "vox_parakeet.nemo_adapter:ParakeetNemoAdapter"

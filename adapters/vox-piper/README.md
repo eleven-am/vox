@@ -12,6 +12,11 @@ Piper TTS adapter package for Vox.
 pip install vox-piper
 ```
 
+## Runtime Dependencies
+
+Piper bootstraps `piper-tts` into the isolated target runtime
+`$VOX_HOME/runtime/piper`.
+
 ## Use with Vox
 
 ```bash

@@ -13,6 +13,12 @@ dependencies = [
     "librosa>=0.10.0",
 ]
 
+[tool.vox.adapter]
+import-package = "vox_qwen"
+runtime-policy = "target-runtime"
+runtime-names = ["qwen-asr", "qwen-tts"]
+adapter-types = ["stt", "tts"]
+
 [project.entry-points."vox.adapters"]
 qwen3-stt-torch = "vox_qwen.asr_adapter:Qwen3ASRAdapter"
 qwen3-tts-torch = "vox_qwen.tts_adapter:Qwen3TTSAdapter"

@@ -14,6 +14,13 @@ dependencies = [
     "soundfile>=0.13.1",
 ]
 
+[tool.vox.adapter]
+import-package = "vox_voxtral"
+runtime-policy = "venv-exception"
+runtime-names = ["voxtral-stt", "voxtral-tts"]
+adapter-types = ["stt", "tts"]
+venv-exceptions = ["voxtral-tts"]
+
 [project.entry-points."vox.adapters"]
 voxtral-stt-torch = "vox_voxtral.stt_adapter:VoxtralSTTAdapter"
 voxtral-tts-vllm = "vox_voxtral.tts_adapter:VoxtralTTSAdapter"

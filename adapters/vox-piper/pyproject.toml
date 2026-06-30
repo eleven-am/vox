@@ -6,9 +6,14 @@ readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
 dependencies = [
     "vox-runtime>=0.2.2",
-    "piper-tts>=1.2.0,<2.0.0",
     "numpy>=1.26.0,<2.4",
 ]
+
+[tool.vox.adapter]
+import-package = "vox_piper"
+runtime-policy = "target-runtime"
+runtime-names = ["piper"]
+adapter-types = ["tts"]
 
 [project.entry-points."vox.adapters"]
 piper-tts-onnx = "vox_piper.adapter:PiperAdapter"

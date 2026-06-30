@@ -12,6 +12,11 @@ Dia TTS adapter package for Vox.
 pip install vox-dia
 ```
 
+## Runtime Dependencies
+
+Dia uses an isolated target runtime at `$VOX_HOME/runtime/dia` for backend
+packages that must not leak into the base Vox app environment.
+
 ## Use with Vox
 
 ```bash
