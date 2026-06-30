@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import os
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -117,19 +118,22 @@ class TestPiperAdapter:
                 sys.modules["piper"] = piper_module
             return mock
 
-        with patch.dict("sys.modules", {"torch": torch_mock}, clear=False):
+        with (
+            patch.dict("sys.modules", {"torch": torch_mock}, clear=False),
+            patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}),
+        ):
             sys.modules.pop("piper", None)
             from vox_piper.adapter import PiperAdapter
 
             with (
-                patch("vox_piper.adapter.importlib.util.find_spec", return_value=None),
                 patch("vox_piper.adapter.subprocess.run", side_effect=fake_run),
             ):
                 adapter = PiperAdapter()
                 adapter.load(str(tmp_path), "cuda", _source="rhasspy/piper-voices")
 
-        assert calls[0][:3] == [sys.executable, "-m", "ensurepip"]
-        assert any(cmd[0].endswith("uv") or cmd[:3] == [sys.executable, "-m", "pip"] for cmd in calls[1:])
+        assert calls[0][:2] == ["uv", "pip"]
+        assert "--target" in calls[0]
+        assert str(tmp_path / "vox-home" / "runtime" / "piper") in calls[0]
         assert adapter.is_loaded is True
 
     def test_synthesize_streams_audio_chunks(self, tmp_path: Path):

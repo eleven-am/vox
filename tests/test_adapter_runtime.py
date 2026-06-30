@@ -176,3 +176,24 @@ def test_install_target_runtime_requirements_rejects_success_without_expected_pa
 
     assert calls[0][:2] == ["uv", "pip"]
     assert calls[1][:3] == [sys.executable, "-m", "pip"]
+
+
+def test_install_target_runtime_requirements_includes_extra_install_args(tmp_path):
+    calls: list[list[str]] = []
+
+    def runner(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    assert adapter_runtime.install_target_runtime_requirements(
+        tmp_path / "runtime",
+        ["git+https://example.invalid/runtime.git"],
+        no_deps=True,
+        upgrade=False,
+        extra_install_args=["--no-build-isolation"],
+        install_runner=runner,
+    )
+
+    assert "--no-build-isolation" in calls[0]
+    assert "--no-deps" in calls[0]
+    assert "--upgrade" not in calls[0]

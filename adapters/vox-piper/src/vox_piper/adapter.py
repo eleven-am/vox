@@ -1,19 +1,24 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
 import subprocess
-import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-import torch
 from numpy.typing import NDArray
 
 from vox.core.adapter import TTSAdapter
+from vox.core.adapter_runtime import (
+    activate_runtime_path,
+    install_target_runtime_requirements,
+    module_available,
+)
+from vox.core.adapter_runtime import (
+    runtime_root as vox_runtime_root,
+)
 from vox.core.types import (
     AdapterInfo,
     ModelFormat,
@@ -26,7 +31,17 @@ logger = logging.getLogger(__name__)
 
 PIPER_SAMPLE_RATE = 22_050
 _DEFAULT_VOICE_ID = "default"
+_RUNTIME_DEPENDENCIES = ("piper-tts>=1.2.0,<2.0.0",)
 
+
+def _runtime_root() -> Path:
+    return vox_runtime_root() / "piper"
+
+
+def _ensure_runtime_path() -> str:
+    runtime_dir = _runtime_root()
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    return activate_runtime_path(runtime_dir, root=runtime_dir.parent)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -116,6 +131,7 @@ def _speaker_id_for_voice(config: dict[str, Any], voice: str | None) -> int | No
 
 
 def _load_piper_voice_class() -> Any:
+    _ensure_runtime_path()
     try:
         from piper import PiperVoice
         return PiperVoice
@@ -140,36 +156,22 @@ def _build_synthesis_config(
     return SynthesisConfig(speaker_id=speaker_id, length_scale=length_scale)
 
 
-def _ensure_pip_available() -> None:
-    if importlib.util.find_spec("pip") is not None:
-        return
-
-    result = subprocess.run(
-        [sys.executable, "-m", "ensurepip", "--default-pip"],
-        capture_output=True,
-        text=True,
-        timeout=300,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            "Failed to bootstrap pip for Piper runtime install. "
-            f"stderr: {result.stderr.strip()}"
-        )
-
-
 def _install_piper_runtime() -> None:
-    _ensure_pip_available()
-    result = subprocess.run(
-        [sys.executable, "-m", "pip", "install", "piper-tts>=1.2.0,<2.0.0"],
-        capture_output=True,
-        text=True,
+    runtime_path = _ensure_runtime_path()
+    if not install_target_runtime_requirements(
+        runtime_path,
+        _RUNTIME_DEPENDENCIES,
         timeout=900,
-    )
-    if result.returncode != 0:
+        install_runner=_run_install_command,
+        context="Piper runtime install",
+    ) or not module_available("piper"):
         raise RuntimeError(
-            "Failed to install Piper runtime package. "
-            f"stderr: {result.stderr.strip()}"
+            "Failed to install Piper runtime package."
         )
+
+
+def _run_install_command(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
 class PiperAdapter(TTSAdapter):

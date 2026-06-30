@@ -21,3 +21,5 @@ def test_adapter_runtime_dependency_policy_documents_resolution_and_repair_rules
     assert "successful `pip` or `uv`" in policy
     assert "exit code is not enough" in policy
     assert "sentinel must not bypass" in policy
+    assert "$VOX_HOME/runtime/voxtral-tts" in policy
+    assert "process-level and library-path isolation" in policy

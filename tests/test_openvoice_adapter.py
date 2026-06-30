@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -180,18 +181,22 @@ class TestOpenVoiceAdapterInfo:
             calls.append(cmd)
             return mock
 
-        with patch.dict("sys.modules", {"torch": torch, "librosa": MagicMock(), "soundfile": MagicMock()}):
+        with (
+            patch.dict("sys.modules", {"torch": torch, "librosa": MagicMock(), "soundfile": MagicMock()}),
+            patch.dict(os.environ, {"VOX_HOME": "/tmp/vox-openvoice-test-home"}),
+        ):
             _clear_openvoice_modules()
             from vox_openvoice.adapter import _install_openvoice_runtime
 
             with (
-                patch("vox_openvoice.adapter.importlib.util.find_spec", return_value=None),
                 patch("vox_openvoice.adapter.subprocess.run", side_effect=fake_run),
             ):
                 _install_openvoice_runtime()
 
-        assert calls[0][0].endswith("uv")
+        assert calls[0][0] == "uv"
         assert calls[0][1:5] == ["pip", "install", "--python", sys.executable]
+        assert "--target" in calls[0]
+        assert "/tmp/vox-openvoice-test-home/runtime/openvoice" in calls[0]
         assert "--no-build-isolation" in calls[0]
         assert "--no-deps" in calls[0]
         assert "resampy==0.4.3" in calls[0]

@@ -1,11 +1,8 @@
 from __future__ import annotations
 
 import importlib
-import importlib.util
 import logging
-import shutil
 import subprocess
-import sys
 import tempfile
 import time
 from collections.abc import AsyncIterator
@@ -19,6 +16,14 @@ import torch
 from numpy.typing import NDArray
 
 from vox.core.adapter import TTSAdapter
+from vox.core.adapter_runtime import (
+    activate_runtime_path,
+    install_target_runtime_requirements,
+    purge_runtime_modules,
+)
+from vox.core.adapter_runtime import (
+    runtime_root as vox_runtime_root,
+)
 from vox.core.types import (
     AdapterInfo,
     ModelFormat,
@@ -57,6 +62,15 @@ OPENVOICE_VOICE_NAMES = (
 )
 OPENVOICE_LANGUAGES = ("en", "zh")
 
+
+def _runtime_root() -> Path:
+    return vox_runtime_root() / "openvoice"
+
+
+def _ensure_runtime_path() -> str:
+    runtime_dir = _runtime_root()
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    return activate_runtime_path(runtime_dir, root=runtime_dir.parent)
 
 
 def _language_name(language: str | None) -> str:
@@ -109,65 +123,29 @@ def _build_voice_list() -> list[VoiceInfo]:
 
 
 def _install_openvoice_runtime() -> None:
+    runtime_path = _ensure_runtime_path()
     logger.info("Installing OpenVoice runtime from %s", OPENVOICE_REPO)
-    uv_executable = shutil.which("uv") or "/usr/bin/uv"
-    install_cmd = [
-        uv_executable,
-        "pip",
-        "install",
-        "--python",
-        sys.executable,
-        "--no-build-isolation",
-        "--no-deps",
-        OPENVOICE_REPO,
-        *OPENVOICE_RUNTIME_DEPS,
-    ]
-    result = subprocess.run(install_cmd, capture_output=True, text=True, timeout=900)
-    if result.returncode != 0:
-        if importlib.util.find_spec("pip") is None:
-            bootstrap = subprocess.run(
-                [sys.executable, "-m", "ensurepip", "--default-pip"],
-                capture_output=True,
-                text=True,
-                timeout=300,
-            )
-            if bootstrap.returncode != 0:
-                raise RuntimeError(
-                    "Failed to bootstrap pip for OpenVoice runtime install. "
-                    f"stderr: {bootstrap.stderr.strip()}"
-                )
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "--no-build-isolation",
-                "--no-deps",
-                OPENVOICE_REPO,
-                *OPENVOICE_RUNTIME_DEPS,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=900,
-        )
-    if result.returncode != 0:
+    if not install_target_runtime_requirements(
+        runtime_path,
+        (OPENVOICE_REPO, *OPENVOICE_RUNTIME_DEPS),
+        no_deps=True,
+        upgrade=False,
+        timeout=900,
+        extra_install_args=("--no-build-isolation",),
+        install_runner=_run_install_command,
+        context="OpenVoice runtime install",
+    ):
         raise RuntimeError(
-            "Failed to install OpenVoice runtime from GitHub. "
-            f"stderr: {result.stderr.strip()}"
+            "Failed to install OpenVoice runtime from GitHub."
         )
 
 
 def _clear_openvoice_modules() -> None:
-    for module_name in list(sys.modules):
-        if module_name == "openvoice" or module_name.startswith(
-            ("openvoice.", "cn2an", "cn2an.", "proces", "proces.", "jieba", "jieba.")
-        ):
-            sys.modules.pop(module_name, None)
-    importlib.invalidate_caches()
+    purge_runtime_modules(("openvoice", "cn2an", "proces", "jieba"))
 
 
 def _load_openvoice_api() -> tuple[type[Any], type[Any]]:
+    _ensure_runtime_path()
     try:
         module = importlib.import_module("openvoice.api")
     except ImportError:
@@ -182,6 +160,10 @@ def _load_openvoice_api() -> tuple[type[Any], type[Any]]:
             "OpenVoice runtime is installed, but the expected API was not found. "
             "The adapter requires openvoice.api.BaseSpeakerTTS and openvoice.api.ToneColorConverter."
         ) from exc
+
+
+def _run_install_command(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
 def _move_to_device(inputs: Any, device: str) -> Any:

@@ -186,6 +186,7 @@ def install_target_runtime_requirements(
     timeout: int = 900,
     expected_paths: Iterable[Path] = (),
     installer_order: Iterable[InstallerName] = ("uv", "pip"),
+    extra_install_args: Iterable[str] = (),
     install_runner: InstallRunner | None = None,
     context: str = "adapter runtime",
 ) -> bool:
@@ -201,6 +202,7 @@ def install_target_runtime_requirements(
         no_deps=no_deps,
         upgrade=upgrade,
         installer_order=installer_order,
+        extra_install_args=list(extra_install_args),
     ):
         try:
             if _is_python_pip_command(installer):
@@ -245,7 +247,9 @@ def _install_commands(
     no_deps: bool,
     upgrade: bool = True,
     installer_order: Iterable[InstallerName] = ("uv", "pip"),
+    extra_install_args: list[str] | None = None,
 ) -> list[list[str]]:
+    extra_args = extra_install_args or []
     commands: dict[str, list[str]] = {
         "uv": [
             "uv",
@@ -265,6 +269,8 @@ def _install_commands(
             runtime_path,
         ],
     }
+    commands["uv"].extend(extra_args)
+    commands["pip"].extend(extra_args)
     if upgrade:
         commands["uv"].append("--upgrade")
         commands["pip"].append("--upgrade")

@@ -92,6 +92,14 @@ If a backend requires a full virtual environment or process-level isolation,
 the adapter may use a custom runtime layout, but that exception must be
 documented and tested.
 
+Current deliberate exception:
+
+- Voxtral TTS uses a full virtual environment under
+  `$VOX_HOME/runtime/voxtral-tts` because vLLM-Omni and GPU PyTorch dependency
+  loading need process-level and library-path isolation stronger than a simple
+  `--target` directory. Voxtral STT still uses a target runtime under
+  `$VOX_HOME/runtime/voxtral-stt`.
+
 ## Verification After Install
 
 A runtime install is valid only after verification. A successful `pip` or `uv`
@@ -172,4 +180,3 @@ Adapters with runtime bootstrap logic should have tests for:
 New runtime policy behavior should be covered in `tests/test_adapter_runtime.py`
 when it belongs to the shared helper, or in the adapter-specific test file when
 it is adapter behavior.
-
