@@ -212,6 +212,27 @@ class TestInstallCommand:
             ]
         ]
 
+    def test_includes_dependencies_for_parakeet_package(self, tmp_path: Path):
+        runner = _FakeRunner()
+        resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
+
+        assert resolver._install_package("vox-parakeet") is True
+        assert runner.calls == [
+            [
+                "uv",
+                "pip",
+                "install",
+                "--python",
+                sys.executable,
+                "--target",
+                str(tmp_path / "adapters" / "vox-parakeet"),
+                "--upgrade",
+                "--refresh-package",
+                "vox-parakeet",
+                "vox-parakeet",
+            ]
+        ]
+
     def test_skip_dependencies_via_env_for_published_packages(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ):

@@ -119,8 +119,41 @@ def test_chatterbox_bootstraps_runtime_when_missing(tmp_path):
         ):
             ChatterboxTurboAdapter().load(str(tmp_path), "cpu")
 
-    assert calls
-    assert calls[0][:2] == ["uv", "pip"]
-    assert "--target" in calls[0]
-    assert str(tmp_path / "vox-home" / "runtime" / "chatterbox") in calls[0]
-    assert "chatterbox-tts>=0.1.7,<0.2.0" in calls[0]
+    assert len(calls) == 2
+    package_install, dependency_install = calls
+    runtime_dir = str(tmp_path / "vox-home" / "runtime" / "chatterbox")
+
+    assert package_install[:2] == ["uv", "pip"]
+    assert "--target" in package_install
+    assert runtime_dir in package_install
+    assert "--no-deps" in package_install
+    assert "chatterbox-tts>=0.1.7,<0.2.0" in package_install
+
+    assert dependency_install[:2] == ["uv", "pip"]
+    assert "--target" in dependency_install
+    assert runtime_dir in dependency_install
+    assert "--no-deps" not in dependency_install
+    assert not any(req in dependency_install for req in {"torch", "torchaudio"})
+    assert "transformers==5.2.0" in dependency_install
+    assert "diffusers==0.29.0" in dependency_install
+
+
+def test_chatterbox_removes_stale_torch_runtime_packages(tmp_path):
+    from vox_chatterbox.adapter import _purge_chatterbox_app_runtime_packages
+
+    runtime_dir = tmp_path / "runtime"
+    stale_dirs = [
+        runtime_dir / "torch",
+        runtime_dir / "torchaudio",
+        runtime_dir / "nvidia",
+        runtime_dir / "torch-2.6.0.dist-info",
+        runtime_dir / "torchaudio-2.6.0.dist-info",
+    ]
+    for path in stale_dirs:
+        path.mkdir(parents=True)
+    (runtime_dir / "chatterbox").mkdir()
+
+    _purge_chatterbox_app_runtime_packages(runtime_dir)
+
+    assert not any(path.exists() for path in stale_dirs)
+    assert (runtime_dir / "chatterbox").is_dir()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import shutil
 import subprocess
 import tempfile
 from collections.abc import AsyncIterator
@@ -26,7 +27,23 @@ from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk,
 logger = logging.getLogger(__name__)
 
 CHATTERBOX_SAMPLE_RATE = 24_000
-CHATTERBOX_RUNTIME_DEPS = ("chatterbox-tts>=0.1.7,<0.2.0",)
+CHATTERBOX_PACKAGE = "chatterbox-tts>=0.1.7,<0.2.0"
+CHATTERBOX_RUNTIME_DEPS = (
+    "numpy>=1.26.0,<2.0.0",
+    "librosa==0.11.0",
+    "s3tokenizer",
+    "transformers==5.2.0",
+    "diffusers==0.29.0",
+    "resemble-perth>=1.0.0",
+    "conformer==0.3.2",
+    "safetensors==0.5.3",
+    "spacy-pkuseg",
+    "pykakasi==2.3.0",
+    "gradio==6.8.0",
+    "pyloudnorm",
+    "omegaconf",
+)
+CHATTERBOX_APP_RUNTIME_PACKAGES = ("torch", "torchaudio", "nvidia")
 
 
 def _runtime_root() -> Path:
@@ -43,20 +60,59 @@ def _run_install_command(cmd: list[str], timeout: int) -> subprocess.CompletedPr
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
+def _purge_chatterbox_app_runtime_packages(runtime_path: str | Path) -> None:
+    runtime_dir = Path(runtime_path)
+    if not runtime_dir.exists():
+        return
+
+    normalized_names = {
+        name.replace("-", "_").lower()
+        for name in CHATTERBOX_APP_RUNTIME_PACKAGES
+    }
+    for child in runtime_dir.iterdir():
+        child_name = child.name.replace("-", "_").lower()
+        if child_name in normalized_names or any(
+            child_name.startswith(f"{name}_") or child_name.startswith(f"{name}.")
+            for name in normalized_names
+        ):
+            if child.is_dir():
+                shutil.rmtree(child, ignore_errors=True)
+            else:
+                child.unlink(missing_ok=True)
+
+
 def _install_chatterbox_runtime() -> None:
     runtime_path = _ensure_runtime_path()
+    _purge_chatterbox_app_runtime_packages(runtime_path)
+    if not install_target_runtime_requirements(
+        runtime_path,
+        (CHATTERBOX_PACKAGE,),
+        no_deps=True,
+        timeout=900,
+        install_runner=_run_install_command,
+        context="Chatterbox runtime package install",
+    ):
+        raise RuntimeError("Failed to install Chatterbox runtime package.")
     if not install_target_runtime_requirements(
         runtime_path,
         CHATTERBOX_RUNTIME_DEPS,
         timeout=900,
         install_runner=_run_install_command,
-        context="Chatterbox runtime install",
+        context="Chatterbox runtime dependency install",
     ):
-        raise RuntimeError("Failed to install Chatterbox runtime package.")
+        raise RuntimeError("Failed to install Chatterbox runtime dependencies.")
+    _purge_chatterbox_app_runtime_packages(runtime_path)
 
 
 def _clear_chatterbox_modules() -> None:
-    purge_runtime_modules(("chatterbox", "s3tokenizer"))
+    purge_runtime_modules((
+        "chatterbox",
+        "diffusers",
+        "huggingface_hub",
+        "s3tokenizer",
+        "tokenizers",
+        "transformers",
+    ))
 
 
 def _load_chatterbox_class(module_name: str, class_name: str) -> type[Any]:

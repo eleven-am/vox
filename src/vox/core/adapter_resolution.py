@@ -26,7 +26,6 @@ DEFAULT_NO_DEPS_ADAPTER_PACKAGES = {
     "vox-kokoro",
     "vox-microsoft",
     "vox-openvoice",
-    "vox-parakeet",
     "vox-qwen",
     "vox-voxtral",
 }
