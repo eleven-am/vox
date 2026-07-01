@@ -78,6 +78,7 @@ _VRAM_ESTIMATES: dict[str, int] = {
 }
 QWEN_ASR_RUNTIME_PACKAGES = (
     "qwen-omni-utils",
+    "DyNet38==2.2",
     "nagisa==0.2.11",
     "soynlp==0.0.493",
     "librosa",
@@ -143,6 +144,7 @@ def _load_qwen_asr_model() -> Any:
         purge_modules=("accelerate", "transformers", "tokenizers", "qwen_asr"),
         no_deps=True,
         extra_packages=QWEN_ASR_RUNTIME_PACKAGES,
+        required_imports=("dynet_config",),
     )
     existing_module = sys.modules.get("qwen_asr")
     existing_model = getattr(existing_module, "Qwen3ASRModel", None) if existing_module is not None else None
@@ -177,6 +179,7 @@ def _load_qwen_forced_aligner() -> Any:
         purge_modules=("accelerate", "transformers", "tokenizers", "qwen_asr"),
         no_deps=True,
         extra_packages=QWEN_ASR_RUNTIME_PACKAGES,
+        required_imports=("dynet_config",),
     )
     existing_module = sys.modules.get("qwen_asr")
     existing_aligner = getattr(existing_module, "Qwen3ForcedAligner", None) if existing_module is not None else None

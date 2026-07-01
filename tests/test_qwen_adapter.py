@@ -78,7 +78,10 @@ class TestQwen3ASRAdapterInfo:
             from vox_qwen.asr_adapter import Qwen3ASRAdapter
 
             adapter = Qwen3ASRAdapter()
-            with patch("vox_qwen.asr_adapter._supports_flash_attention", return_value=True):
+            with (
+                patch("vox_qwen.asr_adapter.ensure_runtime"),
+                patch("vox_qwen.asr_adapter._supports_flash_attention", return_value=True),
+            ):
                 adapter.load("local-path", "cuda", _source="Qwen/Qwen3-ASR-0.6B")
 
             model_cls.from_pretrained.assert_called_once()
@@ -831,12 +834,14 @@ class TestQwenRuntimeBootstrap:
             assert ensure_runtime.call_args.kwargs["no_deps"] is True
             assert ensure_runtime.call_args.kwargs["extra_packages"] == (
                 "qwen-omni-utils",
+                "DyNet38==2.2",
                 "nagisa==0.2.11",
                 "soynlp==0.0.493",
                 "librosa",
                 "soundfile",
                 "sox",
             )
+            assert ensure_runtime.call_args.kwargs["required_imports"] == ("dynet_config",)
 
     def test_qwen_asr_model_stub_avoids_forced_aligner_import_for_plain_transcription(self):
         with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_tts": MagicMock()}, clear=False):

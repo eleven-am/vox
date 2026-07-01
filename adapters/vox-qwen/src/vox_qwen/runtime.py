@@ -26,7 +26,13 @@ def ensure_runtime(
     purge_modules: Iterable[str] = (),
     no_deps: bool = False,
     extra_packages: Iterable[str] = (),
+    required_imports: Iterable[str] = (),
 ) -> None:
+    required_names = tuple(required_imports)
+
+    def probe_runtime(name: str) -> bool:
+        return _module_available(name) and all(_module_available(required) for required in required_names)
+
     ensure_target_runtime(
         package_name,
         package_spec,
@@ -35,6 +41,6 @@ def ensure_runtime(
         no_deps=no_deps,
         extra_packages=extra_packages,
         root=_runtime_root(),
-        module_probe=_module_available,
+        module_probe=probe_runtime,
         context="Qwen runtime install",
     )
