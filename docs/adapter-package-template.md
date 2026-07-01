@@ -154,12 +154,14 @@ tests in `tests/test_adapter_runtime.py` for behavior in
 | `vox-indextts` | `target-runtime` | `indextts` | IndexTTS backend installs into target runtime. |
 | `vox-kokoro` | `package-runtime` | none | Backend packages currently install with the adapter package. |
 | `vox-microsoft` | `mixed` | `vibevoice` | SpeechT5 uses package deps; VibeVoice uses a target runtime. |
+| `vox-neutts` | `target-runtime` | `neutts` | NeuTTS backend installs into target runtime. |
 | `vox-openvoice` | `target-runtime` | `openvoice` | Upstream OpenVoice repo installs into target runtime. |
 | `vox-orpheus` | `target-runtime` | `orpheus` | Orpheus/vLLM backend installs into target runtime. |
 | `vox-parakeet` | `mixed` | `parakeet-nemo` | ONNX backend uses package deps; NeMo uses target runtime. |
 | `vox-piper` | `target-runtime` | `piper` | Piper backend installs into target runtime. |
 | `vox-qwen` | `target-runtime` | `qwen-asr`, `qwen-tts` | ASR/TTS use separate target runtimes. |
 | `vox-sesame` | `target-runtime` | `sesame` | Transformers CSM runtime installs into target runtime. |
+| `vox-spark` | `target-runtime` | `spark` | Spark-TTS repo and backend dependencies install into target runtime. |
 | `vox-voxtral` | `venv-exception` | `voxtral-stt`, `voxtral-tts` | TTS uses a deliberate venv exception. |
 | `vox-whisper` | `target-runtime` | `whisper` | faster-whisper/CTranslate2 target runtime. |
 | `vox-xtts` | `target-runtime` | `xtts` | Coqui XTTS target runtime. |

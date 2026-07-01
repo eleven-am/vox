@@ -85,6 +85,26 @@ _IMPLICIT_MODEL_ALIASES: dict[str, dict[str, tuple[str, str]]] = {
         "spark": ("indextts-tts-torch", "2"),
         "default": ("indextts-tts-torch", "2"),
     },
+    "spark": {
+        "spark": ("spark-tts-torch", "0.5b"),
+        "default": ("spark-tts-torch", "0.5b"),
+    },
+    "spark-tts": {
+        "spark": ("spark-tts-torch", "0.5b"),
+        "default": ("spark-tts-torch", "0.5b"),
+    },
+    "neutts": {
+        "spark": ("neutts-air-tts-torch", "air"),
+        "default": ("neutts-air-tts-torch", "air"),
+    },
+    "neutts-air": {
+        "spark": ("neutts-air-tts-torch", "air"),
+        "default": ("neutts-air-tts-torch", "air"),
+    },
+    "neutts-tts": {
+        "spark": ("neutts-air-tts-torch", "air"),
+        "default": ("neutts-air-tts-torch", "air"),
+    },
     "dia": {
         "spark": ("dia-tts-torch", "1.6b"),
         "default": ("dia-tts-torch", "1.6b"),
@@ -169,6 +189,8 @@ _LEGACY_NAME_ALIASES: dict[str, str] = {
     "dia": "dia-tts-torch",
     "indextts": "indextts-tts-torch",
     "kokoro-torch": "kokoro-tts-torch",
+    "neutts": "neutts-air-tts-torch",
+    "neutts-air": "neutts-air-tts-torch",
     "openvoice": "openvoice-tts-torch",
     "orpheus": "orpheus-tts-vllm",
     "parakeet-nemo": "parakeet-stt-nemo",
@@ -176,6 +198,7 @@ _LEGACY_NAME_ALIASES: dict[str, str] = {
     "qwen3-asr": "qwen3-stt-torch",
     "qwen3-tts": "qwen3-tts-torch",
     "sesame": "sesame-tts-torch",
+    "spark": "spark-tts-torch",
     "speecht5-stt": "speecht5-stt-torch",
     "speecht5-tts": "speecht5-tts-torch",
     "vibevoice": "vibevoice-tts-torch",

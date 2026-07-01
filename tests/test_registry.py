@@ -357,6 +357,22 @@ class TestAvailableModels:
         assert orpheus["adapter"] == "orpheus-tts-vllm"
         assert orpheus["parameters"]["default_voice"] == "tara"
 
+    def test_spark_catalog_entry_uses_spark_adapter_package(self):
+        spark = CATALOG["spark-tts-torch"]["0.5b"]
+
+        assert spark["source"] == "SparkAudio/Spark-TTS-0.5B"
+        assert spark["adapter_package"] == "vox-spark"
+        assert spark["adapter"] == "spark-tts-torch"
+        assert spark["parameters"]["sample_rate"] == 16_000
+
+    def test_neutts_catalog_entry_uses_neutts_adapter_package(self):
+        neutts = CATALOG["neutts-air-tts-torch"]["air"]
+
+        assert neutts["source"] == "neuphonic/neutts-air"
+        assert neutts["adapter_package"] == "vox-neutts"
+        assert neutts["adapter"] == "neutts-air-tts-torch"
+        assert neutts["parameters"]["sample_rate"] == 24_000
+
     def test_xtts_catalog_entry_uses_huggingface_repo_id(self):
         xtts = CATALOG["xtts-tts-torch"]["v2"]
 

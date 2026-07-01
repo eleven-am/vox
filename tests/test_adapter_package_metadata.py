@@ -139,8 +139,10 @@ def test_all_adapter_packages_have_valid_vox_entry_points_and_wheel_packages():
 def test_externalized_adapter_runtime_dependencies_are_not_package_dependencies():
     expected_absent = {
         "vox-dia": ("transformers", "sentencepiece"),
+        "vox-neutts": ("neutts", "torch", "transformers"),
         "vox-piper": ("piper-tts",),
         "vox-sesame": ("transformers", "sentencepiece"),
+        "vox-spark": ("transformers", "torch", "einops"),
         "vox-xtts": ("coqui-tts", "torchaudio"),
     }
 

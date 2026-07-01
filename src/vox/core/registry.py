@@ -279,6 +279,32 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-indextts",
         },
     },
+    "spark-tts-torch": {
+        "0.5b": {
+            "source": "SparkAudio/Spark-TTS-0.5B",
+            "architecture": "spark-tts",
+            "type": "tts",
+            "adapter": "spark-tts-torch",
+            "format": "pytorch",
+            "description": "Spark-TTS 0.5B — efficient LLM-based voice cloning TTS",
+            "license": "Apache-2.0",
+            "parameters": {"sample_rate": 16000},
+            "adapter_package": "vox-spark",
+        },
+    },
+    "neutts-air-tts-torch": {
+        "air": {
+            "source": "neuphonic/neutts-air",
+            "architecture": "neutts-air",
+            "type": "tts",
+            "adapter": "neutts-air-tts-torch",
+            "format": "pytorch",
+            "description": "NeuTTS Air — compact voice cloning TTS",
+            "license": "Apache-2.0",
+            "parameters": {"sample_rate": 24000},
+            "adapter_package": "vox-neutts",
+        },
+    },
     "dia-tts-torch": {
         "1.6b": {
             "source": "nari-labs/Dia-1.6B-0626",
