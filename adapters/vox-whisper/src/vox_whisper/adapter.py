@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import torch
 from numpy.typing import NDArray
 
 from vox.core.adapter import STTAdapter
@@ -87,7 +86,7 @@ def _activate_runtime_path() -> None:
 
 
 def _runtime_module_available(name: str) -> bool:
-    if name in sys.modules:
+    if sys.modules.get(name) is not None:
         return True
     try:
         return importlib.util.find_spec(name) is not None
@@ -104,10 +103,15 @@ def _ensure_runtime_dependencies() -> None:
     sentinel = adapter_root / _RUNTIME_SENTINEL
     logger.info("Installing Whisper runtime dependencies into %s", adapter_root)
     adapter_root.mkdir(parents=True, exist_ok=True)
+    expected_paths = (
+        adapter_root / "faster_whisper",
+        adapter_root / "ctranslate2",
+    )
     if not install_target_runtime_requirements(
         adapter_root,
         _RUNTIME_DEPENDENCIES,
         upgrade=False,
+        expected_paths=expected_paths,
         timeout=600,
         install_runner=_run_install_command,
         context="Whisper runtime install",
@@ -199,8 +203,13 @@ class WhisperAdapter(STTAdapter):
         self._device = "cpu"
         self._compute_type = "int8"
         self._beam_size = 5
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            logger.debug("Unable to clear torch CUDA cache while unloading Whisper", exc_info=True)
         logger.info("Whisper adapter unloaded")
 
     @property

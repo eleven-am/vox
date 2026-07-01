@@ -141,7 +141,7 @@ def _load_qwen_asr_model() -> Any:
         "qwen-asr",
         "qwen_asr",
         purge_modules=("accelerate", "transformers", "tokenizers", "qwen_asr"),
-        no_deps=False,
+        no_deps=True,
         extra_packages=QWEN_ASR_RUNTIME_PACKAGES,
     )
     existing_module = sys.modules.get("qwen_asr")
@@ -175,7 +175,7 @@ def _load_qwen_forced_aligner() -> Any:
         "qwen-asr",
         "qwen_asr",
         purge_modules=("accelerate", "transformers", "tokenizers", "qwen_asr"),
-        no_deps=False,
+        no_deps=True,
         extra_packages=QWEN_ASR_RUNTIME_PACKAGES,
     )
     existing_module = sys.modules.get("qwen_asr")

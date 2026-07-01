@@ -78,7 +78,10 @@ class TestWhisperAdapterInfo:
         model_cls.return_value = MagicMock()
         ct2_module = _mock_ctranslate2(cuda_count=1)
 
-        def _install_side_effect(*_args, **_kwargs):
+        def _install_side_effect(cmd, *_args, **_kwargs):
+            target = Path(cmd[cmd.index("--target") + 1])
+            (target / "faster_whisper").mkdir(parents=True, exist_ok=True)
+            (target / "ctranslate2").mkdir(parents=True, exist_ok=True)
             sys.modules["faster_whisper"] = fw_module
             sys.modules["ctranslate2"] = ct2_module
             return MagicMock(returncode=0, stdout="", stderr="")
@@ -102,7 +105,10 @@ class TestWhisperAdapterInfo:
         model_cls.return_value = MagicMock()
         ct2_module = _mock_ctranslate2(cuda_count=1)
 
-        def _install_side_effect(*_args, **_kwargs):
+        def _install_side_effect(cmd, *_args, **_kwargs):
+            target = Path(cmd[cmd.index("--target") + 1])
+            (target / "faster_whisper").mkdir(parents=True, exist_ok=True)
+            (target / "ctranslate2").mkdir(parents=True, exist_ok=True)
             sys.modules["faster_whisper"] = fw_module
             sys.modules["ctranslate2"] = ct2_module
             return MagicMock(returncode=0, stdout="", stderr="")
@@ -131,7 +137,10 @@ class TestWhisperAdapterInfo:
         runtime_dir.mkdir(parents=True)
         (runtime_dir / ".vox-whisper-runtime-ready").touch()
 
-        def _install_side_effect(*_args, **_kwargs):
+        def _install_side_effect(cmd, *_args, **_kwargs):
+            target = Path(cmd[cmd.index("--target") + 1])
+            (target / "faster_whisper").mkdir(parents=True, exist_ok=True)
+            (target / "ctranslate2").mkdir(parents=True, exist_ok=True)
             sys.modules["faster_whisper"] = fw_module
             sys.modules["ctranslate2"] = ct2_module
             return MagicMock(returncode=0, stdout="", stderr="")

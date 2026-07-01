@@ -809,7 +809,7 @@ class TestQwenRuntimeBootstrap:
                 "tokenizers",
                 "qwen_tts",
             )
-            assert ensure_runtime.call_args.kwargs["no_deps"] is False
+            assert ensure_runtime.call_args.kwargs["no_deps"] is True
             assert ensure_runtime.call_args.kwargs["extra_packages"] == (
                 "sox",
                 "einops",
@@ -828,7 +828,7 @@ class TestQwenRuntimeBootstrap:
                 "tokenizers",
                 "qwen_asr",
             )
-            assert ensure_runtime.call_args.kwargs["no_deps"] is False
+            assert ensure_runtime.call_args.kwargs["no_deps"] is True
             assert ensure_runtime.call_args.kwargs["extra_packages"] == (
                 "qwen-omni-utils",
                 "nagisa==0.2.11",

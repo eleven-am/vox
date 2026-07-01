@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import logging
 import subprocess
@@ -122,6 +123,35 @@ def _runtime_has_dia_support() -> bool:
     return hasattr(transformers, "DiaForConditionalGeneration") and hasattr(transformers, "AutoProcessor")
 
 
+def _decode_dia_output(
+    *,
+    processor: Any,
+    model: Any,
+    inputs: Any,
+    temp_path: Path,
+) -> tuple[np.ndarray, int]:
+    with torch.inference_mode():
+        output = model.generate(
+            **inputs,
+            max_new_tokens=_DEFAULT_MAX_NEW_TOKENS,
+            guidance_scale=_DEFAULT_GUIDANCE_SCALE,
+            temperature=_DEFAULT_TEMPERATURE,
+            top_p=_DEFAULT_TOP_P,
+            top_k=_DEFAULT_TOP_K,
+        )
+
+    decoded = processor.batch_decode(output)
+    processor.save_audio(decoded, str(temp_path))
+
+    import soundfile as sf
+
+    audio, sample_rate = sf.read(str(temp_path), dtype="float32")
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+    return audio, int(sample_rate)
+
+
 class DiaAdapter(TTSAdapter):
     def __init__(self) -> None:
         self._model: Any = None
@@ -208,30 +238,17 @@ class DiaAdapter(TTSAdapter):
         inputs = self._processor(text=[text], padding=True, return_tensors="pt")
         inputs = inputs.to(self._device) if hasattr(inputs, "to") else inputs
 
-        with torch.inference_mode():
-            output = self._model.generate(
-                **inputs,
-                max_new_tokens=_DEFAULT_MAX_NEW_TOKENS,
-                guidance_scale=_DEFAULT_GUIDANCE_SCALE,
-                temperature=_DEFAULT_TEMPERATURE,
-                top_p=_DEFAULT_TOP_P,
-                top_k=_DEFAULT_TOP_K,
-            )
-
-        decoded = self._processor.batch_decode(output)
-
         temp_path: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
                 temp_path = Path(tmp.name)
-            self._processor.save_audio(decoded, str(temp_path))
-
-            import soundfile as sf
-
-            audio, sample_rate = sf.read(str(temp_path), dtype="float32")
-            audio = np.asarray(audio, dtype=np.float32)
-            if audio.ndim > 1:
-                audio = audio.mean(axis=1)
+            audio, sample_rate = await asyncio.to_thread(
+                _decode_dia_output,
+                processor=self._processor,
+                model=self._model,
+                inputs=inputs,
+                temp_path=temp_path,
+            )
 
             chunk_size = sample_rate * 2
             for i in range(0, len(audio), chunk_size):

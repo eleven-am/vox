@@ -196,7 +196,7 @@ def _load_qwen_tts_model() -> Any:
         "qwen-tts",
         "qwen_tts",
         purge_modules=("accelerate", "transformers", "tokenizers", "qwen_tts"),
-        no_deps=False,
+        no_deps=True,
         extra_packages=QWEN_TTS_RUNTIME_PACKAGES,
     )
     try:
