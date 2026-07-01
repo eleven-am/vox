@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -32,6 +33,7 @@ logger = logging.getLogger(__name__)
 SPEECHT5_TTS_SAMPLE_RATE = 16_000
 
 DEFAULT_SPEAKER_EMBEDDING_DATASET = "Matthijs/cmu-arctic-xvectors"
+SPEECHT5_HIFIGAN_SOURCE = "microsoft/speecht5_hifigan"
 
 PRESET_VOICES: list[VoiceInfo] = [
     VoiceInfo(id="default", name="Default (CMU Arctic)", language="en", gender=None),
@@ -48,6 +50,46 @@ VOICE_TO_XVECTOR_INDEX: dict[str, int] = {
     "slt": 3,
     "rms": 2,
 }
+
+
+def _vox_home() -> Path:
+    return Path(os.environ.get("VOX_HOME", str(Path.home() / ".vox")))
+
+
+def _vocoder_runtime_dir() -> Path:
+    return _vox_home() / "runtime" / "speecht5_hifigan"
+
+
+def _ensure_vocoder_model() -> str:
+    runtime_dir = _vocoder_runtime_dir()
+    expected = runtime_dir / "pytorch_model.bin"
+    if expected.is_file():
+        return str(runtime_dir)
+
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError as exc:  # pragma: no cover - package dependency guard
+        raise RuntimeError(
+            "SpeechT5 TTS requires huggingface-hub to download the HiFi-GAN vocoder"
+        ) from exc
+
+    logger.info("Downloading SpeechT5 HiFi-GAN vocoder into %s", runtime_dir)
+    snapshot_download(
+        SPEECHT5_HIFIGAN_SOURCE,
+        local_dir=runtime_dir,
+        local_dir_use_symlinks=False,
+        allow_patterns=(
+            "config.json",
+            "pytorch_model.bin",
+            "preprocessor_config.json",
+        ),
+    )
+    if not expected.is_file():
+        raise RuntimeError(
+            f"SpeechT5 HiFi-GAN vocoder download did not create {expected}"
+        )
+    return str(runtime_dir)
 
 
 
@@ -88,7 +130,7 @@ class SpeechT5TTSAdapter(TTSAdapter):
 
         self._processor = SpeechT5Processor.from_pretrained(model_ref)
         self._model = SpeechT5ForTextToSpeech.from_pretrained(model_ref).to(self._device)
-        self._vocoder = SpeechT5HifiGan.from_pretrained("microsoft/speecht5_hifigan").to(self._device)
+        self._vocoder = SpeechT5HifiGan.from_pretrained(_ensure_vocoder_model()).to(self._device)
         self._model.eval()
         self._vocoder.eval()
 

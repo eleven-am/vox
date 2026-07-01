@@ -284,8 +284,14 @@ class TestSpeechT5TTSAdapterInfo:
             transformers.SpeechT5HifiGan.from_pretrained.return_value = vocoder
 
             adapter = SpeechT5TTSAdapter()
-            adapter.load("microsoft/speecht5_tts", "cpu")
+            with patch(
+                "vox_microsoft.speecht5_tts_adapter._ensure_vocoder_model",
+                return_value="/tmp/speecht5_hifigan",
+            ) as ensure_vocoder:
+                adapter.load("microsoft/speecht5_tts", "cpu")
 
+            ensure_vocoder.assert_called_once_with()
+            transformers.SpeechT5HifiGan.from_pretrained.assert_called_once_with("/tmp/speecht5_hifigan")
             model.to.assert_called_once_with("cpu")
             vocoder.to.assert_called_once_with("cpu")
             model.eval.assert_called_once()
@@ -311,10 +317,58 @@ class TestSpeechT5TTSAdapterInfo:
             transformers.SpeechT5HifiGan.from_pretrained.return_value = vocoder
 
             adapter = SpeechT5TTSAdapter()
-            adapter.load(str(model_dir), "cpu", _source="microsoft/speecht5_tts")
+            with patch(
+                "vox_microsoft.speecht5_tts_adapter._ensure_vocoder_model",
+                return_value="/tmp/speecht5_hifigan",
+            ):
+                adapter.load(str(model_dir), "cpu", _source="microsoft/speecht5_tts")
 
             transformers.SpeechT5Processor.from_pretrained.assert_called_once_with(str(model_dir))
             transformers.SpeechT5ForTextToSpeech.from_pretrained.assert_called_once_with(str(model_dir))
+
+    def test_vocoder_model_downloads_to_runtime_dir(self, tmp_path: Path):
+        huggingface_hub = ModuleType("huggingface_hub")
+        calls = []
+
+        def snapshot_download(repo_id: str, **kwargs):
+            calls.append((repo_id, kwargs))
+            target = Path(kwargs["local_dir"])
+            target.mkdir(parents=True, exist_ok=True)
+            (target / "pytorch_model.bin").write_bytes(b"model")
+            return str(target)
+
+        huggingface_hub.snapshot_download = snapshot_download
+
+        with (
+            patch.dict(
+                "sys.modules",
+                {
+                    "transformers": MagicMock(),
+                    "torch": MagicMock(),
+                    "huggingface_hub": huggingface_hub,
+                },
+            ),
+            patch.dict("os.environ", {"VOX_HOME": str(tmp_path)}),
+        ):
+            from vox_microsoft.speecht5_tts_adapter import _ensure_vocoder_model
+
+            path = _ensure_vocoder_model()
+
+        assert path == str(tmp_path / "runtime" / "speecht5_hifigan")
+        assert calls == [
+            (
+                "microsoft/speecht5_hifigan",
+                {
+                    "local_dir": tmp_path / "runtime" / "speecht5_hifigan",
+                    "local_dir_use_symlinks": False,
+                    "allow_patterns": (
+                        "config.json",
+                        "pytorch_model.bin",
+                        "preprocessor_config.json",
+                    ),
+                },
+            )
+        ]
 
     def test_list_voices_returns_presets(self):
         with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
