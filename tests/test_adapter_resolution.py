@@ -189,13 +189,23 @@ class TestInstallCommand:
             ]
         ]
 
+    @pytest.mark.parametrize("package_name", ["vox-sesame", "vox-whisper"])
+    def test_skip_dependencies_for_torch_backed_target_runtime_packages(
+        self, tmp_path: Path, package_name: str
+    ):
+        runner = _FakeRunner()
+        resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
+
+        assert resolver._install_package(package_name) is True
+        assert runner.calls[0][-2:] == ["--no-deps", package_name]
+
     def test_includes_dependencies_for_non_curated_published_packages(
         self, tmp_path: Path
     ):
         runner = _FakeRunner()
         resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
 
-        assert resolver._install_package("vox-whisper") is True
+        assert resolver._install_package("vox-example") is True
         assert runner.calls == [
             [
                 "uv",
@@ -204,11 +214,11 @@ class TestInstallCommand:
                 "--python",
                 sys.executable,
                 "--target",
-                str(tmp_path / "adapters" / "vox-whisper"),
+                str(tmp_path / "adapters" / "vox-example"),
                 "--upgrade",
                 "--refresh-package",
-                "vox-whisper",
-                "vox-whisper",
+                "vox-example",
+                "vox-example",
             ]
         ]
 

@@ -27,7 +27,9 @@ DEFAULT_NO_DEPS_ADAPTER_PACKAGES = {
     "vox-microsoft",
     "vox-openvoice",
     "vox-qwen",
+    "vox-sesame",
     "vox-voxtral",
+    "vox-whisper",
 }
 
 
