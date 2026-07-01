@@ -144,6 +144,7 @@ def test_chatterbox_removes_stale_torch_runtime_packages(tmp_path):
     runtime_dir = tmp_path / "runtime"
     stale_dirs = [
         runtime_dir / "torch",
+        runtime_dir / "torchgen",
         runtime_dir / "torchaudio",
         runtime_dir / "nvidia",
         runtime_dir / "torch-2.6.0.dist-info",

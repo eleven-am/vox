@@ -43,7 +43,7 @@ CHATTERBOX_RUNTIME_DEPS = (
     "pyloudnorm",
     "omegaconf",
 )
-CHATTERBOX_APP_RUNTIME_PACKAGES = ("torch", "torchaudio", "nvidia")
+CHATTERBOX_APP_RUNTIME_PACKAGES = ("torch", "torchgen", "torchaudio", "nvidia")
 
 
 def _runtime_root() -> Path:
