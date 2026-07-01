@@ -1,13 +1,12 @@
 [project]
 name = "vox-parakeet"
-version = "0.2.9"
+version = "0.2.10"
 description = "NVIDIA Parakeet STT adapters for Vox"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
 dependencies = [
     "vox-runtime>=0.2.2",
-    "onnx-asr[gpu,hub]>=0.10.0; platform_machine == 'x86_64'",
-    "onnx-asr[hub]>=0.10.0; platform_machine != 'x86_64'",
+    "onnx-asr[hub]>=0.10.0",
     "huggingface-hub>=0.34.0,<1.0",
     "numpy>=1.26.0,<2.4",
     "protobuf>=6.31.1,<7.0.0",

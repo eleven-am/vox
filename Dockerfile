@@ -77,7 +77,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
             "huggingface-hub==${HUGGINGFACE_HUB_VERSION}"; \
     elif [ "$TARGETARCH" = "amd64" ]; then \
         uv pip install --python .venv/bin/python \
-            onnxruntime-gpu \
+            onnxruntime-gpu==1.23.2 \
             "transformers==${TRANSFORMERS_VERSION}" \
             "huggingface-hub==${HUGGINGFACE_HUB_VERSION}"; \
     else \
