@@ -16,6 +16,8 @@ from vox.core.adapter import STTAdapter, TTSAdapter
 from vox.core.store import BlobStore, Manifest, ManifestLayer
 from vox.core.types import (
     AdapterInfo,
+    DeviceMemoryInfo,
+    LoadedModelInfo,
     ModelFormat,
     ModelInfo,
     ModelType,
@@ -23,6 +25,8 @@ from vox.core.types import (
     TranscribeResult,
     TranscriptSegment,
     VoiceInfo,
+    VramPolicy,
+    VramSnapshot,
     WordTimestamp,
 )
 from vox.server.routes import get_default_model
@@ -84,6 +88,8 @@ class MockScheduler(FakeScheduler):
         self._loaded = []
         self._unload = True
         self.preloaded: list[str] = []
+        self.trimmed: list[str] = []
+        self.enforced: list[int] = []
 
     def list_loaded(self): return self._loaded
     def set_loaded(self, ms): self._loaded = ms
@@ -91,6 +97,22 @@ class MockScheduler(FakeScheduler):
 
     async def unload(self, name: str) -> bool: return self._unload
     async def preload(self, name: str) -> None: self.preloaded.append(name)
+    async def trim(self, name: str) -> bool:
+        self.trimmed.append(name)
+        return self._unload
+    async def trim_idle(self, *, min_idle_seconds: int = 0) -> list[str]:
+        self.trimmed.append(f"idle:{min_idle_seconds}")
+        return ["fake:latest"]
+    async def enforce_memory_budget(self, *, additional_vram_bytes: int = 0) -> None:
+        self.enforced.append(additional_vram_bytes)
+    def memory_snapshot(self):
+        return VramSnapshot(
+            policy=VramPolicy(max_vram_bytes=10_000, headroom_bytes=1_000, idle_trim_seconds=60),
+            device=DeviceMemoryInfo(device="cuda", free_bytes=5_000, total_bytes=20_000),
+            loaded_models=tuple(self._loaded),
+            estimated_loaded_vram_bytes=4_000,
+            active_model_count=0,
+        )
 
 
 def _build_app(scheduler: MockScheduler | None = None, registry: Any = None, store: Any = None) -> FastAPI:
@@ -107,10 +129,11 @@ def _build_app(scheduler: MockScheduler | None = None, registry: Any = None, sto
     ):
         resolver.side_effect = lambda name, tag, explicit_tag=False: (name, tag)
 
-    from vox.server.routes import health, models, synthesize, transcribe, voices
+    from vox.server.routes import health, models, synthesize, system, transcribe, voices
 
     app.include_router(health.router)
     app.include_router(models.router)
+    app.include_router(system.router)
     app.include_router(transcribe.router)
     app.include_router(synthesize.router)
     app.include_router(voices.router)
@@ -132,6 +155,60 @@ class TestHealth:
         resp = client.get("/v1/models/loaded")
         assert resp.status_code == 200
         assert resp.json()["models"] == []
+
+
+class TestSystemMemory:
+    def test_memory_status_returns_policy_and_models(self):
+        scheduler = MockScheduler()
+        client = TestClient(_build_app(scheduler=scheduler))
+
+        resp = client.get("/v1/system/memory")
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["policy"]["max_vram_bytes"] == 10_000
+        assert body["device"]["device"] == "cuda"
+        assert body["estimated_loaded_vram_bytes"] == 4_000
+
+    def test_trim_idle_endpoint(self):
+        scheduler = MockScheduler()
+        client = TestClient(_build_app(scheduler=scheduler))
+
+        resp = client.post("/v1/system/trim", json={"min_idle_seconds": 30})
+
+        assert resp.status_code == 200
+        assert resp.json()["trimmed"] == ["fake:latest"]
+        assert scheduler.trimmed == ["idle:30"]
+
+    def test_enforce_memory_budget_endpoint(self):
+        scheduler = MockScheduler()
+        client = TestClient(_build_app(scheduler=scheduler))
+
+        resp = client.post("/v1/system/enforce-memory-budget", json={"additional_vram_bytes": 1024})
+
+        assert resp.status_code == 200
+        assert scheduler.enforced == [1024]
+
+    def test_trim_model_endpoint_returns_conflict_when_active(self):
+        scheduler = MockScheduler()
+        scheduler.set_unload_result(False)
+        client = TestClient(_build_app(scheduler=scheduler))
+
+        resp = client.post("/v1/models/fake:latest/trim")
+
+        assert resp.status_code == 409
+
+    def test_unload_idle_endpoint_unloads_inactive_models(self):
+        scheduler = MockScheduler()
+        scheduler.set_loaded([
+            LoadedModelInfo(name="fake", tag="latest", type=ModelType.STT, device="cuda", ref_count=0),
+        ])
+        client = TestClient(_build_app(scheduler=scheduler))
+
+        resp = client.post("/v1/models/unload_idle")
+
+        assert resp.status_code == 200
+        assert resp.json()["unloaded"] == ["fake:latest"]
 
 
 class TestListModels:

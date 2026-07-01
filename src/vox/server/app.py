@@ -107,6 +107,10 @@ def create_app(
     default_device: str = "auto",
     max_loaded: int = 3,
     ttl_seconds: int = 300,
+    max_vram_bytes: int | None = None,
+    vram_headroom_bytes: int = 512 * 1024 * 1024,
+    idle_trim_seconds: int = 0,
+    memory_over_budget: str = "reject",
     grpc_port: int | None = None,
     preload_models: list[str] | None = None,
     preload_vad: bool = False,
@@ -133,7 +137,16 @@ def create_app(
             vox_home = Path(env_home)
     store = BlobStore(root=vox_home)
     registry = ModelRegistry(store)
-    scheduler = Scheduler(registry, default_device=default_device, max_loaded=max_loaded, ttl_seconds=ttl_seconds)
+    scheduler = Scheduler(
+        registry,
+        default_device=default_device,
+        max_loaded=max_loaded,
+        ttl_seconds=ttl_seconds,
+        max_vram_bytes=max_vram_bytes,
+        vram_headroom_bytes=vram_headroom_bytes,
+        idle_trim_seconds=idle_trim_seconds,
+        memory_over_budget=memory_over_budget,
+    )
 
     app.state.store = store
     app.state.registry = registry
@@ -144,9 +157,10 @@ def create_app(
     app.state.preload_vad = preload_vad
 
     from vox.server.pondsocket_gateway import install_pondsocket_gateway
-    from vox.server.routes import bidi, health, models, rtc, stream, synthesize, transcribe, voices
+    from vox.server.routes import bidi, health, models, rtc, stream, synthesize, system, transcribe, voices
     app.include_router(health.router)
     app.include_router(models.router)
+    app.include_router(system.router)
     app.include_router(transcribe.router)
     app.include_router(synthesize.router)
     app.include_router(voices.router)

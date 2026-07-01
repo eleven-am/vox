@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -27,11 +28,11 @@ def parse_model_name(name: str) -> tuple[str, str]:
     return ref.name, ref.tag
 
 
-class ModelType(str, Enum):
+class ModelType(str, Enum):  # noqa: UP042
     STT = "stt"
     TTS = "tts"
 
-class ModelFormat(str, Enum):
+class ModelFormat(str, Enum):  # noqa: UP042
     ONNX = "onnx"
     CT2 = "ct2"
     PYTORCH = "pytorch"
@@ -176,3 +177,32 @@ class LoadedModelInfo:
     loaded_at: float = 0.0
     last_used: float = 0.0
     ref_count: int = 0
+    is_evictable: bool = False
+    is_trimmable: bool = False
+    backend_memory: dict[str, Any] = field(default_factory=dict)
+
+@dataclass(frozen=True)
+class DeviceMemoryInfo:
+    """Best-effort runtime memory snapshot for an accelerator device."""
+    device: str
+    free_bytes: int | None = None
+    total_bytes: int | None = None
+    torch_allocated_bytes: int | None = None
+    torch_reserved_bytes: int | None = None
+
+@dataclass(frozen=True)
+class VramPolicy:
+    """Scheduler policy for bounded accelerator memory use."""
+    max_vram_bytes: int | None = None
+    headroom_bytes: int = 512 * 1024 * 1024
+    idle_trim_seconds: int = 0
+    over_budget: str = "reject"
+
+@dataclass(frozen=True)
+class VramSnapshot:
+    """Current scheduler and device memory state."""
+    policy: VramPolicy
+    device: DeviceMemoryInfo
+    loaded_models: tuple[LoadedModelInfo, ...]
+    estimated_loaded_vram_bytes: int
+    active_model_count: int

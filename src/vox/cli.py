@@ -24,6 +24,41 @@ DEFAULT_STREAM_CHUNK_MS = 5_000
 DEFAULT_STREAM_TEXT_CHARS = 2_000
 
 
+def _parse_byte_size(value: str | int | None) -> int | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, int):
+        return value
+
+    raw = value.strip().lower()
+    units = {
+        "b": 1,
+        "k": 1024,
+        "kb": 1024,
+        "ki": 1024,
+        "kib": 1024,
+        "m": 1024**2,
+        "mb": 1024**2,
+        "mi": 1024**2,
+        "mib": 1024**2,
+        "g": 1024**3,
+        "gb": 1024**3,
+        "gi": 1024**3,
+        "gib": 1024**3,
+    }
+    number = raw
+    multiplier = 1
+    for suffix, unit_multiplier in sorted(units.items(), key=lambda item: len(item[0]), reverse=True):
+        if raw.endswith(suffix):
+            number = raw[: -len(suffix)].strip()
+            multiplier = unit_multiplier
+            break
+    try:
+        return int(float(number) * multiplier)
+    except ValueError as exc:
+        raise click.BadParameter(f"invalid byte size: {value!r}") from exc
+
+
 def _handle_request_error(e: Exception, host: str) -> None:
     """Print a user-friendly error for HTTP request failures."""
     if isinstance(e, httpx.ConnectError):
@@ -332,6 +367,31 @@ def cli(ctx, host: str):
 @click.option("--max-loaded", default=3, help="Max models loaded simultaneously")
 @click.option("--ttl", default=300, help="Idle model TTL in seconds")
 @click.option(
+    "--max-vram",
+    default=None,
+    envvar="VOX_MAX_VRAM",
+    help="Maximum Vox-estimated VRAM budget, e.g. 10Gi. Disabled by default.",
+)
+@click.option(
+    "--vram-headroom",
+    default="512Mi",
+    envvar="VOX_VRAM_HEADROOM",
+    help="VRAM reserved for runtime/headroom, e.g. 2Gi.",
+)
+@click.option(
+    "--idle-trim-ttl",
+    default=0,
+    envvar="VOX_IDLE_TRIM_TTL",
+    help="Seconds idle before trimming non-essential model memory. 0 disables.",
+)
+@click.option(
+    "--memory-over-budget",
+    default="reject",
+    type=click.Choice(["reject"]),
+    envvar="VOX_MEMORY_OVER_BUDGET",
+    help="Behavior when VRAM budget cannot be satisfied.",
+)
+@click.option(
     "--preload", "preload_models", multiple=True,
     help="Model ref to warm at startup (repeatable). Env: VOX_PRELOAD=ref1,ref2",
 )
@@ -341,7 +401,8 @@ def cli(ctx, host: str):
 )
 def serve(
     port: int, grpc_port: int, bind_host: str, device: str,
-    max_loaded: int, ttl: int,
+    max_loaded: int, ttl: int, max_vram: str | None, vram_headroom: str,
+    idle_trim_ttl: int, memory_over_budget: str,
     preload_models: tuple[str, ...], preload_vad: bool,
 ):
     """Start the Vox server."""
@@ -356,6 +417,10 @@ def serve(
         default_device=device,
         max_loaded=max_loaded,
         ttl_seconds=ttl,
+        max_vram_bytes=_parse_byte_size(max_vram),
+        vram_headroom_bytes=_parse_byte_size(vram_headroom) or 0,
+        idle_trim_seconds=idle_trim_ttl,
+        memory_over_budget=memory_over_budget,
         grpc_port=grpc_port if grpc_port > 0 else None,
         preload_models=list(preload_models),
         preload_vad=preload_vad,

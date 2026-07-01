@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 from typing import Any
@@ -7,7 +8,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from vox.core.device_placement import PlacementTier
-from vox.core.types import AdapterInfo, TranscribeResult, SynthesizeChunk, VoiceInfo
+from vox.core.types import AdapterInfo, SynthesizeChunk, TranscribeResult, VoiceInfo
 
 
 class BaseAdapter(ABC):
@@ -36,6 +37,14 @@ class BaseAdapter(ABC):
 
     def placement_tiers(self) -> tuple[PlacementTier, ...]:
         return ()
+
+    def trim(self) -> None:
+        """Release non-essential request/cache memory while keeping model weights loaded."""
+        return None
+
+    def memory_status(self) -> dict[str, Any]:
+        """Return optional backend-specific memory details for diagnostics."""
+        return {}
 
 
 class STTAdapter(BaseAdapter):
