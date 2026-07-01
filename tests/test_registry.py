@@ -341,6 +341,22 @@ class TestAvailableModels:
         assert indextts["format"] == "pytorch"
         assert indextts["parameters"]["sample_rate"] == 24_000
 
+    def test_cosyvoice_catalog_entry_uses_cosyvoice_adapter_package(self):
+        cosyvoice = CATALOG["cosyvoice2-tts-torch"]["0.5b"]
+
+        assert cosyvoice["source"] == "FunAudioLLM/CosyVoice2-0.5B"
+        assert cosyvoice["adapter_package"] == "vox-cosyvoice"
+        assert cosyvoice["adapter"] == "cosyvoice2-tts-torch"
+        assert cosyvoice["parameters"]["sample_rate"] == 24_000
+
+    def test_orpheus_catalog_entry_uses_orpheus_adapter_package(self):
+        orpheus = CATALOG["orpheus-tts-vllm"]["medium-3b"]
+
+        assert orpheus["source"] == "canopylabs/orpheus-tts-0.1-finetune-prod"
+        assert orpheus["adapter_package"] == "vox-orpheus"
+        assert orpheus["adapter"] == "orpheus-tts-vllm"
+        assert orpheus["parameters"]["default_voice"] == "tara"
+
     def test_xtts_catalog_entry_uses_huggingface_repo_id(self):
         xtts = CATALOG["xtts-tts-torch"]["v2"]
 

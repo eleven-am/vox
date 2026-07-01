@@ -240,6 +240,32 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-chatterbox",
         },
     },
+    "cosyvoice2-tts-torch": {
+        "0.5b": {
+            "source": "FunAudioLLM/CosyVoice2-0.5B",
+            "architecture": "cosyvoice2",
+            "type": "tts",
+            "adapter": "cosyvoice2-tts-torch",
+            "format": "pytorch",
+            "description": "CosyVoice 2 0.5B — streaming zero-shot TTS for interactive voice agents",
+            "license": "Apache-2.0",
+            "parameters": {"sample_rate": 24000},
+            "adapter_package": "vox-cosyvoice",
+        },
+    },
+    "orpheus-tts-vllm": {
+        "medium-3b": {
+            "source": "canopylabs/orpheus-tts-0.1-finetune-prod",
+            "architecture": "orpheus",
+            "type": "tts",
+            "adapter": "orpheus-tts-vllm",
+            "format": "pytorch",
+            "description": "Orpheus medium 3B — expressive vLLM-backed streaming TTS",
+            "license": "Apache-2.0",
+            "parameters": {"sample_rate": 24000, "default_voice": "tara"},
+            "adapter_package": "vox-orpheus",
+        },
+    },
     "indextts-tts-torch": {
         "2": {
             "source": "IndexTeam/IndexTTS-2",

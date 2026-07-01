@@ -149,11 +149,13 @@ tests in `tests/test_adapter_runtime.py` for behavior in
 | Package | Runtime policy | Runtime names | Notes |
 | --- | --- | --- | --- |
 | `vox-chatterbox` | `target-runtime` | `chatterbox` | Chatterbox backend installs into target runtime. |
+| `vox-cosyvoice` | `target-runtime` | `cosyvoice` | CosyVoice backend installs into target runtime. |
 | `vox-dia` | `target-runtime` | `dia` | Isolated Transformers/Dia runtime. |
 | `vox-indextts` | `target-runtime` | `indextts` | IndexTTS backend installs into target runtime. |
 | `vox-kokoro` | `package-runtime` | none | Backend packages currently install with the adapter package. |
 | `vox-microsoft` | `mixed` | `vibevoice` | SpeechT5 uses package deps; VibeVoice uses a target runtime. |
 | `vox-openvoice` | `target-runtime` | `openvoice` | Upstream OpenVoice repo installs into target runtime. |
+| `vox-orpheus` | `target-runtime` | `orpheus` | Orpheus/vLLM backend installs into target runtime. |
 | `vox-parakeet` | `mixed` | `parakeet-nemo` | ONNX backend uses package deps; NeMo uses target runtime. |
 | `vox-piper` | `target-runtime` | `piper` | Piper backend installs into target runtime. |
 | `vox-qwen` | `target-runtime` | `qwen-asr`, `qwen-tts` | ASR/TTS use separate target runtimes. |

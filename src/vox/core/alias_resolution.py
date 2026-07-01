@@ -57,6 +57,26 @@ _IMPLICIT_MODEL_ALIASES: dict[str, dict[str, tuple[str, str]]] = {
         "spark": ("chatterbox-tts-multilingual", "0.1.7"),
         "default": ("chatterbox-tts-multilingual", "0.1.7"),
     },
+    "cosyvoice": {
+        "spark": ("cosyvoice2-tts-torch", "0.5b"),
+        "default": ("cosyvoice2-tts-torch", "0.5b"),
+    },
+    "cosyvoice2": {
+        "spark": ("cosyvoice2-tts-torch", "0.5b"),
+        "default": ("cosyvoice2-tts-torch", "0.5b"),
+    },
+    "cosyvoice-tts": {
+        "spark": ("cosyvoice2-tts-torch", "0.5b"),
+        "default": ("cosyvoice2-tts-torch", "0.5b"),
+    },
+    "orpheus": {
+        "spark": ("orpheus-tts-vllm", "medium-3b"),
+        "default": ("orpheus-tts-vllm", "medium-3b"),
+    },
+    "orpheus-tts": {
+        "spark": ("orpheus-tts-vllm", "medium-3b"),
+        "default": ("orpheus-tts-vllm", "medium-3b"),
+    },
     "indextts": {
         "spark": ("indextts-tts-torch", "2"),
         "default": ("indextts-tts-torch", "2"),
@@ -144,10 +164,13 @@ _LEGACY_MODEL_REF_ALIASES: dict[tuple[str, str], tuple[str, str]] = {
 _LEGACY_NAME_ALIASES: dict[str, str] = {
     "chatterbox": "chatterbox-tts-turbo",
     "chatterbox-multilingual": "chatterbox-tts-multilingual",
+    "cosyvoice": "cosyvoice2-tts-torch",
+    "cosyvoice2": "cosyvoice2-tts-torch",
     "dia": "dia-tts-torch",
     "indextts": "indextts-tts-torch",
     "kokoro-torch": "kokoro-tts-torch",
     "openvoice": "openvoice-tts-torch",
+    "orpheus": "orpheus-tts-vllm",
     "parakeet-nemo": "parakeet-stt-nemo",
     "piper": "piper-tts-onnx",
     "qwen3-asr": "qwen3-stt-torch",

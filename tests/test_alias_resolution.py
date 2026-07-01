@@ -50,6 +50,9 @@ class TestBareNameResolution:
             "chatterbox-tts-multilingual",
             "0.1.7",
         )
+        assert resolve_family_alias("cosyvoice") == ("cosyvoice2-tts-torch", "0.5b")
+        assert resolve_family_alias("cosyvoice2") == ("cosyvoice2-tts-torch", "0.5b")
+        assert resolve_family_alias("orpheus") == ("orpheus-tts-vllm", "medium-3b")
         assert resolve_family_alias("indextts") == ("indextts-tts-torch", "2")
         assert resolve_family_alias("dia") == ("dia-tts-torch", "1.6b")
         assert resolve_family_alias("sesame") == ("sesame-tts-torch", "csm-1b")
