@@ -873,6 +873,55 @@ def test_kokoro_torch_runtime_path_prunes_other_vox_runtime_entries(tmp_path: Pa
     assert other_runtime not in sys.path
 
 
+def test_kokoro_onnx_runtime_path_prunes_other_vox_runtime_entries(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("VOX_HOME", str(tmp_path / "vox-home"))
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    _install_fake_modules()
+
+    from vox_kokoro.adapter import _ensure_runtime_path
+
+    other_runtime = str(tmp_path / "vox-home" / "runtime" / "chatterbox")
+    Path(other_runtime).mkdir(parents=True, exist_ok=True)
+    sys.path.insert(0, other_runtime)
+
+    runtime_path = _ensure_runtime_path()
+
+    assert runtime_path == str(tmp_path / "vox-home" / "runtime" / "kokoro-onnx")
+    assert sys.path[0] == runtime_path
+    assert other_runtime not in sys.path
+
+
+def test_kokoro_onnx_runtime_bootstrap_excludes_onnxruntime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("VOX_HOME", str(tmp_path / "vox-home"))
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    _install_fake_modules()
+    sys.modules.pop("kokoro_onnx", None)
+
+    from vox_kokoro import adapter as adapter_module
+
+    calls: list[list[str]] = []
+    runtime_root = tmp_path / "vox-home" / "runtime" / "kokoro-onnx"
+
+    def _fake_run(cmd: list[str], **kwargs):
+        calls.append(cmd)
+        if "kokoro-onnx>=0.4.5,<0.5.0" in cmd:
+            (runtime_root / "kokoro_onnx").mkdir(parents=True, exist_ok=True)
+        return MagicMock(returncode=0, stderr="")
+
+    with patch("vox_kokoro.adapter.subprocess.run", side_effect=_fake_run):
+        adapter_module._install_runtime()
+
+    install_calls = [call for call in calls if "install" in call]
+    assert len(install_calls) == 2
+    assert "kokoro-onnx>=0.4.5,<0.5.0" in install_calls[0]
+    assert "--no-deps" in install_calls[0]
+    assert "phonemizer-fork>=3.3.2" in install_calls[1]
+    assert "--no-deps" not in install_calls[1]
+    assert not any("onnxruntime" in part for call in install_calls for part in call)
+
+
 def test_kokoro_torch_runtime_bootstrap_installs_spacy_model(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("VOX_HOME", str(tmp_path / "vox-home"))
     sys.modules.pop("vox_kokoro", None)
@@ -901,13 +950,14 @@ def test_kokoro_torch_runtime_bootstrap_installs_spacy_model(tmp_path: Path, mon
     ):
         torch_adapter_module._install_runtime()
 
-    assert len(calls) == 5
-    assert "kokoro>=0.9.4,<1.0.0" in calls[0]
-    assert "--no-deps" in calls[0]
-    assert "spacy>=3.8.0,<3.9.0" in calls[1]
-    assert "--no-deps" not in calls[1]
-    assert "spacy-curated-transformers>=0.3.0,<0.4.0" in calls[2]
-    assert "--no-deps" in calls[2]
-    assert "transformers>=4.57.6,<4.58" in calls[3]
-    assert "--no-deps" in calls[3]
-    assert any("en_core_web_sm-3.8.0-py3-none-any.whl" in part for part in calls[4])
+    install_calls = [call for call in calls if "install" in call]
+    assert len(install_calls) == 5
+    assert "kokoro>=0.9.4,<1.0.0" in install_calls[0]
+    assert "--no-deps" in install_calls[0]
+    assert "spacy>=3.8.0,<3.9.0" in install_calls[1]
+    assert "--no-deps" not in install_calls[1]
+    assert "spacy-curated-transformers>=0.3.0,<0.4.0" in install_calls[2]
+    assert "--no-deps" in install_calls[2]
+    assert "transformers>=4.57.6,<4.58" in install_calls[3]
+    assert "--no-deps" in install_calls[3]
+    assert any("en_core_web_sm-3.8.0-py3-none-any.whl" in part for part in install_calls[4])

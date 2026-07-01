@@ -114,7 +114,8 @@ class TestPiperAdapter:
             mock.returncode = 0
             mock.stderr = ""
             calls.append(cmd)
-            if cmd[0].endswith("uv") or cmd[:3] == [sys.executable, "-m", "pip"]:
+            if "piper-tts>=1.2.0,<2.0.0" in cmd:
+                (tmp_path / "vox-home" / "runtime" / "piper" / "piper").mkdir(parents=True, exist_ok=True)
                 sys.modules["piper"] = piper_module
             return mock
 
@@ -131,10 +132,38 @@ class TestPiperAdapter:
                 adapter = PiperAdapter()
                 adapter.load(str(tmp_path), "cuda", _source="rhasspy/piper-voices")
 
-        assert calls[0][:2] == ["uv", "pip"]
-        assert "--target" in calls[0]
-        assert str(tmp_path / "vox-home" / "runtime" / "piper") in calls[0]
+        install_calls = [call for call in calls if "install" in call]
+        assert len(install_calls) == 2
+        assert install_calls[0][:2] == ["uv", "pip"]
+        assert "--target" in install_calls[0]
+        assert str(tmp_path / "vox-home" / "runtime" / "piper") in install_calls[0]
+        assert "piper-tts>=1.2.0,<2.0.0" in install_calls[0]
+        assert "--no-deps" in install_calls[0]
+        assert "pathvalidate>=3,<4" in install_calls[1]
+        assert "--no-deps" not in install_calls[1]
+        assert not any("onnxruntime" in part for call in install_calls for part in call)
         assert adapter.is_loaded is True
+
+    def test_bootstrap_removes_stale_onnxruntime_from_runtime_dir(self, tmp_path: Path):
+        from vox_piper.adapter import _purge_stale_runtime_packages
+
+        runtime_dir = tmp_path / "runtime"
+        for path in (
+            runtime_dir / "onnxruntime",
+            runtime_dir / "onnxruntime-1.27.0.dist-info",
+            runtime_dir / "torch",
+            runtime_dir / "nvidia",
+        ):
+            path.mkdir(parents=True, exist_ok=True)
+        (runtime_dir / "piper").mkdir()
+
+        _purge_stale_runtime_packages(runtime_dir)
+
+        assert not (runtime_dir / "onnxruntime").exists()
+        assert not (runtime_dir / "onnxruntime-1.27.0.dist-info").exists()
+        assert not (runtime_dir / "torch").exists()
+        assert not (runtime_dir / "nvidia").exists()
+        assert (runtime_dir / "piper").is_dir()
 
     def test_synthesize_streams_audio_chunks(self, tmp_path: Path):
         torch_mock = _mock_torch()

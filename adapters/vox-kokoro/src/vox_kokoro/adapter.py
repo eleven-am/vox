@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import errno
+import importlib
 import logging
 import platform
 import re
 import shutil
+import subprocess
 import threading
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -16,6 +18,14 @@ import numpy as np
 from onnxruntime import InferenceSession, get_available_providers
 
 from vox.core.adapter import TTSAdapter
+from vox.core.adapter_runtime import (
+    activate_runtime_path,
+    install_target_runtime_requirements,
+    purge_runtime_modules,
+)
+from vox.core.adapter_runtime import (
+    runtime_root as vox_runtime_root,
+)
 from vox.core.types import (
     AdapterInfo,
     ModelFormat,
@@ -35,6 +45,93 @@ _KOKORO_DEFAULT_MAX_PHONEMES = 510
 _KOKORO_SAFE_PHONEME_LIMIT = 480
 _KOKORO_PUNCTUATION = ".,!?;:。！？；，、"
 _KOKORO_ONNX_LOCK_ATTR = "_vox_onnx_lock"
+_KOKORO_ONNX_RUNTIME_MODULES = {
+    "kokoro_onnx",
+    "phonemizer",
+    "segments",
+    "csvw",
+    "espeakng_loader",
+    "colorlog",
+    "dlinfo",
+    "joblib",
+}
+
+
+def _runtime_root() -> Path:
+    return vox_runtime_root() / "kokoro-onnx"
+
+
+def _ensure_runtime_path() -> str:
+    runtime_dir = _runtime_root()
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    return activate_runtime_path(runtime_dir, root=runtime_dir.parent)
+
+
+def _clear_runtime_modules() -> None:
+    purge_runtime_modules(_KOKORO_ONNX_RUNTIME_MODULES)
+
+
+def _install_runtime() -> None:
+    runtime_path = _ensure_runtime_path()
+    runtime_root = Path(runtime_path)
+    if not _install_runtime_requirements(
+        runtime_path,
+        ["kokoro-onnx>=0.4.5,<0.5.0"],
+        no_deps=True,
+        expected_paths=(runtime_root / "kokoro_onnx",),
+    ):
+        raise RuntimeError("Kokoro ONNX backend requires the 'kokoro-onnx' runtime package")
+
+    support_requirements = [
+        "colorlog>=6.9.0",
+        "espeakng-loader>=0.2.4",
+        "phonemizer-fork>=3.3.2",
+    ]
+    if not _install_runtime_requirements(runtime_path, support_requirements, no_deps=False):
+        raise RuntimeError("Kokoro ONNX backend requires phonemizer runtime dependencies")
+
+
+def _install_runtime_requirements(
+    runtime_path: str,
+    requirements: list[str],
+    *,
+    no_deps: bool,
+    expected_paths: tuple[Path, ...] = (),
+) -> bool:
+    installed = install_target_runtime_requirements(
+        runtime_path,
+        requirements,
+        no_deps=no_deps,
+        timeout=900,
+        expected_paths=expected_paths,
+        installer_order=("pip", "uv"),
+        install_runner=_run_install_command,
+        context="Kokoro ONNX runtime install",
+    )
+    if installed:
+        logger.info("Installed Kokoro ONNX runtime requirements into %s: %s", runtime_path, requirements)
+    return installed
+
+
+def _run_install_command(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+
+def _import_kokoro_onnx():
+    _ensure_runtime_path()
+    try:
+        return importlib.import_module("kokoro_onnx")
+    except Exception as exc:
+        logger.warning("Initial Kokoro ONNX runtime import failed, bootstrapping runtime: %s", exc)
+
+    _install_runtime()
+    _clear_runtime_modules()
+    _ensure_runtime_path()
+    try:
+        return importlib.import_module("kokoro_onnx")
+    except Exception as exc:
+        logger.exception("Kokoro ONNX runtime import still failing after bootstrap")
+        raise RuntimeError("Kokoro ONNX backend requires the 'kokoro-onnx' runtime package") from exc
 
 
 def _normalize_language(language: str | None, voice_id: str) -> str:
@@ -75,10 +172,11 @@ def _ensure_kokoro_onnx_lock(kokoro: Any) -> threading.Lock:
 
 def _kokoro_max_phonemes() -> int:
     try:
-        from kokoro_onnx.config import MAX_PHONEME_LENGTH
+        config = importlib.import_module("kokoro_onnx.config")
+        max_phoneme_length = config.MAX_PHONEME_LENGTH
     except Exception:
         return _KOKORO_DEFAULT_MAX_PHONEMES
-    return int(MAX_PHONEME_LENGTH)
+    return int(max_phoneme_length)
 
 
 def _effective_kokoro_phoneme_limit() -> int:
@@ -322,11 +420,11 @@ class KokoroAdapter(TTSAdapter):
 
         _patch_phonemizer_compat()
         logger.info("Loading Kokoro model from %s (device=%s)", model_dir, self._device)
-        from kokoro_onnx import Kokoro
+        kokoro_onnx = _import_kokoro_onnx()
 
         session = InferenceSession(str(model_file), providers=providers)
         if voices_file.exists():
-            self._kokoro = Kokoro.from_session(session, str(voices_file))
+            self._kokoro = kokoro_onnx.Kokoro.from_session(session, str(voices_file))
         else:
             self._kokoro = self._load_directory_layout(session, model_file, voices_dir)
         self._patch_runtime_compat()
@@ -339,14 +437,14 @@ class KokoroAdapter(TTSAdapter):
         return None
 
     def _load_directory_layout(self, session: InferenceSession, model_file: Path, voices_dir: Path) -> Kokoro:
-        from kokoro_onnx import Kokoro, KoKoroConfig, Tokenizer
+        kokoro_onnx = _import_kokoro_onnx()
 
         voices = self._load_voice_tensors(voices_dir)
-        kokoro = Kokoro.__new__(Kokoro)
+        kokoro = kokoro_onnx.Kokoro.__new__(kokoro_onnx.Kokoro)
         kokoro.sess = session
-        kokoro.config = KoKoroConfig(str(model_file), str(voices_dir))
+        kokoro.config = kokoro_onnx.KoKoroConfig(str(model_file), str(voices_dir))
         kokoro.voices = voices
-        kokoro.tokenizer = Tokenizer(None, vocab={})
+        kokoro.tokenizer = kokoro_onnx.Tokenizer(None, vocab={})
         return kokoro
 
     def _load_voice_tensors(self, voices_dir: Path) -> dict[str, np.ndarray]:
