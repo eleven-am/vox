@@ -369,6 +369,10 @@
     let micMeterTimer = null;
     let micAnalyser = null;
     let micMeterData = null;
+    let rtcStatsTimer = null;
+    let assistantSpeaking = false;
+    let assistantBaseVolume = assistantAudio.volume;
+    let duckRestoreTimer = null;
 
     function log(type, payload) {
       const line = `[${new Date().toISOString()}] ${type} ${JSON.stringify(payload)}`;
@@ -391,6 +395,14 @@
       const line = `[${new Date().toISOString()}] ${direction} ${JSON.stringify(payload)}`;
       dataEventLogEl.textContent += `${line}\n`;
       dataEventLogEl.scrollTop = dataEventLogEl.scrollHeight;
+    }
+
+    function sendDataChannelEvent(event, payload = {}) {
+      if (!dataChannel || dataChannel.readyState !== "open") return false;
+      const envelope = { event, payload };
+      dataChannel.send(JSON.stringify(envelope));
+      appendDataEvent("browser->backend", envelope);
+      return true;
     }
 
     function parseClientEventEnvelope() {
@@ -418,10 +430,12 @@
         sendDataEventBtn.disabled = false;
         log("datachannel.open", { label: channel.label });
         timeline("datachannel.open", { state: "open" });
+        startRtcStats();
       };
       channel.onclose = () => {
         setStatus(dataChannelStateEl, "closed");
         sendDataEventBtn.disabled = true;
+        stopRtcStats();
         log("datachannel.close", { label: channel.label });
         timeline("datachannel.close", { state: "closed" });
         if (dataChannel === channel) dataChannel = null;
@@ -763,7 +777,102 @@
     function clearAssistantAudio() {
       assistantAudio.pause();
       assistantAudio.srcObject = null;
+      assistantSpeaking = false;
+      restoreAssistantAudio();
       setStatus(playbackStateEl, "cleared");
+    }
+
+    function duckAssistantAudio(reason) {
+      if (duckRestoreTimer) clearTimeout(duckRestoreTimer);
+      if (!assistantAudio.dataset.ducked) {
+        assistantBaseVolume = assistantAudio.volume;
+      }
+      assistantAudio.dataset.ducked = "true";
+      assistantAudio.volume = Math.min(assistantBaseVolume, 0.2);
+      log("assistant_audio.duck", { reason, volume: assistantAudio.volume });
+    }
+
+    function restoreAssistantAudio() {
+      if (duckRestoreTimer) clearTimeout(duckRestoreTimer);
+      duckRestoreTimer = null;
+      if (!assistantAudio.dataset.ducked) return;
+      assistantAudio.volume = assistantBaseVolume;
+      delete assistantAudio.dataset.ducked;
+      log("assistant_audio.restore", { volume: assistantAudio.volume });
+    }
+
+    function scheduleAssistantAudioRestore(delayMs = 500) {
+      if (duckRestoreTimer) clearTimeout(duckRestoreTimer);
+      duckRestoreTimer = setTimeout(() => restoreAssistantAudio(), delayMs);
+    }
+
+    async function collectRtcStats() {
+      if (!pc) return null;
+      const report = await pc.getStats();
+      const payload = {
+        timestamp: new Date().toISOString(),
+        connectionState: pc.connectionState,
+        iceConnectionState: pc.iceConnectionState,
+        selectedCandidatePair: null,
+        inboundAudio: [],
+        outboundAudio: []
+      };
+      const statsById = new Map();
+      report.forEach((stat) => statsById.set(stat.id, stat));
+      report.forEach((stat) => {
+        if (stat.type === "candidate-pair" && stat.selected) {
+          const local = statsById.get(stat.localCandidateId);
+          const remote = statsById.get(stat.remoteCandidateId);
+          payload.selectedCandidatePair = {
+            currentRoundTripTime: stat.currentRoundTripTime,
+            availableOutgoingBitrate: stat.availableOutgoingBitrate,
+            nominated: stat.nominated,
+            state: stat.state,
+            localCandidateType: local && local.candidateType,
+            remoteCandidateType: remote && remote.candidateType,
+            protocol: local && local.protocol
+          };
+        } else if (stat.type === "inbound-rtp" && stat.kind === "audio") {
+          payload.inboundAudio.push({
+            packetsReceived: stat.packetsReceived,
+            packetsLost: stat.packetsLost,
+            jitter: stat.jitter,
+            bytesReceived: stat.bytesReceived,
+            concealedSamples: stat.concealedSamples,
+            concealmentEvents: stat.concealmentEvents,
+            jitterBufferDelay: stat.jitterBufferDelay,
+            jitterBufferEmittedCount: stat.jitterBufferEmittedCount,
+            audioLevel: stat.audioLevel
+          });
+        } else if (stat.type === "outbound-rtp" && stat.kind === "audio") {
+          payload.outboundAudio.push({
+            packetsSent: stat.packetsSent,
+            bytesSent: stat.bytesSent,
+            retransmittedPacketsSent: stat.retransmittedPacketsSent,
+            targetBitrate: stat.targetBitrate
+          });
+        }
+      });
+      return payload;
+    }
+
+    function startRtcStats() {
+      stopRtcStats();
+      rtcStatsTimer = setInterval(async () => {
+        try {
+          const stats = await collectRtcStats();
+          if (!stats) return;
+          sendDataChannelEvent("rtc.stats", stats);
+          log("rtc.stats", stats);
+        } catch (error) {
+          log("rtc.stats_error", { message: error.message });
+        }
+      }, 1000);
+    }
+
+    function stopRtcStats() {
+      if (rtcStatsTimer) clearInterval(rtcStatsTimer);
+      rtcStatsTimer = null;
     }
 
     function controlMessageToWire(message) {
@@ -824,9 +933,20 @@
         setStatus(playbackStateEl, "starting");
         attachAssistantAudio();
       }
-      if (type === "response.done") setStatus(playbackStateEl, "done");
-      if (type === "response.cancelled") setStatus(playbackStateEl, "cancelled");
+      if (type === "response.done") {
+        assistantSpeaking = false;
+        restoreAssistantAudio();
+        setStatus(playbackStateEl, "done");
+      }
+      if (type === "response.cancelled") {
+        assistantSpeaking = false;
+        restoreAssistantAudio();
+        setStatus(playbackStateEl, "cancelled");
+      }
       if (type === "response.audio.clear") clearAssistantAudio();
+      if (type === "input_audio_buffer.speech_started" && assistantSpeaking) {
+        duckAssistantAudio("server_speech_started");
+      }
       if (type === "interruption.detected") {
         interruptions += 1;
         setStatus(interruptCountEl, String(interruptions));
@@ -834,9 +954,19 @@
       if (type === "interruption.false_positive") {
         falsePositives += 1;
         setStatus(falsePositiveCountEl, String(falsePositives));
+        scheduleAssistantAudioRestore();
         attachAssistantAudio();
       }
-      if (type === "turn.state_changed") setStatus(turnStateEl, event.state);
+      if (type === "turn.state_changed") {
+        setStatus(turnStateEl, event.state);
+        if (event.state === "speaking") {
+          assistantSpeaking = true;
+          restoreAssistantAudio();
+        } else if (["idle", "listening", "thinking", "interrupted"].includes(event.state)) {
+          assistantSpeaking = false;
+          if (event.state !== "interrupted") restoreAssistantAudio();
+        }
+      }
     }
 
     function wsBase(httpBase) {
@@ -1054,6 +1184,9 @@
       if (pc) await pc.close();
       if (micStream) micStream.getTracks().forEach((track) => track.stop());
       stopMicMeter();
+      stopRtcStats();
+      assistantSpeaking = false;
+      restoreAssistantAudio();
       eventSource = null;
       controlSocket = null;
       controlChannelName = null;
@@ -1125,8 +1258,7 @@
       if (!dataChannel || dataChannel.readyState !== "open") return;
       try {
         const envelope = parseClientEventEnvelope();
-        dataChannel.send(JSON.stringify(envelope));
-        appendDataEvent("browser->backend", envelope);
+        sendDataChannelEvent(envelope.event, envelope.payload);
         log("datachannel.sent", envelope);
       } catch (error) {
         log("client_event.error", { message: error.message });

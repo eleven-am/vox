@@ -235,6 +235,20 @@ Optional data channel:
 - Vox does not define the meaning of `event` names or payload contents. It only
   requires the transport envelope.
 
+RTC diagnostics:
+
+- The RTC control stream emits `rtc.turn_timing` as a derived diagnostic event.
+  It does not replace any conversation event and should not drive turn logic.
+  The payload includes the source event name, turn index, elapsed milliseconds
+  since speech/transcript/response milestones when available, and RTC output
+  buffer stats such as `buffered_audio_ms`, `max_buffered_audio_ms`,
+  `queued_items`, `pending_samples`, and `clear_count`.
+- Browser clients may send `rtc.stats` over the WebRTC data channel using the
+  normal browser-to-backend data event envelope. Vox relays it as `client.event`
+  so application backends can correlate browser WebRTC health with Vox-side turn
+  timing. Vox treats `rtc.stats` as application telemetry and does not use it for
+  VAD, EOU, interruption, or TTS scheduling.
+
 ICE servers are configured with environment variables:
 
 ```text

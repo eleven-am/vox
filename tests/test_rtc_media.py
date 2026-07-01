@@ -98,6 +98,34 @@ async def test_rtc_audio_output_track_fills_tts_gaps_with_paced_silence():
 
 
 @pytest.mark.asyncio
+async def test_rtc_audio_output_track_reports_buffer_and_clear_stats():
+    queue = asyncio.Queue()
+    track = RtcAudioOutputTrack(queue)
+    await track.enqueue(np.full(1600, 1000, dtype=np.int16).tobytes(), 16_000)
+
+    queued = track.stats()
+    assert queued["buffered_audio_ms"] == 100.0
+    assert queued["max_buffered_audio_ms"] == 100.0
+    assert queued["queued_items"] == 1
+    assert queued["enqueued_chunks"] == 1
+
+    frame = await track.recv()
+    assert frame.samples == 320
+    after_frame = track.stats()
+    assert after_frame["buffered_audio_ms"] == 80.0
+    assert after_frame["pending_samples"] == 1280
+
+    track.clear()
+    after_clear = track.stats()
+    assert after_clear["buffered_audio_ms"] == 0.0
+    assert after_clear["clear_count"] == 1
+
+    silence = await track.recv()
+    assert np.all(silence.to_ndarray() == 0)
+    assert track.stats()["silence_frames"] == 1
+
+
+@pytest.mark.asyncio
 async def test_pump_input_audio_treats_media_stream_error_as_eof():
     class ClosedTrack:
         async def recv(self):

@@ -6,6 +6,7 @@ import functools
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 import av
 import numpy as np
@@ -38,9 +39,17 @@ class RtcAudioOutputTrack(MediaStreamTrack):
         self._pending = np.empty(0, dtype=np.int16)
         self._sample_rate = 48_000
         self._silenced = False
+        self._queued_audio_ms = 0.0
+        self._max_buffered_audio_ms = 0.0
+        self._enqueued_chunks = 0
+        self._silence_frames = 0
+        self._clear_count = 0
 
     async def enqueue(self, pcm16: bytes, sample_rate: int) -> None:
         self._silenced = False
+        self._enqueued_chunks += 1
+        self._queued_audio_ms += _pcm16_duration_ms(pcm16, sample_rate)
+        self._update_max_buffered_audio_ms()
         await self._queue.put((pcm16, sample_rate))
 
     async def wait_until_drained(self) -> None:
@@ -51,6 +60,8 @@ class RtcAudioOutputTrack(MediaStreamTrack):
 
     def clear(self) -> None:
         self._pending = np.empty(0, dtype=np.int16)
+        self._queued_audio_ms = 0.0
+        self._clear_count += 1
         self._silenced = True
         self._sync_clock()
         while True:
@@ -79,16 +90,19 @@ class RtcAudioOutputTrack(MediaStreamTrack):
                 continue
             if isinstance(item, RtcAudioClear):
                 self._pending = np.empty(0, dtype=np.int16)
+                self._queued_audio_ms = 0.0
                 self._silenced = True
                 self._sync_clock()
                 return await self._silence_frame()
             pcm16, sample_rate = item
             self._silenced = False
+            self._queued_audio_ms = max(0.0, self._queued_audio_ms - _pcm16_duration_ms(pcm16, sample_rate))
             new_rate = int(sample_rate) or self._sample_rate
             if new_rate != self._sample_rate:
                 self._sample_rate = new_rate
                 self._sync_clock()
             self._pending = np.frombuffer(pcm16, dtype=np.int16)
+            self._update_max_buffered_audio_ms()
 
         samples_per_frame = max(1, self._sample_rate // 50)
         samples = self._pending[:samples_per_frame]
@@ -99,6 +113,7 @@ class RtcAudioOutputTrack(MediaStreamTrack):
         return await self._frame(samples)
 
     async def _silence_frame(self) -> av.AudioFrame:
+        self._silence_frames += 1
         samples_per_frame = max(1, self._sample_rate // 50)
         return await self._frame(np.zeros(samples_per_frame, dtype=np.int16))
 
@@ -126,6 +141,33 @@ class RtcAudioOutputTrack(MediaStreamTrack):
             return
         if wait > 0:
             await asyncio.sleep(wait)
+
+    @property
+    def buffered_audio_ms(self) -> float:
+        pending_ms = float(self._pending.size) / max(1, self._sample_rate) * 1000.0
+        return max(0.0, self._queued_audio_ms) + pending_ms
+
+    def stats(self) -> dict[str, Any]:
+        buffered_ms = self.buffered_audio_ms
+        self._max_buffered_audio_ms = max(self._max_buffered_audio_ms, buffered_ms)
+        return {
+            "buffered_audio_ms": round(buffered_ms, 2),
+            "max_buffered_audio_ms": round(self._max_buffered_audio_ms, 2),
+            "queued_items": self._queue.qsize(),
+            "pending_samples": int(self._pending.size),
+            "sample_rate": int(self._sample_rate),
+            "enqueued_chunks": self._enqueued_chunks,
+            "silence_frames": self._silence_frames,
+            "clear_count": self._clear_count,
+        }
+
+    def _update_max_buffered_audio_ms(self) -> None:
+        self._max_buffered_audio_ms = max(self._max_buffered_audio_ms, self.buffered_audio_ms)
+
+
+def _pcm16_duration_ms(pcm16: bytes, sample_rate: int) -> float:
+    rate = int(sample_rate) or 48_000
+    return (len(pcm16) // np.dtype(np.int16).itemsize) / max(1, rate) * 1000.0
 
 
 async def pump_input_audio(
