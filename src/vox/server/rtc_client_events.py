@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import json
+import logging
 from contextlib import suppress
 from typing import Any
 
+from vox.operations.conversation import parse_client_event_command
+from vox.operations.errors import OperationError
 from vox.server.rtc_registry import RtcSessionRecord
 
 WIRE_CLIENT_EVENT = "client.event"
 WIRE_BROWSER_EVENT = "browser.event"
 WIRE_RTC_CLIENT_DISCONNECTED = "rtc.client.disconnected"
+
+logger = logging.getLogger(__name__)
 
 
 def parse_client_event_message(message: Any) -> tuple[str, Any]:
@@ -133,3 +138,28 @@ async def emit_browser_event_to_control(
     if record.control_events is None:
         return
     await record.control_events.put(browser_event_wire(session_id, event_name, payload))
+
+
+async def handle_browser_data_channel_message(record: RtcSessionRecord, session_id: str, message: Any) -> None:
+    if isinstance(message, bytes):
+        try:
+            text = message.decode("utf-8")
+        except UnicodeDecodeError:
+            logger.warning("dropping non-UTF-8 RTC data channel message for %s", session_id)
+            return
+    else:
+        text = str(message)
+
+    try:
+        message_obj = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("dropping non-JSON RTC data channel message for %s", session_id)
+        return
+
+    try:
+        event_name, payload = parse_client_event_command(message_obj)
+    except OperationError:
+        logger.warning("dropping malformed RTC browser.event payload for %s", session_id)
+        return
+
+    await emit_browser_event_to_control(record, session_id, event_name, payload)

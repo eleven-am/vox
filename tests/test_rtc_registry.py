@@ -4,11 +4,11 @@ import asyncio
 
 import pytest
 
-from vox.server.routes.rtc import _handle_data_channel_message
 from vox.server.rtc_client_events import (
     WIRE_BROWSER_EVENT,
     WIRE_RTC_CLIENT_DISCONNECTED,
     emit_client_disconnected_to_control,
+    handle_browser_data_channel_message,
 )
 from vox.server.rtc_registry import RtcSessionRegistry
 
@@ -113,7 +113,7 @@ async def test_data_channel_message_emits_browser_event_to_control():
     registry = RtcSessionRegistry()
     record, _ = registry.create_session(now=1000.0)
 
-    await _handle_data_channel_message(
+    await handle_browser_data_channel_message(
         record,
         record.session_id,
         '{"event":"ui.select","payload":{"id":"choice-a"}}',
@@ -128,3 +128,16 @@ async def test_data_channel_message_emits_browser_event_to_control():
         "event": "ui.select",
         "payload": {"id": "choice-a"},
     }
+
+
+@pytest.mark.asyncio
+async def test_data_channel_message_drops_malformed_browser_events():
+    registry = RtcSessionRegistry()
+    record, _ = registry.create_session(now=1000.0)
+
+    await handle_browser_data_channel_message(record, record.session_id, b"\xff")
+    await handle_browser_data_channel_message(record, record.session_id, "not-json")
+    await handle_browser_data_channel_message(record, record.session_id, '{"payload":{}}')
+
+    assert record.control_events is not None
+    assert record.control_events.empty()

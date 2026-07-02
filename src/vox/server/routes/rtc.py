@@ -17,7 +17,6 @@ from vox.core.tasks import drain_task
 from vox.operations.conversation import (
     ConvDoneEvent,
     execute_conversation_command,
-    parse_client_event_command,
 )
 from vox.operations.errors import OperationError
 from vox.server.auth import require_api_key
@@ -26,9 +25,9 @@ from vox.server.routes.conversation import (
     _send_error,
 )
 from vox.server.rtc_client_events import (
-    emit_browser_event_to_control,
     emit_client_disconnected_to_control,
     flush_pending_client_events,
+    handle_browser_data_channel_message,
     send_client_event_to_browser,
 )
 from vox.server.rtc_conversation import (
@@ -183,7 +182,7 @@ async def create_rtc_answer(request: Request, session_id: str) -> dict:
 
         @channel.on("message")
         def on_message(message) -> None:
-            task = asyncio.create_task(_handle_data_channel_message(record, session_id, message))
+            task = asyncio.create_task(handle_browser_data_channel_message(record, session_id, message))
             record.media_tasks.add(task)
             task.add_done_callback(record.media_tasks.discard)
 
@@ -405,31 +404,6 @@ async def _ingest_media_audio(record: RtcSessionRecord, pcm16: bytes, sample_rat
     orchestrator = record.orchestrator
     if orchestrator is not None and orchestrator.config is not None:
         await orchestrator.ingest_pcm16(pcm16, sample_rate=sample_rate)
-
-
-async def _handle_data_channel_message(record: RtcSessionRecord, session_id: str, message) -> None:
-    if isinstance(message, bytes):
-        try:
-            text = message.decode("utf-8")
-        except UnicodeDecodeError:
-            logger.warning("dropping non-UTF-8 RTC data channel message for %s", session_id)
-            return
-    else:
-        text = str(message)
-
-    try:
-        message_obj = json.loads(text)
-    except json.JSONDecodeError:
-        logger.warning("dropping non-JSON RTC data channel message for %s", session_id)
-        return
-
-    try:
-        event_name, payload = parse_client_event_command(message_obj)
-    except OperationError:
-        logger.warning("dropping malformed RTC browser.event payload for %s", session_id)
-        return
-
-    await emit_browser_event_to_control(record, session_id, event_name, payload)
 
 
 def _candidate_events_from_sdp(sdp: str) -> list[dict]:
