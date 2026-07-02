@@ -96,7 +96,7 @@ def module_available(import_name: str) -> bool:
     try:
         return find_spec(import_name) is not None
     except (ImportError, ValueError):
-        return True
+        return False
 
 
 def ensure_pip_available(*, context: str = "adapter runtime") -> None:

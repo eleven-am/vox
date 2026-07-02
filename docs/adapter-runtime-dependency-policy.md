@@ -88,6 +88,14 @@ Adapters should use `vox.core.adapter_runtime` for target-directory installs:
 - `purge_runtime_modules(...)`
 - `write_app_fallback_path(...)`
 
+`write_app_fallback_path(...)` is a deliberate compatibility bridge, not a
+silent dependency fallback. It writes a `.pth` file pointing at the Vox
+application `purelib` directory so target runtimes can still import the core
+Vox package and generic app-level dependencies while keeping sibling adapter
+runtimes off `sys.path`. It must not be used to satisfy adapter-owned heavy
+runtime dependencies. Those still belong in `$VOX_HOME/runtime/<runtime-name>`
+and must be verified after install.
+
 If a backend requires a full virtual environment or process-level isolation,
 the adapter may use a custom runtime layout, but that exception must be
 documented and tested.
@@ -104,6 +112,11 @@ Current deliberate exception:
 
 A runtime install is valid only after verification. A successful `pip` or `uv`
 exit code is not enough.
+
+Runtime import probes must fail closed. If import discovery raises because a
+runtime package is broken or has invalid metadata, Vox should treat that runtime
+as missing or stale and repair it. It must not treat probe failures as proof
+that the runtime is available.
 
 Adapters must verify at least one of:
 

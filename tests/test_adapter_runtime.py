@@ -49,6 +49,18 @@ def test_purge_runtime_modules_removes_configured_prefixes(monkeypatch):
     assert sys.modules["other_runtime"] is other
 
 
+def test_module_available_fails_closed_when_spec_probe_raises_import_error(monkeypatch):
+    monkeypatch.setattr(adapter_runtime, "find_spec", lambda _name: (_ for _ in ()).throw(ImportError("broken")))
+
+    assert adapter_runtime.module_available("broken_runtime") is False
+
+
+def test_module_available_fails_closed_when_spec_probe_raises_value_error(monkeypatch):
+    monkeypatch.setattr(adapter_runtime, "find_spec", lambda _name: (_ for _ in ()).throw(ValueError("bad spec")))
+
+    assert adapter_runtime.module_available("broken_runtime") is False
+
+
 def test_ensure_target_runtime_prefers_uv_and_writes_app_fallback(tmp_path):
     calls: list[list[str]] = []
 
