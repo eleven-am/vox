@@ -3,6 +3,7 @@ ARG VOX_UID=10000
 ARG VOX_GID=10000
 ARG VOX_ACCELERATOR=gpu
 ARG VOX_DEFAULT_DEVICE=auto
+ARG VOX_INCLUDE_TORCH=1
 ARG TORCH_VERSION=2.10.0
 ARG TORCHAUDIO_VERSION=2.10.0
 ARG TRANSFORMERS_VERSION=4.57.6
@@ -16,6 +17,7 @@ ARG VOX_UID
 ARG VOX_GID
 ARG TARGETARCH
 ARG VOX_ACCELERATOR
+ARG VOX_INCLUDE_TORCH
 ARG TORCH_VERSION
 ARG TORCHAUDIO_VERSION
 ARG TRANSFORMERS_VERSION
@@ -53,8 +55,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --compile-bytecode --no-editable --python-preference only-system --python 3.12 && \
     .venv/bin/python -m ensurepip --upgrade
 
+# Shared torch stack for the torch-based model adapters that install without
+# their own deps. Set VOX_INCLUDE_TORCH=0 for a lean image that only serves the
+# CTranslate2 and ONNX model families; torch-based models are then unavailable.
+# VAD no longer needs torch regardless.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    if [ "$VOX_ACCELERATOR" = "cpu" ]; then \
+    if [ "$VOX_INCLUDE_TORCH" = "0" ]; then \
+        echo "Skipping torch stack (VOX_INCLUDE_TORCH=0)"; \
+    elif [ "$VOX_ACCELERATOR" = "cpu" ]; then \
         uv pip install --python .venv/bin/python \
             "torch==${TORCH_VERSION}" \
             "torchaudio==${TORCHAUDIO_VERSION}"; \
@@ -69,29 +77,33 @@ RUN --mount=type=cache,target=/root/.cache/uv \
             "torchaudio==${TORCHAUDIO_VERSION}"; \
     fi
 
+# Inference runtimes always available: onnxruntime (ONNX models + VAD) and
+# huggingface-hub (model pull). colorlog is a small logging helper.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    if [ "$VOX_ACCELERATOR" = "cpu" ]; then \
-        uv pip install --python .venv/bin/python \
-            onnxruntime \
-            "transformers==${TRANSFORMERS_VERSION}" \
-            "huggingface-hub==${HUGGINGFACE_HUB_VERSION}"; \
-    elif [ "$TARGETARCH" = "amd64" ]; then \
+    if [ "$VOX_ACCELERATOR" != "cpu" ] && [ "$TARGETARCH" = "amd64" ]; then \
         uv pip install --python .venv/bin/python \
             onnxruntime-gpu==1.23.2 \
-            "transformers==${TRANSFORMERS_VERSION}" \
-            "huggingface-hub==${HUGGINGFACE_HUB_VERSION}"; \
+            "huggingface-hub==${HUGGINGFACE_HUB_VERSION}" \
+            colorlog; \
     else \
         uv pip install --python .venv/bin/python \
             onnxruntime \
+            "huggingface-hub==${HUGGINGFACE_HUB_VERSION}" \
+            colorlog; \
+    fi
+
+# transformers + the torch-model helper libs are only needed by the torch stack.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    if [ "$VOX_INCLUDE_TORCH" = "0" ]; then \
+        echo "Skipping torch model helper libraries (VOX_INCLUDE_TORCH=0)"; \
+    else \
+        uv pip install --python .venv/bin/python \
             "transformers==${TRANSFORMERS_VERSION}" \
-            "huggingface-hub==${HUGGINGFACE_HUB_VERSION}"; \
-    fi && \
-    uv pip install --python .venv/bin/python \
-        accelerate \
-        datasets \
-        librosa \
-        sentencepiece \
-        colorlog
+            accelerate \
+            datasets \
+            librosa \
+            sentencepiece; \
+    fi
 
 FROM ${BASE_IMAGE} AS runtime
 

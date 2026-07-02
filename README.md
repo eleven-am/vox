@@ -270,6 +270,22 @@ docker compose --profile cpu up -d
 
 Models and dynamically installed adapters persist in a Docker volume across container restarts. No image rebuild needed to add new models.
 
+### Lean (torch-free) build
+
+The default image bakes in PyTorch so torch-based model adapters (Voxtral, Qwen,
+Sesame, Dia, …) can share it. If you only serve CTranslate2 and ONNX model
+families — e.g. `whisper-stt-ct2`, `kokoro-tts-onnx`, `parakeet-stt-onnx`,
+`piper-tts-onnx` — build with `VOX_INCLUDE_TORCH=0` for a much smaller image.
+VAD runs on onnxruntime, so the streaming/conversation path works without torch:
+
+```bash
+docker build --build-arg VOX_ACCELERATOR=cpu --build-arg VOX_INCLUDE_TORCH=0 -t vox:lean .
+```
+
+Torch-based models will fail to load in a lean image; pull one of the CT2/ONNX
+families instead. The full image (default `VOX_INCLUDE_TORCH=1`) supports every
+model.
+
 ### Spark ONNX GPU build
 
 The default GPU multi-arch image is generic:
