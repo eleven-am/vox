@@ -42,6 +42,25 @@ class PullEvent:
     error: str = ""
 
 
+@dataclass(frozen=True)
+class ModelReferenceRequest:
+    name: str
+
+
+@dataclass(frozen=True)
+class ResolvedModelReference:
+    requested_name: str
+    parsed_name: str
+    parsed_tag: str
+    resolved_name: str
+    resolved_tag: str
+    explicit_tag: bool
+
+
+def model_reference_request_from_fields(*, name: str) -> ModelReferenceRequest:
+    return ModelReferenceRequest(name=name)
+
+
 def model_info_payload(model: ModelInfo) -> dict[str, Any]:
     return {
         "name": model.full_name,
@@ -92,17 +111,13 @@ def list_models(*, store: Any) -> list[ModelInfo]:
     return list(store.list_models())
 
 
-def show_model(*, store: Any, registry: Any, name: str) -> ShowResult:
-    explicit_tag = ":" in name
-    parsed_name, parsed_tag = parse_model_name(name)
-    resolved_name, resolved_tag = registry.resolve_model_ref(
-        parsed_name, parsed_tag, explicit_tag=explicit_tag,
-    )
-    manifest = store.resolve_model(resolved_name, resolved_tag)
+def show_model(*, store: Any, registry: Any, request: ModelReferenceRequest) -> ShowResult:
+    resolved = resolve_model_reference(registry=registry, request=request)
+    manifest = store.resolve_model(resolved.resolved_name, resolved.resolved_tag)
     if not manifest:
-        raise StoredModelNotFoundError(name)
+        raise StoredModelNotFoundError(request.name)
     return ShowResult(
-        name=name,
+        name=request.name,
         config=dict(manifest.config),
         layers=tuple(
             ModelLayer(
@@ -116,24 +131,26 @@ def show_model(*, store: Any, registry: Any, name: str) -> ShowResult:
     )
 
 
-async def delete_model(*, store: Any, scheduler: Any, registry: Any, name: str) -> None:
-    explicit_tag = ":" in name
-    parsed_name, parsed_tag = parse_model_name(name)
-    resolved_name, resolved_tag = registry.resolve_model_ref(
-        parsed_name, parsed_tag, explicit_tag=explicit_tag,
-    )
+async def delete_model(
+    *,
+    store: Any,
+    scheduler: Any,
+    registry: Any,
+    request: ModelReferenceRequest,
+) -> None:
+    resolved = resolve_model_reference(registry=registry, request=request)
 
-    unloaded = await scheduler.unload(f"{resolved_name}:{resolved_tag}")
+    unloaded = await scheduler.unload(f"{resolved.resolved_name}:{resolved.resolved_tag}")
     if not unloaded:
-        raise ModelInUseError(name)
+        raise ModelInUseError(request.name)
 
-    manifest = store.resolve_model(resolved_name, resolved_tag)
+    manifest = store.resolve_model(resolved.resolved_name, resolved.resolved_tag)
     if not manifest:
-        raise StoredModelNotFoundError(name)
+        raise StoredModelNotFoundError(request.name)
 
-    store.delete_model(resolved_name, resolved_tag)
+    store.delete_model(resolved.resolved_name, resolved.resolved_tag)
     store.gc_blobs()
-    logger.info("model deleted: %s:%s", resolved_name, resolved_tag)
+    logger.info("model deleted: %s:%s", resolved.resolved_name, resolved.resolved_tag)
 
 
 def pull_model(
@@ -141,24 +158,28 @@ def pull_model(
     store: Any,
     scheduler: Any,
     registry: Any,
-    name: str,
+    request: ModelReferenceRequest,
 ) -> AsyncIterator[PullEvent]:
-    explicit_tag = ":" in name
-    parsed_name, parsed_tag = parse_model_name(name)
-    resolved_name, resolved_tag = registry.resolve_model_ref(parsed_name, parsed_tag, explicit_tag=explicit_tag)
-    catalog_entry = registry.lookup(parsed_name, parsed_tag, explicit_tag=explicit_tag)
+    resolved = resolve_model_reference(registry=registry, request=request)
+    catalog_entry = registry.lookup(
+        resolved.parsed_name,
+        resolved.parsed_tag,
+        explicit_tag=resolved.explicit_tag,
+    )
 
     if not catalog_entry:
-        raise CatalogEntryNotFoundError(name)
+        raise CatalogEntryNotFoundError(request.name)
 
     logger.info(
         "pull requested: %s -> %s:%s (adapter=%s, source=%s)",
-        name, resolved_name, resolved_tag,
+        request.name,
+        resolved.resolved_name,
+        resolved.resolved_tag,
         catalog_entry.get("adapter", "?"), catalog_entry.get("source", "?"),
     )
 
     async def _gen() -> AsyncIterator[PullEvent]:
-        yield PullEvent(status=f"pulling {name}")
+        yield PullEvent(status=f"pulling {request.name}")
 
         adapter_name = catalog_entry.get("adapter", "")
         adapter_package = catalog_entry.get("adapter_package", "")
@@ -228,10 +249,10 @@ def pull_model(
                     "adapter_package": catalog_entry.get("adapter_package", ""),
                 },
             )
-            store.save_manifest(resolved_name, resolved_tag, manifest)
+            store.save_manifest(resolved.resolved_name, resolved.resolved_tag, manifest)
 
             if adapter_name == "voxtral-tts-vllm":
-                model_ref = f"{resolved_name}:{resolved_tag}"
+                model_ref = f"{resolved.resolved_name}:{resolved.resolved_tag}"
                 yield PullEvent(status=f"preloading {model_ref}")
                 await scheduler.preload(model_ref)
                 yield PullEvent(status=f"{model_ref} ready")
@@ -239,12 +260,37 @@ def pull_model(
             total_bytes = sum(layer.size for layer in layers)
             logger.info(
                 "pull complete: %s:%s (%d layers, %.1f MiB)",
-                resolved_name, resolved_tag, len(layers), total_bytes / (1024 * 1024),
+                resolved.resolved_name,
+                resolved.resolved_tag,
+                len(layers),
+                total_bytes / (1024 * 1024),
             )
             yield PullEvent(status="success")
 
         except Exception as e:
-            logger.exception("pull failed: %s", name)
+            logger.exception("pull failed: %s", request.name)
             yield PullEvent(status="error", error=str(e))
 
     return _gen()
+
+
+def resolve_model_reference(
+    *,
+    registry: Any,
+    request: ModelReferenceRequest,
+) -> ResolvedModelReference:
+    explicit_tag = ":" in request.name
+    parsed_name, parsed_tag = parse_model_name(request.name)
+    resolved_name, resolved_tag = registry.resolve_model_ref(
+        parsed_name,
+        parsed_tag,
+        explicit_tag=explicit_tag,
+    )
+    return ResolvedModelReference(
+        requested_name=request.name,
+        parsed_name=parsed_name,
+        parsed_tag=parsed_tag,
+        resolved_name=resolved_name,
+        resolved_tag=resolved_tag,
+        explicit_tag=explicit_tag,
+    )

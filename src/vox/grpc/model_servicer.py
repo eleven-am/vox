@@ -17,6 +17,7 @@ from vox.operations.errors import CatalogEntryNotFoundError
 from vox.operations.models import (
     delete_model,
     list_models,
+    model_reference_request_from_fields,
     pull_model,
     show_model,
 )
@@ -37,7 +38,7 @@ class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
                 store=self._store,
                 scheduler=self._scheduler,
                 registry=self._registry,
-                name=request.name,
+                request=model_reference_request_from_fields(name=request.name),
             )
         except CatalogEntryNotFoundError as exc:
             yield vox_pb2.PullProgress(status="error", error=str(exc))
@@ -52,7 +53,11 @@ class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
 
     async def Show(self, request, context):
         async with map_operation_errors_to_grpc(context):
-            result = show_model(store=self._store, registry=self._registry, name=request.name)
+            result = show_model(
+                store=self._store,
+                registry=self._registry,
+                request=model_reference_request_from_fields(name=request.name),
+            )
 
         return show_model_response(result)
 
@@ -62,6 +67,6 @@ class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
                 store=self._store,
                 scheduler=self._scheduler,
                 registry=self._registry,
-                name=request.name,
+                request=model_reference_request_from_fields(name=request.name),
             )
         return delete_model_response()

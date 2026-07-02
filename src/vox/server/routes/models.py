@@ -12,6 +12,7 @@ from vox.operations.models import (
     delete_model_payload,
     list_models,
     list_models_payload,
+    model_reference_request_from_fields,
     pull_event_payload,
     pull_model,
     show_model,
@@ -34,7 +35,12 @@ async def pull_model_route(req: PullRequest, request: Request):
     registry = request.app.state.registry
 
     with map_operation_errors_to_http():
-        events = pull_model(store=store, scheduler=scheduler, registry=registry, name=req.name)
+        events = pull_model(
+            store=store,
+            scheduler=scheduler,
+            registry=registry,
+            request=model_reference_request_from_fields(name=req.name),
+        )
 
     async def stream():
         async for event in events:
@@ -55,7 +61,11 @@ async def show_model_route(name: str, request: Request):
     store = request.app.state.store
     registry = request.app.state.registry
     with map_operation_errors_to_http():
-        result = show_model(store=store, registry=registry, name=name)
+        result = show_model(
+            store=store,
+            registry=registry,
+            request=model_reference_request_from_fields(name=name),
+        )
     return show_model_payload(result)
 
 
@@ -65,5 +75,10 @@ async def delete_model_route(name: str, request: Request):
     scheduler = request.app.state.scheduler
     registry = request.app.state.registry
     with map_operation_errors_to_http():
-        await delete_model(store=store, scheduler=scheduler, registry=registry, name=name)
+        await delete_model(
+            store=store,
+            scheduler=scheduler,
+            registry=registry,
+            request=model_reference_request_from_fields(name=name),
+        )
     return delete_model_payload()
