@@ -413,6 +413,22 @@ class TestSynthesizeMapping:
         assert "audio/wav" in resp.headers["content-type"]
         assert resp.content[:4] == b"RIFF"
 
+    def test_openai_speech_request_preserves_stream_and_response_format_fields(self):
+        client = self._client()
+        resp = client.post(
+            "/v1/audio/speech",
+            json={
+                "model": "test-tts:latest",
+                "input": "hello",
+                "response_format": "pcm",
+                "stream": True,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert "audio/L16" in resp.headers["content-type"]
+        assert resp.content[:4] != b"RIFF"
+
     def test_model_not_found_maps_to_404(self):
         client = self._client()
         resp = client.post(
