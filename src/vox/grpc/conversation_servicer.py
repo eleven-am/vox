@@ -40,11 +40,12 @@ from vox.operations.conversation import (
     ConvTranscriptDeltaEvent,
     ConvTranscriptDoneEvent,
     ConvTurnEouPredictedEvent,
+    execute_conversation_command,
+    execute_conversation_session_update,
 )
 from vox.operations.errors import (
     InvalidConfigError,
     OperationError,
-    SessionAlreadyConfiguredError,
 )
 from vox.streaming.types import TARGET_SAMPLE_RATE
 
@@ -295,32 +296,41 @@ class ConversationServicer(vox_pb2_grpc.ConversationServiceServicer):
                     if kind == "session_update":
                         try:
                             config = _pb_to_config(client_msg.session_update)
-                            await orchestrator.start_session(config)
-                        except SessionAlreadyConfiguredError:
-                            await out_queue.put(_error_pb("session already configured"))
+                            await execute_conversation_session_update(orchestrator, config)
                         except OperationError as exc:
                             await out_queue.put(_error_pb(str(exc)))
                         continue
 
-                    if orchestrator.config is None:
-                        await out_queue.put(_error_pb("send session_update first"))
-                        continue
-
                     if kind == "audio_append":
-                        await orchestrator.ingest_pcm16(
-                            client_msg.audio_append.pcm16,
-                            sample_rate=client_msg.audio_append.sample_rate or None,
-                        )
+                        message = {
+                            "type": "input_audio_buffer.append",
+                            "audio_pcm16": client_msg.audio_append.pcm16,
+                            "sample_rate": client_msg.audio_append.sample_rate,
+                        }
                     elif kind == "response_start":
-                        await orchestrator.start_response()
+                        message = {"type": "response.start"}
                     elif kind == "response_delta":
-                        await orchestrator.append_response_text(client_msg.response_delta.delta)
+                        message = {
+                            "type": "response.delta",
+                            "delta": client_msg.response_delta.delta,
+                        }
                     elif kind == "response_commit":
-                        await orchestrator.commit_response()
+                        message = {"type": "response.commit"}
                     elif kind == "response_cancel":
-                        await orchestrator.cancel_response()
+                        message = {"type": "response.cancel"}
                     else:
                         await out_queue.put(_error_pb(f"unknown message kind: {kind!r}"))
+                        continue
+
+                    try:
+                        await execute_conversation_command(
+                            orchestrator,
+                            message,
+                            require_config_message="send session_update first",
+                            unknown_message_label="unknown message kind",
+                        )
+                    except OperationError as exc:
+                        await out_queue.put(_error_pb(str(exc)))
             finally:
                 await orchestrator.end_of_stream()
 

@@ -274,11 +274,10 @@ async def execute_conversation_command(
         raise InvalidConfigError("missing 'type' field")
 
     if msg_type == "session.update":
-        try:
-            config = parse_session_update(message)
-            await orchestrator.start_session(config)
-        except SessionAlreadyConfiguredError as exc:
-            raise InvalidConfigError("session already configured") from exc
+        await execute_conversation_session_update(
+            orchestrator,
+            parse_session_update(message),
+        )
         return
 
     if msg_type == "client.event" and client_event_handler is not None:
@@ -292,13 +291,17 @@ async def execute_conversation_command(
         raise InvalidConfigError(require_config_message)
 
     if msg_type == "input_audio_buffer.append" and allow_input_audio:
+        raw_pcm = message.get("audio_pcm16")
         audio_b64 = message.get("audio")
-        if not audio_b64:
+        if raw_pcm is not None:
+            pcm = bytes(raw_pcm)
+        elif audio_b64:
+            try:
+                pcm = base64.b64decode(audio_b64)
+            except Exception as exc:  # noqa: BLE001
+                raise InvalidConfigError(f"invalid base64 audio: {exc}") from exc
+        else:
             raise InvalidConfigError("audio field required")
-        try:
-            pcm = base64.b64decode(audio_b64)
-        except Exception as exc:  # noqa: BLE001
-            raise InvalidConfigError(f"invalid base64 audio: {exc}") from exc
         sample_rate = int(message.get("sample_rate", 0)) or None
         await orchestrator.ingest_pcm16(pcm, sample_rate=sample_rate)
         return
@@ -333,6 +336,18 @@ async def execute_conversation_command(
         return
 
     raise InvalidConfigError(f"{unknown_message_label}: {msg_type!r}")
+
+
+async def execute_conversation_session_update(
+    orchestrator: ConversationOrchestrator,
+    config: ConversationSessionConfig,
+    *,
+    already_configured_message: str = "session already configured",
+) -> None:
+    try:
+        await orchestrator.start_session(config)
+    except SessionAlreadyConfiguredError as exc:
+        raise InvalidConfigError(already_configured_message) from exc
 
 
 def parse_client_event_command(message: Any) -> tuple[str, Any]:

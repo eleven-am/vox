@@ -12,6 +12,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import suppress
+from functools import partial
 
 from vox.core.scheduler import Scheduler
 from vox.core.tasks import drain_task, reap_task
@@ -21,8 +22,10 @@ from vox.operations.conversation import (
     ConvAudioDeltaEvent,
     ConvDoneEvent,
     ConversationOrchestrator,
+    execute_conversation_command,
+    execute_conversation_session_update,
 )
-from vox.operations.errors import OperationError, SessionAlreadyConfiguredError
+from vox.operations.errors import OperationError
 from vox.server.routes.conversation import _event_to_wire
 from vox.server.rtc_client_events import control_event_as_client_event, send_client_event_to_browser
 from vox.server.rtc_conversation import (
@@ -143,9 +146,7 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                     if kind == "session_update":
                         try:
                             config = _pb_to_config(client_msg.session_update)
-                            await orchestrator.start_session(config)
-                        except SessionAlreadyConfiguredError:
-                            await out_queue.put(_error_pb("session already configured"))
+                            await execute_conversation_session_update(orchestrator, config)
                         except OperationError as exc:
                             await out_queue.put(_error_pb(str(exc)))
                         continue
@@ -160,23 +161,37 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                         except json.JSONDecodeError as exc:
                             await out_queue.put(_error_pb(f"client_event requires valid payload JSON: {exc}"))
                             continue
-                        send_client_event_to_browser(record, event_name, payload)
-                        continue
-
-                    if orchestrator.config is None:
-                        await out_queue.put(_error_pb("send session_update first"))
-                        continue
-
-                    if kind == "response_start":
-                        await orchestrator.start_response()
+                        message = {
+                            "type": "client.event",
+                            "event": event_name,
+                            "payload": payload,
+                        }
+                    elif kind == "response_start":
+                        message = {"type": "response.start"}
                     elif kind == "response_delta":
-                        await orchestrator.append_response_text(client_msg.response_delta.delta)
+                        message = {
+                            "type": "response.delta",
+                            "delta": client_msg.response_delta.delta,
+                        }
                     elif kind == "response_commit":
-                        await orchestrator.commit_response()
+                        message = {"type": "response.commit"}
                     elif kind == "response_cancel":
-                        await orchestrator.cancel_response()
+                        message = {"type": "response.cancel"}
                     else:
                         await out_queue.put(_error_pb(f"unknown control message kind: {kind!r}"))
+                        continue
+
+                    try:
+                        await execute_conversation_command(
+                            orchestrator,
+                            message,
+                            allow_input_audio=False,
+                            client_event_handler=partial(send_client_event_to_browser, record),
+                            require_config_message="send session_update first",
+                            unknown_message_label="unknown control message kind",
+                        )
+                    except OperationError as exc:
+                        await out_queue.put(_error_pb(str(exc)))
             finally:
                 if orchestrator is not None:
                     await orchestrator.end_of_stream(flush_response=False)

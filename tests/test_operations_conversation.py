@@ -172,6 +172,22 @@ async def test_execute_conversation_command_appends_audio_and_response_text():
 
 
 @pytest.mark.asyncio
+async def test_execute_conversation_command_accepts_internal_raw_pcm_audio():
+    spy = CommandSpy()
+
+    await execute_conversation_command(
+        spy,
+        {
+            "type": "input_audio_buffer.append",
+            "audio_pcm16": b"\x01\x02\x03\x04",
+            "sample_rate": 16_000,
+        },
+    )
+
+    assert spy.calls == [("ingest_pcm16", (b"\x01\x02\x03\x04",), {"sample_rate": 16_000})]
+
+
+@pytest.mark.asyncio
 async def test_execute_conversation_command_rejects_empty_response_delta():
     spy = CommandSpy()
 
