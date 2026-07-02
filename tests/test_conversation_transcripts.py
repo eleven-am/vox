@@ -4,11 +4,13 @@ import logging
 
 from vox.conversation.transcripts import (
     WIRE_TRANSCRIPT_DONE,
+    EndpointCommitDelayPolicy,
     PendingTranscriptFinalizer,
     coalesce_transcript_payload,
     is_transcript_revision,
     transcript_done_payload,
 )
+from vox.conversation.types import TurnPolicy
 from vox.streaming.types import StreamTranscript
 
 
@@ -127,3 +129,58 @@ def test_pending_transcript_finalizer_remembers_pops_clears_and_logs(caplog):
         and "logged" in record.message
         for record in caplog.records
     )
+
+
+def test_endpoint_commit_delay_uses_recent_pause_history_when_dynamic():
+    policy = EndpointCommitDelayPolicy.from_turn_policy(
+        TurnPolicy(
+            max_endpointing_delay_ms=3000,
+            min_endpointing_delay_ms=400,
+            dynamic_endpointing=True,
+        )
+    )
+
+    assert policy.commit_delay_ms(recent_pause_ms=[800, 1000, 1200]) == 1250
+    assert policy.commit_delay_ms(recent_pause_ms=[100]) == 1200
+
+
+def test_endpoint_commit_delay_ignores_pause_history_when_dynamic_disabled():
+    policy = EndpointCommitDelayPolicy.from_turn_policy(
+        TurnPolicy(
+            max_endpointing_delay_ms=3000,
+            min_endpointing_delay_ms=400,
+            dynamic_endpointing=False,
+        )
+    )
+
+    assert policy.commit_delay_ms(recent_pause_ms=[1600, 1800]) == 1200
+
+
+def test_endpoint_commit_delay_shrinks_with_eou_confidence():
+    policy = EndpointCommitDelayPolicy.from_turn_policy(
+        TurnPolicy(
+            max_endpointing_delay_ms=3000,
+            min_endpointing_delay_ms=400,
+            dynamic_endpointing=False,
+        )
+    )
+
+    base_ms = policy.commit_delay_ms()
+
+    assert base_ms == 1200
+    assert policy.commit_delay_ms(eou_probability=1.0, eou_threshold=0.5) == 400
+    mid_ms = policy.commit_delay_ms(eou_probability=0.75, eou_threshold=0.5)
+    assert 400 < mid_ms < base_ms
+
+
+def test_endpoint_commit_delay_keeps_full_delay_for_low_or_missing_eou():
+    policy = EndpointCommitDelayPolicy.from_turn_policy(
+        TurnPolicy(
+            max_endpointing_delay_ms=3000,
+            min_endpointing_delay_ms=400,
+            dynamic_endpointing=False,
+        )
+    )
+
+    assert policy.commit_delay_ms(eou_probability=0.3, eou_threshold=0.5) == 1200
+    assert policy.commit_delay_ms(eou_probability=None, eou_threshold=0.5) == 1200

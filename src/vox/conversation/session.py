@@ -129,7 +129,7 @@ class ConversationConfig:
             )
 
 
-TRANSCRIPT_CONTINUATION_COMMIT_MS = 1200
+TRANSCRIPT_CONTINUATION_COMMIT_MS = transcript_finalization.TRANSCRIPT_CONTINUATION_COMMIT_MS
 TRANSCRIPT_PENDING_STT_RECHECK_MS = 100
 
 
@@ -201,6 +201,9 @@ class ConversationSession:
         self._awaiting_final_transcript_started_at: float = 0.0
         self._recent_endpoint_pauses_ms: list[int] = []
         self._transcript_finalizer = transcript_finalization.PendingTranscriptFinalizer(language=config.language)
+        self._endpoint_commit_delay = transcript_finalization.EndpointCommitDelayPolicy.from_turn_policy(
+            config.policy
+        )
         self._partial_interrupt_evidence = PartialInterruptEvidence.from_turn_policy(config.policy)
 
         self._audio_history = ConversationAudioHistory()
@@ -933,35 +936,11 @@ class ConversationSession:
         eou_probability: float | None = None,
         eou_threshold: float | None = None,
     ) -> int:
-        max_delay_ms = max(0, int(self._config.policy.max_endpointing_delay_ms))
-        min_delay_ms = max(0, int(self._config.policy.min_endpointing_delay_ms))
-        continuation_delay_ms = max(
-            min_delay_ms,
-            TRANSCRIPT_CONTINUATION_COMMIT_MS,
+        return self._endpoint_commit_delay.commit_delay_ms(
+            recent_pause_ms=self._recent_endpoint_pauses_ms,
+            eou_probability=eou_probability,
+            eou_threshold=eou_threshold,
         )
-        if self._config.policy.dynamic_endpointing and self._recent_endpoint_pauses_ms:
-            avg_pause = sum(self._recent_endpoint_pauses_ms) / len(self._recent_endpoint_pauses_ms)
-            dynamic_ms = int(avg_pause * 1.25)
-            base_ms = min(
-                max_delay_ms,
-                max(
-                    continuation_delay_ms,
-                    dynamic_ms,
-                ),
-            )
-        else:
-            base_ms = min(max_delay_ms, continuation_delay_ms)
-
-        if eou_probability is None or eou_threshold is None:
-            return base_ms
-        if eou_probability < eou_threshold:
-            return base_ms
-
-        floor_ms = min(min_delay_ms, base_ms)
-        if eou_threshold >= 1.0:
-            return floor_ms
-        confidence = min(1.0, max(0.0, (eou_probability - eou_threshold) / (1.0 - eou_threshold)))
-        return int(base_ms - confidence * (base_ms - floor_ms))
 
     async def _evaluate_interrupt_candidate(self) -> None:
         """Consult the classifier before confirming a barge-in.

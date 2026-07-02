@@ -5,10 +5,12 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
 
+from vox.conversation.types import TurnPolicy
 from vox.streaming.types import StreamTranscript
 
 WIRE_TRANSCRIPT_DONE = "conversation.item.input_audio_transcription.completed"
 TRANSCRIPT_REVISION_SIMILARITY = 0.78
+TRANSCRIPT_CONTINUATION_COMMIT_MS = 1200
 
 
 def normalise_transcript_text(text: str) -> str:
@@ -135,3 +137,58 @@ class PendingTranscriptFinalizer:
             len(payload.get("entities") or ()),
             len(payload.get("words") or ()),
         )
+
+
+@dataclass(frozen=True)
+class EndpointCommitDelayPolicy:
+    """Computes how long endpointing should wait before committing a transcript."""
+
+    max_delay_ms: int
+    min_delay_ms: int
+    dynamic_endpointing: bool
+    continuation_delay_ms: int = TRANSCRIPT_CONTINUATION_COMMIT_MS
+
+    @classmethod
+    def from_turn_policy(cls, policy: TurnPolicy) -> EndpointCommitDelayPolicy:
+        return cls(
+            max_delay_ms=policy.max_endpointing_delay_ms,
+            min_delay_ms=policy.min_endpointing_delay_ms,
+            dynamic_endpointing=policy.dynamic_endpointing,
+        )
+
+    def commit_delay_ms(
+        self,
+        *,
+        recent_pause_ms: list[int] | tuple[int, ...] = (),
+        eou_probability: float | None = None,
+        eou_threshold: float | None = None,
+    ) -> int:
+        max_delay_ms = max(0, int(self.max_delay_ms))
+        min_delay_ms = max(0, int(self.min_delay_ms))
+        continuation_delay_ms = max(
+            min_delay_ms,
+            max(0, int(self.continuation_delay_ms)),
+        )
+        if self.dynamic_endpointing and recent_pause_ms:
+            avg_pause = sum(recent_pause_ms) / len(recent_pause_ms)
+            dynamic_ms = int(avg_pause * 1.25)
+            base_ms = min(
+                max_delay_ms,
+                max(
+                    continuation_delay_ms,
+                    dynamic_ms,
+                ),
+            )
+        else:
+            base_ms = min(max_delay_ms, continuation_delay_ms)
+
+        if eou_probability is None or eou_threshold is None:
+            return base_ms
+        if eou_probability < eou_threshold:
+            return base_ms
+
+        floor_ms = min(min_delay_ms, base_ms)
+        if eou_threshold >= 1.0:
+            return floor_ms
+        confidence = min(1.0, max(0.0, (eou_probability - eou_threshold) / (1.0 - eou_threshold)))
+        return int(base_ms - confidence * (base_ms - floor_ms))
