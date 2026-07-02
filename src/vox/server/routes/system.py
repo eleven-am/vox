@@ -4,8 +4,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from vox.operations import system as system_operations
-from vox.operations.errors import OperationError
-from vox.server.operation_errors import operation_error_to_http
+from vox.server.operation_errors import map_operation_errors_to_http
 
 router = APIRouter()
 
@@ -35,25 +34,21 @@ async def trim_idle(req: TrimIdleRequest, request: Request):
 
 @router.post("/v1/system/enforce-memory-budget")
 async def enforce_memory_budget(req: EnforceMemoryBudgetRequest, request: Request):
-    try:
+    with map_operation_errors_to_http():
         result = await system_operations.enforce_memory_budget(
             scheduler=request.app.state.scheduler,
             additional_vram_bytes=req.additional_vram_bytes,
         )
-    except OperationError as exc:
-        raise operation_error_to_http(exc) from exc
     return system_operations.enforce_memory_budget_payload(result)
 
 
 @router.post("/v1/models/{name:path}/trim")
 async def trim_model(name: str, request: Request):
-    try:
+    with map_operation_errors_to_http():
         result = await system_operations.trim_model(
             scheduler=request.app.state.scheduler,
             model_name=name,
         )
-    except OperationError as exc:
-        raise operation_error_to_http(exc) from exc
     return system_operations.trim_model_payload(result)
 
 
