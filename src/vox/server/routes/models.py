@@ -7,7 +7,6 @@ from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from vox.operations.errors import OperationError
 from vox.operations.models import (
     delete_model,
     list_models,
@@ -17,7 +16,7 @@ from vox.operations.models import (
     show_model,
     show_model_payload,
 )
-from vox.server.operation_errors import operation_error_to_http
+from vox.server.operation_errors import map_operation_errors_to_http
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -33,10 +32,8 @@ async def pull_model_route(req: PullRequest, request: Request):
     scheduler = request.app.state.scheduler
     registry = request.app.state.registry
 
-    try:
+    with map_operation_errors_to_http():
         events = pull_model(store=store, scheduler=scheduler, registry=registry, name=req.name)
-    except OperationError as exc:
-        raise operation_error_to_http(exc) from exc
 
     async def stream():
         async for event in events:
@@ -56,10 +53,8 @@ async def list_models_route(request: Request):
 async def show_model_route(name: str, request: Request):
     store = request.app.state.store
     registry = request.app.state.registry
-    try:
+    with map_operation_errors_to_http():
         result = show_model(store=store, registry=registry, name=name)
-    except OperationError as exc:
-        raise operation_error_to_http(exc) from exc
     return show_model_payload(result)
 
 
@@ -68,8 +63,6 @@ async def delete_model_route(name: str, request: Request):
     store = request.app.state.store
     scheduler = request.app.state.scheduler
     registry = request.app.state.registry
-    try:
+    with map_operation_errors_to_http():
         await delete_model(store=store, scheduler=scheduler, registry=registry, name=name)
-    except OperationError as exc:
-        raise operation_error_to_http(exc) from exc
     return {"status": "success"}
