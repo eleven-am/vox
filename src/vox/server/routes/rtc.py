@@ -17,11 +17,11 @@ from vox.core.tasks import drain_task
 from vox.operations.conversation import (
     ConvDoneEvent,
     execute_conversation_command,
+    serialize_conversation_event,
 )
 from vox.operations.errors import OperationError
 from vox.server.auth import require_api_key
 from vox.server.routes.conversation import (
-    _event_to_wire,
     _send_error,
 )
 from vox.server.rtc_client_events import (
@@ -275,7 +275,7 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
     async def emit_events() -> None:
         async for event in orchestrator.events():
             clear_rtc_audio_if_needed(record, event)
-            wire = _event_to_wire(event)
+            wire = serialize_conversation_event(event)
             if wire is not None:
                 wire.setdefault("session_id", session_id)
                 forward_wire_event_to_browser(record, wire)

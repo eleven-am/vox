@@ -41,6 +41,8 @@ from vox.streaming.types import TARGET_SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
 
+WIRE_SESSION_CREATED = "session.created"
+
 
 @dataclass(frozen=True)
 class ConversationSessionConfig:
@@ -186,6 +188,99 @@ ConvEvent = (
     | ConvErrorEvent
     | ConvDoneEvent
 )
+
+
+def serialize_conversation_event(event: ConvEvent) -> dict | None:
+    if isinstance(event, ConvSessionCreatedEvent):
+        return {
+            "type": WIRE_SESSION_CREATED,
+            "session": serialize_session_config(event.config),
+        }
+    if isinstance(event, ConvSpeechStartedEvent):
+        return {"type": WIRE_SPEECH_STARTED, "timestamp_ms": event.timestamp_ms}
+    if isinstance(event, ConvSpeechStoppedEvent):
+        return {"type": WIRE_SPEECH_STOPPED, "timestamp_ms": event.timestamp_ms}
+    if isinstance(event, ConvTranscriptDeltaEvent):
+        return {
+            "type": WIRE_TRANSCRIPT_DELTA,
+            "delta": event.delta,
+            "start_ms": event.start_ms,
+            "end_ms": event.end_ms,
+        }
+    if isinstance(event, ConvTranscriptDoneEvent):
+        payload: dict = {
+            "type": WIRE_TRANSCRIPT_DONE,
+            "transcript": event.transcript,
+            "language": event.language,
+            "start_ms": event.start_ms,
+            "end_ms": event.end_ms,
+        }
+        if event.eou_probability is not None:
+            payload["eou_probability"] = event.eou_probability
+        if event.entities:
+            payload["entities"] = list(event.entities)
+        if event.topics:
+            payload["topics"] = list(event.topics)
+        if event.words:
+            payload["words"] = list(event.words)
+        return payload
+    if isinstance(event, ConvResponseCreatedEvent):
+        return {"type": WIRE_RESPONSE_CREATED, "response_id": event.response_id}
+    if isinstance(event, ConvAudioDeltaEvent):
+        return {
+            "type": WIRE_AUDIO_DELTA,
+            "audio": event.audio_b64,
+            "sample_rate": event.sample_rate,
+            "audio_format": event.audio_format,
+            "response_id": event.response_id,
+            "sequence": event.sequence,
+        }
+    if isinstance(event, ConvAudioClearEvent):
+        return {"type": WIRE_AUDIO_CLEAR, "response_id": event.response_id}
+    if isinstance(event, ConvResponseDoneEvent):
+        return {"type": WIRE_RESPONSE_DONE, "response_id": event.response_id}
+    if isinstance(event, ConvResponseCancelledEvent):
+        return {"type": WIRE_RESPONSE_CANCELLED, "response_id": event.response_id}
+    if isinstance(event, ConvResponseCommittedEvent):
+        return {"type": WIRE_RESPONSE_COMMITTED, "response_id": event.response_id}
+    if isinstance(event, ConvInterruptionDetectedEvent):
+        return {
+            "type": WIRE_INTERRUPTION_DETECTED,
+            "response_id": event.response_id,
+            "vad_active_ms": event.vad_active_ms,
+            "partial_transcript": event.partial_transcript,
+        }
+    if isinstance(event, ConvInterruptionFalsePositiveEvent):
+        payload_fp: dict = {
+            "type": WIRE_INTERRUPTION_FALSE_POSITIVE,
+            "response_id": event.response_id,
+            "vad_active_ms": event.vad_active_ms,
+            "partial_transcript": event.partial_transcript,
+        }
+        if event.reason:
+            payload_fp["reason"] = event.reason
+        return payload_fp
+    if isinstance(event, ConvTurnEouPredictedEvent):
+        return {
+            "type": WIRE_TURN_EOU_PREDICTED,
+            "probability": event.probability,
+            "threshold": event.threshold,
+            "decision": event.decision,
+            "action": event.action,
+            "delay_ms": event.delay_ms,
+            "turn_detector": event.turn_detector,
+            "start_ms": event.start_ms,
+            "end_ms": event.end_ms,
+        }
+    if isinstance(event, ConvStateChangedEvent):
+        return {
+            "type": WIRE_STATE_CHANGED,
+            "state": event.state,
+            "previous_state": event.previous_state,
+        }
+    if isinstance(event, ConvErrorEvent):
+        return {"type": WIRE_ERROR, "message": event.message}
+    return None
 
 
 def parse_session_update(payload: dict) -> ConversationSessionConfig:

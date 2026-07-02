@@ -24,9 +24,9 @@ from vox.operations.conversation import (
     ConversationOrchestrator,
     execute_conversation_command,
     execute_conversation_session_update,
+    serialize_conversation_event,
 )
 from vox.operations.errors import OperationError
-from vox.server.routes.conversation import _event_to_wire
 from vox.server.rtc_client_events import control_event_as_client_event, send_client_event_to_browser
 from vox.server.rtc_conversation import (
     clear_rtc_audio_if_needed,
@@ -68,7 +68,7 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
             try:
                 async for event in orchestrator.events():
                     clear_rtc_audio_if_needed(record, event)
-                    forward_wire_event_to_browser(record, _event_to_wire(event))
+                    forward_wire_event_to_browser(record, serialize_conversation_event(event))
                     if (
                         record is not None
                         and isinstance(event, ConvAudioDeltaEvent)

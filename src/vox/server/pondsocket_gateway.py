@@ -13,12 +13,10 @@ from vox.operations.conversation import (
     ConvDoneEvent,
     ConversationOrchestrator,
     execute_conversation_command,
+    serialize_conversation_event,
 )
 from vox.operations.errors import OperationError
 from vox.server.auth import configured_api_key, extract_api_key_from_connection, is_api_key_authorized
-from vox.server.routes.conversation import (
-    _event_to_wire,
-)
 from vox.server.rtc_client_events import send_client_event_to_browser
 from vox.server.rtc_conversation import (
     clear_rtc_audio_if_needed,
@@ -192,7 +190,7 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
 
         async def emit_events() -> None:
             async for event in orchestrator.events():
-                wire = _event_to_wire(event)
+                wire = serialize_conversation_event(event)
                 if wire is not None:
                     with suppress(Exception):
                         await emit_wire_to_user(channel, user_id, wire)
@@ -219,7 +217,7 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
         async def emit_events() -> None:
             async for event in orchestrator.events():
                 clear_rtc_audio_if_needed(record, event)
-                wire = _event_to_wire(event)
+                wire = serialize_conversation_event(event)
                 if wire is not None:
                     wire.setdefault("session_id", session_id)
                     forward_wire_event_to_browser(record, wire)

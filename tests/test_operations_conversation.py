@@ -23,12 +23,15 @@ from vox.operations.conversation import (
     ConversationOrchestrator,
     ConvInterruptionDetectedEvent,
     ConvInterruptionFalsePositiveEvent,
+    ConvResponseCreatedEvent,
     ConvSessionCreatedEvent,
     ConvTranscriptDeltaEvent,
+    ConvTranscriptDoneEvent,
     ConvTurnEouPredictedEvent,
     _wire_event_to_session_event,
     execute_conversation_command,
     parse_session_update,
+    serialize_conversation_event,
     serialize_session_config,
 )
 from vox.operations.errors import (
@@ -381,6 +384,61 @@ def test_serialize_session_config_round_trip_includes_policy_and_audio_format():
     assert payload["turn_policy"]["self_echo_min_overlap"] == pytest.approx(0.7)
     assert payload["turn_policy"]["aec_warmup_ms"] == 750
     assert payload["turn_policy"]["backchannel_end_cooldown_ms"] == 1500
+
+
+def test_serialize_conversation_event_preserves_transcript_metadata():
+    event = ConvTranscriptDoneEvent(
+        transcript="hello",
+        language="en",
+        start_ms=100,
+        end_ms=900,
+        eou_probability=0.73,
+        entities=({"text": "hello", "label": "greeting"},),
+        topics=("greeting",),
+        words=({"word": "hello", "start": 0.1, "end": 0.9},),
+    )
+
+    assert serialize_conversation_event(event) == {
+        "type": "conversation.item.input_audio_transcription.completed",
+        "transcript": "hello",
+        "language": "en",
+        "start_ms": 100,
+        "end_ms": 900,
+        "eou_probability": 0.73,
+        "entities": [{"text": "hello", "label": "greeting"}],
+        "topics": ["greeting"],
+        "words": [{"word": "hello", "start": 0.1, "end": 0.9}],
+    }
+
+
+def test_serialize_conversation_event_preserves_response_audio_contract():
+    assert serialize_conversation_event(ConvResponseCreatedEvent(response_id="resp_1")) == {
+        "type": "response.created",
+        "response_id": "resp_1",
+    }
+    assert serialize_conversation_event(
+        ConvAudioDeltaEvent(
+            audio_b64="AAAA",
+            sample_rate=24_000,
+            audio_format="pcm16",
+            response_id="resp_1",
+            sequence=3,
+        )
+    ) == {
+        "type": "response.audio.delta",
+        "audio": "AAAA",
+        "sample_rate": 24_000,
+        "audio_format": "pcm16",
+        "response_id": "resp_1",
+        "sequence": 3,
+    }
+
+
+def test_serialize_conversation_event_uses_operation_wire_error_constant():
+    assert serialize_conversation_event(ConvErrorEvent(message="boom")) == {
+        "type": "error",
+        "message": "boom",
+    }
 
 
 def test_audio_clear_wire_event_maps_to_operation_event():
