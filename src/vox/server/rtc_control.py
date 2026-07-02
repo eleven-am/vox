@@ -28,7 +28,7 @@ from vox.server.rtc_conversation import (
 from vox.server.rtc_media import cancel_and_drain_media_tasks
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 from vox.server.rtc_timeline import RtcTurnTimeline, rtc_audio_stats
-from vox.server.websocket import safe_send_ws_error, send_ws_error
+from vox.server.websocket import safe_send_ws_error, send_ws_error, send_ws_operation_error
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +158,7 @@ async def receive_rtc_control_commands(
                 unknown_message_label="unknown control message type",
             )
         except OperationError as exc:
-            await send_ws_error(websocket, str(exc))
+            await send_ws_operation_error(websocket, exc)
 
 
 async def close_rtc_control_runtime(

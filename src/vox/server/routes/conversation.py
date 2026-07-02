@@ -26,7 +26,7 @@ from vox.operations.conversation import (
     serialize_conversation_event,
 )
 from vox.operations.errors import OperationError
-from vox.server.websocket import safe_send_ws_error, send_ws_error
+from vox.server.websocket import safe_send_ws_error, send_ws_error, send_ws_operation_error
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -75,7 +75,7 @@ async def conversation_ws(websocket: WebSocket) -> None:
             try:
                 await execute_conversation_command(orchestrator, msg)
             except OperationError as exc:
-                await send_ws_error(websocket, str(exc))
+                await send_ws_operation_error(websocket, exc)
 
     except WebSocketDisconnect:
         pass

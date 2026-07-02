@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from vox.server.websocket import safe_send_ws_error, send_ws_error
+from vox.operations.errors import UnknownMessageTypeError
+from vox.server.websocket import safe_send_ws_error, send_ws_error, send_ws_operation_error
 
 
 class RecordingWebSocket:
@@ -23,6 +24,18 @@ async def test_send_ws_error_uses_shared_error_envelope():
     await send_ws_error(websocket, "boom")
 
     assert websocket.sent == [{"type": "error", "message": "boom"}]
+
+
+@pytest.mark.asyncio
+async def test_send_ws_operation_error_uses_shared_error_envelope():
+    websocket = RecordingWebSocket()
+
+    await send_ws_operation_error(websocket, UnknownMessageTypeError("bad.type"))
+
+    assert websocket.sent == [{
+        "type": "error",
+        "message": "Unknown message type: bad.type",
+    }]
 
 
 @pytest.mark.asyncio

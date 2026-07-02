@@ -41,7 +41,7 @@ from vox.operations.streaming_transcription_longform import (
     LongformTranscriptionSession,
     normalize_longform_config,
 )
-from vox.server.websocket import safe_send_ws_error, send_ws_error
+from vox.server.websocket import safe_send_ws_error, send_ws_error, send_ws_operation_error
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +74,7 @@ async def transcriptions_stream(websocket: WebSocket):
                 store=websocket.app.state.store,
             )
         except OperationError as exc:
-            await send_ws_error(websocket, str(exc))
+            await send_ws_operation_error(websocket, exc)
             return
 
         scheduler = websocket.app.state.scheduler
@@ -88,7 +88,7 @@ async def transcriptions_stream(websocket: WebSocket):
             try:
                 await session.configure(config)
             except OperationError as exc:
-                await send_ws_error(websocket, str(exc))
+                await send_ws_operation_error(websocket, exc)
                 return
 
             while True:
@@ -100,13 +100,13 @@ async def transcriptions_stream(websocket: WebSocket):
                     msg_type = data.get("type", "")
                     if msg_type == "end":
                         break
-                    await send_ws_error(websocket, str(UnknownMessageTypeError(msg_type)))
+                    await send_ws_operation_error(websocket, UnknownMessageTypeError(msg_type))
                     continue
                 if "bytes" in raw and raw["bytes"]:
                     try:
                         await session.submit_chunk(raw["bytes"])
                     except SessionNotConfiguredError as exc:
-                        await send_ws_error(websocket, str(exc))
+                        await send_ws_operation_error(websocket, exc)
 
             await session.end_of_stream()
         finally:
@@ -147,7 +147,7 @@ async def speech_stream(websocket: WebSocket):
                 store=websocket.app.state.store,
             )
         except OperationError as exc:
-            await send_ws_error(websocket, str(exc))
+            await send_ws_operation_error(websocket, exc)
             return
 
         scheduler = websocket.app.state.scheduler
@@ -164,7 +164,7 @@ async def speech_stream(websocket: WebSocket):
                 await send_ws_error(websocket, str(exc))
                 return
             except OperationError as exc:
-                await send_ws_error(websocket, str(exc))
+                await send_ws_operation_error(websocket, exc)
                 return
 
             while True:
@@ -183,7 +183,7 @@ async def speech_stream(websocket: WebSocket):
                     continue
                 if msg_type == "end":
                     break
-                await send_ws_error(websocket, str(UnknownMessageTypeError(msg_type)))
+                await send_ws_operation_error(websocket, UnknownMessageTypeError(msg_type))
 
             await session.end_of_stream()
         finally:
