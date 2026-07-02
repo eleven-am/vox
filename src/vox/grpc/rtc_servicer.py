@@ -18,7 +18,7 @@ from vox.core.scheduler import Scheduler
 from vox.core.tasks import drain_task, reap_task
 from vox.grpc import vox_pb2, vox_pb2_grpc
 from vox.grpc.conversation_commands import rtc_control_message_to_command
-from vox.grpc.conversation_servicer import _error_pb, _event_to_pb
+from vox.grpc.conversation_events import conversation_error_pb, conversation_event_to_pb
 from vox.operations.conversation import (
     ConvAudioDeltaEvent,
     ConvDoneEvent,
@@ -67,7 +67,7 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                         and record.audio_output_track is not None
                     ):
                         continue
-                    pb = _event_to_pb(event)
+                    pb = conversation_event_to_pb(event)
                     if pb is not None:
                         await out_queue.put(pb)
                     if isinstance(event, ConvDoneEvent):
@@ -105,13 +105,13 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                     kind = client_msg.WhichOneof("msg")
                     if record is None:
                         if kind != "attach":
-                            await out_queue.put(_error_pb("send attach first"))
+                            await out_queue.put(conversation_error_pb("send attach first"))
                             break
                         session_id = client_msg.attach.session_id
                         record = self._rtc_registry.attach_control(session_id)
                         if record is None:
                             await out_queue.put(
-                                _error_pb(
+                                conversation_error_pb(
                                     "unknown, expired, or already attached RTC session",
                                 )
                             )
@@ -151,7 +151,7 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                                 unknown_message_label="unknown control message kind",
                             )
                     except OperationError as exc:
-                        await out_queue.put(_error_pb(str(exc)))
+                        await out_queue.put(conversation_error_pb(str(exc)))
             finally:
                 if orchestrator is not None:
                     await orchestrator.end_of_stream(flush_response=False)
