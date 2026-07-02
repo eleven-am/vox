@@ -443,6 +443,20 @@ class TestVoicesMapping:
         assert body["name"] == "Roy"
         assert (store.voices_dir / body["id"] / "reference.wav").is_file()
 
+    def test_create_voice_invalid_reference_maps_to_422(self, tmp_path: Path):
+        store = BlobStore(root=tmp_path)
+        client = TestClient(_build_app(store=store))
+        short_wav = encode_wav(np.full(4_000, 0.1, dtype=np.float32), 16_000)
+
+        resp = client.post(
+            "/v1/audio/voices",
+            files={"audio_sample": ("sample.wav", io.BytesIO(short_wav), "audio/wav")},
+            data={"name": "Roy"},
+        )
+
+        assert resp.status_code == 422
+        assert "too short" in resp.json()["detail"]
+
     def test_delete_voice_route_removes_directory(self, tmp_path: Path):
         from vox.core.cloned_voices import create_stored_voice
 

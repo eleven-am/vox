@@ -27,6 +27,7 @@ from vox.operations.errors import (
     VoiceIdRequiredError,
     VoiceNameRequiredError,
     VoiceNotFoundOperationError,
+    VoiceReferenceInvalidError,
     WrongModelTypeError,
 )
 from vox.operations.voices import (
@@ -161,6 +162,21 @@ def test_create_voice_requires_audio(tmp_path: Path):
     store = BlobStore(root=tmp_path)
     with pytest.raises(VoiceAudioRequiredError):
         create_voice(store=store, request=CreateVoiceRequest(name="Roy", audio=b""))
+
+
+def test_create_voice_translates_invalid_reference_audio(tmp_path: Path):
+    store = BlobStore(root=tmp_path)
+    short_wav = encode_wav(np.full(4_000, 0.1, dtype=np.float32), 16_000)
+
+    with pytest.raises(VoiceReferenceInvalidError, match="too short"):
+        create_voice(
+            store=store,
+            request=CreateVoiceRequest(
+                name="Roy",
+                audio=short_wav,
+                content_type="audio/wav",
+            ),
+        )
 
 
 def test_delete_voice_removes_directory(tmp_path: Path):

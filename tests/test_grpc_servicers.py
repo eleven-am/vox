@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import grpc
 import numpy as np
 import pytest
 
@@ -415,6 +416,27 @@ class TestSynthesisServicerMapping:
         )
         assert resp.voice.name == "Roy"
         assert resp.voice.is_cloned is True
+
+    @pytest.mark.asyncio
+    async def test_create_voice_invalid_reference_aborts_with_invalid_argument(self, tmp_path):
+        from vox.grpc.synthesis_servicer import SynthesisServicer
+
+        store = _make_store(tmp_path)
+        context = FakeContext()
+        servicer = SynthesisServicer(store, MagicMock(), MagicMock())
+
+        with pytest.raises(Exception, match="gRPC abort"):
+            await servicer.CreateVoice(
+                vox_pb2.CreateVoiceRequest(
+                    name="Roy",
+                    audio=encode_wav(np.full(4_000, 0.1, dtype=np.float32), 16_000),
+                    format_hint="wav",
+                ),
+                context,
+            )
+
+        assert context._code is grpc.StatusCode.INVALID_ARGUMENT
+        assert "too short" in context._details
 
     @pytest.mark.asyncio
     async def test_delete_voice_returns_deleted_proto(self, tmp_path):

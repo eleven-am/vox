@@ -11,7 +11,7 @@ from vox.core.cloned_voices import (
     list_stored_voices,
     reference_audio_bytes,
 )
-from vox.core.errors import ModelNotFoundError, VoxError
+from vox.core.errors import ModelNotFoundError, ReferenceAudioInvalidError, VoxError
 from vox.core.types import VoiceInfo
 from vox.operations.errors import (
     InternalOperationError,
@@ -20,6 +20,7 @@ from vox.operations.errors import (
     VoiceIdRequiredError,
     VoiceNameRequiredError,
     VoiceNotFoundOperationError,
+    VoiceReferenceInvalidError,
     VoiceReferenceNotFoundError,
     WrongModelTypeError,
 )
@@ -151,16 +152,19 @@ def create_voice(*, store: Any, request: CreateVoiceRequest):
         raise VoiceAudioRequiredError()
     from vox.core.cloned_voices import generate_voice_id
 
-    return create_stored_voice(
-        store,
-        voice_id=generate_voice_id(store),
-        name=request.name,
-        audio_bytes=request.audio,
-        content_type=request.content_type,
-        language=request.language,
-        gender=request.gender,
-        reference_text=request.reference_text,
-    )
+    try:
+        return create_stored_voice(
+            store,
+            voice_id=generate_voice_id(store),
+            name=request.name,
+            audio_bytes=request.audio,
+            content_type=request.content_type,
+            language=request.language,
+            gender=request.gender,
+            reference_text=request.reference_text,
+        )
+    except ReferenceAudioInvalidError as exc:
+        raise VoiceReferenceInvalidError(str(exc)) from exc
 
 
 def delete_voice(*, store: Any, voice_id: str) -> None:

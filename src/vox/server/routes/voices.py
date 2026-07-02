@@ -3,7 +3,6 @@ from __future__ import annotations
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 
-from vox.core.errors import ReferenceAudioInvalidError
 from vox.operations.errors import (
     OperationError,
 )
@@ -58,8 +57,6 @@ async def create_voice_route(
         voice = create_voice(store=store, request=op_req)
     except OperationError as exc:
         raise operation_error_to_http(exc) from exc
-    except ReferenceAudioInvalidError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

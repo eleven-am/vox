@@ -11,6 +11,8 @@ def operation_error_status(exc: OperationError) -> tuple[grpc.StatusCode, str]:
     kind = classify_operation_error(exc)
     if kind is OperationErrorKind.INVALID_ARGUMENT:
         return grpc.StatusCode.INVALID_ARGUMENT, str(exc)
+    if kind is OperationErrorKind.UNPROCESSABLE_ENTITY:
+        return grpc.StatusCode.INVALID_ARGUMENT, str(exc)
     if kind is OperationErrorKind.NOT_FOUND:
         return grpc.StatusCode.NOT_FOUND, str(exc)
     if kind is OperationErrorKind.CONFLICT:

@@ -5,6 +5,7 @@ from enum import StrEnum
 
 class OperationErrorKind(StrEnum):
     INVALID_ARGUMENT = "invalid_argument"
+    UNPROCESSABLE_ENTITY = "unprocessable_entity"
     NOT_FOUND = "not_found"
     CONFLICT = "conflict"
     INTERNAL = "internal"
@@ -81,6 +82,11 @@ class VoiceAudioRequiredError(OperationError):
         super().__init__("Audio sample is required")
 
 
+class VoiceReferenceInvalidError(OperationError):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
 class VoiceIdRequiredError(OperationError):
     def __init__(self) -> None:
         super().__init__("Voice ID is required")
@@ -150,6 +156,8 @@ def classify_operation_error(exc: OperationError) -> OperationErrorKind:
         InvalidConfigError,
     )):
         return OperationErrorKind.INVALID_ARGUMENT
+    if isinstance(exc, VoiceReferenceInvalidError):
+        return OperationErrorKind.UNPROCESSABLE_ENTITY
     if isinstance(exc, (
         CatalogEntryNotFoundError,
         StoredModelNotFoundError,
