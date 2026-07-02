@@ -11,7 +11,6 @@ the user. That keeps Vox's scope limited to speech inference + turn orchestratio
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from contextlib import suppress
 
@@ -26,7 +25,7 @@ from vox.operations.conversation import (
     serialize_conversation_event,
 )
 from vox.operations.errors import OperationError
-from vox.server.websocket import safe_send_ws_error, send_ws_error, send_ws_operation_error
+from vox.server.websocket import iter_ws_json_messages, safe_send_ws_error, send_ws_operation_error
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -58,20 +57,7 @@ async def conversation_ws(websocket: WebSocket) -> None:
     emit_task = asyncio.create_task(emit_events())
 
     try:
-        while True:
-            raw = await websocket.receive()
-            if raw.get("type") == "websocket.disconnect":
-                break
-            if "text" not in raw or raw["text"] is None:
-                await send_ws_error(websocket, "only JSON text frames are supported")
-                continue
-
-            try:
-                msg = json.loads(raw["text"])
-            except json.JSONDecodeError as exc:
-                await send_ws_error(websocket, f"invalid JSON: {exc}")
-                continue
-
+        async for msg in iter_ws_json_messages(websocket):
             try:
                 await execute_conversation_command(orchestrator, msg)
             except OperationError as exc:

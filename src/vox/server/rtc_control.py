@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import Callable
 from contextlib import suppress
@@ -27,7 +26,7 @@ from vox.server.rtc_conversation import (
 )
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 from vox.server.rtc_timeline import RtcTurnTimeline, rtc_audio_stats
-from vox.server.websocket import safe_send_ws_error, send_ws_error, send_ws_operation_error
+from vox.server.websocket import iter_ws_json_messages, safe_send_ws_error, send_ws_operation_error
 
 logger = logging.getLogger(__name__)
 
@@ -130,20 +129,7 @@ async def receive_rtc_control_commands(
     record: RtcSessionRecord,
     orchestrator: ConversationOrchestrator,
 ) -> None:
-    while True:
-        raw = await websocket.receive()
-        if raw.get("type") == "websocket.disconnect":
-            break
-        if "text" not in raw or raw["text"] is None:
-            await send_ws_error(websocket, "only JSON text frames are supported")
-            continue
-
-        try:
-            msg = json.loads(raw["text"])
-        except json.JSONDecodeError as exc:
-            await send_ws_error(websocket, f"invalid JSON: {exc}")
-            continue
-
+    async for msg in iter_ws_json_messages(websocket):
         try:
             await execute_conversation_command(
                 orchestrator,
