@@ -6,7 +6,6 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 
-
 AUTHORIZATION_HEADER = "authorization"
 API_KEY_HEADER = "x-api-key"
 API_KEY_QUERY_PARAM = "api_key"

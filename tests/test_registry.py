@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from vox.core.adapter_resolution import AdapterResolver
-from vox.core.errors import ModelNotFoundError
+from vox.core.errors import ModelLoadError, ModelNotFoundError
 from vox.core.registry import CATALOG, ModelRegistry
 from vox.core.store import BlobStore, Manifest, ManifestLayer
 
@@ -187,6 +187,50 @@ class TestResolve:
         link = model_dir / "onnx" / "model.onnx"
         assert link.is_symlink()
         assert link.resolve().exists()
+
+    def test_resolve_rejects_parent_traversal_filename(self, tmp_path: Path):
+        store = _make_store(tmp_path)
+        digest = "sha256-" + "ef" * 32
+        blob_path = store.blobs_dir / digest
+        blob_path.parent.mkdir(parents=True, exist_ok=True)
+        blob_path.write_bytes(b"evil")
+        _write_manifest(
+            store, "evil", "v1",
+            layers=[
+                ManifestLayer(
+                    media_type="application/vox.model.onnx",
+                    digest=digest,
+                    size=4,
+                    filename="../../../../../../tmp/vox-escape.onnx",
+                )
+            ],
+        )
+        registry = _make_registry(store)
+
+        with pytest.raises(ModelLoadError, match="escapes model directory"):
+            registry.resolve("evil", "v1")
+
+    def test_resolve_rejects_absolute_filename(self, tmp_path: Path):
+        store = _make_store(tmp_path)
+        digest = "sha256-" + "12" * 32
+        blob_path = store.blobs_dir / digest
+        blob_path.parent.mkdir(parents=True, exist_ok=True)
+        blob_path.write_bytes(b"evil")
+        _write_manifest(
+            store, "evil", "v2",
+            layers=[
+                ManifestLayer(
+                    media_type="application/vox.model.onnx",
+                    digest=digest,
+                    size=4,
+                    filename=str(tmp_path / "vox-abs-escape.onnx"),
+                )
+            ],
+        )
+        registry = _make_registry(store)
+
+        with pytest.raises(ModelLoadError, match="escapes model directory"):
+            registry.resolve("evil", "v2")
 
     def test_resolve_handles_stale_symlinks(self, tmp_path: Path):
         store = _make_store(tmp_path)

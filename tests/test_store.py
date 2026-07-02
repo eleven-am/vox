@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import logging
 import os
 import time
@@ -109,6 +110,18 @@ class TestManifestOperations:
         store = _make_store(tmp_path)
         assert store.resolve_model("nonexistent") is None
 
+    def test_save_manifest_dotted_tags_do_not_collide(self, tmp_path: Path):
+        store = _make_store(tmp_path)
+        _save_minimal_manifest(store, "parakeet", "tdt-0.6b", "sha256-aaa", 100)
+        _save_minimal_manifest(store, "parakeet", "tdt-0.6b-v3", "sha256-bbb", 200)
+
+        first = store.resolve_model("parakeet", "tdt-0.6b")
+        second = store.resolve_model("parakeet", "tdt-0.6b-v3")
+        assert first is not None and first.layers[0].digest == "sha256-aaa"
+        assert second is not None and second.layers[0].digest == "sha256-bbb"
+        leftover = list((store.manifests_dir / "parakeet").glob("*.tmp"))
+        assert leftover == []
+
     def test_list_models_returns_all_stored(self, tmp_path: Path):
         store = _make_store(tmp_path)
         _save_minimal_manifest(store, "whisper", "large-v3", "sha256-aaa", 100)
@@ -139,6 +152,19 @@ class TestManifestOperations:
         assert len(models) == 1
         assert models[0].tag == "good"
         assert any("Skipping corrupted manifest" in msg for msg in caplog.messages)
+
+    def test_list_models_skips_manifest_with_malformed_layer(self, tmp_path: Path):
+        store = _make_store(tmp_path)
+        _save_minimal_manifest(store, "whisper", "good", "sha256-aaa", 100)
+
+        bad_dir = store.manifests_dir / "whisper"
+        bad_dir.mkdir(parents=True, exist_ok=True)
+        (bad_dir / "bad").write_text(
+            json.dumps({"schema_version": 1, "layers": [{"digest": "sha256-x", "size": 1}], "config": {}})
+        )
+
+        models = store.list_models()
+        assert [m.tag for m in models] == ["good"]
 
 
 
@@ -178,10 +204,24 @@ class TestGcBlobs:
 
         _save_minimal_manifest(store, "whisper", "latest", d1, 10)
 
+        old_mtime = time.time() - 7200
+        os.utime(store.get_blob_path(d2), (old_mtime, old_mtime))
+
         removed = store.gc_blobs()
         assert removed == 1
         assert store.has_blob(d1)
         assert not store.has_blob(d2)
+
+    def test_gc_blobs_keeps_recent_unreferenced_blob(self, tmp_path: Path):
+        store = _make_store(tmp_path)
+
+        d1 = store.write_blob(io.BytesIO(b"referenced"))
+        d2 = store.write_blob(io.BytesIO(b"just-downloaded-mid-pull"))
+        _save_minimal_manifest(store, "whisper", "latest", d1, 10)
+
+        removed = store.gc_blobs()
+        assert removed == 0
+        assert store.has_blob(d2)
 
     def test_gc_blobs_keeps_referenced(self, tmp_path: Path):
         store = _make_store(tmp_path)

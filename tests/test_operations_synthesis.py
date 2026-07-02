@@ -216,6 +216,22 @@ async def test_synthesize_stream_multichunk_wav_has_single_container_header(tmp_
 
 
 @pytest.mark.asyncio
+async def test_synthesize_audio_response_streamed_preflights_wrong_model_type(tmp_path: Path):
+    sched = DummyScheduler(FakeSTT())
+    store = BlobStore(root=tmp_path)
+    registry = MagicMock()
+
+    with pytest.raises(WrongModelTypeError):
+        await synthesize_audio_response(
+            scheduler=sched,
+            registry=registry,
+            store=store,
+            request=SynthesisRequest(input="hello", model="fake-stt:latest", response_format="wav"),
+            stream=True,
+        )
+
+
+@pytest.mark.asyncio
 async def test_synthesize_audio_response_non_streamed_wav_uses_incremental_metadata(tmp_path: Path):
     sched = DummyScheduler(MultiChunkTTS(chunks=2))
     store = BlobStore(root=tmp_path)

@@ -156,6 +156,16 @@ def test_normalize_rejects_invalid_chunk_chars():
         )
 
 
+def test_normalize_clamps_non_positive_speed():
+    for bad_speed in (-2.0, 0.0):
+        config = normalize_longform_tts_config(
+            model="t:1", voice=None, speed=bad_speed, language=None,
+            response_format="pcm16", chunk_chars=None,
+            registry=_make_registry(), store=_make_store(),
+        )
+        assert config.speed == 1.0
+
+
 def test_longform_tts_event_payloads_preserve_wire_contract():
     assert longform_tts_event_payload(
         TtsReadyEvent(

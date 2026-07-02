@@ -5,8 +5,8 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from vox.server.auth import bearer_token_from_http, require_api_key
 from vox.server.app_services import app_rtc_registry
+from vox.server.auth import bearer_token_from_http, require_api_key
 from vox.server.rtc_media_events import iter_media_sse
 from vox.server.rtc_sessions import (
     RTC_CANDIDATE_TOKEN_FIELDS,

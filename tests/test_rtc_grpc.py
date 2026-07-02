@@ -410,3 +410,44 @@ async def test_rtc_grpc_emits_browser_events_to_backend():
         "event": "ui.select",
         "payload": {"id": "choice-a"},
     }
+
+
+@pytest.mark.asyncio
+async def test_rtc_grpc_orchestrator_failure_after_attach_releases_session(monkeypatch):
+    registry = RtcSessionRegistry()
+    record, _ = registry.create_session()
+
+    class FakePeer:
+        def __init__(self) -> None:
+            self.closed = False
+
+        async def close(self) -> None:
+            self.closed = True
+
+    fake_peer = FakePeer()
+    record.rtc_peer = fake_peer
+    servicer = RtcServicer(
+        scheduler=FakeScheduler(ScriptedTTS()),
+        rtc_registry=registry,
+    )
+
+    def boom(**kwargs):
+        raise RuntimeError("orchestrator init failed")
+
+    monkeypatch.setattr(rtc_servicer_module, "create_rtc_orchestrator_with", boom)
+
+    await _collect_all(
+        servicer,
+        messages=[
+            vox_pb2.RtcControlClientMessage(
+                attach=vox_pb2.RtcControlAttach(session_id=record.session_id),
+            )
+        ],
+    )
+
+    assert fake_peer.closed
+    assert registry.get(record.session_id) is None
+    assert record.closed
+
+    fresh_record, _ = registry.create_session()
+    assert registry.attach_control(fresh_record.session_id) is fresh_record

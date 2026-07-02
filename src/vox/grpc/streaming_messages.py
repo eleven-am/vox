@@ -42,9 +42,7 @@ async def execute_stream_input_message(
             format_hint=client_msg.encoded_audio.format or None,
         )
         return True
-    if msg_type == "end_of_stream":
-        return False
-    return True
+    return msg_type != "end_of_stream"
 
 
 def stream_config_request(message: vox_pb2.StreamConfig) -> StreamingTranscriptionConfig:

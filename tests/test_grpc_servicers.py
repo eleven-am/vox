@@ -27,6 +27,7 @@ from vox.core.types import (
     WordTimestamp,
 )
 from vox.grpc import vox_pb2
+from vox.operations.errors import InvalidConfigError
 from vox.operations.models import (
     ModelLayer,
     PullEvent,
@@ -36,7 +37,6 @@ from vox.operations.models import (
     pull_event_payload,
     show_model_payload,
 )
-from vox.operations.errors import InvalidConfigError
 from vox.operations.synthesis import SynthesisRawChunk
 from vox.operations.system import (
     HealthStatusResult,

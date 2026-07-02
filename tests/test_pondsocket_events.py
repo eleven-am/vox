@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from vox.operations.conversation import ConvDoneEvent, ConvResponseCreatedEvent
+from vox.operations.errors import SessionNotConfiguredError
 from vox.server.pondsocket_events import (
     broadcast_conversation_events_to_user,
     broadcast_rtc_client_events_to_user,
@@ -13,8 +15,6 @@ from vox.server.pondsocket_events import (
     reply_pondsocket_error,
     try_broadcast_wire_to_user,
 )
-from vox.operations.errors import SessionNotConfiguredError
-from vox.operations.conversation import ConvDoneEvent, ConvResponseCreatedEvent
 
 
 class FakeChannel:

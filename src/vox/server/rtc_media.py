@@ -14,8 +14,6 @@ from aiortc import MediaStreamTrack
 from aiortc.mediastreams import MediaStreamError
 from av.audio.resampler import AudioResampler
 
-from vox.server.rtc_tasks import cancel_and_drain_media_tasks, cancel_media_tasks
-
 
 @dataclass
 class RtcAudioDrain:

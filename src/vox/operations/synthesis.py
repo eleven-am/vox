@@ -248,6 +248,12 @@ async def synthesize_audio_response(
 ) -> SynthesisAudioResponse:
     response_format = request.response_format
     if stream:
+        await preflight_synthesis(
+            scheduler=scheduler,
+            registry=registry,
+            store=store,
+            request=request,
+        )
         chunks = await synthesize_stream(
             scheduler=scheduler,
             registry=registry,

@@ -19,7 +19,6 @@ from vox.operations.errors import (
     OperationErrorKind,
     StoredModelNotFoundError,
 )
-from vox.server.operation_errors import HTTP_STATUS_BY_OPERATION_ERROR_KIND, operation_error_to_http
 from vox.server.auth import (
     API_KEY_HEADER,
     API_KEY_QUERY_PARAM,
@@ -29,6 +28,7 @@ from vox.server.auth import (
     bearer_token_from_authorization,
     extract_api_key_from_parts,
 )
+from vox.server.operation_errors import HTTP_STATUS_BY_OPERATION_ERROR_KIND, operation_error_to_http
 
 
 def test_transport_mappings_cover_every_operation_error_kind():

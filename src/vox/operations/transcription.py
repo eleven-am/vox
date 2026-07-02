@@ -19,6 +19,7 @@ from vox.core.types import TranscribeResult
 from vox.operations.defaults import resolve_requested_or_default_model
 from vox.operations.errors import (
     EmptyAudioError,
+    OperationError,
     WrongModelTypeError,
 )
 from vox.operations.model_acquisition import acquire_typed_adapter
@@ -310,7 +311,7 @@ async def transcribe(
                 )
                 per_chunk.append((partial, chunk.offset_ms))
             result = merge_transcripts(per_chunk)
-    except (WrongModelTypeError, VoxError):
+    except (WrongModelTypeError, OperationError, VoxError):
         raise
     except Exception:
         logger.exception(f"Transcription failed for model {model}")

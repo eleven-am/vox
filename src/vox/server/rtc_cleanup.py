@@ -14,11 +14,13 @@ async def close_rtc_runtime_resources(
     session_id: str,
     registry: RtcSessionRegistry,
     record: RtcSessionRecord,
-    orchestrator: Any,
-    emit_task: asyncio.Task,
-    client_event_task: asyncio.Task,
+    orchestrator: Any | None,
+    emit_task: asyncio.Task | None,
+    client_event_task: asyncio.Task | None,
 ) -> None:
-    await orchestrator.end_of_stream(flush_response=False)
+    if orchestrator is not None:
+        with suppress(Exception):
+            await orchestrator.end_of_stream(flush_response=False)
     await drain_task(emit_task)
     if record.control_events is not None:
         await record.control_events.put(None)
@@ -36,9 +38,11 @@ async def close_attached_rtc_resources(
     session_id: str,
     registry: RtcSessionRegistry,
     record: RtcSessionRecord,
-    orchestrator: Any,
+    orchestrator: Any | None,
 ) -> None:
-    await orchestrator.close()
+    if orchestrator is not None:
+        with suppress(Exception):
+            await orchestrator.close()
     record.orchestrator = None
     record.data_channel = None
     if record.audio_output is not None:

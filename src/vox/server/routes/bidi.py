@@ -99,9 +99,8 @@ async def transcriptions_stream(websocket: WebSocket):
                             break
                         await send_ws_unknown_message_type(websocket, msg_type)
                         continue
-                    if isinstance(frame, WsBytesFrame):
-                        if not await session.submit_chunk_or_report(frame.data):
-                            return
+                    if isinstance(frame, WsBytesFrame) and not await session.submit_chunk_or_report(frame.data):
+                        return
 
                 await session.end_of_stream_or_report()
 

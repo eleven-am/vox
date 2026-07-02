@@ -6,12 +6,12 @@ from typing import Any
 import numpy as np
 import pytest
 
+from tests.fakes import FakeTTSAdapter
 from vox.core.adapter import STTAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, TranscribeResult, TranscriptSegment
 from vox.streaming.pipeline import StreamPipeline
 from vox.streaming.types import TARGET_SAMPLE_RATE, StreamSessionConfig
 from vox.streaming.vad import SpeechSegment
-from tests.fakes import FakeTTSAdapter
 
 
 class GapSensitiveSTTAdapter(STTAdapter):

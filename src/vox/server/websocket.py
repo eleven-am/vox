@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import asyncio
+import json
 from collections.abc import AsyncIterable, AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from contextvars import Token
@@ -91,7 +91,7 @@ async def websocket_session_event_scope(
     session: Any,
     emit_events: Callable[[], Any],
     *,
-    drain_timeout: float | None = None,
+    drain_timeout: float | None = 5.0,
 ) -> AsyncIterator[None]:
     emit_task = asyncio.create_task(emit_events())
     try:

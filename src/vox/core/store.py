@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
@@ -80,6 +81,7 @@ def _manifest_from_dict(d: dict[str, Any]) -> Manifest:
 
 
 _READ_CHUNK = 1 << 20
+_BLOB_GC_GRACE_SECONDS = 3600
 
 
 class BlobStore:
@@ -174,10 +176,15 @@ class BlobStore:
         path = self._manifest_path(name, tag)
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        tmp = path.with_suffix(".tmp")
-        with open(tmp, "w") as f:
-            json.dump(_manifest_to_dict(manifest), f, indent=2)
-        tmp.rename(path)
+        fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f"{path.name}.", suffix=".tmp")
+        tmp = Path(tmp_name)
+        try:
+            with open(fd, "w") as f:
+                json.dump(_manifest_to_dict(manifest), f, indent=2)
+            os.replace(tmp, path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
     def list_models(self) -> list[ModelInfo]:
         """Scan the manifests directory and return info for every stored model."""
@@ -202,7 +209,7 @@ class BlobStore:
                     models.append(
                         ModelInfo.from_manifest_config(name, tag, cfg, size_bytes=size)
                     )
-                except (json.JSONDecodeError, KeyError, ValueError) as e:
+                except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
                     logger.warning(f"Skipping corrupted manifest {tag_file}: {e}")
                     continue
 
@@ -236,6 +243,12 @@ class BlobStore:
         now = time.time()
         for blob in self.blobs_dir.iterdir():
             if blob.name.startswith("sha256-") and blob.name not in referenced:
+                try:
+                    age = now - blob.stat().st_mtime
+                except OSError:
+                    continue
+                if age < _BLOB_GC_GRACE_SECONDS:
+                    continue
                 blob.unlink(missing_ok=True)
                 removed += 1
             elif blob.suffix == ".tmp":

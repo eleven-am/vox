@@ -8,19 +8,19 @@ from typing import TYPE_CHECKING
 from fastapi import APIRouter, FastAPI, WebSocket
 
 from vox.operations.conversation import (
+    WIRE_RTC_SESSION_ATTACHED,
     ConversationOrchestrator,
     execute_conversation_command,
     execute_rtc_control_command,
     rtc_session_attached_payload,
-    WIRE_RTC_SESSION_ATTACHED,
 )
-from vox.server.auth import authorize_api_key_connection
 from vox.server.app_services import (
     app_pondsocket,
     app_rtc_registry,
     app_scheduler,
     set_app_pondsocket_gateway,
 )
+from vox.server.auth import authorize_api_key_connection
 from vox.server.conversation_cleanup import close_conversation_runtime_resources
 from vox.server.pondsocket_events import (
     broadcast_conversation_events_to_user,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from vox.core.adapter_resolution import AdapterResolver
@@ -585,6 +585,14 @@ def fetch_registry_index(*, force_refresh: bool = False) -> list[dict[str, Any]]
     return result
 
 
+def _is_safe_layer_filename(filename: str) -> bool:
+    if not filename or filename in (".", ".."):
+        return False
+    normalized = filename.replace("\\", "/")
+    posix = PurePosixPath(normalized)
+    if posix.is_absolute() or PureWindowsPath(filename).is_absolute():
+        return False
+    return not any(part == ".." for part in posix.parts)
 
 
 class ModelRegistry:
@@ -685,6 +693,10 @@ class ModelRegistry:
         model_dir.mkdir(parents=True, exist_ok=True)
 
         for layer in manifest.layers:
+            if not _is_safe_layer_filename(layer.filename):
+                raise ModelLoadError(
+                    f"Manifest layer filename escapes model directory: {layer.filename!r}"
+                )
             link_path = model_dir / layer.filename
             blob_path = self._store.get_blob_path(layer.digest)
             link_path.parent.mkdir(parents=True, exist_ok=True)

@@ -169,10 +169,14 @@ def normalize_longform_tts_config(
         except (TypeError, ValueError) as exc:
             raise InvalidConfigError("chunk_chars must be a non-negative integer") from exc
 
+    resolved_speed = float(speed or 1.0)
+    if resolved_speed <= 0:
+        resolved_speed = 1.0
+
     return LongformSynthesisConfig(
         model=resolved_model,
         voice=voice,
-        speed=float(speed or 1.0),
+        speed=resolved_speed,
         language=language,
         response_format=fmt,
         chunk_chars=cap,

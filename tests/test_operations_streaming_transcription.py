@@ -21,6 +21,7 @@ from vox.operations.errors import (
     SessionAlreadyConfiguredError,
     SessionNotConfiguredError,
 )
+from vox.operations.streaming_reporting import streaming_operation_error_message
 from vox.operations.streaming_transcription import (
     DoneEvent,
     ErrorEvent,
@@ -33,7 +34,6 @@ from vox.operations.streaming_transcription import (
     streaming_transcription_config_from_fields,
     streaming_transcription_event_payload,
 )
-from vox.operations.streaming_reporting import streaming_operation_error_message
 from vox.streaming.types import SpeechStarted, StreamTranscript
 
 

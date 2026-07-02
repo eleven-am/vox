@@ -82,6 +82,11 @@ def test_encode_pcm_pcm16_to_float32_roundtrip():
     np.testing.assert_allclose(recovered, audio, atol=2.0 / 32768)
 
 
+def test_pcm16_to_float32_tolerates_odd_length_bytes():
+    recovered = pcm16_to_float32(b"\x00\x10\x7f")
+    assert recovered.shape == (1,)
+
+
 
 
 

@@ -6,6 +6,8 @@ from numpy.typing import NDArray
 
 
 def pcm16_to_float32(pcm_bytes: bytes) -> NDArray[np.float32]:
+    if len(pcm_bytes) % 2:
+        pcm_bytes = pcm_bytes[:-1]
     return np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
 

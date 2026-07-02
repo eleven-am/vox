@@ -135,7 +135,7 @@ class RtcSessionRegistry:
         if peer is None:
             return
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
             return
         track_task(self._teardown_tasks, self._close_peer(peer))

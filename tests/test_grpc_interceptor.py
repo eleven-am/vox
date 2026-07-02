@@ -37,10 +37,9 @@ def test_grpc_request_scope_resets_and_logs_errors(caplog):
     caplog.set_level(logging.INFO, logger="vox.grpc.request")
     outer = request_id_var.set("outer")
     try:
-        with pytest.raises(RuntimeError, match="boom"):
-            with _grpc_request_scope("/vox.Test/Call", "inbound-rid"):
-                assert request_id_var.get() == "inbound-rid"
-                raise RuntimeError("boom")
+        with pytest.raises(RuntimeError, match="boom"), _grpc_request_scope("/vox.Test/Call", "inbound-rid"):
+            assert request_id_var.get() == "inbound-rid"
+            raise RuntimeError("boom")
 
         assert request_id_var.get() == "outer"
     finally:

@@ -8,9 +8,15 @@ from vox.core.adapter import BaseAdapter
 from vox.core.adapter_acquisition import (
     AdapterTypeMismatchError,
     EnteredAdapter,
+)
+from vox.core.adapter_acquisition import (
     enter_typed_adapter as enter_core_typed_adapter,
-    release_entered_adapter,
-    release_entered_adapter_suppressing,
+)
+from vox.core.adapter_acquisition import (
+    release_entered_adapter as release_entered_adapter,
+)
+from vox.core.adapter_acquisition import (
+    release_entered_adapter_suppressing as release_entered_adapter_suppressing,
 )
 from vox.core.errors import ModelNotFoundError
 from vox.operations.errors import StoredModelNotFoundError, WrongModelTypeError

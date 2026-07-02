@@ -26,7 +26,7 @@ from vox.grpc.streaming_queue import (
     iter_grpc_stream_lifecycle,
     start_grpc_event_pump,
 )
-from vox.operations.conversation import ConversationOrchestrator, ConvDoneEvent, ConvEvent
+from vox.operations.conversation import ConvDoneEvent, ConversationOrchestrator, ConvEvent
 from vox.operations.errors import OperationError
 from vox.server.rtc_cleanup import close_rtc_runtime_resources
 from vox.server.rtc_client_events import send_client_event_to_browser
@@ -121,12 +121,7 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                     except OperationError as exc:
                         await out_queue.put(conversation_error_pb(str(exc)))
             finally:
-                if (
-                    record is not None
-                    and orchestrator is not None
-                    and emit_task is not None
-                    and client_event_task is not None
-                ):
+                if record is not None:
                     await close_rtc_runtime_resources(
                         session_id=session_id,
                         registry=self._rtc_registry,
@@ -135,7 +130,7 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                         emit_task=emit_task,
                         client_event_task=client_event_task,
                     )
-                elif client_event_task is None:
+                if emit_task is None:
                     await close_grpc_output_queue(out_queue)
 
         client_task = asyncio.create_task(drain_client())

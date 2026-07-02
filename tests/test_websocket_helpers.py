@@ -5,13 +5,14 @@ import asyncio
 import pytest
 from starlette.websockets import WebSocketDisconnect
 
-from vox.operations.errors import EmptyInputError, UnknownMessageTypeError
 from vox.logging_context import request_id_var
+from vox.operations.errors import EmptyInputError, UnknownMessageTypeError
 from vox.server.websocket import (
     WsBytesFrame,
     WsDisconnectFrame,
     WsTextFrame,
     bind_websocket_request_id,
+    emit_ws_session_events,
     iter_ws_json_messages,
     parse_ws_frame,
     parse_ws_json_text_frame,
@@ -19,7 +20,6 @@ from vox.server.websocket import (
     receive_ws_frame,
     receive_ws_json_message,
     reset_websocket_request_id,
-    emit_ws_session_events,
     safe_close_websocket,
     safe_send_ws_error,
     send_ws_error,
@@ -271,6 +271,23 @@ async def test_websocket_session_event_scope_drains_events_before_closing_sessio
         done.set()
 
     assert drained is True
+    assert session.closed is True
+
+
+@pytest.mark.asyncio
+async def test_websocket_session_event_scope_does_not_hang_on_never_ending_emit():
+    session = RecordingSession()
+    started = asyncio.Event()
+
+    async def emit_events() -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    async def run() -> None:
+        async with websocket_session_event_scope(session, emit_events, drain_timeout=0.05):
+            await started.wait()
+
+    await asyncio.wait_for(run(), timeout=2.0)
     assert session.closed is True
 
 

@@ -25,8 +25,7 @@ from vox.operations.errors import (
     WrongModelTypeError,
     classify_operation_error,
 )
-from vox.server.operation_errors import map_operation_errors_to_http
-from vox.server.operation_errors import map_route_errors_to_http
+from vox.server.operation_errors import map_operation_errors_to_http, map_route_errors_to_http
 
 
 @pytest.mark.parametrize(

@@ -10,7 +10,6 @@ from fastapi import HTTPException
 
 from vox.operations.errors import OperationError, OperationErrorKind, classify_operation_error
 
-
 HTTP_STATUS_BY_OPERATION_ERROR_KIND: dict[OperationErrorKind, int] = {
     OperationErrorKind.INVALID_ARGUMENT: 400,
     OperationErrorKind.UNPROCESSABLE_ENTITY: 422,

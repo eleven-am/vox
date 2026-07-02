@@ -55,45 +55,44 @@ async def audio_stream(websocket: WebSocket):
             disconnect_log_message="WS stream client disconnected",
             error_log_message="WS stream error",
             closed_log_message="realtime STT ws closed",
-        ):
-            async with websocket_session_event_scope(session, emit_events):
-                while True:
-                    frame = await receive_ws_frame(websocket)
-                    if frame is None:
-                        continue
+        ), websocket_session_event_scope(session, emit_events):
+            while True:
+                frame = await receive_ws_frame(websocket)
+                if frame is None:
+                    continue
 
-                    if isinstance(frame, WsDisconnectFrame):
-                        return
+                if isinstance(frame, WsDisconnectFrame):
+                    return
 
-                    if isinstance(frame, WsTextFrame):
-                        data = frame.message
-                        msg_type = data.get("type", "")
+                if isinstance(frame, WsTextFrame):
+                    data = frame.message
+                    msg_type = data.get("type", "")
 
-                        if msg_type == "config":
-                            await session.configure_or_report(
-                                streaming_transcription_config_from_fields(
-                                    model=data.get("model", "") or "",
-                                    language=data.get("language", "en") or "en",
-                                    sample_rate=data.get("sample_rate") or 16_000,
-                                    partials=data.get("partials", False),
-                                    partial_window_ms=data.get("partial_window_ms") or 1500,
-                                    partial_stride_ms=data.get("partial_stride_ms") or 700,
-                                    include_word_timestamps=data.get(
-                                        "include_word_timestamps",
-                                        False,
-                                    ),
-                                    temperature=data.get("temperature", 0.0) or 0.0,
-                                )
+                    if msg_type == "config":
+                        await session.configure_or_report(
+                            streaming_transcription_config_from_fields(
+                                model=data.get("model", "") or "",
+                                language=data.get("language", "en") or "en",
+                                sample_rate=data.get("sample_rate") or 16_000,
+                                partials=data.get("partials", False),
+                                partial_window_ms=data.get("partial_window_ms") or 1500,
+                                partial_stride_ms=data.get("partial_stride_ms") or 700,
+                                include_word_timestamps=data.get(
+                                    "include_word_timestamps",
+                                    False,
+                                ),
+                                temperature=data.get("temperature", 0.0) or 0.0,
                             )
-                            continue
-
-                        if msg_type == "end":
-                            break
-
-                        await session.report_error(str(UnknownMessageTypeError(msg_type)))
+                        )
                         continue
 
-                    if isinstance(frame, WsBytesFrame):
-                        await session.submit_pcm16_or_report(frame.data)
+                    if msg_type == "end":
+                        break
 
-                await session.end_of_stream()
+                    await session.report_error(str(UnknownMessageTypeError(msg_type)))
+                    continue
+
+                if isinstance(frame, WsBytesFrame):
+                    await session.submit_pcm16_or_report(frame.data)
+
+            await session.end_of_stream()

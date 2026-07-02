@@ -146,6 +146,8 @@ def encode_opus(
 
 def pcm16_to_float32(data: bytes) -> NDArray[np.float32]:
     """Convert int16 little-endian PCM bytes to float32 array."""
+    if len(data) % 2:
+        data = data[:-1]
     pcm_array = np.frombuffer(data, dtype=np.int16)
     return pcm_array.astype(np.float32) / 32768.0
 
