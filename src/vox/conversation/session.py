@@ -33,6 +33,7 @@ import numpy as np
 
 from vox.conversation import response_stream as response_streams
 from vox.conversation import transcripts as transcript_finalization
+from vox.conversation.audio_output import ResponseAudioOutput
 from vox.conversation.interrupt import (
     HeuristicInterruptClassifier,
     InterruptClassifier,
@@ -220,15 +221,13 @@ class ConversationSession:
         self._tts_task: asyncio.Task | None = None
         self._runner: asyncio.Task | None = None
         self._paused: bool = False
-        self._pending_audio: list[tuple[bytes, int, int]] = []
+        self._audio_output = ResponseAudioOutput(pace_to_playout=config.pace_response_done_to_audio)
         self._response_stream: ResponseStream | None = None
         self._closed: bool = False
         self._client_sample_rate: int = config.sample_rate
         self._response_counter: int = 0
-        self._audio_sequence: int = 0
         self._active_response_id: str | None = None
         self._last_cancelled_response_id: str | None = None
-        self._playout_end_at: float = 0.0
 
         self._flutter_cooldown_until: float = 0.0
         self._aec_warmup_until: float = 0.0
@@ -681,8 +680,7 @@ class ConversationSession:
         self._response_stream = stream
         self._active_response_id = response_id
         self._last_cancelled_response_id = None
-        self._playout_end_at = 0.0
-        self._audio_sequence = 0
+        self._audio_output.reset_for_response()
         await self._event_queue.put(TurnEvent(type=TurnEventType.RESPONSE_STARTED))
         await self._emit({"type": WIRE_RESPONSE_CREATED, "response_id": response_id})
         self._tts_task = asyncio.create_task(self._run_response_stream(stream))
@@ -801,29 +799,20 @@ class ConversationSession:
         if sample_rate != output_sample_rate:
             pcm_audio = resample_audio(pcm_audio, sample_rate, output_sample_rate)
         encoded_audio = float32_to_pcm16(pcm_audio)
-        self._audio_sequence += 1
-        sequence = self._audio_sequence
+        sequence = self._audio_output.next_sequence()
         if self._paused:
-            self._pending_audio.append((encoded_audio, output_sample_rate, sequence))
+            self._audio_output.hold(encoded_audio, output_sample_rate, sequence)
             return
         await self._emit_output_audio(encoded_audio, output_sample_rate, sequence)
 
     def _mark_estimated_playout(self, pcm16_audio: bytes, sample_rate: int) -> None:
-        if not self._config.pace_response_done_to_audio:
-            return
-        if sample_rate <= 0 or not pcm16_audio:
-            return
-        duration_s = len(pcm16_audio) / float(sample_rate * 2)
-        now = time.monotonic()
-        self._playout_end_at = max(now, self._playout_end_at) + duration_s
+        self._audio_output.mark_playout(pcm16_audio, sample_rate)
 
     async def _wait_for_estimated_playout(self) -> None:
         if self._config.wait_for_output_playout is not None:
             await self._config.wait_for_output_playout()
             return
-        if not self._config.pace_response_done_to_audio:
-            return
-        delay_s = self._playout_end_at - time.monotonic()
+        delay_s = self._audio_output.playout_delay_s()
         if delay_s > 0:
             await asyncio.sleep(delay_s)
 
@@ -922,7 +911,7 @@ class ConversationSession:
     async def _execute(self, action: TurnAction) -> None:
         if action.type == TurnActionType.PAUSE_OUTPUT:
             self._paused = True
-            self._playout_end_at = 0.0
+            self._audio_output.reset_playout()
             await self._emit(
                 {
                     "type": WIRE_AUDIO_CLEAR,
@@ -932,11 +921,9 @@ class ConversationSession:
 
         elif action.type == TurnActionType.RESUME_OUTPUT:
             stream = self._response_stream
-            while self._pending_audio:
-                pending = self._pending_audio
-                self._pending_audio = []
-                for encoded_audio, sample_rate, sequence in pending:
-                    await self._emit_output_audio(encoded_audio, sample_rate, sequence)
+            while self._audio_output.pending_count:
+                for pending in self._audio_output.pop_pending_batch():
+                    await self._emit_output_audio(pending.audio, pending.sample_rate, pending.sequence)
             self._paused = False
             cooldown_s = self._config.policy.stable_speaking_min_ms / 1000.0
             self._flutter_cooldown_until = time.monotonic() + cooldown_s
@@ -944,9 +931,9 @@ class ConversationSession:
                 await self._complete_response_stream(stream)
 
         elif action.type == TurnActionType.FLUSH_OUTPUT:
-            self._pending_audio = []
+            self._audio_output.clear_pending()
             self._paused = False
-            self._playout_end_at = 0.0
+            self._audio_output.reset_playout()
             self._output_audio_ring = np.empty(0, dtype=np.float32)
             self._audio_ring = np.empty(0, dtype=np.float32)
             await self._emit(
@@ -970,7 +957,7 @@ class ConversationSession:
                 with suppress(asyncio.CancelledError, Exception):
                     await self._tts_task
             self._tts_task = None
-            self._playout_end_at = 0.0
+            self._audio_output.reset_playout()
             if stream is not None and self._active_response_id == stream.response_id:
                 self._active_response_id = None
             self._response_stream = None
@@ -1354,4 +1341,4 @@ class ConversationSession:
 
     @property
     def pending_audio_count(self) -> int:
-        return len(self._pending_audio)
+        return self._audio_output.pending_count

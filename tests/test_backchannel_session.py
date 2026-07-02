@@ -269,12 +269,12 @@ class TestBackchannelRejection:
         audio = np.full(480, 0.01, dtype=np.float32).tobytes()
         await session._handle_tts_chunk(audio, 24_000)
 
-        assert session._pending_audio
+        assert session.pending_audio_count > 0
         assert not coll.by_type("response.audio.delta")
 
         await session._execute(TurnAction(TurnActionType.RESUME_OUTPUT))
 
-        assert not session._pending_audio
+        assert session.pending_audio_count == 0
         assert coll.by_type("response.audio.delta")
 
         await session.close()
@@ -318,7 +318,7 @@ class TestBackchannelRejection:
         assert sequences == sorted(sequences)
         assert len(sequences) == 4
         assert session._paused is False
-        assert not session._pending_audio
+        assert session.pending_audio_count == 0
 
         await session.close()
 
