@@ -41,6 +41,7 @@ from vox.server.rtc_ice import (
     server_ice_servers_from_env,
 )
 from vox.server.rtc_media import RtcAudioOutputTrack, cancel_and_drain_media_tasks, pump_input_audio
+from vox.server.rtc_media_events import emit_media_event, iter_media_sse
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 from vox.server.rtc_timeline import RtcTurnTimeline, rtc_audio_stats
 from vox.server.websocket import safe_send_ws_error, send_ws_error
@@ -101,7 +102,7 @@ async def create_rtc_answer(request: Request, session_id: str) -> dict:
 
     @pc.on("connectionstatechange")
     async def on_connectionstatechange() -> None:
-        await _emit_media_event(
+        await emit_media_event(
             record,
             {
                 "type": "rtc.connection_state",
@@ -121,7 +122,7 @@ async def create_rtc_answer(request: Request, session_id: str) -> dict:
 
     @pc.on("iceconnectionstatechange")
     async def on_iceconnectionstatechange() -> None:
-        await _emit_media_event(
+        await emit_media_event(
             record,
             {
                 "type": "rtc.ice_connection_state",
@@ -140,7 +141,7 @@ async def create_rtc_answer(request: Request, session_id: str) -> dict:
 
     @pc.on("icegatheringstatechange")
     async def on_icegatheringstatechange() -> None:
-        await _emit_media_event(
+        await emit_media_event(
             record,
             {
                 "type": "rtc.ice_gathering_state",
@@ -198,8 +199,8 @@ async def create_rtc_answer(request: Request, session_id: str) -> dict:
     await pc.setLocalDescription(answer)
     answer_sdp = rewrite_private_relay_candidates(pc.localDescription.sdp)
     for event in candidate_events_from_sdp(answer_sdp):
-        await _emit_media_event(record, event)
-    await _emit_media_event(record, {"type": "rtc.ice_candidate", "candidate": None})
+        await emit_media_event(record, event)
+    await emit_media_event(record, {"type": "rtc.ice_candidate", "candidate": None})
 
     return {
         "session_id": session_id,
@@ -234,15 +235,7 @@ async def rtc_media_events(request: Request, session_id: str, token: str) -> Str
     if record is None or record.media_events is None:
         raise HTTPException(status_code=401, detail="invalid RTC media token")
 
-    async def stream():
-        while True:
-            event = await record.media_events.get()
-            if event is None:
-                yield "event: close\ndata: {}\n\n"
-                return
-            yield f"event: {event.get('type', 'message')}\ndata: {json.dumps(event)}\n\n"
-
-    return StreamingResponse(stream(), media_type="text/event-stream")
+    return StreamingResponse(iter_media_sse(record), media_type="text/event-stream")
 
 
 @legacy_router.websocket("/v1/rtc/sessions/{session_id}/control")
@@ -370,11 +363,6 @@ def _rtc_configuration(ice_servers: list[dict]) -> RTCConfiguration:
             for server in ice_servers
         ]
     )
-
-
-async def _emit_media_event(record: RtcSessionRecord, event: dict) -> None:
-    if record.media_events is not None:
-        await record.media_events.put(event)
 
 
 async def _ingest_media_audio(record: RtcSessionRecord, pcm16: bytes, sample_rate: int | None) -> None:
