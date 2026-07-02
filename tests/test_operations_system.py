@@ -12,10 +12,15 @@ from vox.core.types import (
 )
 from vox.operations.errors import ModelInUseError
 from vox.operations.system import (
+    EnforceMemoryBudgetRequest,
     EnforceMemoryBudgetResult,
     MemoryBudgetExceededError,
+    MemoryStatusRequest,
+    TrimIdleMemoryRequest,
     TrimIdleResult,
+    TrimModelRequest,
     TrimModelResult,
+    UnloadIdleModelsRequest,
     UnloadIdleResult,
     enforce_memory_budget,
     enforce_memory_budget_payload,
@@ -105,7 +110,7 @@ class FakeSystemScheduler:
 def test_memory_status_payload_preserves_http_contract_shape():
     scheduler = FakeSystemScheduler()
 
-    result = get_memory_status(scheduler=scheduler)
+    result = get_memory_status(scheduler=scheduler, request=MemoryStatusRequest())
     payload = memory_status_payload(result)
 
     assert payload["policy"] == {
@@ -147,7 +152,10 @@ def test_system_action_payloads_preserve_http_contract_shapes():
 async def test_trim_idle_clamps_negative_idle_seconds():
     scheduler = FakeSystemScheduler()
 
-    result = await trim_idle_memory(scheduler=scheduler, min_idle_seconds=-15)
+    result = await trim_idle_memory(
+        scheduler=scheduler,
+        request=TrimIdleMemoryRequest(min_idle_seconds=-15),
+    )
 
     assert scheduler.trim_idle_calls == [0]
     assert result.trimmed == ["parakeet-stt-onnx:tdt-0.6b-v3"]
@@ -157,12 +165,18 @@ async def test_trim_idle_clamps_negative_idle_seconds():
 async def test_enforce_memory_budget_clamps_negative_budget_and_wraps_failures():
     scheduler = FakeSystemScheduler()
 
-    await enforce_memory_budget(scheduler=scheduler, additional_vram_bytes=-10)
+    await enforce_memory_budget(
+        scheduler=scheduler,
+        request=EnforceMemoryBudgetRequest(additional_vram_bytes=-10),
+    )
     assert scheduler.enforce_calls == [0]
 
     scheduler.fail_budget = True
     with pytest.raises(MemoryBudgetExceededError, match="Cannot satisfy VRAM budget"):
-        await enforce_memory_budget(scheduler=scheduler, additional_vram_bytes=2048)
+        await enforce_memory_budget(
+            scheduler=scheduler,
+            request=EnforceMemoryBudgetRequest(additional_vram_bytes=2048),
+        )
 
 
 @pytest.mark.asyncio
@@ -171,14 +185,20 @@ async def test_trim_model_raises_operation_error_when_model_is_active():
     scheduler.trim_result = False
 
     with pytest.raises(ModelInUseError, match="currently in use"):
-        await trim_model(scheduler=scheduler, model_name="chatterbox-tts-turbo:0.1.7")
+        await trim_model(
+            scheduler=scheduler,
+            request=TrimModelRequest(model_name="chatterbox-tts-turbo:0.1.7"),
+        )
 
 
 @pytest.mark.asyncio
 async def test_unload_idle_models_unloads_only_inactive_models():
     scheduler = FakeSystemScheduler()
 
-    result = await unload_idle_models(scheduler=scheduler)
+    result = await unload_idle_models(
+        scheduler=scheduler,
+        request=UnloadIdleModelsRequest(),
+    )
 
     assert scheduler.unload_calls == ["parakeet-stt-onnx:tdt-0.6b-v3"]
     assert result.unloaded == ["parakeet-stt-onnx:tdt-0.6b-v3"]

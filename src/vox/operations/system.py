@@ -23,6 +23,31 @@ class MemoryStatus:
 
 
 @dataclass(frozen=True)
+class MemoryStatusRequest:
+    pass
+
+
+@dataclass(frozen=True)
+class TrimIdleMemoryRequest:
+    min_idle_seconds: int = 0
+
+
+@dataclass(frozen=True)
+class EnforceMemoryBudgetRequest:
+    additional_vram_bytes: int = 0
+
+
+@dataclass(frozen=True)
+class TrimModelRequest:
+    model_name: str
+
+
+@dataclass(frozen=True)
+class UnloadIdleModelsRequest:
+    pass
+
+
+@dataclass(frozen=True)
 class TrimIdleResult:
     trimmed: list[str]
     snapshot: VramSnapshot
@@ -110,41 +135,51 @@ def unload_idle_payload(result: UnloadIdleResult) -> dict[str, Any]:
     }
 
 
-def get_memory_status(*, scheduler: SystemScheduler) -> MemoryStatus:
+def get_memory_status(
+    *,
+    scheduler: SystemScheduler,
+    request: MemoryStatusRequest,
+) -> MemoryStatus:
+    _ = request
     return MemoryStatus(snapshot=scheduler.memory_snapshot())
 
 
 async def trim_idle_memory(
     *,
     scheduler: SystemScheduler,
-    min_idle_seconds: int = 0,
+    request: TrimIdleMemoryRequest,
 ) -> TrimIdleResult:
-    trimmed = await scheduler.trim_idle(min_idle_seconds=max(0, min_idle_seconds))
+    trimmed = await scheduler.trim_idle(min_idle_seconds=max(0, request.min_idle_seconds))
     return TrimIdleResult(trimmed=trimmed, snapshot=scheduler.memory_snapshot())
 
 
 async def enforce_memory_budget(
     *,
     scheduler: SystemScheduler,
-    additional_vram_bytes: int = 0,
+    request: EnforceMemoryBudgetRequest,
 ) -> EnforceMemoryBudgetResult:
     try:
         await scheduler.enforce_memory_budget(
-            additional_vram_bytes=max(0, additional_vram_bytes),
+            additional_vram_bytes=max(0, request.additional_vram_bytes),
         )
     except ModelLoadError as exc:
         raise MemoryBudgetExceededError(str(exc)) from exc
     return EnforceMemoryBudgetResult(snapshot=scheduler.memory_snapshot())
 
 
-async def trim_model(*, scheduler: SystemScheduler, model_name: str) -> TrimModelResult:
-    trimmed = await scheduler.trim(model_name)
+async def trim_model(*, scheduler: SystemScheduler, request: TrimModelRequest) -> TrimModelResult:
+    trimmed = await scheduler.trim(request.model_name)
     if not trimmed:
-        raise ModelInUseError(model_name)
+        raise ModelInUseError(request.model_name)
     return TrimModelResult()
 
 
-async def unload_idle_models(*, scheduler: SystemScheduler) -> UnloadIdleResult:
+async def unload_idle_models(
+    *,
+    scheduler: SystemScheduler,
+    request: UnloadIdleModelsRequest,
+) -> UnloadIdleResult:
+    _ = request
     unloaded: list[str] = []
     for model in scheduler.list_loaded():
         if model.ref_count > 0:
