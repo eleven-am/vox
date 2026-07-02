@@ -23,6 +23,9 @@ from vox.operations.errors import (
     EmptyInputError,
     NoAudioGeneratedError,
     NoDefaultModelError,
+    StoredModelNotFoundError,
+    VoiceCloningUnsupportedOperationError,
+    VoiceReferenceNotFoundError,
     WrongModelTypeError,
 )
 from vox.operations.synthesis import (
@@ -320,3 +323,69 @@ async def test_synthesize_full_uses_stored_clone_reference(tmp_path: Path):
     assert adapter.last_kwargs["voice"] is None
     assert adapter.last_kwargs["reference_audio"] is not None
     assert adapter.last_kwargs["reference_text"] == "hi there"
+
+
+@pytest.mark.asyncio
+async def test_synthesize_full_translates_missing_stored_voice_reference_to_operation_error(tmp_path: Path):
+    sched = DummyScheduler(FakeTTS(supports_voice_cloning=True))
+    store = BlobStore(root=tmp_path)
+    create_stored_voice(
+        store,
+        voice_id="voice1234",
+        name="Roy",
+        audio_bytes=encode_wav(np.full(16_000, 0.1, dtype=np.float32), 16_000),
+        content_type="audio/wav",
+    )
+    (store.voices_dir / "voice1234" / "reference.wav").unlink()
+    registry = MagicMock()
+
+    with pytest.raises(VoiceReferenceNotFoundError):
+        await synthesize_full(
+            scheduler=sched,
+            registry=registry,
+            store=store,
+            request=SynthesisRequest(input="hello", model="fake-tts:latest", voice="voice1234"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_synthesize_full_translates_clone_unsupported_to_operation_error(tmp_path: Path):
+    store = BlobStore(root=tmp_path)
+    create_stored_voice(
+        store,
+        voice_id="voice1234",
+        name="Roy",
+        audio_bytes=encode_wav(np.full(16_000, 0.1, dtype=np.float32), 16_000),
+        content_type="audio/wav",
+    )
+    sched = DummyScheduler(FakeTTS(supports_voice_cloning=False))
+    registry = MagicMock()
+
+    with pytest.raises(VoiceCloningUnsupportedOperationError):
+        await synthesize_full(
+            scheduler=sched,
+            registry=registry,
+            store=store,
+            request=SynthesisRequest(input="hello", model="fake-tts:latest", voice="voice1234"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_synthesize_preflight_translates_model_not_found_to_operation_error(tmp_path: Path):
+    from vox.core.errors import ModelNotFoundError
+
+    class MissingModelScheduler:
+        def acquire(self, model):
+            raise ModelNotFoundError(model)
+
+    store = BlobStore(root=tmp_path)
+    registry = MagicMock()
+
+    with pytest.raises(StoredModelNotFoundError):
+        await synthesize_audio_response(
+            scheduler=MissingModelScheduler(),
+            registry=registry,
+            store=store,
+            request=SynthesisRequest(input="hello", model="missing:latest", response_format="wav"),
+            stream=False,
+        )

@@ -4,12 +4,7 @@ import logging
 
 import grpc
 
-from vox.core.errors import (
-    ModelNotFoundError,
-    VoiceCloningUnsupportedError,
-    VoiceNotFoundError,
-    VoxError,
-)
+from vox.core.errors import ModelNotFoundError, VoxError
 from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
@@ -64,15 +59,6 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
         except OperationError as exc:
             code, msg = operation_error_status(exc)
             await context.abort(code, msg)
-            return
-        except (VoiceCloningUnsupportedError, VoiceNotFoundError) as exc:
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
-            return
-        except ModelNotFoundError as exc:
-            await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))
-            return
-        except VoxError as exc:
-            await context.abort(grpc.StatusCode.INTERNAL, str(exc))
             return
         except Exception:
             logger.exception("Synthesis failed")

@@ -13,12 +13,16 @@ from vox.audio.pipeline import get_content_type, prepare_for_output
 from vox.conversation.text_buffer import split_for_tts
 from vox.core.adapter import TTSAdapter
 from vox.core.cloned_voices import resolve_voice_request
-from vox.core.errors import ModelNotFoundError, VoxError
+from vox.core.errors import ModelNotFoundError, VoiceCloningUnsupportedError, VoiceNotFoundError, VoxError
 from vox.operations.defaults import resolve_default_model
 from vox.operations.errors import (
     EmptyInputError,
     NoAudioGeneratedError,
     NoDefaultModelError,
+    StoredModelNotFoundError,
+    VoiceCloningUnsupportedOperationError,
+    VoiceNotFoundOperationError,
+    VoiceReferenceNotFoundError,
     WrongModelTypeError,
 )
 
@@ -82,6 +86,22 @@ def _validate_input(text: str) -> None:
         raise EmptyInputError()
 
 
+def _resolve_voice(
+    adapter: TTSAdapter,
+    store: Any,
+    voice: str | None,
+    language: str | None,
+) -> tuple[str | None, str | None, Any, str | None]:
+    try:
+        return resolve_voice_request(adapter, store, voice, language)
+    except VoiceNotFoundError as exc:
+        raise VoiceNotFoundOperationError(exc.voice_id) from exc
+    except VoiceCloningUnsupportedError as exc:
+        raise VoiceCloningUnsupportedOperationError(exc.adapter_name) from exc
+    except FileNotFoundError as exc:
+        raise VoiceReferenceNotFoundError(str(voice or "")) from exc
+
+
 async def synthesize_full(
     *,
     scheduler: Any,
@@ -97,7 +117,7 @@ async def synthesize_full(
         async with scheduler.acquire(model) as adapter:
             if not isinstance(adapter, TTSAdapter):
                 raise WrongModelTypeError(model, "TTS")
-            voice, language, reference_audio, reference_text = resolve_voice_request(
+            voice, language, reference_audio, reference_text = _resolve_voice(
                 adapter, store, request.voice, request.language
             )
             text_chunks = _split_for_adapter(request.input, adapter)
@@ -124,7 +144,9 @@ async def synthesize_full(
                 raise NoAudioGeneratedError()
 
             encoded, content_type = prepare_for_output(audio, sample_rate, request.response_format)
-    except (WrongModelTypeError, NoAudioGeneratedError, ModelNotFoundError, VoxError):
+    except ModelNotFoundError as exc:
+        raise StoredModelNotFoundError(exc.model) from exc
+    except (WrongModelTypeError, NoAudioGeneratedError, VoxError):
         raise
     except Exception:
         logger.exception(f"Synthesis failed for model {model}")
@@ -155,10 +177,13 @@ async def preflight_synthesis(
 ) -> None:
     model = _resolve_model(registry, store, request.model)
     _validate_input(request.input)
-    async with scheduler.acquire(model) as adapter:
-        if not isinstance(adapter, TTSAdapter):
-            raise WrongModelTypeError(model, "TTS")
-        resolve_voice_request(adapter, store, request.voice, request.language)
+    try:
+        async with scheduler.acquire(model) as adapter:
+            if not isinstance(adapter, TTSAdapter):
+                raise WrongModelTypeError(model, "TTS")
+            _resolve_voice(adapter, store, request.voice, request.language)
+    except ModelNotFoundError as exc:
+        raise StoredModelNotFoundError(exc.model) from exc
 
 
 async def synthesize_stream(
@@ -274,7 +299,7 @@ async def synthesize_incremental(
             async with scheduler.acquire(model) as adapter:
                 if not isinstance(adapter, TTSAdapter):
                     raise WrongModelTypeError(model, "TTS")
-                voice, language, reference_audio, reference_text = resolve_voice_request(
+                voice, language, reference_audio, reference_text = _resolve_voice(
                     adapter, store, request.voice, request.language
                 )
                 for text_chunk in _split_for_adapter(request.input, adapter):
@@ -322,7 +347,9 @@ async def synthesize_incremental(
 
                 if not yielded_audio:
                     raise NoAudioGeneratedError()
-        except (WrongModelTypeError, NoAudioGeneratedError, ModelNotFoundError, VoxError):
+        except ModelNotFoundError as exc:
+            raise StoredModelNotFoundError(exc.model) from exc
+        except (WrongModelTypeError, NoAudioGeneratedError, VoxError):
             raise
         except Exception:
             logger.exception(f"Synthesis failed for model {model}")
@@ -358,27 +385,30 @@ async def synthesize_raw(
     _validate_input(request.input)
 
     async def _gen() -> AsyncIterator[SynthesisRawChunk]:
-        async with scheduler.acquire(model) as adapter:
-            if not isinstance(adapter, TTSAdapter):
-                raise WrongModelTypeError(model, "TTS")
-            voice, language, reference_audio, reference_text = resolve_voice_request(
-                adapter, store, request.voice, request.language
-            )
-            text_chunks = _split_for_adapter(request.input, adapter)
-            for idx, text_chunk in enumerate(text_chunks):
-                is_last_text_chunk = idx == len(text_chunks) - 1
-                async for chunk in adapter.synthesize(
-                    text_chunk,
-                    voice=voice,
-                    speed=request.speed if request.speed > 0 else 1.0,
-                    language=language,
-                    reference_audio=reference_audio,
-                    reference_text=reference_text,
-                ):
-                    yield SynthesisRawChunk(
-                        audio=chunk.audio,
-                        sample_rate=chunk.sample_rate,
-                        is_final=chunk.is_final and is_last_text_chunk,
-                    )
+        try:
+            async with scheduler.acquire(model) as adapter:
+                if not isinstance(adapter, TTSAdapter):
+                    raise WrongModelTypeError(model, "TTS")
+                voice, language, reference_audio, reference_text = _resolve_voice(
+                    adapter, store, request.voice, request.language
+                )
+                text_chunks = _split_for_adapter(request.input, adapter)
+                for idx, text_chunk in enumerate(text_chunks):
+                    is_last_text_chunk = idx == len(text_chunks) - 1
+                    async for chunk in adapter.synthesize(
+                        text_chunk,
+                        voice=voice,
+                        speed=request.speed if request.speed > 0 else 1.0,
+                        language=language,
+                        reference_audio=reference_audio,
+                        reference_text=reference_text,
+                    ):
+                        yield SynthesisRawChunk(
+                            audio=chunk.audio,
+                            sample_rate=chunk.sample_rate,
+                            is_final=chunk.is_final and is_last_text_chunk,
+                        )
+        except ModelNotFoundError as exc:
+            raise StoredModelNotFoundError(exc.model) from exc
 
     return _gen()

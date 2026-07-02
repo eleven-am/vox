@@ -6,12 +6,6 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from vox.core.errors import (
-    ModelNotFoundError,
-    VoiceCloningUnsupportedError,
-    VoiceNotFoundError,
-    VoxError,
-)
 from vox.operations.errors import OperationError
 from vox.operations.synthesis import (
     SynthesisRequest,
@@ -41,14 +35,6 @@ class OpenAISpeechRequest(BaseModel):
     response_format: str = "wav"
     language: str | None = None
     stream: bool = False
-
-
-def _voice_error_to_http(exc: Exception) -> HTTPException:
-    if isinstance(exc, VoiceCloningUnsupportedError):
-        return HTTPException(status_code=400, detail=str(exc))
-    if isinstance(exc, VoiceNotFoundError):
-        return HTTPException(status_code=404, detail=str(exc))
-    return HTTPException(status_code=500, detail=str(exc))
 
 
 async def synthesize(req: SynthesizeRequest, request: Request):
@@ -82,12 +68,6 @@ async def synthesize(req: SynthesizeRequest, request: Request):
         raise
     except OperationError as exc:
         raise operation_error_to_http(exc) from exc
-    except (VoiceCloningUnsupportedError, VoiceNotFoundError) as exc:
-        raise _voice_error_to_http(exc) from exc
-    except ModelNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except VoxError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception(f"Synthesis failed for model {req.model}")
         raise HTTPException(status_code=500, detail="Internal synthesis error") from exc

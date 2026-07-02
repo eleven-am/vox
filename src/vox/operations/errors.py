@@ -93,6 +93,12 @@ class VoiceReferenceNotFoundError(OperationError):
         super().__init__(f"Reference audio for voice '{voice_id}' not found")
 
 
+class VoiceCloningUnsupportedOperationError(OperationError):
+    def __init__(self, model: str) -> None:
+        self.model = model
+        super().__init__(f"model '{model}' does not support cloned voices")
+
+
 class SessionAlreadyConfiguredError(OperationError):
     def __init__(self) -> None:
         super().__init__("Session already configured")
@@ -131,6 +137,7 @@ def classify_operation_error(exc: OperationError) -> OperationErrorKind:
         VoiceNameRequiredError,
         VoiceAudioRequiredError,
         VoiceIdRequiredError,
+        VoiceCloningUnsupportedOperationError,
         SessionAlreadyConfiguredError,
         SessionNotConfiguredError,
         UnknownMessageTypeError,
