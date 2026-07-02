@@ -43,6 +43,7 @@ class RecordingWebSocket:
         self.fail = fail
         self.incoming = list(incoming or [])
         self.headers = headers or {}
+        self.query_params: dict[str, str] = {}
         self.sent: list[dict] = []
         self.sent_bytes: list[bytes] = []
         self.accepted = False
@@ -61,10 +62,11 @@ class RecordingWebSocket:
             raise RuntimeError("closed")
         self.sent_bytes.append(payload)
 
-    async def close(self) -> None:
+    async def close(self, code: int = 1000, reason: str = "") -> None:
         if self.fail:
             raise RuntimeError("closed")
         self.closed = True
+        self.close_code = code
 
     async def receive(self) -> dict:
         if self.incoming:
@@ -272,6 +274,21 @@ async def test_websocket_session_event_scope_drains_events_before_closing_sessio
 
     assert drained is True
     assert session.closed is True
+
+
+@pytest.mark.asyncio
+async def test_websocket_connection_scope_rejects_unauthorized_before_accept(monkeypatch):
+    from starlette.websockets import WebSocketDisconnect
+
+    monkeypatch.setenv("VOX_API_KEY", "secret")
+    websocket = RecordingWebSocket()
+
+    with pytest.raises(WebSocketDisconnect):
+        async with websocket_connection_scope(websocket):
+            raise AssertionError("body must not run for unauthorized connection")
+
+    assert websocket.accepted is False
+    assert websocket.closed is True
 
 
 @pytest.mark.asyncio

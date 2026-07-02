@@ -17,6 +17,7 @@ import grpc
 from grpc.aio import ServerInterceptor
 
 from vox.logging_context import bind_request_id, reset_request_id
+from vox.server.auth import MISSING_OR_INVALID_API_KEY, api_key_required, is_metadata_authorized
 
 logger = logging.getLogger("vox.grpc.request")
 
@@ -49,6 +50,39 @@ def _grpc_request_scope(method: str, incoming: str | None) -> Iterator[None]:
         duration_ms = int((time.perf_counter() - start) * 1000)
         logger.info("%s %s (%d ms)", method, status, duration_ms)
         reset_request_id(token)
+
+
+_AUTH_EXEMPT_METHOD_SUFFIXES = ("/Check", "/Watch", "ServerReflectionInfo")
+
+
+def _is_auth_exempt(method: str) -> bool:
+    return any(method.endswith(suffix) for suffix in _AUTH_EXEMPT_METHOD_SUFFIXES)
+
+
+class ApiKeyInterceptor(ServerInterceptor):
+    """Reject unauthenticated gRPC calls when VOX_API_KEY is configured.
+
+    Health checks and reflection are exempt so orchestrator probes and tooling
+    keep working; everything else requires the key in ``authorization`` or
+    ``x-api-key`` metadata.
+    """
+
+    async def intercept_service(
+        self,
+        continuation: Callable[
+            [grpc.HandlerCallDetails], Awaitable[grpc.RpcMethodHandler]
+        ],
+        handler_call_details: grpc.HandlerCallDetails,
+    ) -> grpc.RpcMethodHandler:
+        if not api_key_required() or _is_auth_exempt(handler_call_details.method):
+            return await continuation(handler_call_details)
+        if is_metadata_authorized(handler_call_details.invocation_metadata):
+            return await continuation(handler_call_details)
+
+        async def _abort(request, context):
+            await context.abort(grpc.StatusCode.UNAUTHENTICATED, MISSING_OR_INVALID_API_KEY)
+
+        return grpc.unary_unary_rpc_method_handler(_abort)
 
 
 class RequestIdInterceptor(ServerInterceptor):

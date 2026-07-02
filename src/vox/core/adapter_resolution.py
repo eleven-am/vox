@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 ADAPTERS_DIR = "adapters"
 ADAPTERS_NO_DEPS_ENV = "VOX_ADAPTERS_NO_DEPS"
 ADAPTER_INSTALL_TIMEOUT_ENV = "VOX_ADAPTER_INSTALL_TIMEOUT_SECONDS"
+ADAPTERS_ALLOW_UNVERIFIED_ENV = "VOX_ALLOW_UNVERIFIED_ADAPTERS"
 DEFAULT_NO_DEPS_ADAPTER_PACKAGES = {
     "vox-dia",
     "vox-kokoro",
@@ -31,6 +32,31 @@ DEFAULT_NO_DEPS_ADAPTER_PACKAGES = {
     "vox-voxtral",
     "vox-whisper",
 }
+KNOWN_ADAPTER_PACKAGES = frozenset({
+    "vox-chatterbox",
+    "vox-cosyvoice",
+    "vox-dia",
+    "vox-indextts",
+    "vox-kokoro",
+    "vox-microsoft",
+    "vox-neutts",
+    "vox-openvoice",
+    "vox-orpheus",
+    "vox-parakeet",
+    "vox-piper",
+    "vox-qwen",
+    "vox-sesame",
+    "vox-spark",
+    "vox-voxtral",
+    "vox-whisper",
+    "vox-xtts",
+})
+
+
+def _adapter_package_allowed(package_name: str) -> bool:
+    if package_name in KNOWN_ADAPTER_PACKAGES:
+        return True
+    return os.environ.get(ADAPTERS_ALLOW_UNVERIFIED_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
 
 InstallRunner = Callable[[list[str], int], "subprocess.CompletedProcess[str]"]
@@ -136,6 +162,14 @@ class AdapterResolver:
         self._refresh_installed_specs()
         if adapter_name in self._adapters or adapter_name in self._installed_specs:
             return True
+
+        if not _adapter_package_allowed(package_name):
+            logger.error(
+                "Refusing to install unverified adapter package %r for adapter '%s'. "
+                "Set %s=1 to allow installing packages outside the built-in catalog.",
+                package_name, adapter_name, ADAPTERS_ALLOW_UNVERIFIED_ENV,
+            )
+            return False
 
         logger.info("Adapter '%s' installing %s from package registry...", adapter_name, package_name)
         if not self._install_package(package_name):

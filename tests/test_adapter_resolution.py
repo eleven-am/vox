@@ -119,6 +119,30 @@ class TestEnsure:
         assert rescan_mock.called
         assert runner.calls == []
 
+    def test_refuses_unverified_package_without_opt_in(self, tmp_path: Path, monkeypatch):
+        monkeypatch.delenv("VOX_ALLOW_UNVERIFIED_ADAPTERS", raising=False)
+        runner = _FakeRunner()
+        resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
+
+        assert resolver.ensure("evil", "totally-not-vox") is False
+        assert runner.calls == []
+
+    def test_allows_unverified_package_with_opt_in(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("VOX_ALLOW_UNVERIFIED_ADAPTERS", "1")
+        runner = _FakeRunner()
+        resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
+
+        resolver.ensure("evil", "totally-not-vox")
+        assert runner.calls != []
+
+    def test_allows_known_catalog_package(self, tmp_path: Path, monkeypatch):
+        monkeypatch.delenv("VOX_ALLOW_UNVERIFIED_ADAPTERS", raising=False)
+        runner = _FakeRunner()
+        resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
+
+        resolver.ensure("parakeet", "vox-parakeet")
+        assert runner.calls != []
+
 
 class TestDiscover:
     def test_lists_global_and_isolated_adapters(self, tmp_path: Path):

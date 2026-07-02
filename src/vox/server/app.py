@@ -13,7 +13,7 @@ from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.logging_config import configure_logging
 from vox.server.app_services import app_rtc_registry, app_services
-from vox.server.middleware import RequestIdMiddleware
+from vox.server.middleware import ApiKeyAuthMiddleware, RequestIdMiddleware
 from vox.server.preload import merged_preload_models, preload_models, preload_vad, should_preload_vad
 from vox.server.rtc_registry import RtcSessionRegistry
 
@@ -84,7 +84,7 @@ def create_app(
     configure_logging()
     configure_hf_runtime()
     app = FastAPI(title="Vox", version="0.1.0", lifespan=lifespan)
-    app.add_middleware(RequestIdMiddleware)
+    app.add_middleware(ApiKeyAuthMiddleware)
     cors_origins = _parse_cors_origins(os.environ.get("VOX_CORS_ORIGINS"))
     if cors_origins:
         from fastapi.middleware.cors import CORSMiddleware
@@ -96,6 +96,7 @@ def create_app(
             allow_methods=["GET", "POST", "OPTIONS"],
             allow_headers=["authorization", "content-type", "x-api-key"],
         )
+    app.add_middleware(RequestIdMiddleware)
 
     if vox_home is None:
         env_home = os.environ.get("VOX_HOME")

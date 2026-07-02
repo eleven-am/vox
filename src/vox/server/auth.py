@@ -63,6 +63,42 @@ def require_api_key(request: Request) -> None:
     raise HTTPException(status_code=401, detail=MISSING_OR_INVALID_API_KEY)
 
 
+def api_key_required() -> bool:
+    return configured_api_key() is not None
+
+
+def extract_api_key_from_metadata(metadata: Any) -> str | None:
+    if not metadata:
+        return None
+    values: dict[str, str] = {}
+    for key, value in metadata:
+        text = value.decode() if isinstance(value, bytes) else str(value)
+        values[key.lower()] = text
+    token = bearer_token_from_authorization(values.get(AUTHORIZATION_HEADER))
+    if token:
+        return token
+    api_key = values.get(API_KEY_HEADER)
+    if api_key and api_key.strip():
+        return api_key.strip()
+    return None
+
+
+def is_metadata_authorized(metadata: Any) -> bool:
+    return is_api_key_authorized(extract_api_key_from_metadata(metadata))
+
+
+async def require_ws_api_key(websocket: Any) -> bool:
+    """Close the websocket with a policy-violation code when the key is invalid.
+
+    Returns True when the connection is authorized (or no key is configured).
+    """
+    candidate = extract_api_key_from_parts(websocket.headers, websocket.query_params)
+    if is_api_key_authorized(candidate):
+        return True
+    await websocket.close(code=1008, reason=MISSING_OR_INVALID_API_KEY)
+    return False
+
+
 def extract_api_key_from_connection(ctx: Any) -> str | None:
     return extract_api_key_from_parts(ctx.headers, ctx.query)
 

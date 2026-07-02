@@ -15,9 +15,15 @@ import time
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 from vox.logging_context import bind_request_id, current_request_id, reset_request_id
+from vox.server.auth import (
+    MISSING_OR_INVALID_API_KEY,
+    api_key_required,
+    extract_api_key_from_http,
+    is_api_key_authorized,
+)
 
 logger = logging.getLogger("vox.server.request")
 
@@ -26,6 +32,32 @@ HEADER = "X-Request-ID"
 _QUIET_PATHS: frozenset[str] = frozenset({
     "/", "/health", "/healthz", "/readyz", "/v1/health",
 })
+
+_AUTH_EXEMPT_PATHS: frozenset[str] = frozenset({
+    "/", "/health", "/healthz", "/readyz", "/v1/health",
+})
+
+
+class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
+    """Enforce the API key on every HTTP route when one is configured.
+
+    When ``VOX_API_KEY`` is unset the server stays open (unchanged behavior).
+    Health/probe paths are always exempt so orchestrator liveness checks work.
+    Websocket connections are authenticated in their own routes.
+    """
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        if (
+            api_key_required()
+            and request.url.path not in _AUTH_EXEMPT_PATHS
+            and not is_api_key_authorized(extract_api_key_from_http(request))
+        ):
+            return JSONResponse(
+                {"detail": MISSING_OR_INVALID_API_KEY},
+                status_code=401,
+                headers={HEADER: current_request_id()},
+            )
+        return await call_next(request)
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):

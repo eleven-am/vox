@@ -15,6 +15,7 @@ from starlette.websockets import WebSocketDisconnect
 from vox.core.tasks import drain_task
 from vox.logging_context import bind_request_id, reset_request_id
 from vox.operations.errors import OperationError, UnknownMessageTypeError
+from vox.server.auth import require_ws_api_key
 
 
 @dataclass(frozen=True)
@@ -102,7 +103,9 @@ async def websocket_session_event_scope(
 
 
 @asynccontextmanager
-async def websocket_connection_scope(websocket: Any) -> AsyncIterator[None]:
+async def websocket_connection_scope(websocket: Any, *, require_auth: bool = True) -> AsyncIterator[None]:
+    if require_auth and not await require_ws_api_key(websocket):
+        raise WebSocketDisconnect(code=1008)
     await websocket.accept()
     token = bind_websocket_request_id(websocket)
     try:
