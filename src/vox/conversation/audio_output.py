@@ -71,6 +71,10 @@ class ResponseAudioOutput:
         self._pending = []
         return pending
 
+    def pending_resume_batches(self):
+        while self.pending_count:
+            yield self.pop_pending_batch()
+
     def mark_playout(self, pcm16_audio: bytes, sample_rate: int) -> None:
         if not self._pace_to_playout:
             return

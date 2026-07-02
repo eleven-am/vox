@@ -751,8 +751,8 @@ class ConversationSession:
 
         elif action.type == TurnActionType.RESUME_OUTPUT:
             stream = self._response_stream
-            while self._audio_output.pending_count:
-                for pending in self._audio_output.pop_pending_batch():
+            for pending_batch in self._audio_output.pending_resume_batches():
+                for pending in pending_batch:
                     await self._emit_output_audio(pending.audio, pending.sample_rate, pending.sequence)
             self._audio_output.finish_resume()
             self._speech_guard.start_flutter_cooldown(self._config.policy.stable_speaking_min_ms)

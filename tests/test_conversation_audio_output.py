@@ -75,6 +75,29 @@ def test_audio_output_resume_keeps_pause_active_until_finished():
     assert not output.hold_if_paused(b"c", 16_000, 3)
 
 
+def test_audio_output_pending_resume_batches_keep_pause_active_until_finished():
+    output = ResponseAudioOutput()
+    output.pause()
+    output.hold(b"a", 16_000, 1)
+
+    batches = []
+    for batch in output.pending_resume_batches():
+        batches.append(batch)
+        if batch[0].audio == b"a":
+            assert output.paused
+            assert output.hold_if_paused(b"b", 16_000, 2)
+
+    assert batches == [
+        [PendingAudio(b"a", 16_000, 1)],
+        [PendingAudio(b"b", 16_000, 2)],
+    ]
+    assert output.paused
+
+    output.finish_resume()
+
+    assert not output.paused
+
+
 def test_audio_output_flush_clears_pause_pending_and_playout():
     output = ResponseAudioOutput(pace_to_playout=True)
     output.pause()
