@@ -39,7 +39,10 @@ class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
                 store=self._store,
                 scheduler=self._scheduler,
                 registry=self._registry,
-                request=model_reference_request_from_fields(name=request.name),
+                request=model_reference_request_from_fields(
+                    name=request.name,
+                    variant=request.variant or None,
+                ),
             )
         except CatalogEntryNotFoundError as exc:
             yield pull_error_message(exc)

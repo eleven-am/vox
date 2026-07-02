@@ -48,6 +48,7 @@ message LoadedModel {
 
 message PullRequest {
   string name = 1;
+  string variant = 2;
 }
 
 message PullProgress {

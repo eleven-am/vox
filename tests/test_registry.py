@@ -268,6 +268,33 @@ class TestResolve:
         info, _ = registry.resolve("mymodel", "v1")
         assert "_source" not in info.parameters
 
+    def test_resolve_ignores_pull_time_runtime_diagnostics(self, tmp_path: Path):
+        store = _make_store(tmp_path)
+        _write_manifest(
+            store,
+            "mymodel",
+            "v1",
+            adapter="kokoro-tts-onnx",
+            model_type="tts",
+            fmt="onnx",
+        )
+        manifest = store.resolve_model("mymodel", "v1")
+        assert manifest is not None
+        manifest.config["runtime"] = {
+            "checked_at_pull": True,
+            "resolved_variant": "onnx",
+            "preferred_backend": "kokoro-onnx-cpu",
+            "detected": {"torch_cuda": True},
+        }
+        store.save_manifest("mymodel", "v1", manifest)
+        registry = _make_registry(store)
+
+        info, _ = registry.resolve("mymodel", "v1")
+
+        assert info.adapter == "kokoro-tts-onnx"
+        assert info.format.value == "onnx"
+        assert "runtime" not in info.parameters
+
 
 class TestAvailableModels:
     def test_available_models_returns_catalog(self, tmp_path: Path):
@@ -277,7 +304,9 @@ class TestAvailableModels:
         catalog = registry.available_models()
         assert catalog is CATALOG
         assert "whisper-stt-ct2" in catalog
-        assert "kokoro-tts-onnx" in catalog
+        assert "kokoro-tts" in catalog
+        assert "kokoro-tts-onnx" not in catalog
+        assert "kokoro-tts-torch" not in catalog
 
     def test_whisper_catalog_uses_ct2_and_whisper_adapter_package(self):
         whisper = CATALOG["whisper-stt-ct2"]
@@ -349,14 +378,35 @@ class TestAvailableModels:
         assert dia["adapter"] == "dia-tts-torch"
         assert dia["source"] == "nari-labs/Dia-1.6B-0626"
 
-    def test_kokoro_torch_catalog_entry_is_explicit_and_pytorch(self):
-        kokoro_torch = CATALOG["kokoro-tts-torch"]["v1.0"]
+    def test_kokoro_logical_catalog_entry_keeps_concrete_variants(self):
+        kokoro = CATALOG["kokoro-tts"]["v1.0"]
 
-        assert kokoro_torch["adapter_package"] == "vox-kokoro"
-        assert kokoro_torch["adapter"] == "kokoro-tts-torch"
-        assert kokoro_torch["format"] == "pytorch"
-        assert kokoro_torch["files"] == ["kokoro-v1_0.pth"]
-        assert kokoro_torch["parameters"]["default_voice"] == "af_heart"
+        assert kokoro["type"] == "tts"
+        assert "variants" in kokoro
+        variants = {variant["id"]: variant for variant in kokoro["variants"]}
+        assert variants["torch"]["adapter"] == "kokoro-tts-torch"
+        assert variants["torch"]["format"] == "pytorch"
+        assert variants["torch"]["files"] == ["kokoro-v1_0.pth"]
+        assert variants["onnx"]["adapter"] == "kokoro-tts-onnx"
+        assert variants["onnx"]["format"] == "onnx"
+        assert variants["onnx"]["fallback"] is True
+
+    def test_kokoro_logical_lookup_uses_canonical_name(self, tmp_path: Path):
+        store = _make_store(tmp_path)
+        registry = _make_registry(store)
+
+        entry = registry.lookup("kokoro-tts")
+
+        assert entry is CATALOG["kokoro-tts"]["v1.0"]
+        assert entry["variants"][0]["adapter"] == "kokoro-tts-torch"
+
+    def test_kokoro_backend_suffix_names_are_not_public_catalog_entries(self, tmp_path: Path):
+        store = _make_store(tmp_path)
+        registry = _make_registry(store)
+
+        with patch("vox.core.registry.fetch_from_registry", return_value=None):
+            assert registry.lookup("kokoro-tts-onnx", "v1.0", explicit_tag=True) is None
+            assert registry.lookup("kokoro-tts-torch", "v1.0", explicit_tag=True) is None
 
     def test_openvoice_catalog_entry_has_checkpoint_files(self):
         openvoice = CATALOG["openvoice-tts-torch"]["v1"]

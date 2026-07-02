@@ -343,6 +343,33 @@ class TestPullModels:
         resp = client.post("/v1/models/pull", json={"name": "missing:latest"})
         assert resp.status_code == 404
 
+    def test_pull_variant_field_is_used_for_resolution(self, tmp_path: Path):
+        store = BlobStore(root=tmp_path)
+        registry = MagicMock()
+        registry.lookup.return_value = {
+            "architecture": "fake",
+            "type": "tts",
+            "variants": [
+                {
+                    "id": "onnx",
+                    "requires": {},
+                    "adapter": "fake",
+                    "format": "onnx",
+                    "source": "owner/repo",
+                    "adapter_package": "",
+                }
+            ],
+        }
+        registry.resolve_model_ref.side_effect = lambda n, t, explicit_tag=False: (n, t)
+        scheduler = MockScheduler()
+        app = _build_app(registry=registry, store=store, scheduler=scheduler)
+        client = TestClient(app)
+
+        resp = client.post("/v1/models/pull", json={"name": "foo:latest", "variant": "mlx"})
+
+        assert resp.status_code == 409
+        assert "variant 'mlx' is not defined" in resp.text
+
 
 class TestTranscribeMapping:
     def _client(self) -> TestClient:

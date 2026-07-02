@@ -4,13 +4,14 @@ import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
 
-from vox.core.capabilities import incompatible_pull_allowed, missing_capabilities_for
+from vox.core.capabilities import incompatible_pull_allowed
 from vox.core.hf_runtime import configure_hf_runtime
+from vox.core.model_resolution import parse_model_variant_ref, resolve_catalog_entry
 from vox.core.store import Manifest, ManifestLayer
-from vox.core.types import ModelInfo, parse_model_name
+from vox.core.types import ModelInfo
 from vox.operations.errors import (
     CatalogEntryNotFoundError,
     ModelIncompatibleError,
@@ -47,6 +48,7 @@ class PullEvent:
 @dataclass(frozen=True)
 class ModelReferenceRequest:
     name: str
+    variant: str | None = None
 
 
 @dataclass(frozen=True)
@@ -54,13 +56,18 @@ class ResolvedModelReference:
     requested_name: str
     parsed_name: str
     parsed_tag: str
+    requested_variant: str | None
     resolved_name: str
     resolved_tag: str
     explicit_tag: bool
 
 
-def model_reference_request_from_fields(*, name: str) -> ModelReferenceRequest:
-    return ModelReferenceRequest(name=name)
+def model_reference_request_from_fields(
+    *,
+    name: str,
+    variant: str | None = None,
+) -> ModelReferenceRequest:
+    return ModelReferenceRequest(name=name, variant=variant or None)
 
 
 def model_info_payload(model: ModelInfo) -> dict[str, Any]:
@@ -172,21 +179,38 @@ def pull_model(
     if not catalog_entry:
         raise CatalogEntryNotFoundError(request.name)
 
-    if not incompatible_pull_allowed():
-        missing = missing_capabilities_for(catalog_entry)
-        if missing:
-            raise ModelIncompatibleError(request.name, missing)
+    variant_resolution = resolve_catalog_entry(
+        catalog_entry,
+        forced_variant=resolved.requested_variant,
+    )
+    catalog_entry = variant_resolution.entry
+    missing = list(variant_resolution.missing)
+    if not incompatible_pull_allowed() and missing:
+        raise ModelIncompatibleError(request.name, missing)
+    if not catalog_entry:
+        raise ModelIncompatibleError(request.name, missing or ["no compatible catalog entry resolved"])
 
     logger.info(
-        "pull requested: %s -> %s:%s (adapter=%s, source=%s)",
+        "pull requested: %s -> %s:%s (variant=%s, adapter=%s, source=%s)",
         request.name,
         resolved.resolved_name,
         resolved.resolved_tag,
+        variant_resolution.variant_id or "-",
         catalog_entry.get("adapter", "?"), catalog_entry.get("source", "?"),
     )
 
     async def _gen() -> AsyncIterator[PullEvent]:
         yield PullEvent(status=f"pulling {request.name}")
+        if missing:
+            yield PullEvent(
+                status="warning",
+                error=(
+                    "pull compatibility bypassed by VOX_ALLOW_INCOMPATIBLE=1: "
+                    + "; ".join(missing)
+                ),
+            )
+        for warning in variant_resolution.warnings:
+            yield PullEvent(status="warning", error=warning)
 
         adapter_name = catalog_entry.get("adapter", "")
         adapter_package = catalog_entry.get("adapter_package", "")
@@ -254,6 +278,12 @@ def pull_model(
                     "description": catalog_entry.get("description", ""),
                     "license": catalog_entry.get("license", ""),
                     "adapter_package": catalog_entry.get("adapter_package", ""),
+                    "runtime": _runtime_diagnostic_payload(
+                        variant_id=variant_resolution.variant_id,
+                        preferred_backend=variant_resolution.preferred_backend,
+                        warnings=variant_resolution.warnings,
+                        snapshot=variant_resolution.snapshot,
+                    ),
                 },
             )
             store.save_manifest(resolved.resolved_name, resolved.resolved_tag, manifest)
@@ -286,18 +316,36 @@ def resolve_model_reference(
     registry: Any,
     request: ModelReferenceRequest,
 ) -> ResolvedModelReference:
-    explicit_tag = ":" in request.name
-    parsed_name, parsed_tag = parse_model_name(request.name)
+    parsed = parse_model_variant_ref(request.name)
     resolved_name, resolved_tag = registry.resolve_model_ref(
-        parsed_name,
-        parsed_tag,
-        explicit_tag=explicit_tag,
+        parsed.name,
+        parsed.tag,
+        explicit_tag=parsed.explicit_tag,
     )
     return ResolvedModelReference(
         requested_name=request.name,
-        parsed_name=parsed_name,
-        parsed_tag=parsed_tag,
+        parsed_name=parsed.name,
+        parsed_tag=parsed.tag,
+        requested_variant=request.variant,
         resolved_name=resolved_name,
         resolved_tag=resolved_tag,
-        explicit_tag=explicit_tag,
+        explicit_tag=parsed.explicit_tag,
     )
+
+
+def _runtime_diagnostic_payload(
+    *,
+    variant_id: str | None,
+    preferred_backend: str | None,
+    warnings: tuple[str, ...],
+    snapshot: Any,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "checked_at_pull": True,
+        "resolved_variant": variant_id or "",
+        "preferred_backend": preferred_backend or "",
+        "warnings": list(warnings),
+    }
+    if snapshot is not None:
+        payload["detected"] = asdict(snapshot)
+    return payload

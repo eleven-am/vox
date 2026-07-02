@@ -435,13 +435,17 @@ def serve(
 
 @cli.command()
 @click.argument("model")
+@click.option("--variant", default=None, help="Force a hardware/backend variant such as onnx or torch")
 @click.pass_context
-def pull(ctx, model: str):
+def pull(ctx, model: str, variant: str | None):
     """Download a model."""
     host = ctx.obj["host"]
     had_error = False
+    payload = {"name": model}
+    if variant:
+        payload["variant"] = variant
     try:
-        with httpx.stream("POST", f"{host}/v1/models/pull", json={"name": model}, timeout=None) as resp:
+        with httpx.stream("POST", f"{host}/v1/models/pull", json=payload, timeout=None) as resp:
             if resp.status_code >= 400:
                 resp.read()
                 try:

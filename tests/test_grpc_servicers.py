@@ -4,7 +4,7 @@ import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import grpc
 import numpy as np
@@ -189,6 +189,28 @@ class TestModelServicerMapping:
         assert len(messages) == 1
         assert messages[0].status == "error"
         assert "not found" in messages[0].error
+
+    @pytest.mark.asyncio
+    async def test_pull_forwards_variant_field(self, tmp_path):
+        from vox.grpc.model_servicer import ModelServicer
+
+        async def fake_events(**kwargs):
+            request = kwargs["request"]
+            assert request.name == "kokoro-tts:v1.0"
+            assert request.variant == "onnx"
+            yield PullEvent(status="success")
+
+        servicer = ModelServicer(_make_store(tmp_path), _make_registry_mock(), MagicMock())
+        with patch("vox.grpc.model_servicer.pull_model", side_effect=fake_events):
+            messages = []
+            async for msg in servicer.Pull(
+                vox_pb2.PullRequest(name="kokoro-tts:v1.0", variant="onnx"),
+                FakeContext(),
+            ):
+                messages.append(msg)
+
+        assert len(messages) == 1
+        assert messages[0].status == "success"
 
 
 class TestGrpcModelMessages:

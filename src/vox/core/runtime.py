@@ -2,53 +2,196 @@ from __future__ import annotations
 
 import os
 import platform
+import shutil
+import subprocess
+import sys
+from contextlib import suppress
 from dataclasses import dataclass
+from importlib import metadata
 from pathlib import Path
 
 
 @dataclass(frozen=True)
 class RuntimeCapabilities:
-    system: str
-    machine: str
-    torch_cuda: bool
-    onnx_cuda: bool
-    onnx_coreml: bool
-    mps: bool
-    nvidia_device: bool
+    system: str = ""
+    machine: str = ""
+    python_version: str = ""
+    torch_installed: bool = False
+    torch_version: str | None = None
+    torch_cuda: bool = False
+    torch_cuda_version: str | None = None
+    torch_device_count: int | None = None
+    torch_device_names: tuple[str, ...] = ()
+    torch_compute_capability: int | None = None
+    torch_mps_available: bool = False
+    onnxruntime_installed: bool = False
+    onnxruntime_version: str | None = None
+    onnxruntime_providers: tuple[str, ...] = ()
+    onnx_cuda: bool = False
+    onnx_coreml: bool = False
+    mps: bool = False
+    ram_gb: float | None = None
+    vram_gb: float | None = None
+    nvidia_device: bool = False
+    nvidia_smi_available: bool = False
+    nvidia_driver_version: str | None = None
+    driver_cuda_version: str | None = None
 
     @property
     def has_gpu_accelerator(self) -> bool:
         return self.torch_cuda or self.onnx_cuda or self.nvidia_device
 
 
-def _torch_cuda_available() -> bool:
-    try:
-        import torch
+@dataclass(frozen=True)
+class _TorchProbe:
+    installed: bool = False
+    version: str | None = None
+    cuda_available: bool = False
+    cuda_version: str | None = None
+    device_count: int | None = None
+    device_names: tuple[str, ...] = ()
+    compute_capability: int | None = None
+    mps_available: bool = False
+    vram_gb: float | None = None
 
-        return bool(torch.cuda.is_available())
+
+@dataclass(frozen=True)
+class _OnnxProbe:
+    installed: bool = False
+    version: str | None = None
+    providers: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _NvidiaSmiProbe:
+    available: bool = False
+    driver_version: str | None = None
+    cuda_version: str | None = None
+    vram_gb: float | None = None
+
+
+def _package_version(name: str) -> str | None:
+    try:
+        return metadata.version(name)
+    except metadata.PackageNotFoundError:
+        return None
     except Exception:
-        return False
+        return None
 
 
-def _torch_mps_available() -> bool:
+def _torch_probe() -> _TorchProbe:
     try:
-        import torch
+        import torch  # type: ignore[import-not-found]
+
+        cuda = getattr(torch, "cuda", None)
+        cuda_available = bool(cuda is not None and cuda.is_available())
+        device_count = None
+        device_names: list[str] = []
+        compute_caps: list[int] = []
+        vram_values: list[float] = []
+
+        if cuda_available and cuda is not None:
+            try:
+                device_count = int(cuda.device_count())
+            except Exception:
+                device_count = None
+            for index in range(device_count or 0):
+                with suppress(Exception):
+                    device_names.append(str(cuda.get_device_name(index)))
+                try:
+                    major, minor = cuda.get_device_capability(index)
+                    compute_caps.append(int(major) * 10 + int(minor))
+                except Exception:
+                    pass
+                try:
+                    props = cuda.get_device_properties(index)
+                    total_memory = getattr(props, "total_memory", None)
+                    if total_memory is not None:
+                        vram_values.append(int(total_memory) / (1024**3))
+                except Exception:
+                    pass
 
         backends = getattr(torch, "backends", None)
         mps = getattr(backends, "mps", None)
-        is_available = getattr(mps, "is_available", None)
-        return bool(is_available()) if callable(is_available) else False
+        is_mps_available = getattr(mps, "is_available", None)
+
+        version = getattr(torch, "__version__", None) or _package_version("torch")
+        torch_version = str(version) if version is not None else None
+        torch_cuda_version = getattr(getattr(torch, "version", None), "cuda", None)
+        return _TorchProbe(
+            installed=True,
+            version=torch_version,
+            cuda_available=cuda_available,
+            cuda_version=str(torch_cuda_version) if torch_cuda_version else None,
+            device_count=device_count,
+            device_names=tuple(device_names),
+            compute_capability=max(compute_caps) if compute_caps else None,
+            mps_available=bool(is_mps_available()) if callable(is_mps_available) else False,
+            vram_gb=max(vram_values) if vram_values else None,
+        )
     except Exception:
-        return False
+        return _TorchProbe(installed=_package_version("torch") is not None)
 
 
-def _onnx_available_providers() -> set[str]:
+def _onnx_probe() -> _OnnxProbe:
     try:
-        import onnxruntime as ort
+        import onnxruntime as ort  # type: ignore[import-not-found]
 
-        return set(ort.get_available_providers())
+        providers = tuple(str(provider) for provider in ort.get_available_providers())
+        version = getattr(ort, "__version__", None) or _package_version("onnxruntime")
+        return _OnnxProbe(
+            installed=True,
+            version=str(version) if version else None,
+            providers=providers,
+        )
     except Exception:
-        return set()
+        return _OnnxProbe(installed=_package_version("onnxruntime") is not None)
+
+
+def _nvidia_smi_probe() -> _NvidiaSmiProbe:
+    if shutil.which("nvidia-smi") is None:
+        return _NvidiaSmiProbe()
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=driver_version,cuda_version,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return _NvidiaSmiProbe(available=True)
+
+    if result.returncode != 0:
+        return _NvidiaSmiProbe(available=True)
+
+    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not lines:
+        return _NvidiaSmiProbe(available=True)
+
+    driver_versions: list[str] = []
+    cuda_versions: list[str] = []
+    memory_values: list[float] = []
+    for line in lines:
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) >= 1 and parts[0]:
+            driver_versions.append(parts[0])
+        if len(parts) >= 2 and parts[1]:
+            cuda_versions.append(parts[1])
+        if len(parts) >= 3:
+            with suppress(ValueError):
+                memory_values.append(float(parts[2]) / 1024)
+
+    return _NvidiaSmiProbe(
+        available=True,
+        driver_version=driver_versions[0] if driver_versions else None,
+        cuda_version=cuda_versions[0] if cuda_versions else None,
+        vram_gb=max(memory_values) if memory_values else None,
+    )
 
 
 def _has_nvidia_device_files() -> bool:
@@ -67,16 +210,60 @@ def _nvidia_visible_devices_configured() -> bool:
     return value not in {"void", "none", "no", "off"}
 
 
+def _ram_gb() -> float | None:
+    try:
+        import psutil  # type: ignore[import-not-found]
+
+        return float(psutil.virtual_memory().total) / (1024**3)
+    except Exception:
+        pass
+
+    if hasattr(os, "sysconf"):
+        try:
+            page_size = int(os.sysconf("SC_PAGE_SIZE"))
+            pages = int(os.sysconf("SC_PHYS_PAGES"))
+            return float(page_size * pages) / (1024**3)
+        except (OSError, ValueError):
+            return None
+    return None
+
+
 def detect_runtime_capabilities() -> RuntimeCapabilities:
-    providers = _onnx_available_providers()
+    torch = _torch_probe()
+    onnx = _onnx_probe()
+    nvidia_smi = _nvidia_smi_probe()
+    nvidia_device = (
+        _has_nvidia_device_files()
+        or _nvidia_visible_devices_configured()
+        or nvidia_smi.available
+    )
+    vram_candidates = [
+        value for value in (torch.vram_gb, nvidia_smi.vram_gb) if value is not None
+    ]
     return RuntimeCapabilities(
         system=platform.system().lower(),
         machine=platform.machine().lower(),
-        torch_cuda=_torch_cuda_available(),
-        onnx_cuda="CUDAExecutionProvider" in providers,
-        onnx_coreml="CoreMLExecutionProvider" in providers,
-        mps=_torch_mps_available(),
-        nvidia_device=_has_nvidia_device_files() or _nvidia_visible_devices_configured(),
+        python_version=".".join(str(part) for part in sys.version_info[:3]),
+        torch_installed=torch.installed,
+        torch_version=torch.version,
+        torch_cuda=torch.cuda_available,
+        torch_cuda_version=torch.cuda_version,
+        torch_device_count=torch.device_count,
+        torch_device_names=torch.device_names,
+        torch_compute_capability=torch.compute_capability,
+        torch_mps_available=torch.mps_available,
+        onnxruntime_installed=onnx.installed,
+        onnxruntime_version=onnx.version,
+        onnxruntime_providers=onnx.providers,
+        onnx_cuda="CUDAExecutionProvider" in onnx.providers,
+        onnx_coreml="CoreMLExecutionProvider" in onnx.providers,
+        mps=torch.mps_available,
+        ram_gb=_ram_gb(),
+        vram_gb=max(vram_candidates) if vram_candidates else None,
+        nvidia_device=nvidia_device,
+        nvidia_smi_available=nvidia_smi.available,
+        nvidia_driver_version=nvidia_smi.driver_version,
+        driver_cuda_version=nvidia_smi.cuda_version or torch.cuda_version,
     )
 
 

@@ -208,8 +208,8 @@ def test_system_operation_request_builders_preserve_transport_values():
         additional_vram_bytes=-2048,
     ) == EnforceMemoryBudgetRequest(additional_vram_bytes=-2048)
     assert trim_model_request_from_fields(
-        model_name="kokoro-tts-onnx:v1.0",
-    ) == TrimModelRequest(model_name="kokoro-tts-onnx:v1.0")
+        model_name="kokoro-tts:v1.0",
+    ) == TrimModelRequest(model_name="kokoro-tts:v1.0")
     assert unload_idle_models_request_from_fields() == UnloadIdleModelsRequest()
 
 

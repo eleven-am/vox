@@ -22,7 +22,7 @@ def test_grpc_session_update_decodes_to_shared_command_shape():
     command = conversation_session_update_to_message(
         vox_pb2.ConversationSessionUpdate(
             stt_model="parakeet-stt-onnx:tdt-0.6b-v3",
-            tts_model="kokoro-tts-onnx:v1.0",
+            tts_model="kokoro-tts:v1.0",
             voice="af_heart",
             turn_profile="headset",
             policy=vox_pb2.ConversationTurnPolicy(
@@ -35,7 +35,7 @@ def test_grpc_session_update_decodes_to_shared_command_shape():
         "type": "session.update",
         "session": {
             "stt_model": "parakeet-stt-onnx:tdt-0.6b-v3",
-            "tts_model": "kokoro-tts-onnx:v1.0",
+            "tts_model": "kokoro-tts:v1.0",
             "voice": "af_heart",
             "turn_profile": "headset",
             "turn_policy": {
@@ -45,7 +45,7 @@ def test_grpc_session_update_decodes_to_shared_command_shape():
     }
     config = parse_session_update(command)
     assert config.stt_model == "parakeet-stt-onnx:tdt-0.6b-v3"
-    assert config.tts_model == "kokoro-tts-onnx:v1.0"
+    assert config.tts_model == "kokoro-tts:v1.0"
     assert config.voice == "af_heart"
     assert config.turn_profile == "headset"
     assert config.policy is not None
@@ -57,7 +57,7 @@ def test_grpc_session_update_preserves_every_operation_owned_policy_override():
     command = conversation_session_update_to_message(
         vox_pb2.ConversationSessionUpdate(
             stt_model="parakeet-stt-onnx:tdt-0.6b-v3",
-            tts_model="kokoro-tts-onnx:v1.0",
+            tts_model="kokoro-tts:v1.0",
             policy=vox_pb2.ConversationTurnPolicy(
                 allow_interrupt_while_speaking=False,
                 min_interrupt_duration_ms=101,

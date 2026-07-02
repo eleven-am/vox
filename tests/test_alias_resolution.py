@@ -20,7 +20,7 @@ class TestBareNameResolution:
         monkeypatch.setattr("vox.core.device_placement.platform.machine", lambda: "arm64")
 
         assert resolve_family_alias("parakeet") == ("parakeet-stt-onnx", "tdt-0.6b-v3")
-        assert resolve_family_alias("kokoro") == ("kokoro-tts-onnx", "v1.0")
+        assert resolve_family_alias("kokoro") == ("kokoro-tts", "v1.0")
         assert resolve_family_alias("voxtral-stt") == ("voxtral-stt-torch", "mini-3b")
         assert resolve_family_alias("voxtral-tts") == ("voxtral-tts-vllm", "4b")
 
@@ -45,9 +45,9 @@ class TestBareNameResolution:
         monkeypatch.setattr("vox.core.device_placement.platform.machine", lambda: "arm64")
 
         assert resolve_family_alias("parakeet") == ("parakeet-stt-nemo", "tdt-0.6b-v3")
-        assert resolve_family_alias("kokoro") == ("kokoro-tts-torch", "v1.0")
+        assert resolve_family_alias("kokoro") == ("kokoro-tts", "v1.0")
         assert resolve_family_alias("parakeet-stt") == ("parakeet-stt-nemo", "tdt-0.6b-v3")
-        assert resolve_family_alias("kokoro-tts") == ("kokoro-tts-torch", "v1.0")
+        assert resolve_family_alias("kokoro-tts") == ("kokoro-tts", "v1.0")
 
     def test_bare_name_falls_back_to_default_when_profile_missing(
         self, monkeypatch: pytest.MonkeyPatch
@@ -62,7 +62,7 @@ class TestBareNameResolution:
 
         assert resolution.profile == "unknown-profile"
         assert resolution.resolved_profile == "default"
-        assert (resolution.name, resolution.tag) == ("kokoro-tts-onnx", "v1.0")
+        assert (resolution.name, resolution.tag) == ("kokoro-tts", "v1.0")
 
     def test_all_bare_family_names_resolve(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("VOX_DEVICE", "cuda")
@@ -110,7 +110,7 @@ class TestProfileInference:
         assert parakeet.resolved_profile == "spark"
         assert kokoro.resolved_profile == "spark"
         assert (parakeet.name, parakeet.tag) == ("parakeet-stt-nemo", "tdt-0.6b-v3")
-        assert (kokoro.name, kokoro.tag) == ("kokoro-tts-torch", "v1.0")
+        assert (kokoro.name, kokoro.tag) == ("kokoro-tts", "v1.0")
 
     def test_cuda_hint_on_arm_forces_spark_regardless_of_inference(
         self, monkeypatch: pytest.MonkeyPatch
@@ -139,15 +139,15 @@ class TestExplicitTags:
         monkeypatch.setattr("vox.core.device_placement.platform.machine", lambda: "arm64")
 
         assert resolve_family_alias("kokoro", "v1.0", explicit_tag=True) == (
-            "kokoro-tts-onnx",
+            "kokoro-tts",
             "v1.0",
         )
 
 
 class TestLegacyAliasRewrite:
     def test_legacy_model_ref_pairs_rewrite_to_canonical(self):
-        assert resolve_family_alias("kokoro", "v1.0") == ("kokoro-tts-onnx", "v1.0")
-        assert resolve_family_alias("kokoro", "v1.0-torch") == ("kokoro-tts-torch", "v1.0")
+        assert resolve_family_alias("kokoro", "v1.0") == ("kokoro-tts", "v1.0")
+        assert resolve_family_alias("kokoro", "v1.0-torch") == ("kokoro-tts", "v1.0")
         assert resolve_family_alias("parakeet", "tdt-0.6b") == (
             "parakeet-stt-onnx",
             "tdt-0.6b",
@@ -169,10 +169,6 @@ class TestLegacyAliasRewrite:
         assert resolve_family_alias("qwen3-asr", "0.6b", explicit_tag=True) == (
             "qwen3-stt-torch",
             "0.6b",
-        )
-        assert resolve_family_alias("kokoro-torch", "v1.0", explicit_tag=True) == (
-            "kokoro-tts-torch",
-            "v1.0",
         )
         assert resolve_family_alias("parakeet-nemo", "tdt-1.1b", explicit_tag=True) == (
             "parakeet-stt-nemo",
@@ -216,7 +212,6 @@ class TestLegacyAliasRewrite:
         }
 
         assert policies["qwen3-asr"] == "qwen3-stt-torch"
-        assert policies["kokoro-torch"] == "kokoro-tts-torch"
 
     def test_family_alias_policy_is_read_only(self):
         parakeet = next(policy for policy in family_alias_policy() if policy.name == "parakeet")

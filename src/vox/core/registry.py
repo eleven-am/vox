@@ -88,31 +88,43 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-parakeet",
         },
     },
-    "kokoro-tts-onnx": {
+    "kokoro-tts": {
         "v1.0": {
-            "source": "onnx-community/Kokoro-82M-v1.0-ONNX",
             "architecture": "kokoro",
             "type": "tts",
-            "adapter": "kokoro-tts-onnx",
-            "format": "onnx",
-            "description": "Kokoro 82M ONNX — fast, lightweight TTS with preset voices",
+            "description": "Kokoro 82M — hardware-aware TTS selection",
             "license": "Apache-2.0",
             "parameters": {"sample_rate": 24000, "default_voice": "af_heart"},
-            "adapter_package": "vox-kokoro",
-        },
-    },
-    "kokoro-tts-torch": {
-        "v1.0": {
-            "source": "hexgrad/Kokoro-82M",
-            "architecture": "kokoro-torch",
-            "type": "tts",
-            "adapter": "kokoro-tts-torch",
-            "format": "pytorch",
-            "description": "Kokoro 82M native runtime — PyTorch backend for Spark/CUDA systems",
-            "license": "Apache-2.0",
-            "parameters": {"sample_rate": 24000, "default_voice": "af_heart"},
-            "files": ["kokoro-v1_0.pth"],
-            "adapter_package": "vox-kokoro",
+            "variants": [
+                {
+                    "id": "torch",
+                    "aliases": ["cuda"],
+                    "priority": 100,
+                    "requires": {
+                        "python_modules": ["torch"],
+                        "accelerators": ["cuda"],
+                        "min_compute_capability": 70,
+                    },
+                    "source": "hexgrad/Kokoro-82M",
+                    "architecture": "kokoro-torch",
+                    "adapter": "kokoro-tts-torch",
+                    "format": "pytorch",
+                    "files": ["kokoro-v1_0.pth"],
+                    "adapter_package": "vox-kokoro",
+                },
+                {
+                    "id": "onnx",
+                    "aliases": ["cpu"],
+                    "priority": 0,
+                    "fallback": True,
+                    "requires": {"python_modules": ["onnxruntime"]},
+                    "source": "onnx-community/Kokoro-82M-v1.0-ONNX",
+                    "architecture": "kokoro",
+                    "adapter": "kokoro-tts-onnx",
+                    "format": "onnx",
+                    "adapter_package": "vox-kokoro",
+                },
+            ],
         },
     },
     "xtts-tts-torch": {
@@ -536,6 +548,13 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
     },
 }
 
+_HIDDEN_PUBLIC_MODEL_NAMES = frozenset(
+    {
+        "kokoro-tts-onnx",
+        "kokoro-tts-torch",
+    }
+)
+
 
 
 
@@ -613,6 +632,9 @@ class ModelRegistry:
     def lookup(self, name: str, tag: str = "latest", *, explicit_tag: bool = False) -> dict | None:
         """Look up a model — local catalog first, then remote registry."""
         name, tag = self.resolve_model_ref(name, tag, explicit_tag=explicit_tag)
+        if name in _HIDDEN_PUBLIC_MODEL_NAMES:
+            CATALOG.pop(name, None)
+            return None
         tags = CATALOG.get(name)
         if tags is not None:
             entry = tags.get(tag)
@@ -633,10 +655,14 @@ class ModelRegistry:
 
     def available_models(self) -> dict[str, dict[str, dict[str, Any]]]:
         """Return local catalog merged with remote index if available."""
+        for hidden_name in _HIDDEN_PUBLIC_MODEL_NAMES:
+            CATALOG.pop(hidden_name, None)
         remote = fetch_registry_index()
         if remote:
             for entry in remote:
                 name, tag = entry["name"], entry["tag"]
+                if name in _HIDDEN_PUBLIC_MODEL_NAMES:
+                    continue
                 if name not in CATALOG:
                     CATALOG[name] = {}
                 if tag not in CATALOG[name]:

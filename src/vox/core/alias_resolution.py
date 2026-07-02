@@ -61,12 +61,12 @@ _IMPLICIT_MODEL_ALIASES: dict[str, dict[str, tuple[str, str]]] = {
         "default": ("parakeet-stt-onnx", "tdt-0.6b-v3"),
     },
     "kokoro": {
-        "spark": ("kokoro-tts-torch", "v1.0"),
-        "default": ("kokoro-tts-onnx", "v1.0"),
+        "spark": ("kokoro-tts", "v1.0"),
+        "default": ("kokoro-tts", "v1.0"),
     },
     "kokoro-tts": {
-        "spark": ("kokoro-tts-torch", "v1.0"),
-        "default": ("kokoro-tts-onnx", "v1.0"),
+        "spark": ("kokoro-tts", "v1.0"),
+        "default": ("kokoro-tts", "v1.0"),
     },
     "whisper": {
         "spark": ("whisper-stt-ct2", "base.en"),
@@ -211,8 +211,8 @@ _IMPLICIT_MODEL_ALIASES: dict[str, dict[str, tuple[str, str]]] = {
 }
 
 _LEGACY_MODEL_REF_ALIASES: dict[tuple[str, str], tuple[str, str]] = {
-    ("kokoro", "v1.0"): ("kokoro-tts-onnx", "v1.0"),
-    ("kokoro", "v1.0-torch"): ("kokoro-tts-torch", "v1.0"),
+    ("kokoro", "v1.0"): ("kokoro-tts", "v1.0"),
+    ("kokoro", "v1.0-torch"): ("kokoro-tts", "v1.0"),
     ("parakeet", "tdt-0.6b"): ("parakeet-stt-onnx", "tdt-0.6b"),
     ("parakeet", "tdt-0.6b-v3"): ("parakeet-stt-onnx", "tdt-0.6b-v3"),
     ("parakeet", "tdt-0.6b-v3-nemo"): ("parakeet-stt-nemo", "tdt-0.6b-v3"),
@@ -235,7 +235,6 @@ _LEGACY_NAME_ALIASES: dict[str, str] = {
     "cosyvoice2": "cosyvoice2-tts-torch",
     "dia": "dia-tts-torch",
     "indextts": "indextts-tts-torch",
-    "kokoro-torch": "kokoro-tts-torch",
     "neutts": "neutts-air-tts-torch",
     "neutts-air": "neutts-air-tts-torch",
     "openvoice": "openvoice-tts-torch",

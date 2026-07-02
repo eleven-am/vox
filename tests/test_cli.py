@@ -190,6 +190,23 @@ class TestPull:
         assert "done" in result.output
 
     @patch("httpx.stream")
+    def test_pull_variant_sends_request_field(self, mock_stream, runner):
+        ctx = MagicMock()
+        ctx.status_code = 200
+        ctx.__enter__ = Mock(return_value=ctx)
+        ctx.__exit__ = Mock(return_value=False)
+        ctx.iter_lines.return_value = iter([json.dumps({"status": "done"})])
+        mock_stream.return_value = ctx
+
+        result = runner.invoke(cli, ["pull", "kokoro-tts:v1.0", "--variant", "onnx"])
+
+        assert result.exit_code == 0
+        assert mock_stream.call_args.kwargs["json"] == {
+            "name": "kokoro-tts:v1.0",
+            "variant": "onnx",
+        }
+
+    @patch("httpx.stream")
     def test_pull_error_status_in_stream(self, mock_stream, runner):
         lines = [
             json.dumps({"status": "error", "error": "model not found"}),

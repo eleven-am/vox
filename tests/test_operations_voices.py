@@ -217,8 +217,8 @@ def test_create_voice_request_from_fields_uses_grpc_format_hint_without_content_
 
 def test_voice_operation_request_builders_normalize_transport_input():
     assert list_voices_request_from_fields(model="") == ListVoicesRequest(model=None)
-    assert list_voices_request_from_fields(model="kokoro-tts-onnx:v1.0") == ListVoicesRequest(
-        model="kokoro-tts-onnx:v1.0",
+    assert list_voices_request_from_fields(model="kokoro-tts:v1.0") == ListVoicesRequest(
+        model="kokoro-tts:v1.0",
     )
     assert delete_voice_request_from_fields(voice_id="voice1234") == DeleteVoiceRequest(
         voice_id="voice1234",
@@ -345,14 +345,14 @@ def test_list_voices_payload_can_include_model_for_unfiltered_route():
     listed = [
         ListedVoice(
             voice=VoiceInfo(id="default", name="Default", language="en"),
-            model="kokoro-tts-onnx:v1.0",
+            model="kokoro-tts:v1.0",
         )
     ]
 
     assert list_voices_payload(listed, include_model=True) == {
         "voices": [
             {
-                "model": "kokoro-tts-onnx:v1.0",
+                "model": "kokoro-tts:v1.0",
                 "id": "default",
                 "name": "Default",
                 "language": "en",
