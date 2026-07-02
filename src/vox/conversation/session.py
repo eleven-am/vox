@@ -41,9 +41,9 @@ from vox.conversation.interrupt import (
     looks_like_self_echo,
 )
 from vox.conversation.profiles import DEFAULT_TURN_PROFILE, resolve_turn_profile
+from vox.conversation.response_synthesis import synthesize_response_stream
 from vox.conversation.speech_guard import AssistantSpeechGuard
 from vox.conversation.state_machine import TurnStateMachine
-from vox.conversation.text_buffer import StreamingTextBuffer, split_for_tts
 from vox.conversation.timers import ConversationTimerRegistry
 from vox.conversation.types import (
     TimerKey,
@@ -638,36 +638,20 @@ class ConversationSession:
         return stream
 
     async def _run_response_stream(self, stream: ResponseStream) -> None:
-        audio_started = False
-        text_buffer = StreamingTextBuffer()
         try:
             async with self._scheduler.acquire(self._config.tts_model) as adapter:
                 if not isinstance(adapter, TTSAdapter):
                     await self._fail_response(f"model {self._config.tts_model!r} is not a TTS adapter")
                     return
 
-                adapter_cap = int(getattr(adapter.info(), "max_input_chars", 0) or 0)
-                while True:
-                    item_text = await stream.next_text()
-                    if item_text is None:
-                        break
-                    for text in text_buffer.push(item_text):
-                        audio_started = await self._synthesize_text(
-                            adapter,
-                            text,
-                            stream=stream,
-                            audio_started=audio_started,
-                            max_input_chars=adapter_cap,
-                        )
-
-                for text in text_buffer.flush():
-                    audio_started = await self._synthesize_text(
-                        adapter,
-                        text,
-                        stream=stream,
-                        audio_started=audio_started,
-                        max_input_chars=adapter_cap,
-                    )
+                await synthesize_response_stream(
+                    adapter=adapter,
+                    stream=stream,
+                    voice=self._config.voice,
+                    language=self._config.language,
+                    on_audio_started=self._notify_tts_audio_started,
+                    on_audio_chunk=self._handle_tts_chunk,
+                )
 
                 assistant_text = stream.assistant_context_text()
                 if assistant_text:
@@ -689,6 +673,9 @@ class ConversationSession:
             if self._active_response_id == stream.response_id and not stream.pending_done:
                 self._active_response_id = None
 
+    async def _notify_tts_audio_started(self) -> None:
+        await self._event_queue.put(TurnEvent(type=TurnEventType.TTS_AUDIO_STARTED))
+
     async def _complete_response_stream(self, stream: ResponseStream) -> None:
         stream.pending_done = False
         self._mark_agent_speech_ended()
@@ -703,38 +690,6 @@ class ConversationSession:
             self._response_stream = None
         if self._active_response_id == stream.response_id:
             self._active_response_id = None
-
-    async def _synthesize_text(
-        self,
-        adapter: TTSAdapter,
-        text: str,
-        *,
-        stream: ResponseStream,
-        audio_started: bool,
-        max_input_chars: int,
-    ) -> bool:
-        for chunk_text in split_for_tts(text, max_chars=max_input_chars):
-            chunk_started = False
-            async for chunk in adapter.synthesize(
-                chunk_text,
-                voice=self._config.voice,
-                language=self._config.language,
-            ):
-                if chunk.is_final and not chunk.audio:
-                    continue
-                if not audio_started:
-                    audio_started = True
-                    await self._event_queue.put(
-                        TurnEvent(
-                            type=TurnEventType.TTS_AUDIO_STARTED,
-                        )
-                    )
-                chunk_started = True
-                await self._handle_tts_chunk(chunk.audio, chunk.sample_rate)
-            if chunk_started:
-                stream.add_heard_text(chunk_text)
-
-        return audio_started
 
     async def _fail_response(self, message: str) -> None:
         await self._emit({"type": WIRE_ERROR, "message": message})
