@@ -37,9 +37,10 @@ from vox.conversation.audio_history import ConversationAudioHistory
 from vox.conversation.audio_output import ResponseAudioOutput
 from vox.conversation.interrupt import (
     HeuristicInterruptClassifier,
+    InterruptCandidateAction,
     InterruptClassifier,
     PartialInterruptEvidence,
-    looks_like_self_echo,
+    evaluate_interrupt_candidate_gate,
     transcript_duration_ms,
     transcript_word_count,
 )
@@ -919,14 +920,19 @@ class ConversationSession:
         active_assistant_text = self._active_assistant_text()
 
         is_interrupt_keyword = self._config.interrupt_classifier.should_short_circuit(partial_transcript)
-        if looks_like_self_echo(
-            partial_transcript,
-            active_assistant_text,
-            min_words=self._config.policy.self_echo_min_words,
-            min_overlap=self._config.policy.self_echo_min_overlap,
-        ):
+        gate = evaluate_interrupt_candidate_gate(
+            partial=partial,
+            active_assistant_text=active_assistant_text,
+            policy=self._config.policy,
+            evidence=self._partial_interrupt_evidence,
+            is_interrupt_keyword=is_interrupt_keyword,
+            output_echo=self._looks_like_current_output_echo(),
+            vad_active_ms=vad_active_ms,
+        )
+        if gate.action == InterruptCandidateAction.REJECT:
             logger.debug(
-                "classifier rejected barge-in as likely assistant self-echo (vad_active=%dms)",
+                "classifier rejected barge-in as %s (vad_active=%dms)",
+                gate.false_positive_reason,
                 vad_active_ms,
             )
             self._vad_started_at = None
@@ -936,42 +942,17 @@ class ConversationSession:
                     "response_id": self._active_response_id,
                     "vad_active_ms": vad_active_ms,
                     "partial_transcript": partial_transcript,
-                    "reason": "self_echo_transcript",
+                    "reason": gate.false_positive_reason,
                 }
             )
             await self._event_queue.put(
                 TurnEvent(
                     type=TurnEventType.SPEECH_STOPPED,
-                    payload={"reason": "self_echo"},
+                    payload={"reason": gate.speech_stopped_reason},
                 )
             )
             return
-        if self._looks_like_current_output_echo():
-            logger.debug(
-                "classifier rejected barge-in as likely acoustic echo (vad_active=%dms)",
-                vad_active_ms,
-            )
-            self._vad_started_at = None
-            await self._emit(
-                {
-                    "type": WIRE_INTERRUPTION_FALSE_POSITIVE,
-                    "response_id": self._active_response_id,
-                    "vad_active_ms": vad_active_ms,
-                    "partial_transcript": partial_transcript,
-                    "reason": "output_echo",
-                }
-            )
-            await self._event_queue.put(
-                TurnEvent(
-                    type=TurnEventType.SPEECH_STOPPED,
-                    payload={"reason": "output_echo"},
-                )
-            )
-            return
-        if active_assistant_text and self._has_strong_partial_interrupt_evidence(
-            partial,
-            assistant_text=active_assistant_text,
-        ):
+        if gate.action == InterruptCandidateAction.CONFIRM_FROM_PARTIAL:
             logger.debug(
                 "classifier confirmed barge-in from partial transcript evidence "
                 "(words=%d, duration=%dms, vad_active=%dms)",
@@ -981,34 +962,6 @@ class ConversationSession:
             )
             await self._confirm_interrupt_from_partial(partial)
             return
-        if active_assistant_text and not is_interrupt_keyword and partial_transcript is not None:
-            word_count = transcript_word_count(partial_transcript)
-            if (
-                word_count < self._config.policy.speaking_interrupt_min_words
-                and vad_active_ms < self._config.policy.false_interruption_timeout_ms
-            ):
-                logger.debug(
-                    "classifier rejected barge-in without enough non-echo words (words=%d, vad_active=%dms)",
-                    word_count,
-                    vad_active_ms,
-                )
-                self._vad_started_at = None
-                await self._emit(
-                    {
-                        "type": WIRE_INTERRUPTION_FALSE_POSITIVE,
-                        "response_id": self._active_response_id,
-                        "vad_active_ms": vad_active_ms,
-                        "partial_transcript": partial_transcript,
-                        "reason": "insufficient_interrupt_evidence",
-                    }
-                )
-                await self._event_queue.put(
-                    TurnEvent(
-                        type=TurnEventType.SPEECH_STOPPED,
-                        payload={"reason": "insufficient_interrupt_evidence"},
-                    )
-                )
-                return
 
         try:
             is_real = await self._config.interrupt_classifier.is_real_interrupt(

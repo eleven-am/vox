@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 import numpy as np
@@ -127,6 +128,70 @@ class PartialInterruptEvidence:
             return False
         duration_ms = transcript_duration_ms(transcript)
         return not (duration_ms > 0 and duration_ms < self.min_interrupt_duration_ms)
+
+
+class InterruptCandidateAction(StrEnum):
+    CONTINUE = "continue"
+    CONFIRM_FROM_PARTIAL = "confirm_from_partial"
+    REJECT = "reject"
+
+
+@dataclass(frozen=True)
+class InterruptCandidateDecision:
+    action: InterruptCandidateAction
+    false_positive_reason: str | None = None
+    speech_stopped_reason: str | None = None
+
+
+def evaluate_interrupt_candidate_gate(
+    *,
+    partial: StreamTranscript | None,
+    active_assistant_text: str,
+    policy: TurnPolicy,
+    evidence: PartialInterruptEvidence,
+    is_interrupt_keyword: bool,
+    output_echo: bool,
+    vad_active_ms: int,
+) -> InterruptCandidateDecision:
+    partial_transcript = partial.text if partial is not None else None
+    if looks_like_self_echo(
+        partial_transcript,
+        active_assistant_text,
+        min_words=policy.self_echo_min_words,
+        min_overlap=policy.self_echo_min_overlap,
+    ):
+        return InterruptCandidateDecision(
+            action=InterruptCandidateAction.REJECT,
+            false_positive_reason="self_echo_transcript",
+            speech_stopped_reason="self_echo",
+        )
+
+    if output_echo:
+        return InterruptCandidateDecision(
+            action=InterruptCandidateAction.REJECT,
+            false_positive_reason="output_echo",
+            speech_stopped_reason="output_echo",
+        )
+
+    if active_assistant_text and evidence.is_strong(
+        partial,
+        assistant_text=active_assistant_text,
+    ):
+        return InterruptCandidateDecision(action=InterruptCandidateAction.CONFIRM_FROM_PARTIAL)
+
+    if active_assistant_text and not is_interrupt_keyword and partial_transcript is not None:
+        word_count = transcript_word_count(partial_transcript)
+        if (
+            word_count < policy.speaking_interrupt_min_words
+            and vad_active_ms < policy.false_interruption_timeout_ms
+        ):
+            return InterruptCandidateDecision(
+                action=InterruptCandidateAction.REJECT,
+                false_positive_reason="insufficient_interrupt_evidence",
+                speech_stopped_reason="insufficient_interrupt_evidence",
+            )
+
+    return InterruptCandidateDecision(action=InterruptCandidateAction.CONTINUE)
 
 
 @runtime_checkable

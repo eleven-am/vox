@@ -4,7 +4,15 @@ import numpy as np
 import pytest
 
 from vox.conversation import HeuristicInterruptClassifier, InterruptClassifier
-from vox.conversation.interrupt import DEFAULT_INTERRUPT_KEYWORDS_BY_LANG, looks_like_self_echo
+from vox.conversation.interrupt import (
+    DEFAULT_INTERRUPT_KEYWORDS_BY_LANG,
+    InterruptCandidateAction,
+    PartialInterruptEvidence,
+    evaluate_interrupt_candidate_gate,
+    looks_like_self_echo,
+)
+from vox.conversation.types import TurnPolicy
+from vox.streaming.types import StreamTranscript
 
 
 class TestConfirmWindowMs:
@@ -251,6 +259,97 @@ class TestSelfEchoHeuristic:
             "wait I need to change that",
             "Sure. The appointment is tomorrow at noon.",
         )
+
+
+class TestInterruptCandidateGate:
+    def test_rejects_partial_transcript_self_echo(self):
+        policy = TurnPolicy(self_echo_min_words=3, self_echo_min_overlap=0.7)
+        decision = evaluate_interrupt_candidate_gate(
+            partial=StreamTranscript(text="the appointment is tomorrow", start_ms=0, end_ms=800),
+            active_assistant_text="Sure. The appointment is tomorrow at noon.",
+            policy=policy,
+            evidence=PartialInterruptEvidence.from_turn_policy(policy),
+            is_interrupt_keyword=False,
+            output_echo=False,
+            vad_active_ms=500,
+        )
+
+        assert decision.action is InterruptCandidateAction.REJECT
+        assert decision.false_positive_reason == "self_echo_transcript"
+        assert decision.speech_stopped_reason == "self_echo"
+
+    def test_rejects_acoustic_output_echo_before_partial_evidence(self):
+        policy = TurnPolicy(speaking_interrupt_min_words=1)
+        decision = evaluate_interrupt_candidate_gate(
+            partial=StreamTranscript(
+                text="please stop now",
+                start_ms=0,
+                end_ms=1200,
+                audio_duration_ms=1200,
+            ),
+            active_assistant_text="assistant text",
+            policy=policy,
+            evidence=PartialInterruptEvidence.from_turn_policy(policy),
+            is_interrupt_keyword=True,
+            output_echo=True,
+            vad_active_ms=1200,
+        )
+
+        assert decision.action is InterruptCandidateAction.REJECT
+        assert decision.false_positive_reason == "output_echo"
+        assert decision.speech_stopped_reason == "output_echo"
+
+    def test_confirms_strong_partial_interrupt_evidence(self):
+        policy = TurnPolicy(speaking_interrupt_min_words=2, min_interrupt_duration_ms=250)
+        decision = evaluate_interrupt_candidate_gate(
+            partial=StreamTranscript(
+                text="wait stop now",
+                start_ms=0,
+                end_ms=800,
+                audio_duration_ms=800,
+            ),
+            active_assistant_text="assistant is still speaking",
+            policy=policy,
+            evidence=PartialInterruptEvidence.from_turn_policy(policy),
+            is_interrupt_keyword=False,
+            output_echo=False,
+            vad_active_ms=800,
+        )
+
+        assert decision.action is InterruptCandidateAction.CONFIRM_FROM_PARTIAL
+
+    def test_rejects_weak_partial_inside_false_interruption_window(self):
+        policy = TurnPolicy(
+            speaking_interrupt_min_words=2,
+            false_interruption_timeout_ms=2000,
+        )
+        decision = evaluate_interrupt_candidate_gate(
+            partial=StreamTranscript(text="uh", start_ms=0, end_ms=300),
+            active_assistant_text="assistant is still speaking",
+            policy=policy,
+            evidence=PartialInterruptEvidence.from_turn_policy(policy),
+            is_interrupt_keyword=False,
+            output_echo=False,
+            vad_active_ms=300,
+        )
+
+        assert decision.action is InterruptCandidateAction.REJECT
+        assert decision.false_positive_reason == "insufficient_interrupt_evidence"
+        assert decision.speech_stopped_reason == "insufficient_interrupt_evidence"
+
+    def test_continues_to_classifier_when_no_pre_gate_applies(self):
+        policy = TurnPolicy(speaking_interrupt_min_words=2)
+        decision = evaluate_interrupt_candidate_gate(
+            partial=None,
+            active_assistant_text="assistant is still speaking",
+            policy=policy,
+            evidence=PartialInterruptEvidence.from_turn_policy(policy),
+            is_interrupt_keyword=False,
+            output_echo=False,
+            vad_active_ms=2200,
+        )
+
+        assert decision.action is InterruptCandidateAction.CONTINUE
 
 
 class TestLanguageDefaults:
