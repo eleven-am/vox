@@ -16,7 +16,7 @@ from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.core.tasks import reap_task
 from vox.grpc import vox_pb2, vox_pb2_grpc
-from vox.grpc.conversation_commands import converse_client_message_to_command
+from vox.grpc.conversation_commands import execute_converse_client_message
 from vox.grpc.conversation_events import (
     conversation_error_pb,
     conversation_event_to_pb,
@@ -24,7 +24,6 @@ from vox.grpc.conversation_events import (
 from vox.operations.conversation import (
     ConvDoneEvent,
     ConversationOrchestrator,
-    execute_conversation_command,
 )
 from vox.operations.errors import OperationError
 
@@ -63,13 +62,7 @@ class ConversationServicer(vox_pb2_grpc.ConversationServiceServicer):
                         break
 
                     try:
-                        command = converse_client_message_to_command(client_msg)
-                        await execute_conversation_command(
-                            orchestrator,
-                            command.message,
-                            require_config_message="send session_update first",
-                            unknown_message_label="unknown message kind",
-                        )
+                        await execute_converse_client_message(orchestrator, client_msg)
                     except OperationError as exc:
                         await out_queue.put(conversation_error_pb(str(exc)))
             finally:

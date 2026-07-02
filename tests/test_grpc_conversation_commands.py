@@ -6,9 +6,11 @@ from vox.grpc import vox_pb2
 from vox.grpc.conversation_commands import (
     conversation_session_update_to_message,
     converse_client_message_to_command,
+    execute_converse_client_message,
+    execute_rtc_control_message,
     rtc_control_message_to_command,
 )
-from vox.operations.conversation import parse_session_update
+from vox.operations.conversation import ConversationOrchestrator, parse_session_update
 from vox.operations.errors import InvalidConfigError
 
 
@@ -178,3 +180,49 @@ def test_rtc_attach_is_not_a_conversation_command_after_attach_phase():
                 attach=vox_pb2.RtcControlAttach(session_id="rtc_123"),
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_execute_converse_client_message_owns_session_update_error_policy():
+    orchestrator = ConversationOrchestrator(scheduler=object())
+
+    with pytest.raises(InvalidConfigError, match="send session_update first"):
+        await execute_converse_client_message(
+            orchestrator,
+            vox_pb2.ConverseClientMessage(
+                audio_append=vox_pb2.ConversationAudioAppend(pcm16=b"\x00" * 100),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_execute_rtc_control_message_owns_session_update_error_policy():
+    orchestrator = ConversationOrchestrator(scheduler=object())
+
+    with pytest.raises(InvalidConfigError, match="send session_update first"):
+        await execute_rtc_control_message(
+            orchestrator,
+            vox_pb2.RtcControlClientMessage(
+                response_delta=vox_pb2.ConversationResponseDelta(delta="hello"),
+            ),
+            client_event_handler=lambda _event, _payload: None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_execute_rtc_control_message_routes_client_events_before_session_update():
+    orchestrator = ConversationOrchestrator(scheduler=object())
+    received: list[tuple[str, object]] = []
+
+    await execute_rtc_control_message(
+        orchestrator,
+        vox_pb2.RtcControlClientMessage(
+            client_event=vox_pb2.RtcClientEvent(
+                event="app.marker",
+                payload_json='{"n": 1}',
+            ),
+        ),
+        client_event_handler=lambda event, payload: received.append((event, payload)),
+    )
+
+    assert received == [("app.marker", {"n": 1})]

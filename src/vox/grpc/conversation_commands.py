@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 
 from vox.grpc import vox_pb2
+from vox.operations.conversation import ConversationOrchestrator, execute_conversation_command
 from vox.operations.errors import InvalidConfigError
 
 _POLICY_FIELDS = (
@@ -104,6 +107,36 @@ def rtc_control_message_to_command(
             message={"type": "client.event", "event": event_name, "payload": payload},
         )
     return _response_command(kind, client_msg, unknown_message_label="unknown control message kind")
+
+
+async def execute_converse_client_message(
+    orchestrator: ConversationOrchestrator,
+    client_msg: vox_pb2.ConverseClientMessage,
+) -> None:
+    command = converse_client_message_to_command(client_msg)
+    await execute_conversation_command(
+        orchestrator,
+        command.message,
+        require_config_message="send session_update first",
+        unknown_message_label="unknown message kind",
+    )
+
+
+async def execute_rtc_control_message(
+    orchestrator: ConversationOrchestrator,
+    client_msg: vox_pb2.RtcControlClientMessage,
+    *,
+    client_event_handler: Callable[[str, Any], Awaitable[None] | None],
+) -> None:
+    command = rtc_control_message_to_command(client_msg)
+    await execute_conversation_command(
+        orchestrator,
+        command.message,
+        allow_input_audio=False,
+        client_event_handler=client_event_handler,
+        require_config_message="send session_update first",
+        unknown_message_label="unknown control message kind",
+    )
 
 
 def _response_command(

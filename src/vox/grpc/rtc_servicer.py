@@ -17,13 +17,12 @@ from functools import partial
 from vox.core.scheduler import Scheduler
 from vox.core.tasks import drain_task, reap_task
 from vox.grpc import vox_pb2, vox_pb2_grpc
-from vox.grpc.conversation_commands import rtc_control_message_to_command
+from vox.grpc.conversation_commands import execute_rtc_control_message
 from vox.grpc.conversation_events import conversation_error_pb, conversation_event_to_pb
 from vox.operations.conversation import (
     ConvAudioDeltaEvent,
     ConvDoneEvent,
     ConversationOrchestrator,
-    execute_conversation_command,
     serialize_conversation_event,
 )
 from vox.operations.errors import OperationError
@@ -135,14 +134,10 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                     assert orchestrator is not None
 
                     try:
-                        command = rtc_control_message_to_command(client_msg)
-                        await execute_conversation_command(
+                        await execute_rtc_control_message(
                             orchestrator,
-                            command.message,
-                            allow_input_audio=False,
+                            client_msg,
                             client_event_handler=partial(send_client_event_to_browser, record),
-                            require_config_message="send session_update first",
-                            unknown_message_label="unknown control message kind",
                         )
                     except OperationError as exc:
                         await out_queue.put(conversation_error_pb(str(exc)))
