@@ -245,7 +245,7 @@ FIXTURE_CATALOG: dict[str, dict[str, dict[str, Any]]] = {
     },
     "chatterbox-tts-turbo": {
         "0.1.7": {
-            "source": "ResembleAI/chatterbox",
+            "source": "ResembleAI/chatterbox-turbo",
             "architecture": "chatterbox-turbo",
             "type": "tts",
             "adapter": "chatterbox-tts-turbo",
@@ -316,7 +316,7 @@ FIXTURE_CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter": "indextts-tts-torch",
             "format": "pytorch",
             "description": "IndexTTS2 — zero-shot voice cloning TTS",
-            "license": "Apache-2.0",
+            "license": "other",
             "parameters": {"sample_rate": 24000},
             "adapter_package": "vox-indextts",
         },
@@ -329,7 +329,7 @@ FIXTURE_CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter": "spark-tts-torch",
             "format": "pytorch",
             "description": "Spark-TTS 0.5B — efficient LLM-based voice cloning TTS",
-            "license": "Apache-2.0",
+            "license": "cc-by-nc-sa-4.0",
             "parameters": {"sample_rate": 16000},
             "adapter_package": "vox-spark",
         },
