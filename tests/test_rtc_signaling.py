@@ -6,6 +6,7 @@ import pytest
 
 from vox.server.rtc_signaling import (
     RtcSignalingError,
+    add_browser_rtc_candidate,
     create_browser_rtc_answer,
     ingest_media_audio,
     rtc_configuration,
@@ -100,3 +101,87 @@ async def test_create_browser_rtc_answer_closes_mismatched_session():
     assert exc_info.value.status_code == 404
     assert exc_info.value.detail == "RTC session not found"
     assert registry.closed == ["rtc_other"]
+
+
+@pytest.mark.asyncio
+async def test_add_browser_rtc_candidate_rejects_invalid_media_token():
+    class Registry:
+        def validate_media_token(self, _session_id: str, _token: str):
+            return None
+
+    with pytest.raises(RtcSignalingError) as exc_info:
+        await add_browser_rtc_candidate(
+            registry=Registry(),
+            session_id="rtc_123",
+            media_token="wrong",
+            candidate={"candidate": None},
+        )
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "invalid RTC media token"
+
+
+@pytest.mark.asyncio
+async def test_add_browser_rtc_candidate_rejects_record_without_peer():
+    class Registry:
+        def validate_media_token(self, _session_id: str, _token: str):
+            return SimpleNamespace(rtc_peer=None)
+
+    with pytest.raises(RtcSignalingError) as exc_info:
+        await add_browser_rtc_candidate(
+            registry=Registry(),
+            session_id="rtc_123",
+            media_token="rtc_media_123",
+            candidate={"candidate": None},
+        )
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "invalid RTC media token"
+
+
+@pytest.mark.asyncio
+async def test_add_browser_rtc_candidate_rejects_invalid_candidate():
+    class Peer:
+        async def addIceCandidate(self, _candidate):
+            raise AssertionError("invalid candidate should not be applied")
+
+    class Registry:
+        def validate_media_token(self, _session_id: str, _token: str):
+            return SimpleNamespace(rtc_peer=Peer())
+
+    with pytest.raises(RtcSignalingError) as exc_info:
+        await add_browser_rtc_candidate(
+            registry=Registry(),
+            session_id="rtc_123",
+            media_token="rtc_media_123",
+            candidate={"candidate": "not-a-real-candidate"},
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "invalid ICE candidate"
+
+
+@pytest.mark.asyncio
+async def test_add_browser_rtc_candidate_applies_end_of_candidates():
+    class Peer:
+        def __init__(self) -> None:
+            self.candidates = []
+
+        async def addIceCandidate(self, candidate):
+            self.candidates.append(candidate)
+
+    peer = Peer()
+
+    class Registry:
+        def validate_media_token(self, _session_id: str, _token: str):
+            return SimpleNamespace(rtc_peer=peer)
+
+    payload = await add_browser_rtc_candidate(
+        registry=Registry(),
+        session_id="rtc_123",
+        media_token="rtc_media_123",
+        candidate={"candidate": None},
+    )
+
+    assert payload == {"ok": True}
+    assert peer.candidates == [None]

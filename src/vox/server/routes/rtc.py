@@ -7,17 +7,17 @@ from fastapi.responses import StreamingResponse
 
 from vox.server.auth import require_api_key
 from vox.server.rtc_control import handle_rtc_control_ws
-from vox.server.rtc_ice import (
-    InvalidIceCandidateError,
-    parse_browser_ice_candidate,
-)
 from vox.server.rtc_media_events import iter_media_sse
 from vox.server.rtc_registry import RtcSessionRegistry
 from vox.server.rtc_sessions import (
     create_rtc_session_bootstrap,
     parse_rtc_session_bootstrap_request,
 )
-from vox.server.rtc_signaling import RtcSignalingError, create_browser_rtc_answer
+from vox.server.rtc_signaling import (
+    RtcSignalingError,
+    add_browser_rtc_candidate,
+    create_browser_rtc_answer,
+)
 
 router = APIRouter()
 legacy_router = APIRouter()
@@ -66,16 +66,15 @@ async def add_rtc_candidate(request: Request, session_id: str) -> dict:
     registry = get_rtc_registry(request)
     body = await request.json()
     token = _bearer_token(request) or str(body.get("media_token") or body.get("token") or "")
-    record = registry.validate_media_token(session_id, token)
-    if record is None or record.rtc_peer is None:
-        raise HTTPException(status_code=401, detail="invalid RTC media token")
-
     try:
-        ice = parse_browser_ice_candidate(body)
-    except InvalidIceCandidateError as exc:
-        raise HTTPException(status_code=400, detail="invalid ICE candidate") from exc
-    await record.rtc_peer.addIceCandidate(ice)
-    return {"ok": True}
+        return await add_browser_rtc_candidate(
+            registry=registry,
+            session_id=session_id,
+            media_token=token,
+            candidate=body,
+        )
+    except RtcSignalingError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.get("/v1/rtc/sessions/{session_id}/events")

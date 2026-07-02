@@ -14,7 +14,9 @@ from vox.server.rtc_client_events import (
     handle_browser_data_channel_message,
 )
 from vox.server.rtc_ice import (
+    InvalidIceCandidateError,
     candidate_events_from_sdp,
+    parse_browser_ice_candidate,
     patch_aioice_turn_error_code_parser,
     rewrite_private_relay_candidates,
     server_ice_servers_from_env,
@@ -75,6 +77,26 @@ async def create_browser_rtc_answer(
         "type": pc.localDescription.type,
         "sdp": answer_sdp,
     }
+
+
+async def add_browser_rtc_candidate(
+    *,
+    registry: RtcSessionRegistry,
+    session_id: str,
+    media_token: str,
+    candidate: dict[str, Any],
+) -> dict[str, bool]:
+    record = registry.validate_media_token(session_id, media_token)
+    if record is None or record.rtc_peer is None:
+        raise RtcSignalingError(status_code=401, detail="invalid RTC media token")
+
+    try:
+        ice = parse_browser_ice_candidate(candidate)
+    except InvalidIceCandidateError as exc:
+        raise RtcSignalingError(status_code=400, detail="invalid ICE candidate") from exc
+
+    await record.rtc_peer.addIceCandidate(ice)
+    return {"ok": True}
 
 
 def bind_peer_connection_handlers(
