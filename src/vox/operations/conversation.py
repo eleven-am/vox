@@ -454,6 +454,12 @@ def parse_client_event_command(message: Any) -> tuple[str, Any]:
     return event_name.strip(), message.get("payload")
 
 
+def pondsocket_event_to_conversation_command(event_name: str, payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise InvalidConfigError(f"{event_name} requires an object payload")
+    return {"type": event_name, **payload}
+
+
 def _wire_event_to_session_event(event: dict) -> ConvEvent | None:
     t = event.get("type")
     if t == WIRE_SPEECH_STARTED:

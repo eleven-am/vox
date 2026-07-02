@@ -13,6 +13,7 @@ from vox.operations.conversation import (
     ConvDoneEvent,
     ConversationOrchestrator,
     execute_conversation_command,
+    pondsocket_event_to_conversation_command,
     serialize_conversation_event,
 )
 from vox.operations.errors import OperationError
@@ -142,11 +143,6 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
         event_name = str(payload.pop("type"))
         await channel.broadcast_to(event_name, payload, user_id)
 
-    def payload_as_message(event_name: str, payload: Any) -> dict[str, Any]:
-        if not isinstance(payload, dict):
-            raise ValueError(f"{event_name} requires an object payload")
-        return {"type": event_name, **payload}
-
     async def reply_error(ctx: EventContext, message: str) -> None:
         if ctx.has_replied():
             return
@@ -273,13 +269,13 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
             await reply_error(ctx, "conversation session not attached")
             return
         try:
-            message = payload_as_message(ctx.event_name, ctx.get_payload())
+            message = pondsocket_event_to_conversation_command(ctx.event_name, ctx.get_payload())
             await execute_conversation_command(
                 runtime.orchestrator,
                 message,
                 unknown_message_label="unknown conversation message type",
             )
-        except (OperationError, ValueError) as exc:
+        except OperationError as exc:
             await reply_error(ctx, str(exc))
         except Exception as exc:  # noqa: BLE001
             logger.exception("PondSocket conversation event error")
@@ -319,7 +315,7 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
             await reply_error(ctx, "RTC control session not attached")
             return
         try:
-            message = payload_as_message(ctx.event_name, ctx.get_payload())
+            message = pondsocket_event_to_conversation_command(ctx.event_name, ctx.get_payload())
             await execute_conversation_command(
                 runtime.orchestrator,
                 message,
@@ -331,7 +327,7 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
                 ),
                 unknown_message_label="unknown RTC control message type",
             )
-        except (OperationError, ValueError) as exc:
+        except OperationError as exc:
             await reply_error(ctx, str(exc))
         except Exception as exc:  # noqa: BLE001
             logger.exception("PondSocket RTC control event error")

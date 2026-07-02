@@ -31,6 +31,7 @@ from vox.operations.conversation import (
     _wire_event_to_session_event,
     execute_conversation_command,
     parse_session_update,
+    pondsocket_event_to_conversation_command,
     serialize_conversation_event,
     serialize_session_config,
 )
@@ -118,6 +119,22 @@ def test_parse_session_update_requires_stt_model():
 def test_parse_session_update_requires_tts_model():
     with pytest.raises(InvalidConfigError):
         parse_session_update({"session": {"stt_model": "x:1"}})
+
+
+def test_pondsocket_event_to_conversation_command_wraps_object_payload():
+    assert pondsocket_event_to_conversation_command(
+        "response.delta",
+        {"delta": "hello", "allow_interruptions": False},
+    ) == {
+        "type": "response.delta",
+        "delta": "hello",
+        "allow_interruptions": False,
+    }
+
+
+def test_pondsocket_event_to_conversation_command_rejects_non_object_payload():
+    with pytest.raises(InvalidConfigError, match="response.delta requires an object payload"):
+        pondsocket_event_to_conversation_command("response.delta", "hello")
 
 
 @pytest.mark.asyncio
