@@ -197,7 +197,7 @@ class ConversationSession:
         self._last_speech_stopped_at: float | None = None
         self._awaiting_final_transcript: bool = False
         self._awaiting_final_transcript_started_at: float = 0.0
-        self._recent_endpoint_pauses_ms: list[int] = []
+        self._endpoint_pause_history = transcript_finalization.EndpointPauseHistory()
         self._transcript_finalizer = transcript_finalization.PendingTranscriptFinalizer(language=config.language)
         self._endpoint_commit_delay = transcript_finalization.EndpointCommitDelayPolicy.from_turn_policy(
             config.policy
@@ -556,16 +556,13 @@ class ConversationSession:
 
             if stream_event.eou_probability is not None:
                 self._last_eou_probability = float(stream_event.eou_probability)
-            if self._last_speech_stopped_at is not None:
-                pause_ms = max(0, int((time.monotonic() - self._last_speech_stopped_at) * 1000))
-                self._recent_endpoint_pauses_ms.append(pause_ms)
-                self._recent_endpoint_pauses_ms = self._recent_endpoint_pauses_ms[-8:]
+            self._endpoint_pause_history.record_since(self._last_speech_stopped_at)
             eou_threshold = EOUConfig().threshold
             decision = transcript_finalization.final_transcript_decision(
                 stream_event,
                 endpoint_timer_active=self._has_active_timer(TimerKey.ENDPOINTING.value),
                 commit_delay_policy=self._endpoint_commit_delay,
-                recent_pause_ms=self._recent_endpoint_pauses_ms,
+                recent_pause_ms=self._endpoint_pause_history.values(),
                 eou_threshold=eou_threshold,
                 turn_detector=self._config.turn_detector,
             )

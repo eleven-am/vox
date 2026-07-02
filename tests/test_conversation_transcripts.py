@@ -7,6 +7,7 @@ from vox.conversation.transcripts import (
     WIRE_TRANSCRIPT_DONE,
     WIRE_TURN_EOU_PREDICTED,
     EndpointCommitDelayPolicy,
+    EndpointPauseHistory,
     PendingTranscriptFinalizer,
     coalesce_transcript_payload,
     final_transcript_decision,
@@ -146,6 +147,29 @@ def test_endpoint_commit_delay_uses_recent_pause_history_when_dynamic():
 
     assert policy.commit_delay_ms(recent_pause_ms=[800, 1000, 1200]) == 1250
     assert policy.commit_delay_ms(recent_pause_ms=[100]) == 1200
+
+
+def test_endpoint_pause_history_records_clamped_recent_pauses():
+    history = EndpointPauseHistory(max_items=3)
+
+    history.record_since(None, now=10.0)
+    assert history.values() == ()
+
+    history.record_since(10.0, now=11.0)
+    history.record_since(10.0, now=12.0)
+    history.record_since(10.0, now=13.0)
+    history.record_since(15.0, now=14.0)
+
+    assert history.values() == (2000, 3000, 0)
+
+
+def test_endpoint_pause_history_keeps_at_least_one_item():
+    history = EndpointPauseHistory(max_items=0)
+
+    history.record_since(10.0, now=11.0)
+    history.record_since(10.0, now=12.0)
+
+    assert history.values() == (2000,)
 
 
 def test_endpoint_commit_delay_ignores_pause_history_when_dynamic_disabled():

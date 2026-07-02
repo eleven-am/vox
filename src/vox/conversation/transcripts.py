@@ -196,6 +196,23 @@ class EndpointCommitDelayPolicy:
         return int(base_ms - confidence * (base_ms - floor_ms))
 
 
+@dataclass
+class EndpointPauseHistory:
+    max_items: int = 8
+    pauses_ms: list[int] = field(default_factory=list)
+
+    def record_since(self, stopped_at: float | None, *, now: float | None = None) -> None:
+        if stopped_at is None:
+            return
+        current_time = time.monotonic() if now is None else now
+        pause_ms = max(0, int((current_time - stopped_at) * 1000))
+        self.pauses_ms.append(pause_ms)
+        self.pauses_ms = self.pauses_ms[-max(1, int(self.max_items)):]
+
+    def values(self) -> tuple[int, ...]:
+        return tuple(self.pauses_ms)
+
+
 @dataclass(frozen=True)
 class FinalTranscriptDecision:
     commit_delay_ms: int
