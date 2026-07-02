@@ -7,7 +7,7 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from vox.core.adapter import STTAdapter, TTSAdapter
 from vox.core.device_placement import (
@@ -51,6 +51,16 @@ def _clear_gpu_cache() -> None:
     except RuntimeError as e:
         logger.warning(f"Failed to clear GPU cache: {e}")
     gc.collect()
+
+
+def _teardown_adapters_blocking(items: list[tuple[str, Any, str]]) -> None:
+    """Unload adapters and clear the GPU cache. Blocking; run off the event loop."""
+    for full_name, adapter, reason in items:
+        try:
+            adapter.unload()
+        except Exception as error:
+            logger.error("Error unloading %s during %s: %s", full_name, reason, error)
+    _clear_gpu_cache()
 
 
 def _device_memory_snapshot(device: str) -> DeviceMemoryInfo:
@@ -461,18 +471,26 @@ class Scheduler:
             if needs_load:
                 await self._load_model(full_name)
 
+    async def _teardown_off_loop(self, items: list[tuple[str, _LoadedModel, str]]) -> None:
+        if not items:
+            return
+        await asyncio.to_thread(
+            _teardown_adapters_blocking,
+            [(name, loaded.adapter, reason) for name, loaded, reason in items],
+        )
+
     async def unload(self, model_name: str) -> bool:
         """Unload a specific model. Returns True if unloaded, False if skipped."""
         full_name = self._normalize_model_ref(model_name)
         async with self._lock:
-            if full_name in self._models:
-                loaded = self._models[full_name]
-                if loaded.ref_count > 0:
-                    logger.warning(f"Cannot unload {full_name}: {loaded.ref_count} active references")
-                    return False
-                self._unload_adapter(full_name, loaded, reason="explicit unload")
-                del self._models[full_name]
-                _clear_gpu_cache()
+            loaded = self._models.get(full_name)
+            if loaded is None:
+                return True
+            if loaded.ref_count > 0:
+                logger.warning(f"Cannot unload {full_name}: {loaded.ref_count} active references")
+                return False
+            del self._models[full_name]
+        await self._teardown_off_loop([(full_name, loaded, "explicit unload")])
         return True
 
     async def trim(self, model_name: str) -> bool:
@@ -498,12 +516,19 @@ class Scheduler:
             self._enforce_budget_locked(additional_vram_bytes=additional_vram_bytes)
 
     async def unload_all(self) -> None:
-        """Unload all models."""
+        """Unload all idle models. Models with active references are left in place."""
         async with self._lock:
-            for name, loaded in list(self._models.items()):
-                self._unload_adapter(name, loaded, reason="unload_all")
-            self._models.clear()
-            _clear_gpu_cache()
+            removable = [(name, m) for name, m in self._models.items() if m.ref_count == 0]
+            busy = [name for name, m in self._models.items() if m.ref_count > 0]
+            for name, _loaded in removable:
+                del self._models[name]
+        if busy:
+            logger.warning(
+                "unload_all skipped %d model(s) with active references: %s",
+                len(busy),
+                ", ".join(busy),
+            )
+        await self._teardown_off_loop([(name, loaded, "unload_all") for name, loaded in removable])
 
     def list_loaded(self) -> list[LoadedModelInfo]:
         """List currently loaded models."""
@@ -539,6 +564,7 @@ class Scheduler:
         while True:
             await asyncio.sleep(self._cleanup_interval)
             now = time.time()
+            to_unload: list[tuple[str, _LoadedModel, str]] = []
             async with self._lock:
                 if self._ttl_seconds > 0:
                     to_evict = [
@@ -547,14 +573,9 @@ class Scheduler:
                     ]
                     for name in to_evict:
                         logger.info(f"TTL expired for {name}, unloading")
-                        self._unload_adapter(
-                            name,
-                            self._models[name],
-                            reason="TTL cleanup",
-                        )
+                        to_unload.append((name, self._models[name], "TTL cleanup"))
                         del self._models[name]
-                    if to_evict:
-                        _clear_gpu_cache()
-
+            await self._teardown_off_loop(to_unload)
+            async with self._lock:
                 if self._vram_policy.idle_trim_seconds > 0:
                     self._trim_idle_models_locked(min_idle_seconds=self._vram_policy.idle_trim_seconds)

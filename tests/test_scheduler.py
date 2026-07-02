@@ -412,6 +412,43 @@ async def test_unload_all(scheduler: Scheduler, registry: FakeRegistry):
 
 
 @pytest.mark.asyncio
+async def test_unload_all_keeps_models_with_active_references(scheduler: Scheduler, registry: FakeRegistry):
+    registry.add_model("m2", "latest", adapter_cls=FakeSTTAdapter)
+
+    async with scheduler.acquire("whisper:large-v3"):
+        pass
+
+    async with scheduler.acquire("m2:latest") as busy_adapter:
+        await scheduler.unload_all()
+        loaded = scheduler.list_loaded()
+        assert [m.name for m in loaded] == ["m2"]
+        assert busy_adapter.is_loaded
+
+    await scheduler.unload_all()
+    assert len(scheduler.list_loaded()) == 0
+
+
+@pytest.mark.asyncio
+async def test_unload_runs_adapter_unload_off_event_loop(scheduler: Scheduler):
+    import threading
+
+    seen: dict[str, int] = {}
+
+    class ThreadRecordingAdapter(FakeSTTAdapter):
+        def unload(self) -> None:
+            seen["unload_thread"] = threading.get_ident()
+            super().unload()
+
+    scheduler._registry.add_model("thr", "latest", adapter_cls=ThreadRecordingAdapter)
+    await scheduler.preload("thr:latest")
+
+    await scheduler.unload("thr:latest")
+
+    assert seen["unload_thread"] != threading.get_ident()
+    assert len(scheduler.list_loaded()) == 0
+
+
+@pytest.mark.asyncio
 async def test_preload(scheduler: Scheduler):
     """preload should load the model without bumping the ref_count."""
     await scheduler.preload("whisper:large-v3")
