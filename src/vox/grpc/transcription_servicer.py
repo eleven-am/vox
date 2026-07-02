@@ -8,7 +8,7 @@ from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.grpc import vox_pb2_grpc
-from vox.grpc.operation_errors import operation_error_status
+from vox.grpc.operation_errors import abort_operation_error
 from vox.grpc.transcript_messages import annotate_response, transcribe_response
 from vox.operations.errors import OperationError
 from vox.operations.transcription import (
@@ -46,8 +46,7 @@ class TranscriptionServicer(vox_pb2_grpc.TranscriptionServiceServicer):
                 request=op_request,
             )
         except OperationError as exc:
-            code, msg = operation_error_status(exc)
-            await context.abort(code, msg)
+            await abort_operation_error(context, exc)
             return
         except Exception:
             logger.exception("Transcription failed")

@@ -8,7 +8,7 @@ from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.grpc import vox_pb2, vox_pb2_grpc
-from vox.grpc.operation_errors import operation_error_status
+from vox.grpc.operation_errors import abort_operation_error
 from vox.grpc.voice_messages import (
     create_voice_response,
     delete_voice_response,
@@ -56,8 +56,7 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
                     is_final=chunk.is_final,
                 )
         except OperationError as exc:
-            code, msg = operation_error_status(exc)
-            await context.abort(code, msg)
+            await abort_operation_error(context, exc)
             return
         except Exception:
             logger.exception("Synthesis failed")
@@ -71,8 +70,7 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
                 model=request.model or None,
             )
         except OperationError as exc:
-            code, msg = operation_error_status(exc)
-            await context.abort(code, msg)
+            await abort_operation_error(context, exc)
             return
 
         return list_voices_response(listed)
@@ -89,8 +87,7 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
         try:
             voice = create_voice(store=self._store, request=op_req)
         except OperationError as exc:
-            code, msg = operation_error_status(exc)
-            await context.abort(code, msg)
+            await abort_operation_error(context, exc)
             return
         except TypeError as exc:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
@@ -102,7 +99,6 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
         try:
             delete_voice(store=self._store, voice_id=request.id)
         except OperationError as exc:
-            code, msg = operation_error_status(exc)
-            await context.abort(code, msg)
+            await abort_operation_error(context, exc)
             return
         return delete_voice_response(request.id)

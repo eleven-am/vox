@@ -12,7 +12,7 @@ from vox.grpc.model_messages import (
     pull_progress_message,
     show_model_response,
 )
-from vox.grpc.operation_errors import operation_error_status
+from vox.grpc.operation_errors import abort_operation_error
 from vox.operations.errors import CatalogEntryNotFoundError, OperationError
 from vox.operations.models import (
     delete_model,
@@ -54,8 +54,7 @@ class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
         try:
             result = show_model(store=self._store, registry=self._registry, name=request.name)
         except OperationError as exc:
-            code, msg = operation_error_status(exc)
-            await context.abort(code, msg)
+            await abort_operation_error(context, exc)
             return
 
         return show_model_response(result)
@@ -69,7 +68,6 @@ class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
                 name=request.name,
             )
         except OperationError as exc:
-            code, msg = operation_error_status(exc)
-            await context.abort(code, msg)
+            await abort_operation_error(context, exc)
             return
         return delete_model_response()

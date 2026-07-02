@@ -20,3 +20,8 @@ def operation_error_status(exc: OperationError) -> tuple[grpc.StatusCode, str]:
     if kind is OperationErrorKind.RESOURCE_EXHAUSTED:
         return grpc.StatusCode.RESOURCE_EXHAUSTED, str(exc)
     return grpc.StatusCode.INTERNAL, str(exc)
+
+
+async def abort_operation_error(context, exc: OperationError) -> None:
+    code, message = operation_error_status(exc)
+    await context.abort(code, message)
