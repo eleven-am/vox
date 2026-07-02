@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from vox.core.registry import CATALOG
+from tests._catalog_fixture import FIXTURE_CATALOG as CATALOG
 from vox.core.types import ModelFormat, ModelType
 
 

@@ -5,9 +5,10 @@ from unittest.mock import patch
 
 import pytest
 
+from tests._catalog_fixture import FIXTURE_CATALOG as CATALOG
 from vox.core.adapter_resolution import AdapterResolver
 from vox.core.errors import ModelLoadError, ModelNotFoundError
-from vox.core.registry import CATALOG, ModelRegistry
+from vox.core.registry import ModelRegistry
 from vox.core.store import BlobStore, Manifest, ManifestLayer
 
 
@@ -96,7 +97,7 @@ class TestLookup:
         )
 
         entry = registry.lookup("parakeet")
-        assert entry is CATALOG["parakeet-stt"]["tdt-0.6b-v3"]
+        assert entry == CATALOG["parakeet-stt"]["tdt-0.6b-v3"]
 
 
 class TestAdapterForwarders:
@@ -302,9 +303,9 @@ class TestAvailableModels:
         registry = _make_registry(store)
 
         catalog = registry.available_models()
-        assert catalog is CATALOG
         assert "whisper-stt" in catalog
         assert "kokoro-tts" in catalog
+        assert catalog["whisper-stt"]["large-v3"]["type"] == "stt"
         assert "kokoro-tts-onnx" not in catalog
         assert "kokoro-tts-torch" not in catalog
 
@@ -401,7 +402,7 @@ class TestAvailableModels:
 
         entry = registry.lookup("kokoro-tts")
 
-        assert entry is CATALOG["kokoro-tts"]["v1.0"]
+        assert entry == CATALOG["kokoro-tts"]["v1.0"]
         assert entry["variants"][0]["adapter"] == "kokoro-tts-torch"
 
     def test_kokoro_backend_suffix_names_are_not_public_catalog_entries(self, tmp_path: Path):

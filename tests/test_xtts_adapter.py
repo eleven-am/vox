@@ -173,7 +173,7 @@ class TestXTTSAdapter:
 
 
 def test_registry_contains_xtts_catalog_entry():
-    from vox.core.registry import CATALOG
+    from tests._catalog_fixture import FIXTURE_CATALOG as CATALOG
 
     entry = CATALOG["xtts-tts"]["v2"]
     assert entry["source"] == "coqui/XTTS-v2"

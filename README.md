@@ -303,9 +303,9 @@ refuses torch-based models up front instead of failing at load time. See
 
 ## Representative models
 
-Vox ships a bundled catalog of 25 model entries (39 tags) spanning ~18 model
-families across 5 backends (ONNX, CTranslate2, Torch, NeMo, and vLLM), with more
-available from the community registry. A representative slice:
+Vox pulls models from the [vox-registry](https://github.com/eleven-am/vox-registry)
+community catalog: ~20 model families across 5 backends (ONNX, CTranslate2, Torch,
+NeMo, and vLLM). A representative slice:
 
 | Model | Type | Description |
 |-------|------|-------------|
@@ -335,7 +335,7 @@ port beyond localhost, set these environment variables:
   reflection stay open so orchestrator liveness checks keep working. When unset,
   the server is fully open (unchanged behavior).
 - `VOX_ALLOW_UNVERIFIED_ADAPTERS=1`: pulling a model installs its adapter as a
-  pip package; by default only the built-in catalog's `vox-*` packages are
+  pip package; by default only the registry's `vox-*` packages are
   allowed. Set this only if you intentionally pull adapters outside that set.
 
 gRPC still uses an insecure port and reflection; terminate TLS at a proxy for
