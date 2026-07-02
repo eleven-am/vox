@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 from fastapi import APIRouter, HTTPException, Request, WebSocket
 from fastapi.responses import StreamingResponse
 
@@ -11,11 +9,14 @@ from vox.server.auth import require_api_key
 from vox.server.rtc_control import handle_rtc_control_ws
 from vox.server.rtc_ice import (
     InvalidIceCandidateError,
-    ice_servers_from_env,
     parse_browser_ice_candidate,
 )
 from vox.server.rtc_media_events import iter_media_sse
 from vox.server.rtc_registry import RtcSessionRegistry
+from vox.server.rtc_sessions import (
+    create_rtc_session_bootstrap,
+    parse_rtc_session_bootstrap_request,
+)
 from vox.server.rtc_signaling import RtcSignalingError, create_browser_rtc_answer
 
 router = APIRouter()
@@ -34,20 +35,14 @@ def get_rtc_registry(request_or_ws: Request | WebSocket) -> RtcSessionRegistry:
 async def create_rtc_session(request: Request) -> dict:
     require_api_key(request)
     registry = get_rtc_registry(request)
-    record, client_token = registry.create_session()
     try:
         body = await request.json()
     except Exception:
         body = None
-    if isinstance(body, dict) and "browser_events" in body:
-        record.forward_browser_events = bool(body["browser_events"])
-    return {
-        "session_id": record.session_id,
-        "client_token": client_token,
-        "expires_at": datetime.fromtimestamp(record.expires_at, tz=UTC).isoformat(),
-        "join_token_ttl_seconds": registry.join_token_ttl_s,
-        "ice_servers": ice_servers_from_env(now=record.created_at),
-    }
+    return create_rtc_session_bootstrap(
+        registry=registry,
+        request=parse_rtc_session_bootstrap_request(body),
+    )
 
 
 @router.post("/v1/rtc/sessions/{session_id}/offer")
