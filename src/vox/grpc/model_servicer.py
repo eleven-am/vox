@@ -6,6 +6,12 @@ from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.grpc import vox_pb2, vox_pb2_grpc
+from vox.grpc.model_messages import (
+    delete_model_response,
+    list_models_response,
+    pull_progress_message,
+    show_model_response,
+)
 from vox.grpc.operation_errors import operation_error_status
 from vox.operations.errors import CatalogEntryNotFoundError, OperationError
 from vox.operations.models import (
@@ -38,28 +44,11 @@ class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
             return
 
         async for event in events:
-            yield vox_pb2.PullProgress(
-                status=event.status,
-                completed=event.completed,
-                total=event.total,
-                error=event.error,
-            )
+            yield pull_progress_message(event)
 
     async def List(self, request, context):
         models = list_models(store=self._store)
-        return vox_pb2.ListModelsResponse(
-            models=[
-                vox_pb2.ModelInfo(
-                    name=m.full_name,
-                    type=m.type.value,
-                    format=m.format.value,
-                    architecture=m.architecture,
-                    size_bytes=m.size_bytes,
-                    description=m.description,
-                )
-                for m in models
-            ]
-        )
+        return list_models_response(models)
 
     async def Show(self, request, context):
         try:
@@ -69,21 +58,7 @@ class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
             await context.abort(code, msg)
             return
 
-        config_map = {k: (str(v) if not isinstance(v, str) else v) for k, v in result.config.items()}
-
-        return vox_pb2.ShowResponse(
-            name=result.name,
-            config=config_map,
-            layers=[
-                vox_pb2.LayerInfo(
-                    media_type=layer.media_type,
-                    digest=layer.digest,
-                    size=layer.size,
-                    filename=layer.filename,
-                )
-                for layer in result.layers
-            ],
-        )
+        return show_model_response(result)
 
     async def Delete(self, request, context):
         try:
@@ -97,4 +72,4 @@ class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
             code, msg = operation_error_status(exc)
             await context.abort(code, msg)
             return
-        return vox_pb2.DeleteResponse(status="success")
+        return delete_model_response()

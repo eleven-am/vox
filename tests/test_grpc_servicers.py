@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
@@ -16,11 +17,22 @@ from vox.core.types import (
     AdapterInfo,
     LoadedModelInfo,
     ModelFormat,
+    ModelInfo,
     ModelType,
     TranscribeResult,
     TranscriptSegment,
+    VoiceInfo,
 )
 from vox.grpc import vox_pb2
+from vox.operations.models import (
+    ModelLayer,
+    PullEvent,
+    ShowResult,
+    list_models_payload,
+    pull_event_payload,
+    show_model_payload,
+)
+from vox.operations.voices import ListedVoice, list_voices_payload
 
 
 def _make_store(tmp_path: Path) -> BlobStore:
@@ -161,6 +173,68 @@ class TestModelServicerMapping:
         assert "not found" in messages[0].error
 
 
+class TestGrpcModelMessages:
+    def test_list_models_response_matches_operation_payload_fields(self):
+        from vox.grpc.model_messages import list_models_response
+
+        model = ModelInfo(
+            name="parakeet-stt-onnx",
+            tag="tdt-0.6b-v3",
+            type=ModelType.STT,
+            format=ModelFormat.ONNX,
+            architecture="parakeet",
+            adapter="parakeet",
+            size_bytes=123,
+            description="fast stt",
+        )
+
+        operation_payload = list_models_payload([model])["models"][0]
+        message = list_models_response([model]).models[0]
+
+        for field, value in operation_payload.items():
+            assert getattr(message, field) == value
+
+    def test_show_model_response_matches_operation_payload_fields(self):
+        from vox.grpc.model_messages import show_model_response
+
+        result = ShowResult(
+            name="foo:latest",
+            config={"architecture": "fake", "quantized": True, "size": 7},
+            layers=(
+                ModelLayer(
+                    media_type="application/vox.model.bin",
+                    digest="sha256-x",
+                    size=12,
+                    filename="model.bin",
+                ),
+            ),
+        )
+
+        operation_payload = show_model_payload(result)
+        message = show_model_response(result)
+
+        assert message.name == operation_payload["name"]
+        assert dict(message.config) == {
+            "architecture": "fake",
+            "quantized": "True",
+            "size": "7",
+        }
+        assert message.layers[0].media_type == operation_payload["layers"][0]["media_type"]
+        assert message.layers[0].digest == operation_payload["layers"][0]["digest"]
+        assert message.layers[0].size == operation_payload["layers"][0]["size"]
+        assert message.layers[0].filename == operation_payload["layers"][0]["filename"]
+
+    def test_pull_progress_message_matches_operation_payload_fields(self):
+        from vox.grpc.model_messages import pull_progress_message
+
+        event = PullEvent(status="downloading model.onnx", completed=1, total=3, error="slow")
+        operation_payload = pull_event_payload(event)
+        message = pull_progress_message(event)
+
+        for field, value in operation_payload.items():
+            assert getattr(message, field) == value
+
+
 class TestTranscriptionServicerMapping:
     @pytest.mark.asyncio
     async def test_transcribe_returns_text_and_segments(self, tmp_path):
@@ -278,6 +352,64 @@ class TestSynthesisServicerMapping:
         servicer = SynthesisServicer(store, MagicMock(), scheduler)
         resp = await servicer.ListVoices(vox_pb2.ListVoicesRequest(), FakeContext())
         assert any(v.id == "voice1234" and v.is_cloned for v in resp.voices)
+
+
+class TestGrpcVoiceMessages:
+    def test_list_voices_response_matches_operation_payload_with_proto_defaults(self):
+        from vox.grpc.voice_messages import list_voices_response
+
+        listed = [
+            ListedVoice(
+                voice=VoiceInfo(
+                    id="default",
+                    name="Default",
+                    language=None,
+                    gender=None,
+                    description=None,
+                    is_cloned=False,
+                ),
+                model=None,
+            )
+        ]
+
+        operation_payload = list_voices_payload(listed, include_model=True)["voices"][0]
+        message = list_voices_response(listed).voices[0]
+
+        assert message.id == operation_payload["id"]
+        assert message.name == operation_payload["name"]
+        assert message.language == ""
+        assert message.gender == ""
+        assert message.description == ""
+        assert message.model == ""
+        assert message.is_cloned is False
+
+    def test_create_voice_response_uses_created_voice_contract(self):
+        from vox.grpc.voice_messages import create_voice_response
+
+        voice = SimpleNamespace(
+            id="voice1234",
+            name="Roy",
+            language=None,
+            gender="male",
+            created_at=123,
+        )
+
+        message = create_voice_response(voice)
+
+        assert message.voice.id == "voice1234"
+        assert message.voice.name == "Roy"
+        assert message.voice.language == ""
+        assert message.voice.gender == "male"
+        assert message.voice.is_cloned is True
+        assert message.created_at == 123
+
+    def test_delete_voice_response_uses_deleted_voice_contract(self):
+        from vox.grpc.voice_messages import delete_voice_response
+
+        message = delete_voice_response("voice1234")
+
+        assert message.id == "voice1234"
+        assert message.deleted is True
 
 
 class TestProtoMessages:

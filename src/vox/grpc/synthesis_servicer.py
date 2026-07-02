@@ -15,6 +15,11 @@ from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.grpc import vox_pb2, vox_pb2_grpc
 from vox.grpc.operation_errors import operation_error_status
+from vox.grpc.voice_messages import (
+    create_voice_response,
+    delete_voice_response,
+    list_voices_response,
+)
 from vox.operations.errors import OperationError
 from vox.operations.synthesis import SynthesisRequest, synthesize_raw
 from vox.operations.voices import (
@@ -91,19 +96,7 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
             await context.abort(grpc.StatusCode.INTERNAL, str(exc))
             return
 
-        voices = []
-        for entry in listed:
-            v = entry.voice
-            voices.append(vox_pb2.VoiceInfo(
-                id=v.id,
-                name=v.name,
-                language=v.language or "",
-                gender=v.gender or "",
-                description=v.description or "",
-                is_cloned=v.is_cloned,
-                model=entry.model or "",
-            ))
-        return vox_pb2.ListVoicesResponse(voices=voices)
+        return list_voices_response(listed)
 
     async def CreateVoice(self, request, context):
         op_req = CreateVoiceRequest(
@@ -124,17 +117,7 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
             return
 
-        return vox_pb2.CreateVoiceResponse(
-            voice=vox_pb2.VoiceInfo(
-                id=voice.id,
-                name=voice.name,
-                language=voice.language or "",
-                gender=voice.gender or "",
-                description=voice.description or "",
-                is_cloned=True,
-            ),
-            created_at=voice.created_at,
-        )
+        return create_voice_response(voice)
 
     async def DeleteVoice(self, request, context):
         try:
@@ -143,4 +126,4 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
             code, msg = operation_error_status(exc)
             await context.abort(code, msg)
             return
-        return vox_pb2.DeleteVoiceResponse(id=request.id, deleted=True)
+        return delete_voice_response(request.id)
