@@ -27,6 +27,7 @@ from vox.operations.errors import (
 )
 from vox.operations.synthesis import (
     SynthesisRequest,
+    synthesize_audio_response,
     synthesize_full,
     synthesize_incremental,
     synthesize_raw,
@@ -178,6 +179,64 @@ async def test_synthesize_stream_multichunk_wav_has_single_container_header(tmp_
     assert body[:4] == b"RIFF"
     assert body.count(b"RIFF") == 1
     assert body.count(b"WAVE") == 1
+
+
+@pytest.mark.asyncio
+async def test_synthesize_audio_response_non_streamed_wav_uses_incremental_metadata(tmp_path: Path):
+    sched = DummyScheduler(MultiChunkTTS(chunks=2))
+    store = BlobStore(root=tmp_path)
+    registry = MagicMock()
+
+    response = await synthesize_audio_response(
+        scheduler=sched,
+        registry=registry,
+        store=store,
+        request=SynthesisRequest(input="hello", model="fake-tts:latest", response_format="wav"),
+        stream=False,
+    )
+    body = b"".join([chunk async for chunk in response.chunks])
+
+    assert response.content_type == "audio/wav"
+    assert response.response_format == "wav"
+    assert response.filename == "speech.wav"
+    assert body[:4] == b"RIFF"
+    assert body.count(b"RIFF") == 1
+
+
+@pytest.mark.asyncio
+async def test_synthesize_audio_response_non_incremental_format_returns_encoded_bundle(tmp_path: Path):
+    sched = DummyScheduler(MultiChunkTTS(chunks=1))
+    store = BlobStore(root=tmp_path)
+    registry = MagicMock()
+
+    response = await synthesize_audio_response(
+        scheduler=sched,
+        registry=registry,
+        store=store,
+        request=SynthesisRequest(input="hello", model="fake-tts:latest", response_format="flac"),
+        stream=False,
+    )
+    body = b"".join([chunk async for chunk in response.chunks])
+
+    assert response.content_type == "audio/flac"
+    assert response.filename == "speech.flac"
+    assert body.startswith(b"fLaC")
+
+
+@pytest.mark.asyncio
+async def test_synthesize_audio_response_non_streamed_wav_preflights_before_returning(tmp_path: Path):
+    sched = DummyScheduler(FakeSTT())
+    store = BlobStore(root=tmp_path)
+    registry = MagicMock()
+
+    with pytest.raises(WrongModelTypeError):
+        await synthesize_audio_response(
+            scheduler=sched,
+            registry=registry,
+            store=store,
+            request=SynthesisRequest(input="hello", model="fake-stt:latest", response_format="wav"),
+            stream=False,
+        )
 
 
 @pytest.mark.asyncio

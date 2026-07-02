@@ -21,11 +21,7 @@ from vox.operations.errors import (
 )
 from vox.operations.synthesis import (
     SynthesisRequest,
-    preflight_synthesis,
-    stream_content_type,
-    synthesize_full,
-    synthesize_incremental,
-    synthesize_stream,
+    synthesize_audio_response,
 )
 
 logger = logging.getLogger(__name__)
@@ -83,9 +79,18 @@ async def synthesize(req: SynthesizeRequest, request: Request):
     )
 
     try:
-        if req.stream:
-            return await _stream_response(scheduler, registry, store, op_req)
-        return await _full_response(scheduler, registry, store, op_req)
+        result = await synthesize_audio_response(
+            scheduler=scheduler,
+            registry=registry,
+            store=store,
+            request=op_req,
+            stream=req.stream,
+        )
+        return StreamingResponse(
+            result.chunks,
+            media_type=result.content_type,
+            headers={"Content-Disposition": f"attachment; filename={result.filename}"},
+        )
     except HTTPException:
         raise
     except OperationError as exc:
@@ -99,34 +104,6 @@ async def synthesize(req: SynthesizeRequest, request: Request):
     except Exception as exc:
         logger.exception(f"Synthesis failed for model {req.model}")
         raise HTTPException(status_code=500, detail="Internal synthesis error") from exc
-
-
-async def _full_response(scheduler, registry, store, op_req: SynthesisRequest):
-    if op_req.response_format.lower() in {"wav", "pcm", "mp3"}:
-        await preflight_synthesis(scheduler=scheduler, registry=registry, store=store, request=op_req)
-        iterator = await synthesize_incremental(
-            scheduler=scheduler, registry=registry, store=store, request=op_req,
-        )
-        return StreamingResponse(
-            iterator,
-            media_type=stream_content_type(op_req.response_format),
-            headers={"Content-Disposition": f"attachment; filename=speech.{op_req.response_format}"},
-        )
-
-    bundle = await synthesize_full(scheduler=scheduler, registry=registry, store=store, request=op_req)
-    return StreamingResponse(
-        iter([bundle.audio]),
-        media_type=bundle.content_type,
-        headers={"Content-Disposition": f"attachment; filename=speech.{bundle.response_format}"},
-    )
-
-
-async def _stream_response(scheduler, registry, store, op_req: SynthesisRequest):
-    iterator = await synthesize_stream(
-        scheduler=scheduler, registry=registry, store=store, request=op_req,
-    )
-    content_type = stream_content_type(op_req.response_format)
-    return StreamingResponse(iterator, media_type=content_type)
 
 
 @router.post("/v1/audio/speech")

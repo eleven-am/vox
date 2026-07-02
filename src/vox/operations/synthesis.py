@@ -52,6 +52,17 @@ class SynthesisRawChunk:
     is_final: bool
 
 
+@dataclass(frozen=True)
+class SynthesisAudioResponse:
+    chunks: AsyncIterator[bytes]
+    content_type: str
+    response_format: str
+
+    @property
+    def filename(self) -> str:
+        return f"speech.{self.response_format}"
+
+
 def _split_for_adapter(text: str, adapter: TTSAdapter) -> list[str]:
     max_chars = int(getattr(adapter.info(), "max_input_chars", 0) or 0)
     if max_chars <= 0:
@@ -162,6 +173,64 @@ async def synthesize_stream(
         registry=registry,
         store=store,
         request=request,
+    )
+
+
+async def synthesize_audio_response(
+    *,
+    scheduler: Any,
+    registry: Any,
+    store: Any,
+    request: SynthesisRequest,
+    stream: bool = False,
+) -> SynthesisAudioResponse:
+    response_format = request.response_format
+    if stream:
+        chunks = await synthesize_stream(
+            scheduler=scheduler,
+            registry=registry,
+            store=store,
+            request=request,
+        )
+        return SynthesisAudioResponse(
+            chunks=chunks,
+            content_type=stream_content_type(response_format),
+            response_format=response_format,
+        )
+
+    if supports_incremental_output(response_format):
+        await preflight_synthesis(
+            scheduler=scheduler,
+            registry=registry,
+            store=store,
+            request=request,
+        )
+        chunks = await synthesize_incremental(
+            scheduler=scheduler,
+            registry=registry,
+            store=store,
+            request=request,
+        )
+        return SynthesisAudioResponse(
+            chunks=chunks,
+            content_type=stream_content_type(response_format),
+            response_format=response_format,
+        )
+
+    bundle = await synthesize_full(
+        scheduler=scheduler,
+        registry=registry,
+        store=store,
+        request=request,
+    )
+
+    async def _single() -> AsyncIterator[bytes]:
+        yield bundle.audio
+
+    return SynthesisAudioResponse(
+        chunks=_single(),
+        content_type=bundle.content_type,
+        response_format=bundle.response_format,
     )
 
 
