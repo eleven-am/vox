@@ -216,6 +216,26 @@ def test_install_target_runtime_requirements_rejects_success_without_expected_pa
     assert calls[1][:3] == [sys.executable, "-m", "pip"]
 
 
+def test_install_target_runtime_requirements_accepts_success_with_expected_paths(tmp_path):
+    calls: list[list[str]] = []
+    installed_package = tmp_path / "runtime" / "transformers"
+
+    def runner(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        installed_package.mkdir(parents=True)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    assert adapter_runtime.install_target_runtime_requirements(
+        tmp_path / "runtime",
+        ["transformers==4.57.6"],
+        expected_paths=[installed_package],
+        install_runner=runner,
+    )
+
+    assert calls[0][:2] == ["uv", "pip"]
+    assert len(calls) == 1
+
+
 def test_install_target_runtime_requirements_includes_extra_install_args(tmp_path):
     calls: list[list[str]] = []
 

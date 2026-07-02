@@ -218,31 +218,48 @@ def install_target_runtime_requirements(
             continue
 
         if result.returncode == 0:
-            if expected_paths and not all(path.exists() for path in expected_paths):
-                logger.warning(
-                    "Installer reported success but runtime packages were not placed into %s: %s",
-                    runtime_path,
-                    packages,
-                )
-                continue
-            return True
+            if _install_result_has_expected_paths(
+                runtime_path=runtime_path,
+                packages=packages,
+                expected_paths=expected_paths,
+            ):
+                return True
+            continue
 
         if _is_python_pip_command(installer):
             retry = runner(installer, timeout)
             if retry.returncode == 0:
-                if expected_paths and not all(path.exists() for path in expected_paths):
-                    logger.warning(
-                        "Installer reported success but runtime packages were not placed into %s: %s",
-                        runtime_path,
-                        packages,
-                    )
-                    continue
-                return True
+                if _install_result_has_expected_paths(
+                    runtime_path=runtime_path,
+                    packages=packages,
+                    expected_paths=expected_paths,
+                ):
+                    return True
+                continue
             logger.warning("%s failed: %s", " ".join(installer), retry.stderr)
             continue
 
         logger.warning("%s failed: %s", " ".join(installer), result.stderr)
 
+    return False
+
+
+def _install_result_has_expected_paths(
+    *,
+    runtime_path: Path | str,
+    packages: list[str],
+    expected_paths: Iterable[Path],
+) -> bool:
+    expected = tuple(expected_paths)
+    if not expected:
+        return True
+    if all(path.exists() for path in expected):
+        return True
+    logger.warning(
+        "Installer reported success but runtime packages were not placed into %s: %s",
+        runtime_path,
+        packages,
+    )
     return False
 
 
