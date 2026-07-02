@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 ONSET_GUARD_COMPARE_MAX_MS = 60_000
 ONSET_GUARD_SPARSE_MIN_MS = 1_500
 ONSET_GUARD_SPARSE_MAX_WORDS = 1
+ONSET_GUARD_PADDED_MIN_SCORE_RATIO = 0.75
 
 
 @dataclass(frozen=True)
@@ -141,15 +142,6 @@ async def _transcribe_chunk(
     word_timestamps: bool,
     temperature: float,
 ) -> TranscribeResult:
-    direct = await _run_stt(
-        adapter,
-        audio,
-        language=language,
-        word_timestamps=word_timestamps,
-        temperature=temperature,
-    )
-    direct = replace(direct, duration_ms=duration_ms)
-
     if not guard_onset:
         return await _run_padded_stt(
             adapter,
@@ -160,6 +152,15 @@ async def _transcribe_chunk(
             word_timestamps=word_timestamps,
             temperature=temperature,
         )
+
+    direct = await _run_stt(
+        adapter,
+        audio,
+        language=language,
+        word_timestamps=word_timestamps,
+        temperature=temperature,
+    )
+    direct = replace(direct, duration_ms=duration_ms)
 
     if duration_ms > ONSET_GUARD_COMPARE_MAX_MS and not _looks_sparse(direct, duration_ms=duration_ms):
         return direct
@@ -174,13 +175,13 @@ async def _transcribe_chunk(
         temperature=temperature,
     )
     chosen = _choose_onset_result(direct, padded)
-    if chosen is not direct:
-        logger.info(
-            "transcribe onset guard selected padded result direct_chars=%d padded_chars=%d duration_ms=%d",
-            len(direct.text or ""),
-            len(padded.text or ""),
-            duration_ms,
-        )
+    logger.info(
+        "transcribe onset guard selected %s result direct_chars=%d padded_chars=%d duration_ms=%d",
+        "direct" if chosen is direct else "padded",
+        len(direct.text or ""),
+        len(padded.text or ""),
+        duration_ms,
+    )
     return chosen
 
 
@@ -229,7 +230,11 @@ def _looks_sparse(result: TranscribeResult, *, duration_ms: int) -> bool:
 
 
 def _choose_onset_result(direct: TranscribeResult, padded: TranscribeResult) -> TranscribeResult:
-    if _transcript_score(padded) > _transcript_score(direct):
+    padded_score = _transcript_score(padded)
+    direct_score = _transcript_score(direct)
+    if padded_score == 0:
+        return direct
+    if padded_score >= direct_score * ONSET_GUARD_PADDED_MIN_SCORE_RATIO:
         return padded
     return direct
 

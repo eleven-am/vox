@@ -18,6 +18,8 @@ from vox.operations.errors import (
 from vox.operations.transcription import (
     AnnotateRequest,
     TranscriptionRequest,
+    _choose_onset_result,
+    _transcribe_chunk,
     annotate_text,
     transcribe,
 )
@@ -165,6 +167,85 @@ async def test_transcribe_onset_guard_keeps_direct_result_when_padding_hurts():
 
     assert bundle.result.text == "beginning middle only"
     assert adapter.calls == 2
+
+
+class OnsetHallucinatingSTT(FakeSTT):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def transcribe(self, audio, **kwargs) -> TranscribeResult:
+        self.calls += 1
+        context_samples = 5 * 16_000
+        has_leading_context = (
+            audio.shape[0] > context_samples
+            and np.allclose(audio[:context_samples], 0)
+            and np.max(np.abs(audio[context_samples:])) > 0
+        )
+        text = (
+            "trying my speech to text model again"
+            if has_leading_context
+            else "trying my speech to text mode that i can"
+        )
+        return TranscribeResult(
+            text=text,
+            language="en",
+            duration_ms=int(audio.shape[0] / 16_000 * 1000),
+            segments=(TranscriptSegment(text=text, start_ms=0, end_ms=1000),),
+        )
+
+
+@pytest.mark.asyncio
+async def test_transcribe_onset_guard_prefers_padded_over_longer_hallucination():
+    adapter = OnsetHallucinatingSTT()
+    sched = DummyScheduler(adapter)
+    registry = MagicMock()
+
+    bundle = await transcribe(
+        scheduler=sched, registry=registry, store=None,
+        request=TranscriptionRequest(audio=_tone_wav_bytes(), model="fake-stt:latest"),
+    )
+
+    assert bundle.result.text == "trying my speech to text model again"
+    assert adapter.calls == 2
+
+
+def test_choose_onset_result_falls_back_to_direct_when_padded_empty():
+    direct = TranscribeResult(text="hello world", language="en", duration_ms=1000)
+    padded = TranscribeResult(text="", language="en", duration_ms=6000)
+    assert _choose_onset_result(direct, padded) is direct
+
+
+def test_choose_onset_result_keeps_direct_when_padded_degenerate():
+    direct = TranscribeResult(text="beginning middle only", language="en", duration_ms=1000)
+    padded = TranscribeResult(text="middle only", language="en", duration_ms=6000)
+    assert _choose_onset_result(direct, padded) is direct
+
+
+def test_choose_onset_result_prefers_padded_within_ratio():
+    direct = TranscribeResult(text="trying my speech to text mode that i can", language="en", duration_ms=1000)
+    padded = TranscribeResult(text="trying my speech to text model again", language="en", duration_ms=6000)
+    assert _choose_onset_result(direct, padded) is padded
+
+
+@pytest.mark.asyncio
+async def test_transcribe_chunk_without_onset_guard_runs_single_stt_pass():
+    adapter = LeadingContextHurtsSTT()
+    audio = np.full(16_000, 0.25, dtype=np.float32)
+
+    result = await _transcribe_chunk(
+        adapter,
+        audio,
+        sample_rate=16_000,
+        duration_ms=1000,
+        guard_onset=False,
+        language=None,
+        word_timestamps=False,
+        temperature=0.0,
+    )
+
+    assert adapter.calls == 1
+    assert result.text == "middle only"
 
 
 @pytest.mark.asyncio

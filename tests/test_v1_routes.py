@@ -50,14 +50,22 @@ class _FakeSTT(STTAdapter):
     def is_loaded(self): return True
 
     def transcribe(self, audio, **kwargs):
+        sample_rate = 16_000
+        context_samples = 5 * sample_rate
+        offset_ms = 0
+        if audio.shape[0] > context_samples and np.allclose(audio[:context_samples], 0):
+            offset_ms = 5000
         words = (
-            WordTimestamp(word="Alice", start_ms=0, end_ms=500),
-            WordTimestamp(word="visited", start_ms=500, end_ms=900),
-            WordTimestamp(word="Paris", start_ms=900, end_ms=1300),
+            WordTimestamp(word="Alice", start_ms=offset_ms + 0, end_ms=offset_ms + 500),
+            WordTimestamp(word="visited", start_ms=offset_ms + 500, end_ms=offset_ms + 900),
+            WordTimestamp(word="Paris", start_ms=offset_ms + 900, end_ms=offset_ms + 1200),
         )
-        seg = TranscriptSegment(text="Alice visited Paris", start_ms=0, end_ms=1300, words=words)
+        seg = TranscriptSegment(
+            text="Alice visited Paris", start_ms=offset_ms, end_ms=offset_ms + 1200, words=words,
+        )
         return TranscribeResult(
-            text="Alice visited Paris", segments=(seg,), language="en", duration_ms=1300,
+            text="Alice visited Paris", segments=(seg,), language="en",
+            duration_ms=offset_ms + 1200,
         )
 
 
@@ -198,7 +206,7 @@ class TestV1TranscriptionsTransport:
         assert body["duration"] == 1.2
         assert body["segments"][0]["id"] == 0
         assert body["segments"][0]["start"] == 0.0
-        assert body["segments"][0]["end"] == 1.3
+        assert body["segments"][0]["end"] == 1.2
         assert body["segments"][0]["tokens"] == []
         assert "start_ms" not in body["segments"][0]
         assert "words" not in body["segments"][0]
@@ -216,7 +224,7 @@ class TestV1TranscriptionsTransport:
         assert "segments" in body
         assert "words" not in body
         assert body["segments"][0]["start"] == 0.0
-        assert body["segments"][0]["end"] == 1.3
+        assert body["segments"][0]["end"] == 1.2
 
     def test_text_format_returns_plain(self, tmp_path: Path):
         client = TestClient(_build_app(store=BlobStore(root=tmp_path), stt=_FakeSTT()))
