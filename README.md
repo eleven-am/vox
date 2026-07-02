@@ -17,8 +17,8 @@
 ```bash
 pip install vox-runtime
 
-vox pull kokoro-tts-onnx:v1.0
-vox pull whisper-stt-ct2:large-v3
+vox pull kokoro-tts:v1.0
+vox pull whisper-stt:large-v3
 vox serve
 ```
 
@@ -27,7 +27,7 @@ Then hit the local API:
 ```bash
 curl -X POST http://localhost:11435/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d '{"model":"kokoro-tts-onnx:v1.0","input":"Hello from Vox"}' \
+  -d '{"model":"kokoro-tts:v1.0","input":"Hello from Vox"}' \
   -o output.wav
 ```
 
@@ -90,8 +90,8 @@ vox serve --port 11435 --device auto
 ### Pull a model
 
 ```bash
-vox pull kokoro-tts-onnx:v1.0
-vox pull parakeet-stt-onnx:tdt-0.6b-v3
+vox pull kokoro-tts:v1.0
+vox pull parakeet-stt:tdt-0.6b-v3
 vox list
 ```
 
@@ -99,8 +99,8 @@ vox list
 
 ```bash
 # CLI
-vox run parakeet-stt-onnx:tdt-0.6b-v3 recording.wav
-vox stream-transcribe parakeet-stt-onnx:tdt-0.6b-v3 meeting.mp3
+vox run parakeet-stt:tdt-0.6b-v3 recording.wav
+vox stream-transcribe parakeet-stt:tdt-0.6b-v3 meeting.mp3
 
 # OpenAI-compatible: thin response (just {"text": ...})
 curl -F file=@recording.wav http://localhost:11435/v1/audio/transcriptions
@@ -114,13 +114,13 @@ curl -F file=@recording.wav -F response_format=verbose_json \
 
 ```bash
 # CLI
-vox run kokoro-tts-onnx:v1.0 "Hello, how are you?" -o output.wav
-vox stream-synthesize kokoro-tts-onnx:v1.0 "Hello, how are you?" -o output.wav
+vox run kokoro-tts:v1.0 "Hello, how are you?" -o output.wav
+vox stream-synthesize kokoro-tts:v1.0 "Hello, how are you?" -o output.wav
 
 # OpenAI-compatible
 curl -X POST http://localhost:11435/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d '{"model":"kokoro-tts-onnx:v1.0","input":"Hello"}' \
+  -d '{"model":"kokoro-tts:v1.0","input":"Hello"}' \
   -o output.wav
 ```
 
@@ -137,7 +137,7 @@ curl -X POST http://localhost:11435/v1/audio/voices \
   -F reference_text="Hello there from my custom voice"
 
 # list voices, including cloned voices for clone-capable models
-curl "http://localhost:11435/v1/audio/voices?model=openvoice-tts-torch:v1"
+curl "http://localhost:11435/v1/audio/voices?model=openvoice-tts:v1"
 
 # download the stored reference audio
 curl -o reference.wav http://localhost:11435/v1/audio/voices/voice1234/reference
@@ -145,7 +145,7 @@ curl -o reference.wav http://localhost:11435/v1/audio/voices/voice1234/reference
 # synthesize with the stored voice id returned at creation time
 curl -X POST http://localhost:11435/v1/audio/speech \
   -H "Content-Type: application/json" \
-  -d '{"model":"openvoice-tts-torch:v1","input":"Hello from Vox","voice":"voice1234"}' \
+  -d '{"model":"openvoice-tts:v1","input":"Hello from Vox","voice":"voice1234"}' \
   -o output.wav
 
 # delete a stored cloned voice
@@ -165,9 +165,9 @@ vox search --type stt
 ```bash
 vox list          # downloaded models
 vox ps            # loaded models
-vox show kokoro-tts-onnx:v1.0
-vox rm kokoro-tts-onnx:v1.0
-vox voices kokoro-tts-onnx:v1.0
+vox show kokoro-tts:v1.0
+vox rm kokoro-tts:v1.0
+vox voices kokoro-tts:v1.0
 ```
 
 ## Streaming APIs
@@ -204,7 +204,7 @@ Example config:
 ```json
 {
   "type": "config",
-  "model": "parakeet-stt-onnx:tdt-0.6b-v3",
+  "model": "parakeet-stt:tdt-0.6b-v3",
   "input_format": "pcm16",
   "sample_rate": 16000,
   "language": "en",
@@ -217,7 +217,7 @@ Example config:
 Server events:
 
 ```json
-{"type":"ready","model":"parakeet-stt-onnx:tdt-0.6b-v3","input_format":"pcm16","sample_rate":16000}
+{"type":"ready","model":"parakeet-stt:tdt-0.6b-v3","input_format":"pcm16","sample_rate":16000}
 {"type":"progress","uploaded_ms":60000,"processed_ms":30000,"chunks_completed":1}
 {"type":"done","text":"full transcript","duration_ms":120000,"processing_ms":8420,"segments":[]}
 ```
@@ -251,7 +251,7 @@ Example config:
 ```json
 {
   "type": "config",
-  "model": "kokoro-tts-onnx:v1.0",
+  "model": "kokoro-tts:v1.0",
   "voice": "af_heart",
   "speed": 1.0,
   "response_format": "pcm16"
@@ -261,7 +261,7 @@ Example config:
 Server events:
 
 ```json
-{"type":"ready","model":"kokoro-tts-onnx:v1.0","response_format":"pcm16"}
+{"type":"ready","model":"kokoro-tts:v1.0","response_format":"pcm16"}
 {"type":"audio_start","sample_rate":24000,"response_format":"pcm16"}
 {"type":"progress","completed_chars":120,"total_chars":480,"chunks_completed":1,"chunks_total":4}
 {"type":"done","response_format":"pcm16","audio_duration_ms":2450,"processing_ms":891}
@@ -274,9 +274,9 @@ Binary frames between `audio_start` and `done` carry the synthesized audio paylo
 These commands sit on top of the WebSocket APIs:
 
 ```bash
-vox stream-transcribe parakeet-stt-onnx:tdt-0.6b-v3 meeting.mp3
-vox stream-transcribe parakeet-stt-onnx:tdt-0.6b-v3 meeting.wav --json-output
-vox stream-synthesize kokoro-tts-onnx:v1.0 script.txt -o script.wav
+vox stream-transcribe parakeet-stt:tdt-0.6b-v3 meeting.mp3
+vox stream-transcribe parakeet-stt:tdt-0.6b-v3 meeting.wav --json-output
+vox stream-synthesize kokoro-tts:v1.0 script.txt -o script.wav
 ```
 
 `vox stream-transcribe` transcodes the local input to streamed mono `pcm16` on the client side, then uploads chunk-by-chunk over the WebSocket session. For compressed inputs this uses `ffmpeg`; install it if you want the helper to handle formats that `soundfile` cannot stream directly.
@@ -286,7 +286,7 @@ vox stream-synthesize kokoro-tts-onnx:v1.0 script.txt -o script.wav
 ```bash
 # GPU (default)
 docker compose up -d
-vox pull kokoro-tts-onnx:v1.0  # auto-installs adapter inside container
+vox pull kokoro-tts:v1.0  # auto-installs adapter inside container
 
 # CPU (lean, torch-free)
 docker compose --profile cpu up -d
@@ -309,20 +309,18 @@ available from the community registry. A representative slice:
 
 | Model | Type | Description |
 |-------|------|-------------|
-| `parakeet-stt-onnx:tdt-0.6b-v3` | STT | NVIDIA Parakeet TDT 0.6B v3 via ONNX |
-| `parakeet-stt-nemo:tdt-0.6b-v3` | STT | NVIDIA Parakeet TDT 0.6B v3 via NeMo |
-| `whisper-stt-ct2:large-v3` | STT | OpenAI Whisper Large V3 via CTranslate2 |
-| `whisper-stt-ct2:base.en` | STT | Whisper Base English |
-| `qwen3-stt-torch:0.6b` | STT | Qwen3 ASR 0.6B |
-| `voxtral-stt-torch:mini-3b` | STT | Voxtral Mini 3B speech-to-text |
-| `kokoro-tts-onnx:v1.0` | TTS | Kokoro 82M ONNX with preset voices |
-| `kokoro-tts-torch:v1.0` | TTS | Kokoro native runtime backend |
-| `qwen3-tts-torch:0.6b` | TTS | Qwen3 TTS 0.6B |
-| `voxtral-tts-vllm:4b` | TTS | Voxtral 4B TTS via vLLM-Omni |
-| `openvoice-tts-torch:v1` | TTS | OpenVoice voice-cloning backend |
-| `piper-tts-onnx:en-us-lessac-medium` | TTS | Piper English US Lessac |
-| `dia-tts-torch:1.6b` | TTS | Dia 1.6B multi-speaker dialogue |
-| `sesame-tts-torch:csm-1b` | TTS | Sesame CSM 1B conversational speech |
+| `parakeet-stt:tdt-0.6b-v3` | STT | NVIDIA Parakeet TDT 0.6B v3 (ONNX on CPU, NeMo on CUDA) |
+| `whisper-stt:large-v3` | STT | OpenAI Whisper Large V3 via CTranslate2 |
+| `whisper-stt:base.en` | STT | Whisper Base English |
+| `qwen3-stt:0.6b` | STT | Qwen3 ASR 0.6B |
+| `voxtral-stt:mini-3b` | STT | Voxtral Mini 3B speech-to-text |
+| `kokoro-tts:v1.0` | TTS | Kokoro 82M (ONNX on CPU, Torch on CUDA) |
+| `qwen3-tts:0.6b` | TTS | Qwen3 TTS 0.6B |
+| `voxtral-tts:4b` | TTS | Voxtral 4B TTS via vLLM-Omni |
+| `openvoice-tts:v1` | TTS | OpenVoice voice-cloning backend |
+| `piper-tts:en-us-lessac-medium` | TTS | Piper English US Lessac |
+| `dia-tts:1.6b` | TTS | Dia 1.6B multi-speaker dialogue |
+| `sesame-tts:csm-1b` | TTS | Sesame CSM 1B conversational speech |
 
 More models at [vox-registry](https://github.com/eleven-am/vox-registry). Add a model by submitting a PR with a JSON file.
 

@@ -43,7 +43,7 @@ def _write_piper_bundle(root: Path) -> tuple[Path, Path]:
 
 class TestPiperAdapter:
     def test_registry_points_to_specific_voice_bundle(self):
-        entry = CATALOG["piper-tts-onnx"]["en-us-lessac-medium"]
+        entry = CATALOG["piper-tts"]["en-us-lessac-medium"]
 
         assert entry["source"] == "rhasspy/piper-voices"
         assert entry["format"] == "onnx"

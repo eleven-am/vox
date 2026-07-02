@@ -67,7 +67,7 @@ class TestLookup:
         store = _make_store(tmp_path)
         registry = _make_registry(store)
 
-        entry = registry.lookup("whisper-stt-ct2", "large-v3")
+        entry = registry.lookup("whisper-stt", "large-v3")
         assert entry is not None
         assert entry["source"] == "Systran/faster-whisper-large-v3"
         assert entry["type"] == "stt"
@@ -96,7 +96,7 @@ class TestLookup:
         )
 
         entry = registry.lookup("parakeet")
-        assert entry is CATALOG["parakeet-stt-nemo"]["tdt-0.6b-v3"]
+        assert entry is CATALOG["parakeet-stt"]["tdt-0.6b-v3"]
 
 
 class TestAdapterForwarders:
@@ -303,13 +303,13 @@ class TestAvailableModels:
 
         catalog = registry.available_models()
         assert catalog is CATALOG
-        assert "whisper-stt-ct2" in catalog
+        assert "whisper-stt" in catalog
         assert "kokoro-tts" in catalog
         assert "kokoro-tts-onnx" not in catalog
         assert "kokoro-tts-torch" not in catalog
 
     def test_whisper_catalog_uses_ct2_and_whisper_adapter_package(self):
-        whisper = CATALOG["whisper-stt-ct2"]
+        whisper = CATALOG["whisper-stt"]
 
         assert set(whisper) == {"large-v3", "large-v3-turbo", "base.en", "small.en", "medium.en"}
         for _tag, entry in whisper.items():
@@ -320,23 +320,25 @@ class TestAvailableModels:
             assert entry["parameters"]["sample_rate"] == 16000
 
     def test_sesame_catalog_entry_has_default_voice(self):
-        sesame = CATALOG["sesame-tts-torch"]["csm-1b"]
+        sesame = CATALOG["sesame-tts"]["csm-1b"]
 
         assert sesame["adapter_package"] == "vox-sesame"
         assert sesame["parameters"]["sample_rate"] == 24_000
         assert sesame["parameters"]["default_voice"] == "0"
 
     def test_parakeet_nemo_catalog_entry_is_explicit_and_pytorch(self):
-        parakeet_nemo = CATALOG["parakeet-stt-nemo"]["tdt-0.6b-v3"]
+        entry = CATALOG["parakeet-stt"]["tdt-0.6b-v3"]
+        parakeet_nemo = next(v for v in entry["variants"] if v["id"] == "nemo")
 
         assert parakeet_nemo["adapter_package"] == "vox-parakeet"
         assert parakeet_nemo["adapter"] == "parakeet-stt-nemo"
         assert parakeet_nemo["format"] == "pytorch"
         assert parakeet_nemo["files"] == ["parakeet-tdt-0.6b-v3.nemo"]
-        assert parakeet_nemo["parameters"]["sample_rate"] == 16_000
+        assert entry["parameters"]["sample_rate"] == 16_000
 
     def test_parakeet_onnx_catalog_entry_uses_onnx_repo_and_runtime_source(self):
-        parakeet_onnx = CATALOG["parakeet-stt-onnx"]["tdt-0.6b-v3"]
+        entry = CATALOG["parakeet-stt"]["tdt-0.6b-v3"]
+        parakeet_onnx = next(v for v in entry["variants"] if v["id"] == "onnx")
 
         assert parakeet_onnx["source"] == "istupakov/parakeet-tdt-0.6b-v3-onnx"
         assert parakeet_onnx["runtime_source"] == "nvidia/parakeet-tdt-0.6b-v3"
@@ -350,7 +352,8 @@ class TestAvailableModels:
         ]
 
     def test_parakeet_cuda_alias_points_to_nemo_backend(self):
-        registry_entry = CATALOG["parakeet-stt-nemo"]["tdt-0.6b-v3"]
+        entry = CATALOG["parakeet-stt"]["tdt-0.6b-v3"]
+        registry_entry = next(v for v in entry["variants"] if v["id"] == "nemo")
 
         assert registry_entry["adapter_package"] == "vox-parakeet"
         assert registry_entry["adapter"] == "parakeet-stt-nemo"
@@ -358,21 +361,22 @@ class TestAvailableModels:
         assert registry_entry["files"] == ["parakeet-tdt-0.6b-v3.nemo"]
 
     def test_parakeet_1_1b_variants_use_nemo_backend(self):
-        parakeet_nemo = CATALOG["parakeet-stt-nemo"]["tdt-1.1b"]
+        entry = CATALOG["parakeet-stt"]["tdt-1.1b"]
+        parakeet_nemo = next(v for v in entry["variants"] if v["id"] == "nemo")
 
         assert parakeet_nemo["adapter_package"] == "vox-parakeet"
         assert parakeet_nemo["adapter"] == "parakeet-stt-nemo"
         assert parakeet_nemo["files"] == ["parakeet-tdt-1.1b.nemo"]
 
     def test_voxtral_24b_alias_points_to_large_stt_source(self):
-        voxtral_24b = CATALOG["voxtral-stt-torch"]["24b"]
+        voxtral_24b = CATALOG["voxtral-stt"]["24b"]
 
         assert voxtral_24b["adapter_package"] == "vox-voxtral"
         assert voxtral_24b["adapter"] == "voxtral-stt-torch"
         assert voxtral_24b["source"] == "mistralai/Voxtral-Small-24B-2507"
 
     def test_dia_catalog_entry_uses_transformers_compatible_checkpoint(self):
-        dia = CATALOG["dia-tts-torch"]["1.6b"]
+        dia = CATALOG["dia-tts"]["1.6b"]
 
         assert dia["adapter_package"] == "vox-dia"
         assert dia["adapter"] == "dia-tts-torch"
@@ -409,7 +413,7 @@ class TestAvailableModels:
             assert registry.lookup("kokoro-tts-torch", "v1.0", explicit_tag=True) is None
 
     def test_openvoice_catalog_entry_has_checkpoint_files(self):
-        openvoice = CATALOG["openvoice-tts-torch"]["v1"]
+        openvoice = CATALOG["openvoice-tts"]["v1"]
 
         assert openvoice["adapter_package"] == "vox-openvoice"
         assert openvoice["parameters"]["sample_rate"] == 22_050
@@ -428,7 +432,7 @@ class TestAvailableModels:
         assert multilingual["parameters"]["sample_rate"] == 24_000
 
     def test_indextts_catalog_entry_uses_indextts_adapter_package(self):
-        indextts = CATALOG["indextts-tts-torch"]["2"]
+        indextts = CATALOG["indextts-tts"]["2"]
 
         assert indextts["adapter_package"] == "vox-indextts"
         assert indextts["adapter"] == "indextts-tts-torch"
@@ -436,7 +440,7 @@ class TestAvailableModels:
         assert indextts["parameters"]["sample_rate"] == 24_000
 
     def test_qwen_tts_catalog_entries_prefer_faster_backend_with_fallback(self):
-        for entry in CATALOG["qwen3-tts-torch"].values():
+        for entry in CATALOG["qwen3-tts"].values():
             backends = entry["backends"]
             preferred = backends["preferred"][0]
             assert preferred["name"] == "faster-qwen3-tts"
@@ -446,7 +450,7 @@ class TestAvailableModels:
             assert backends["fallback"]["name"] == "qwen-tts"
 
     def test_cosyvoice_catalog_entry_uses_cosyvoice_adapter_package(self):
-        cosyvoice = CATALOG["cosyvoice2-tts-torch"]["0.5b"]
+        cosyvoice = CATALOG["cosyvoice2-tts"]["0.5b"]
 
         assert cosyvoice["source"] == "FunAudioLLM/CosyVoice2-0.5B"
         assert cosyvoice["adapter_package"] == "vox-cosyvoice"
@@ -454,7 +458,7 @@ class TestAvailableModels:
         assert cosyvoice["parameters"]["sample_rate"] == 24_000
 
     def test_orpheus_catalog_entry_uses_orpheus_adapter_package(self):
-        orpheus = CATALOG["orpheus-tts-vllm"]["medium-3b"]
+        orpheus = CATALOG["orpheus-tts"]["medium-3b"]
 
         assert orpheus["source"] == "canopylabs/orpheus-tts-0.1-finetune-prod"
         assert orpheus["adapter_package"] == "vox-orpheus"
@@ -462,7 +466,7 @@ class TestAvailableModels:
         assert orpheus["parameters"]["default_voice"] == "tara"
 
     def test_spark_catalog_entry_uses_spark_adapter_package(self):
-        spark = CATALOG["spark-tts-torch"]["0.5b"]
+        spark = CATALOG["spark-tts"]["0.5b"]
 
         assert spark["source"] == "SparkAudio/Spark-TTS-0.5B"
         assert spark["adapter_package"] == "vox-spark"
@@ -470,7 +474,7 @@ class TestAvailableModels:
         assert spark["parameters"]["sample_rate"] == 16_000
 
     def test_neutts_catalog_entry_uses_neutts_adapter_package(self):
-        neutts = CATALOG["neutts-air-tts-torch"]["air"]
+        neutts = CATALOG["neutts-air-tts"]["air"]
 
         assert neutts["source"] == "neuphonic/neutts-air"
         assert neutts["adapter_package"] == "vox-neutts"
@@ -478,7 +482,7 @@ class TestAvailableModels:
         assert neutts["parameters"]["sample_rate"] == 24_000
 
     def test_xtts_catalog_entry_uses_huggingface_repo_id(self):
-        xtts = CATALOG["xtts-tts-torch"]["v2"]
+        xtts = CATALOG["xtts-tts"]["v2"]
 
         assert xtts["source"] == "coqui/XTTS-v2"
         assert xtts["adapter_package"] == "vox-xtts"

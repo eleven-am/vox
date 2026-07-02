@@ -19,10 +19,10 @@ class TestBareNameResolution:
         monkeypatch.setenv("VOX_DEVICE", "auto")
         monkeypatch.setattr("vox.core.device_placement.platform.machine", lambda: "arm64")
 
-        assert resolve_family_alias("parakeet") == ("parakeet-stt-onnx", "tdt-0.6b-v3")
+        assert resolve_family_alias("parakeet") == ("parakeet-stt", "tdt-0.6b-v3")
         assert resolve_family_alias("kokoro") == ("kokoro-tts", "v1.0")
-        assert resolve_family_alias("voxtral-stt") == ("voxtral-stt-torch", "mini-3b")
-        assert resolve_family_alias("voxtral-tts") == ("voxtral-tts-vllm", "4b")
+        assert resolve_family_alias("voxtral-stt") == ("voxtral-stt", "mini-3b")
+        assert resolve_family_alias("voxtral-tts") == ("voxtral-tts", "4b")
 
     def test_bare_name_resolution_reports_family_alias_metadata(
         self, monkeypatch: pytest.MonkeyPatch
@@ -38,15 +38,15 @@ class TestBareNameResolution:
         assert resolution.original_tag == "latest"
         assert resolution.profile == "default"
         assert resolution.resolved_profile == "default"
-        assert (resolution.name, resolution.tag) == ("parakeet-stt-onnx", "tdt-0.6b-v3")
+        assert (resolution.name, resolution.tag) == ("parakeet-stt", "tdt-0.6b-v3")
 
     def test_bare_name_uses_spark_profile_when_cuda_on_arm(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("VOX_DEVICE", "cuda")
         monkeypatch.setattr("vox.core.device_placement.platform.machine", lambda: "arm64")
 
-        assert resolve_family_alias("parakeet") == ("parakeet-stt-nemo", "tdt-0.6b-v3")
+        assert resolve_family_alias("parakeet") == ("parakeet-stt", "tdt-0.6b-v3")
         assert resolve_family_alias("kokoro") == ("kokoro-tts", "v1.0")
-        assert resolve_family_alias("parakeet-stt") == ("parakeet-stt-nemo", "tdt-0.6b-v3")
+        assert resolve_family_alias("parakeet-stt") == ("parakeet-stt", "tdt-0.6b-v3")
         assert resolve_family_alias("kokoro-tts") == ("kokoro-tts", "v1.0")
 
     def test_bare_name_falls_back_to_default_when_profile_missing(
@@ -68,30 +68,30 @@ class TestBareNameResolution:
         monkeypatch.setenv("VOX_DEVICE", "cuda")
         monkeypatch.setattr("vox.core.device_placement.platform.machine", lambda: "arm64")
 
-        assert resolve_family_alias("whisper") == ("whisper-stt-ct2", "base.en")
-        assert resolve_family_alias("whisper-stt") == ("whisper-stt-ct2", "base.en")
-        assert resolve_family_alias("piper") == ("piper-tts-onnx", "en-us-lessac-medium")
-        assert resolve_family_alias("openvoice") == ("openvoice-tts-torch", "v1")
+        assert resolve_family_alias("whisper") == ("whisper-stt", "base.en")
+        assert resolve_family_alias("whisper-stt") == ("whisper-stt", "base.en")
+        assert resolve_family_alias("piper") == ("piper-tts", "en-us-lessac-medium")
+        assert resolve_family_alias("openvoice") == ("openvoice-tts", "v1")
         assert resolve_family_alias("chatterbox") == ("chatterbox-tts-turbo", "0.1.7")
         assert resolve_family_alias("chatterbox-multilingual") == (
             "chatterbox-tts-multilingual",
             "0.1.7",
         )
-        assert resolve_family_alias("cosyvoice") == ("cosyvoice2-tts-torch", "0.5b")
-        assert resolve_family_alias("cosyvoice2") == ("cosyvoice2-tts-torch", "0.5b")
-        assert resolve_family_alias("orpheus") == ("orpheus-tts-vllm", "medium-3b")
-        assert resolve_family_alias("indextts") == ("indextts-tts-torch", "2")
-        assert resolve_family_alias("spark") == ("spark-tts-torch", "0.5b")
-        assert resolve_family_alias("neutts") == ("neutts-air-tts-torch", "air")
-        assert resolve_family_alias("neutts-air") == ("neutts-air-tts-torch", "air")
-        assert resolve_family_alias("dia") == ("dia-tts-torch", "1.6b")
-        assert resolve_family_alias("sesame") == ("sesame-tts-torch", "csm-1b")
-        assert resolve_family_alias("speecht5-stt") == ("speecht5-stt-torch", "base")
-        assert resolve_family_alias("speecht5-tts") == ("speecht5-tts-torch", "base")
-        assert resolve_family_alias("vibevoice") == ("vibevoice-tts-torch", "realtime-0.5b")
-        assert resolve_family_alias("qwen3-stt") == ("qwen3-stt-torch", "0.6b")
-        assert resolve_family_alias("qwen3-tts") == ("qwen3-tts-torch", "0.6b")
-        assert resolve_family_alias("xtts") == ("xtts-tts-torch", "v2")
+        assert resolve_family_alias("cosyvoice") == ("cosyvoice2-tts", "0.5b")
+        assert resolve_family_alias("cosyvoice2") == ("cosyvoice2-tts", "0.5b")
+        assert resolve_family_alias("orpheus") == ("orpheus-tts", "medium-3b")
+        assert resolve_family_alias("indextts") == ("indextts-tts", "2")
+        assert resolve_family_alias("spark") == ("spark-tts", "0.5b")
+        assert resolve_family_alias("neutts") == ("neutts-air-tts", "air")
+        assert resolve_family_alias("neutts-air") == ("neutts-air-tts", "air")
+        assert resolve_family_alias("dia") == ("dia-tts", "1.6b")
+        assert resolve_family_alias("sesame") == ("sesame-tts", "csm-1b")
+        assert resolve_family_alias("speecht5-stt") == ("speecht5-stt", "base")
+        assert resolve_family_alias("speecht5-tts") == ("speecht5-tts", "base")
+        assert resolve_family_alias("vibevoice") == ("vibevoice-tts", "realtime-0.5b")
+        assert resolve_family_alias("qwen3-stt") == ("qwen3-stt", "0.6b")
+        assert resolve_family_alias("qwen3-tts") == ("qwen3-tts", "0.6b")
+        assert resolve_family_alias("xtts") == ("xtts-tts", "v2")
 
 
 class TestProfileInference:
@@ -109,7 +109,7 @@ class TestProfileInference:
 
         assert parakeet.resolved_profile == "spark"
         assert kokoro.resolved_profile == "spark"
-        assert (parakeet.name, parakeet.tag) == ("parakeet-stt-nemo", "tdt-0.6b-v3")
+        assert (parakeet.name, parakeet.tag) == ("parakeet-stt", "tdt-0.6b-v3")
         assert (kokoro.name, kokoro.tag) == ("kokoro-tts", "v1.0")
 
     def test_cuda_hint_on_arm_forces_spark_regardless_of_inference(
@@ -121,7 +121,7 @@ class TestProfileInference:
             "vox.core.device_placement.infer_runtime_profile",
             return_value="default",
         ):
-            assert resolve_family_alias("parakeet") == ("parakeet-stt-nemo", "tdt-0.6b-v3")
+            assert resolve_family_alias("parakeet") == ("parakeet-stt", "tdt-0.6b-v3")
 
 
 class TestExplicitTags:
@@ -151,29 +151,33 @@ class TestLegacyAliasRewrite:
         # so it 404s at pull instead of silently picking the wrong backend.
         assert resolve_family_alias("kokoro", "v1.0-torch") == ("kokoro", "v1.0-torch")
         assert resolve_family_alias("parakeet", "tdt-0.6b") == (
-            "parakeet-stt-onnx",
+            "parakeet-stt",
             "tdt-0.6b",
         )
+        # The explicit-backend parakeet legacy refs are a hard cutoff: they no longer
+        # rewrite and pass through unchanged to 404 at pull.
         assert resolve_family_alias("parakeet", "tdt-0.6b-v3-cuda") == (
-            "parakeet-stt-nemo",
-            "tdt-0.6b-v3",
+            "parakeet",
+            "tdt-0.6b-v3-cuda",
         )
         assert resolve_family_alias("parakeet", "tdt-1.1b-cuda") == (
-            "parakeet-stt-nemo",
-            "tdt-1.1b",
+            "parakeet",
+            "tdt-1.1b-cuda",
         )
-        assert resolve_family_alias("speecht5", "asr") == ("speecht5-stt-torch", "base")
-        assert resolve_family_alias("speecht5", "tts") == ("speecht5-tts-torch", "base")
-        assert resolve_family_alias("voxtral", "tts-4b") == ("voxtral-tts-vllm", "4b")
-        assert resolve_family_alias("voxtral", "24b") == ("voxtral-stt-torch", "24b")
+        assert resolve_family_alias("speecht5", "asr") == ("speecht5-stt", "base")
+        assert resolve_family_alias("speecht5", "tts") == ("speecht5-tts", "base")
+        assert resolve_family_alias("voxtral", "tts-4b") == ("voxtral-tts", "4b")
+        assert resolve_family_alias("voxtral", "24b") == ("voxtral-stt", "24b")
 
     def test_legacy_name_aliases_rewrite_canonical_with_tag_passthrough(self):
         assert resolve_family_alias("qwen3-asr", "0.6b", explicit_tag=True) == (
-            "qwen3-stt-torch",
+            "qwen3-stt",
             "0.6b",
         )
+        # The legacy "parakeet-nemo" name was removed as a hard cutoff: it no longer
+        # rewrites and passes through unchanged.
         assert resolve_family_alias("parakeet-nemo", "tdt-1.1b", explicit_tag=True) == (
-            "parakeet-stt-nemo",
+            "parakeet-nemo",
             "tdt-1.1b",
         )
 
@@ -184,7 +188,7 @@ class TestLegacyAliasRewrite:
         assert resolution.rewritten is True
         assert resolution.original_name == "voxtral"
         assert resolution.original_tag == "tts-4b"
-        assert (resolution.name, resolution.tag) == ("voxtral-tts-vllm", "4b")
+        assert (resolution.name, resolution.tag) == ("voxtral-tts", "4b")
 
     def test_legacy_name_resolution_reports_legacy_metadata(self):
         resolution = resolve_model_alias("qwen3-asr", "0.6b", explicit_tag=True)
@@ -193,7 +197,7 @@ class TestLegacyAliasRewrite:
         assert resolution.rewritten is True
         assert resolution.original_name == "qwen3-asr"
         assert resolution.original_tag == "0.6b"
-        assert (resolution.name, resolution.tag) == ("qwen3-stt-torch", "0.6b")
+        assert (resolution.name, resolution.tag) == ("qwen3-stt", "0.6b")
 
     def test_documented_legacy_model_ref_examples_are_public_policy(self):
         policies = {
@@ -201,11 +205,11 @@ class TestLegacyAliasRewrite:
             for policy in legacy_model_ref_alias_policy()
         }
 
-        assert policies[("parakeet", "tdt-0.6b-v3-cuda")] == (
-            "parakeet-stt-nemo",
+        assert policies[("parakeet", "tdt-0.6b-v3")] == (
+            "parakeet-stt",
             "tdt-0.6b-v3",
         )
-        assert policies[("voxtral", "tts-4b")] == ("voxtral-tts-vllm", "4b")
+        assert policies[("voxtral", "tts-4b")] == ("voxtral-tts", "4b")
 
     def test_documented_legacy_name_examples_are_public_policy(self):
         policies = {
@@ -213,7 +217,7 @@ class TestLegacyAliasRewrite:
             for policy in legacy_name_alias_policy()
         }
 
-        assert policies["qwen3-asr"] == "qwen3-stt-torch"
+        assert policies["qwen3-asr"] == "qwen3-stt"
 
     def test_family_alias_policy_is_read_only(self):
         parakeet = next(policy for policy in family_alias_policy() if policy.name == "parakeet")

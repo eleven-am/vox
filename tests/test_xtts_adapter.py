@@ -175,7 +175,7 @@ class TestXTTSAdapter:
 def test_registry_contains_xtts_catalog_entry():
     from vox.core.registry import CATALOG
 
-    entry = CATALOG["xtts-tts-torch"]["v2"]
+    entry = CATALOG["xtts-tts"]["v2"]
     assert entry["source"] == "coqui/XTTS-v2"
     assert entry["adapter"] == "xtts-tts-torch"
     assert entry["format"] == "pytorch"

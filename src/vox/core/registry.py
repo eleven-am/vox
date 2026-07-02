@@ -37,72 +37,97 @@ _QWEN_TTS_BACKENDS = {
 
 
 CATALOG: dict[str, dict[str, dict[str, Any]]] = {
-    "parakeet-stt-onnx": {
+    "parakeet-stt": {
         "tdt-0.6b": {
-            "source": "istupakov/parakeet-tdt-0.6b-v2-onnx",
-            "runtime_source": "nvidia/parakeet-tdt-0.6b-v2",
-            "architecture": "parakeet",
             "type": "stt",
-            "adapter": "parakeet-stt-onnx",
-            "format": "onnx",
             "description": "NVIDIA Parakeet TDT 0.6B — top Open ASR Leaderboard model",
             "license": "CC-BY-4.0",
             "parameters": {"sample_rate": 16000},
-            "files": [
-                "config.json",
-                "decoder_joint-model.onnx",
-                "encoder-model.onnx",
-                "encoder-model.onnx.data",
-                "nemo128.onnx",
-                "vocab.txt",
+            "variants": [
+                {
+                    "id": "onnx",
+                    "aliases": ["cpu"],
+                    "priority": 0,
+                    "fallback": True,
+                    "requires": {"python_modules": ["onnxruntime"]},
+                    "source": "istupakov/parakeet-tdt-0.6b-v2-onnx",
+                    "runtime_source": "nvidia/parakeet-tdt-0.6b-v2",
+                    "architecture": "parakeet",
+                    "adapter": "parakeet-stt-onnx",
+                    "format": "onnx",
+                    "files": [
+                        "config.json",
+                        "decoder_joint-model.onnx",
+                        "encoder-model.onnx",
+                        "encoder-model.onnx.data",
+                        "nemo128.onnx",
+                        "vocab.txt",
+                    ],
+                    "adapter_package": "vox-parakeet",
+                },
             ],
-            "adapter_package": "vox-parakeet",
         },
         "tdt-0.6b-v3": {
-            "source": "istupakov/parakeet-tdt-0.6b-v3-onnx",
-            "runtime_source": "nvidia/parakeet-tdt-0.6b-v3",
-            "architecture": "parakeet",
             "type": "stt",
-            "adapter": "parakeet-stt-onnx",
-            "format": "onnx",
             "description": "NVIDIA Parakeet TDT 0.6B v3 — 25 languages, streaming support",
             "license": "CC-BY-4.0",
             "parameters": {"sample_rate": 16000},
-            "files": [
-                "config.json",
-                "decoder_joint-model.onnx",
-                "encoder-model.onnx",
-                "encoder-model.onnx.data",
-                "nemo128.onnx",
-                "vocab.txt",
+            "variants": [
+                {
+                    "id": "nemo",
+                    "aliases": ["cuda"],
+                    "priority": 100,
+                    "requires": {"python_modules": ["torch"], "accelerators": ["cuda"]},
+                    "source": "nvidia/parakeet-tdt-0.6b-v3",
+                    "architecture": "parakeet-nemo",
+                    "adapter": "parakeet-stt-nemo",
+                    "format": "pytorch",
+                    "files": ["parakeet-tdt-0.6b-v3.nemo"],
+                    "adapter_package": "vox-parakeet",
+                },
+                {
+                    "id": "onnx",
+                    "aliases": ["cpu"],
+                    "priority": 0,
+                    "fallback": True,
+                    "requires": {"python_modules": ["onnxruntime"]},
+                    "source": "istupakov/parakeet-tdt-0.6b-v3-onnx",
+                    "runtime_source": "nvidia/parakeet-tdt-0.6b-v3",
+                    "architecture": "parakeet",
+                    "adapter": "parakeet-stt-onnx",
+                    "format": "onnx",
+                    "files": [
+                        "config.json",
+                        "decoder_joint-model.onnx",
+                        "encoder-model.onnx",
+                        "encoder-model.onnx.data",
+                        "nemo128.onnx",
+                        "vocab.txt",
+                    ],
+                    "adapter_package": "vox-parakeet",
+                },
             ],
-            "adapter_package": "vox-parakeet",
-        },
-    },
-    "parakeet-stt-nemo": {
-        "tdt-0.6b-v3": {
-            "source": "nvidia/parakeet-tdt-0.6b-v3",
-            "architecture": "parakeet-nemo",
-            "type": "stt",
-            "adapter": "parakeet-stt-nemo",
-            "format": "pytorch",
-            "description": "NVIDIA Parakeet TDT 0.6B v3 — native NeMo/PyTorch CUDA ASR",
-            "license": "CC-BY-4.0",
-            "parameters": {"sample_rate": 16000},
-            "files": ["parakeet-tdt-0.6b-v3.nemo"],
-            "adapter_package": "vox-parakeet",
         },
         "tdt-1.1b": {
-            "source": "nvidia/parakeet-tdt-1.1b",
-            "architecture": "parakeet-nemo",
             "type": "stt",
-            "adapter": "parakeet-stt-nemo",
-            "format": "pytorch",
             "description": "NVIDIA Parakeet TDT 1.1B — larger native NeMo/PyTorch CUDA ASR",
             "license": "CC-BY-4.0",
             "parameters": {"sample_rate": 16000},
-            "files": ["parakeet-tdt-1.1b.nemo"],
-            "adapter_package": "vox-parakeet",
+            "variants": [
+                {
+                    "id": "nemo",
+                    "aliases": ["cuda"],
+                    "priority": 100,
+                    "fallback": True,
+                    "requires": {"python_modules": ["torch"], "accelerators": ["cuda"]},
+                    "source": "nvidia/parakeet-tdt-1.1b",
+                    "architecture": "parakeet-nemo",
+                    "adapter": "parakeet-stt-nemo",
+                    "format": "pytorch",
+                    "files": ["parakeet-tdt-1.1b.nemo"],
+                    "adapter_package": "vox-parakeet",
+                },
+            ],
         },
     },
     "kokoro-tts": {
@@ -143,7 +168,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             ],
         },
     },
-    "xtts-tts-torch": {
+    "xtts-tts": {
         "v2": {
             "source": "coqui/XTTS-v2",
             "architecture": "xtts-v2",
@@ -155,7 +180,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-xtts",
         },
     },
-    "whisper-stt-ct2": {
+    "whisper-stt": {
         "large-v3": {
             "source": "Systran/faster-whisper-large-v3",
             "architecture": "whisper",
@@ -212,7 +237,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-whisper",
         },
     },
-    "piper-tts-onnx": {
+    "piper-tts": {
         "en-us-lessac-medium": {
             "source": "rhasspy/piper-voices",
             "architecture": "piper",
@@ -268,7 +293,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-chatterbox",
         },
     },
-    "cosyvoice2-tts-torch": {
+    "cosyvoice2-tts": {
         "0.5b": {
             "source": "FunAudioLLM/CosyVoice2-0.5B",
             "architecture": "cosyvoice2",
@@ -281,7 +306,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-cosyvoice",
         },
     },
-    "orpheus-tts-vllm": {
+    "orpheus-tts": {
         "medium-3b": {
             "source": "canopylabs/orpheus-tts-0.1-finetune-prod",
             "architecture": "orpheus",
@@ -294,7 +319,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-orpheus",
         },
     },
-    "indextts-tts-torch": {
+    "indextts-tts": {
         "2": {
             "source": "IndexTeam/IndexTTS-2",
             "architecture": "indextts2",
@@ -307,7 +332,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-indextts",
         },
     },
-    "spark-tts-torch": {
+    "spark-tts": {
         "0.5b": {
             "source": "SparkAudio/Spark-TTS-0.5B",
             "architecture": "spark-tts",
@@ -320,7 +345,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-spark",
         },
     },
-    "neutts-air-tts-torch": {
+    "neutts-air-tts": {
         "air": {
             "source": "neuphonic/neutts-air",
             "architecture": "neutts-air",
@@ -333,7 +358,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-neutts",
         },
     },
-    "dia-tts-torch": {
+    "dia-tts": {
         "1.6b": {
             "source": "nari-labs/Dia-1.6B-0626",
             "architecture": "dia",
@@ -346,7 +371,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-dia",
         },
     },
-    "sesame-tts-torch": {
+    "sesame-tts": {
         "csm-1b": {
             "source": "sesame/csm-1b",
             "architecture": "sesame",
@@ -359,7 +384,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-sesame",
         },
     },
-    "openvoice-tts-torch": {
+    "openvoice-tts": {
         "v1": {
             "source": "myshell-ai/OpenVoice",
             "architecture": "openvoice",
@@ -383,7 +408,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-openvoice",
         },
     },
-    "voxtral-stt-torch": {
+    "voxtral-stt": {
         "mini-3b": {
             "source": "mistralai/Voxtral-Mini-3B-2507",
             "architecture": "voxtral-mini",
@@ -429,7 +454,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-voxtral",
         },
     },
-    "voxtral-tts-vllm": {
+    "voxtral-tts": {
         "4b": {
             "source": "mistralai/Voxtral-4B-TTS-2603",
             "architecture": "voxtral-tts",
@@ -442,7 +467,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-voxtral",
         },
     },
-    "speecht5-tts-torch": {
+    "speecht5-tts": {
         "base": {
             "source": "microsoft/speecht5_tts",
             "architecture": "speecht5-tts",
@@ -455,7 +480,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-microsoft",
         },
     },
-    "speecht5-stt-torch": {
+    "speecht5-stt": {
         "base": {
             "source": "microsoft/speecht5_asr",
             "architecture": "speecht5-asr",
@@ -468,7 +493,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-microsoft",
         },
     },
-    "vibevoice-tts-torch": {
+    "vibevoice-tts": {
         "realtime-0.5b": {
             "source": "microsoft/VibeVoice-Realtime-0.5B",
             "architecture": "vibevoice-realtime",
@@ -492,7 +517,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-microsoft",
         },
     },
-    "qwen3-stt-torch": {
+    "qwen3-stt": {
         "1.7b": {
             "source": "Qwen/Qwen3-ASR-1.7B",
             "architecture": "qwen3-asr",
@@ -516,7 +541,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "adapter_package": "vox-qwen",
         },
     },
-    "qwen3-tts-torch": {
+    "qwen3-tts": {
         "1.7b": {
             "source": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
             "architecture": "qwen3-tts",
@@ -572,6 +597,26 @@ _HIDDEN_PUBLIC_MODEL_NAMES = frozenset(
     {
         "kokoro-tts-onnx",
         "kokoro-tts-torch",
+        "parakeet-stt-onnx",
+        "parakeet-stt-nemo",
+        "whisper-stt-ct2",
+        "qwen3-stt-torch",
+        "qwen3-tts-torch",
+        "voxtral-stt-torch",
+        "voxtral-tts-vllm",
+        "orpheus-tts-vllm",
+        "piper-tts-onnx",
+        "xtts-tts-torch",
+        "dia-tts-torch",
+        "sesame-tts-torch",
+        "openvoice-tts-torch",
+        "cosyvoice2-tts-torch",
+        "indextts-tts-torch",
+        "neutts-air-tts-torch",
+        "spark-tts-torch",
+        "vibevoice-tts-torch",
+        "speecht5-stt-torch",
+        "speecht5-tts-torch",
     }
 )
 

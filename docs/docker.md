@@ -23,7 +23,7 @@ container restarts. No image rebuild is needed to add new models.
 The `:lean` image drops the ~2GB torch stack. VAD runs on onnxruntime, so the
 streaming/conversation path still works, and `vox pull` refuses torch-based
 models up front. Use it if you only serve CTranslate2/ONNX families
-(`whisper-stt-ct2`, `kokoro-tts-onnx`, `parakeet-stt-onnx`, `piper-tts-onnx`).
+(`whisper-stt`, `kokoro-tts`, `parakeet-stt`, `piper-tts`).
 
 ```bash
 docker build --build-arg VOX_ACCELERATOR=cpu --build-arg VOX_INCLUDE_TORCH=0 -t vox:lean .
@@ -33,7 +33,7 @@ In a lean image, `vox pull` checks the environment's actual capabilities (torch,
 onnxruntime, CUDA) against what each model needs and fails fast with a clear
 message rather than downloading a model that can't load:
 
-- `whisper-stt-ct2`, `kokoro-tts-onnx`, `parakeet-stt-onnx`, `piper-tts-onnx`: pull fine.
+- `whisper-stt`, `kokoro-tts`, `parakeet-stt`, `piper-tts`: pull fine.
 - torch models (Qwen, Voxtral, Sesame, Dia, ...): blocked; vLLM models also need a CUDA GPU.
 
 Set `VOX_ALLOW_INCOMPATIBLE=1` to bypass the check and pull anyway. The full

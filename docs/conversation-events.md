@@ -328,8 +328,8 @@ Example session update:
 {
   "type": "session.update",
   "session": {
-    "stt_model": "parakeet-stt-onnx:tdt-0.6b-v3",
-    "tts_model": "kokoro-tts-onnx:v1.0",
+    "stt_model": "parakeet-stt:tdt-0.6b-v3",
+    "tts_model": "kokoro-tts:v1.0",
     "voice": "af_heart",
     "language": "en",
     "sample_rate": 16000,
@@ -428,8 +428,8 @@ Use `turn_profile` on `session.update` / `session_update`:
 {
   "type": "session.update",
   "session": {
-    "stt_model": "parakeet-stt-onnx:tdt-0.6b-v3",
-    "tts_model": "kokoro-tts-onnx:v1.0",
+    "stt_model": "parakeet-stt:tdt-0.6b-v3",
+    "tts_model": "kokoro-tts:v1.0",
     "voice": "af_heart",
     "turn_profile": "speakerphone"
   }
