@@ -23,10 +23,12 @@ from vox.operations.errors import (
 )
 from vox.operations.streaming_transcription import (
     DoneEvent,
+    ErrorEvent,
     SessionReadyEvent,
     StreamingTranscriptionConfig,
     StreamingTranscriptionSession,
     TranscriptEvent,
+    streaming_operation_error_message,
 )
 from vox.streaming.types import SpeechStarted
 
@@ -156,6 +158,30 @@ async def test_configure_without_default_raises_no_default_model():
     )
     with pytest.raises(NoDefaultModelError):
         await session.configure(StreamingTranscriptionConfig())
+    await session.close()
+
+
+def test_streaming_operation_error_message_special_cases_missing_default_stt():
+    assert (
+        streaming_operation_error_message(NoDefaultModelError("stt"))
+        == "No STT model specified and no default STT model available"
+    )
+
+
+@pytest.mark.asyncio
+async def test_report_operation_error_uses_streaming_message_policy():
+    session = StreamingTranscriptionSession(
+        scheduler=FakeScheduler(FakeSTTAdapter()),
+        registry=_make_registry(),
+        store=_make_store(),
+    )
+
+    await session.report_operation_error(NoDefaultModelError("stt"))
+    await session.end_of_stream()
+    events = await _collect_events(session)
+
+    errors = [event for event in events if isinstance(event, ErrorEvent)]
+    assert errors[0].message == "No STT model specified and no default STT model available"
     await session.close()
 
 

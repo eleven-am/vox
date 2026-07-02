@@ -15,6 +15,7 @@ from vox.operations.defaults import resolve_default_model
 from vox.operations.errors import (
     InvalidConfigError,
     NoDefaultModelError,
+    OperationError,
     SessionAlreadyConfiguredError,
     SessionNotConfiguredError,
 )
@@ -81,6 +82,12 @@ class DoneEvent:
 
 
 SessionEvent = SessionReadyEvent | SpeechStartedEvent | SpeechStoppedEvent | TranscriptEvent | ErrorEvent | DoneEvent
+
+
+def streaming_operation_error_message(exc: OperationError) -> str:
+    if isinstance(exc, NoDefaultModelError):
+        return "No STT model specified and no default STT model available"
+    return str(exc)
 
 
 class StreamingTranscriptionSession:
@@ -218,6 +225,9 @@ class StreamingTranscriptionSession:
 
     async def report_error(self, message: str) -> None:
         await self._events.put(ErrorEvent(message=message))
+
+    async def report_operation_error(self, exc: OperationError) -> None:
+        await self.report_error(streaming_operation_error_message(exc))
 
     async def close(self) -> None:
         if self._closed:

@@ -10,7 +10,6 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from vox.core.tasks import drain_task
 from vox.logging_context import new_request_id, request_id_var
 from vox.operations.errors import (
-    NoDefaultModelError,
     OperationError,
     SessionNotConfiguredError,
     UnknownMessageTypeError,
@@ -30,12 +29,6 @@ from vox.streaming.types import StreamTranscript
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-def _operation_error_message(exc: OperationError) -> str:
-    if isinstance(exc, NoDefaultModelError):
-        return "No STT model specified and no default STT model available"
-    return str(exc)
 
 
 def _config_from_message(data: dict) -> StreamingTranscriptionConfig:
@@ -129,7 +122,7 @@ async def audio_stream(websocket: WebSocket):
                     try:
                         await session.configure(_config_from_message(data))
                     except OperationError as exc:
-                        await session.report_error(_operation_error_message(exc))
+                        await session.report_operation_error(exc)
                     continue
 
                 if msg_type == "end":

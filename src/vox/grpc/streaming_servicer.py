@@ -109,7 +109,7 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
                         try:
                             await session.configure(_config_from_pb(client_msg.config))
                         except OperationError as exc:
-                            await session.report_error(str(exc))
+                            await session.report_operation_error(exc)
                         continue
                     if msg_type == "audio":
                         try:
@@ -118,7 +118,7 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
                                 sample_rate=client_msg.audio.sample_rate or None,
                             )
                         except SessionNotConfiguredError as exc:
-                            await session.report_error(str(exc))
+                            await session.report_operation_error(exc)
                     elif msg_type == "opus_frame":
                         try:
                             await session.submit_opus(
@@ -127,7 +127,7 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
                                 channels=client_msg.opus_frame.channels or 1,
                             )
                         except SessionNotConfiguredError as exc:
-                            await session.report_error(str(exc))
+                            await session.report_operation_error(exc)
                     elif msg_type == "encoded_audio":
                         try:
                             await session.submit_encoded(
@@ -135,7 +135,7 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
                                 format_hint=client_msg.encoded_audio.format or None,
                             )
                         except SessionNotConfiguredError as exc:
-                            await session.report_error(str(exc))
+                            await session.report_operation_error(exc)
                     elif msg_type == "end_of_stream":
                         break
             finally:

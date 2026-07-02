@@ -438,6 +438,33 @@ class TestStreamPipelineConfig:
 
 class TestStreamingGRPCServicerEdgeCases:
     @pytest.mark.asyncio
+    async def test_servicer_no_default_model_uses_streaming_error_message(self):
+        from vox.grpc import vox_pb2
+        from vox.grpc.streaming_servicer import StreamingServiceServicer
+
+        store = MagicMock()
+        store.list_models.return_value = []
+        registry = MagicMock()
+        registry.available_models.return_value = {}
+        scheduler = MagicMock()
+
+        servicer = StreamingServiceServicer(store, registry, scheduler)
+
+        async def request_iter():
+            yield vox_pb2.StreamInput(config=vox_pb2.StreamConfig())
+
+        ctx = MagicMock()
+        ctx.cancelled.return_value = False
+
+        messages = []
+        async for msg in servicer.StreamTranscribe(request_iter(), ctx):
+            messages.append(msg)
+
+        assert len(messages) == 1
+        assert messages[0].WhichOneof("msg") == "error"
+        assert messages[0].error.message == "No STT model specified and no default STT model available"
+
+    @pytest.mark.asyncio
     async def test_servicer_unconfigured_audio(self):
         from vox.grpc import vox_pb2
         from vox.grpc.streaming_servicer import StreamingServiceServicer
