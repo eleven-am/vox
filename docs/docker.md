@@ -10,7 +10,7 @@ which uses `Dockerfile.spark`.
 | `:cpu` | amd64 + arm64 | CPU | ✅ | `make build-cpu` | torch models on CPU (slow) |
 | `:spark` | arm64 | CUDA | ✅ | `make build-spark` | NVIDIA arm (Jetson/SBSA) |
 
-`:latest` is amd64/CUDA only — CUDA torch wheels are x86-only, so a generic
+`:latest` is amd64/CUDA only. CUDA torch wheels are x86-only, so a generic
 arm64 CUDA image isn't possible (that's what `:spark` is for). On arm64 hosts
 (including Apple-Silicon Docker) use `:lean` or `:cpu`; for arm NVIDIA use
 `:spark`.
@@ -33,8 +33,8 @@ In a lean image, `vox pull` checks the environment's actual capabilities (torch,
 onnxruntime, CUDA) against what each model needs and fails fast with a clear
 message rather than downloading a model that can't load:
 
-- `whisper-stt-ct2`, `kokoro-tts-onnx`, `parakeet-stt-onnx`, `piper-tts-onnx` — pull fine.
-- torch models (Qwen, Voxtral, Sesame, Dia, …) — blocked; vLLM models also need a CUDA GPU.
+- `whisper-stt-ct2`, `kokoro-tts-onnx`, `parakeet-stt-onnx`, `piper-tts-onnx`: pull fine.
+- torch models (Qwen, Voxtral, Sesame, Dia, ...): blocked; vLLM models also need a CUDA GPU.
 
 Set `VOX_ALLOW_INCOMPATIBLE=1` to bypass the check and pull anyway. The full
 image (default `VOX_INCLUDE_TORCH=1`) supports every model.

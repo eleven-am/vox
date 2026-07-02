@@ -1,10 +1,10 @@
 # Vox
 
-**The local voice layer for realtime speech agents.** Vox is a self-hosted runtime that gives speech-to-text and text-to-speech models one operational surface — pull a model like Ollama, serve one OpenAI-compatible API — and adds a full realtime conversation stack: VAD, streaming STT, end-of-utterance turn detection, TTS, and true barge-in over WebRTC. **You bring the LLM; Vox is the ears and the mouth.**
+**The local voice layer for realtime speech agents.** Vox is a self-hosted runtime that gives speech-to-text and text-to-speech models one operational surface: you pull a model like Ollama and serve one OpenAI-compatible API. On top of that it adds a full realtime conversation stack: VAD, streaming STT, end-of-utterance turn detection, TTS, and true barge-in over WebRTC. **You bring the LLM; Vox is the ears and the mouth.**
 
 ## Why Vox
 
-- **Realtime voice, self-hosted.** A local, OpenAI-Realtime-style conversation API over WebRTC, WebSocket, or gRPC — VAD, streaming transcription, semantic turn-taking, and real barge-in — with any LLM in the middle. Vox owns the audio; you own the text generation.
+- **Realtime voice, self-hosted.** A local, OpenAI-Realtime-style conversation API over WebRTC, WebSocket, or gRPC, covering VAD, streaming transcription, semantic turn-taking, and real barge-in, with any LLM in the middle. Vox owns the audio; you own the text generation.
 - **One runtime for STT and TTS.** `pull` a model, `serve` one API, no per-model Python wiring.
 - **Many backends, one interface.** ONNX, CTranslate2, Torch, NeMo, and vLLM model families behind the same API.
 - **OpenAI-compatible.** Drop-in `/v1/audio/speech` and `/v1/audio/transcriptions`, plus REST, WebSocket, and gRPC.
@@ -35,32 +35,32 @@ gRPC starts with `vox serve` too and listens on `:9090` by default.
 
 ## Realtime voice conversations
 
-Vox ships a self-hosted realtime voice stack — the local answer to the OpenAI
+Vox ships a self-hosted realtime voice stack, the local answer to the OpenAI
 Realtime API. **Vox owns VAD, streaming STT, end-of-utterance (EOU) turn
 detection, TTS, and interruption handling; you own the LLM.** User speech comes
 in, transcripts come out, you generate a reply with any LLM, stream the text
-back, and Vox speaks it — with real barge-in.
+back, and Vox speaks it with real barge-in.
 
 Three transports carry a conversation session:
 
-- **WebRTC** — Vox hosts the browser media connection (mic in, assistant audio
+- **WebRTC:** Vox hosts the browser media connection (mic in, assistant audio
   out) while your backend drives a control stream. A dependency-free client is in
   [`examples/rtc-browser-client.html`](examples/rtc-browser-client.html).
-- **WebSocket** (PondSocket) and **gRPC** — you own microphone capture and
-  playback; audio is PCM16 over the stream.
+- **WebSocket** (PondSocket) and **gRPC:** you own microphone capture and
+  playback, and audio is PCM16 over the stream.
 
 What Vox handles for you:
 
-- **VAD** — Silero on onnxruntime (no torch, no runtime model download).
-- **Turn-taking** — a semantic EOU detector shortens the endpointing delay when
+- **VAD:** Silero on onnxruntime (no torch, no runtime model download).
+- **Turn-taking:** a semantic EOU detector shortens the endpointing delay when
   the user clearly finished and waits when they didn't.
-- **Barge-in** — two-stage interruption with self-echo and backchannel
+- **Barge-in:** two-stage interruption with self-echo and backchannel
   rejection, so the assistant doesn't cancel itself on its own audio or a stray
   "mhm".
-- **Turn profiles** — `headset`, `browser_default`, `speakerphone`, and
+- **Turn profiles:** `headset`, `browser_default`, `speakerphone`, and
   `noisy_room` acoustic presets.
-- **Browser-native events** — captions, turn state, and barge-in signals
-  forwarded straight to a WebRTC data channel, no backend relay required.
+- **Browser-native events:** captions, turn state, and barge-in signals
+  forwarded straight to a WebRTC data channel, with no backend relay required.
 
 Full protocol and event reference: [docs/conversation-events.md](docs/conversation-events.md).
 
@@ -293,7 +293,7 @@ docker compose --profile cpu up -d
 ```
 
 Models and dynamically installed adapters persist in a Docker volume across
-restarts — no image rebuild needed to add new models.
+restarts, so no image rebuild is needed to add new models.
 
 Four image variants are published: `:latest` (amd64 CUDA), `:lean` and `:cpu`
 (multi-arch CPU), and `:spark` (arm64 NVIDIA). The `:lean` image drops the ~2GB
@@ -304,7 +304,7 @@ refuses torch-based models up front instead of failing at load time. See
 ## Representative models
 
 Vox ships a bundled catalog of 25 model entries (39 tags) spanning ~18 model
-families across 5 backends — ONNX, CTranslate2, Torch, NeMo, and vLLM — with more
+families across 5 backends (ONNX, CTranslate2, Torch, NeMo, and vLLM), with more
 available from the community registry. A representative slice:
 
 | Model | Type | Description |
@@ -331,12 +331,12 @@ More models at [vox-registry](https://github.com/eleven-am/vox-registry). Add a 
 Vox is local-first and runs open by default. For deployments that expose the
 port beyond localhost, set these environment variables:
 
-- `VOX_API_KEY` — when set, every HTTP route, audio websocket, and gRPC call
+- `VOX_API_KEY`: when set, every HTTP route, audio websocket, and gRPC call
   requires the key (sent as `Authorization: Bearer <key>`, an `x-api-key`
   header, or an `api_key` query param). Health/probe paths and gRPC health and
   reflection stay open so orchestrator liveness checks keep working. When unset,
   the server is fully open (unchanged behavior).
-- `VOX_ALLOW_UNVERIFIED_ADAPTERS=1` — pulling a model installs its adapter as a
+- `VOX_ALLOW_UNVERIFIED_ADAPTERS=1`: pulling a model installs its adapter as a
   pip package; by default only the built-in catalog's `vox-*` packages are
   allowed. Set this only if you intentionally pull adapters outside that set.
 
