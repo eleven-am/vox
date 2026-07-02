@@ -54,6 +54,26 @@ VOXTRAL_TTS_TIERS: tuple[PlacementTier, ...] = (
 
 logger = logging.getLogger(__name__)
 
+
+def _close_backend_blocking(backend: Any) -> None:
+    import asyncio
+    import threading
+
+    error: dict[str, BaseException] = {}
+
+    def _run() -> None:
+        try:
+            asyncio.run(backend.close())
+        except Exception as exc:  # noqa: BLE001
+            error["err"] = exc
+
+    thread = threading.Thread(target=_run, name="voxtral-backend-close")
+    thread.start()
+    thread.join()
+    if "err" in error:
+        logger.warning("Voxtral TTS backend close failed: %s", error["err"])
+
+
 VOXTRAL_TTS_SAMPLE_RATE = 24_000
 
 PRESET_VOICES: list[VoiceInfo] = [
@@ -221,18 +241,10 @@ class VoxtralTTSAdapter(TTSAdapter):
         )
 
     def unload(self) -> None:
-        import asyncio
-        from contextlib import suppress
-
         if self._backend is not None:
             backend = self._backend
             self._backend = None
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(backend.close())
-            except RuntimeError:
-                with suppress(Exception):
-                    asyncio.run(backend.close())
+            _close_backend_blocking(backend)
 
         self._runtime = None
         self._tokenizer = None

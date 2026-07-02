@@ -212,6 +212,51 @@ class TestPiperAdapter:
             assert any(chunk.audio for chunk in chunks[:-1])
             assert voice_instance.synthesize.called
 
+    def test_synthesize_scales_int16_fallback_chunks(self, tmp_path: Path):
+        import types
+
+        torch_mock = _mock_torch()
+        piper_module = MagicMock()
+        voice_cls = MagicMock()
+        voice_instance = MagicMock()
+        syn_config = MagicMock()
+        syn_config.speaker_id = None
+        syn_config.length_scale = 1.0
+        piper_config = MagicMock()
+        piper_config.SynthesisConfig.return_value = syn_config
+
+        def synthesize(text, syn_config=None, include_alignments=False):
+            chunk = types.SimpleNamespace(
+                sample_rate=22050,
+                audio_float_array=None,
+                _audio_int16_array=np.array([0, 16384, -16384, 32767], dtype=np.int16),
+            )
+            return [chunk]
+
+        voice_instance.synthesize.side_effect = synthesize
+        voice_cls.load.return_value = voice_instance
+        piper_module.PiperVoice = voice_cls
+        _write_piper_bundle(tmp_path)
+
+        with patch.dict(
+            "sys.modules",
+            {"torch": torch_mock, "piper": piper_module, "piper.config": piper_config},
+        ):
+            from vox_piper.adapter import PiperAdapter
+
+            adapter = PiperAdapter()
+            adapter.load(str(tmp_path), "cpu", _source="rhasspy/piper-voices")
+
+            async def run():
+                return [chunk async for chunk in adapter.synthesize("Hello world")]
+
+            chunks = asyncio.run(run())
+
+        pcm = b"".join(c.audio for c in chunks if c.audio)
+        samples = np.frombuffer(pcm, dtype=np.float32)
+        assert samples.max() <= 1.0
+        assert abs(samples[1] - 0.5) < 0.01
+
     def test_synthesize_rejects_reference_audio(self, tmp_path: Path):
         torch_mock = _mock_torch()
         piper_module = MagicMock()

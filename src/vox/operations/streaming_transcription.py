@@ -19,7 +19,7 @@ from vox.operations.errors import (
 )
 from vox.operations.streaming_reporting import StreamingOperationErrorReporter
 from vox.streaming.annotation import enrich_transcript
-from vox.streaming.codecs import pcm16_to_float32, resample_audio
+from vox.streaming.codecs import StreamResampler, pcm16_to_float32
 from vox.streaming.opus import OPUS_SAMPLE_RATE, OpusStreamDecoder
 from vox.streaming.partials import PartialTranscriptService
 from vox.streaming.pipeline import StreamPipeline, StreamPipelineConfig
@@ -163,6 +163,8 @@ class StreamingTranscriptionSession(StreamingOperationErrorReporter):
         self._pipeline: StreamPipeline | None = None
         self._partial_service: PartialTranscriptService | None = None
         self._opus_decoder: OpusStreamDecoder | None = None
+        self._pcm_resampler = StreamResampler(TARGET_SAMPLE_RATE)
+        self._opus_resampler = StreamResampler(TARGET_SAMPLE_RATE)
         self._session = SpeechSession()
         self._events: asyncio.Queue[SessionEvent] = asyncio.Queue()
         self._closed = False
@@ -216,7 +218,7 @@ class StreamingTranscriptionSession(StreamingOperationErrorReporter):
         audio = pcm16_to_float32(pcm16)
         src_rate = int(sample_rate or self._session_config.sample_rate)
         if src_rate != TARGET_SAMPLE_RATE:
-            audio = resample_audio(audio, src_rate, TARGET_SAMPLE_RATE)
+            audio = self._pcm_resampler.process(audio, src_rate)
         await self._ingest_audio(audio)
 
     async def submit_pcm16_or_report(
@@ -243,7 +245,7 @@ class StreamingTranscriptionSession(StreamingOperationErrorReporter):
                     channels=channels or 1,
                 )
             audio = self._opus_decoder.decode_frame(data)
-            audio = resample_audio(audio, OPUS_SAMPLE_RATE, TARGET_SAMPLE_RATE)
+            audio = self._opus_resampler.process(audio, OPUS_SAMPLE_RATE)
             await self._ingest_audio(audio)
         except Exception as exc:
             await self.report_error(str(exc))
@@ -284,10 +286,14 @@ class StreamingTranscriptionSession(StreamingOperationErrorReporter):
             try:
                 tail = self._opus_decoder.flush()
                 if tail.size > 0:
-                    audio = resample_audio(tail, OPUS_SAMPLE_RATE, TARGET_SAMPLE_RATE)
+                    audio = self._opus_resampler.process(tail, OPUS_SAMPLE_RATE)
                     await self._ingest_audio(audio)
             except Exception as exc:
                 await self.report_error(str(exc))
+        for resampler in (self._pcm_resampler, self._opus_resampler):
+            tail = resampler.flush()
+            if tail.size > 0:
+                await self._ingest_audio(tail)
         if self._partial_service is not None:
             remaining = self._partial_service.flush_remaining_audio(self._session)
             if remaining is not None and len(remaining) > 0:

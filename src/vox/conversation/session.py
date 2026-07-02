@@ -65,7 +65,7 @@ from vox.core.adapter_acquisition import AdapterTypeMismatchError, acquire_typed
 from vox.core.scheduler import Scheduler
 from vox.core.tasks import reap_task
 from vox.streaming.annotation import enrich_transcript
-from vox.streaming.codecs import float32_to_pcm16, pcm16_to_float32, resample_audio
+from vox.streaming.codecs import StreamResampler, float32_to_pcm16, pcm16_to_float32, resample_audio
 from vox.streaming.eou import EOUConfig
 from vox.streaming.partials import PartialTranscriptService
 from vox.streaming.pipeline import StreamPipeline, StreamPipelineConfig
@@ -191,6 +191,7 @@ class ConversationSession:
         self._response_lifecycle = ConversationResponseLifecycle()
         self._closed: bool = False
         self._client_sample_rate: int = config.sample_rate
+        self._input_resampler = StreamResampler(TARGET_SAMPLE_RATE)
 
         self._speech_guard = AssistantSpeechGuard()
 
@@ -253,7 +254,7 @@ class ConversationSession:
         self._client_sample_rate = source_rate
         audio = pcm16_to_float32(pcm16)
         if source_rate != TARGET_SAMPLE_RATE:
-            audio = resample_audio(audio, source_rate, TARGET_SAMPLE_RATE)
+            audio = self._input_resampler.process(audio, source_rate)
 
         if self._config.audio_preprocessor is not None and audio.size:
             try:

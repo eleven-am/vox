@@ -96,6 +96,17 @@ _models: dict[str, Any] = {}
 _missing_languages: set[str] = set()
 _spacy_unavailable: bool = False
 _lock = threading.Lock()
+_load_locks: dict[str, threading.Lock] = {}
+_load_locks_guard = threading.Lock()
+
+
+def _language_load_lock(lang: str) -> threading.Lock:
+    with _load_locks_guard:
+        lock = _load_locks.get(lang)
+        if lock is None:
+            lock = threading.Lock()
+            _load_locks[lang] = lock
+        return lock
 
 
 def _runtime_root() -> Path:
@@ -179,6 +190,12 @@ def _get_model(lang: str) -> Any | None:
 
     with _lock:
         cached = _models.get(lang)
+    if cached is not None:
+        return cached
+
+    with _language_load_lock(lang):
+        with _lock:
+            cached = _models.get(lang)
         if cached is not None:
             return cached
 
@@ -223,7 +240,8 @@ def _get_model(lang: str) -> Any | None:
             logger.exception("NER: failed to load spaCy model %s", model_name)
             return None
 
-        _models[lang] = nlp
+        with _lock:
+            _models[lang] = nlp
         logger.info("NER: loaded spaCy model %s", model_name)
         return nlp
 

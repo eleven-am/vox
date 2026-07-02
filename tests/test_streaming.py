@@ -110,6 +110,56 @@ class TestCodecs:
         assert abs(len(result) - 48000) < 100
 
 
+class TestStreamResampler:
+    def test_chunked_prefix_matches_oneshot_without_seams(self):
+        from vox.streaming.codecs import StreamResampler
+
+        rng = np.random.default_rng(0)
+        signal = rng.standard_normal(8000).astype(np.float32)
+        oneshot = resample_audio(signal, 8000, 16000)
+
+        resampler = StreamResampler(16000)
+        out = [resampler.process(signal[i:i + 160], 8000) for i in range(0, len(signal), 160)]
+        streamed = np.concatenate(out)
+
+        n = len(streamed)
+        assert n <= len(oneshot)
+        assert len(oneshot) - n < 2000
+        assert float(np.max(np.abs(streamed - oneshot[:n]))) < 1e-4
+
+    def test_flush_recovers_full_length_with_no_drift(self):
+        from vox.streaming.codecs import StreamResampler
+
+        rng = np.random.default_rng(1)
+        signal = rng.standard_normal(8000).astype(np.float32)
+        oneshot = resample_audio(signal, 8000, 16000)
+
+        resampler = StreamResampler(16000)
+        out = [resampler.process(signal[i:i + 160], 8000) for i in range(0, len(signal), 160)]
+        out.append(resampler.flush())
+        streamed = np.concatenate(out)
+
+        assert abs(len(streamed) - len(oneshot)) < 8
+        n = min(len(streamed), len(oneshot))
+        assert float(np.max(np.abs(streamed[:n] - oneshot[:n]))) < 1e-4
+
+    def test_passthrough_when_rates_match(self):
+        from vox.streaming.codecs import StreamResampler
+
+        resampler = StreamResampler(16000)
+        audio = np.ones(320, dtype=np.float32)
+        assert resampler.process(audio, 16000).shape == audio.shape
+
+    def test_recreates_stream_on_source_rate_change(self):
+        from vox.streaming.codecs import StreamResampler
+
+        resampler = StreamResampler(16000)
+        first = resampler.process(np.ones(160, dtype=np.float32), 8000)
+        second = resampler.process(np.ones(441, dtype=np.float32), 44100)
+        assert first.dtype == np.float32
+        assert second.dtype == np.float32
+
+
 class TestSpeechSession:
     def test_initial_state(self):
         session = SpeechSession()

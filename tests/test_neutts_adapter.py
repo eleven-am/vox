@@ -22,6 +22,7 @@ class _FakeNeuTTSAir:
         self.stream_calls: list[tuple] = []
         self.infer_calls: list[tuple] = []
         self.raise_stream = False
+        self.raise_stream_after = None
         _FakeNeuTTSAir.instances.append(self)
 
     def encode_reference(self, ref_path):
@@ -31,6 +32,10 @@ class _FakeNeuTTSAir:
     def infer_stream(self, text, ref_codes, ref_text):
         self.stream_calls.append((text, ref_codes, ref_text))
         if self.raise_stream:
+            raise NotImplementedError
+        if self.raise_stream_after is not None:
+            for _ in range(self.raise_stream_after):
+                yield np.array([0.0, 0.5], dtype=np.float32)
             raise NotImplementedError
         yield np.array([0.0, 0.5], dtype=np.float32)
 
@@ -136,6 +141,32 @@ def test_neutts_falls_back_when_streaming_backend_is_not_implemented(tmp_path):
 
     assert instance.infer_calls[0][0] == "Hello"
     assert chunks[0].audio == np.array([0.0, -0.5], dtype=np.float32).tobytes()
+
+
+def test_neutts_does_not_duplicate_audio_when_stream_fails_midway(tmp_path):
+    _install_fake_neutts_modules()
+    from vox_neutts.adapter import NeuTTSAirAdapter
+
+    adapter = NeuTTSAirAdapter()
+    adapter.load(str(tmp_path), "cpu")
+    _FakeNeuTTSAir.instances[-1].raise_stream_after = 2
+
+    async def run():
+        return [
+            chunk
+            async for chunk in adapter.synthesize(
+                "Hello",
+                reference_audio=np.zeros(2400, dtype=np.float32),
+                reference_text="Reference",
+            )
+        ]
+
+    chunks = asyncio.run(run())
+    instance = _FakeNeuTTSAir.instances[-1]
+
+    assert instance.infer_calls == []
+    audio_chunks = [c for c in chunks if c.audio]
+    assert len(audio_chunks) == 2
 
 
 def test_neutts_bootstraps_runtime_when_missing(tmp_path):

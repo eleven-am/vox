@@ -269,6 +269,39 @@ class TestConcurrentModelLoad:
 
         assert counter["calls"] == 20
 
+    def test_slow_load_does_not_block_cached_language_lookup(self):
+        ner._models.clear()
+        ner._missing_languages.clear()
+        ner._models["fr"] = object()
+
+        release = threading.Event()
+        entered = threading.Event()
+        original_lock = ner._language_load_lock("en")
+
+        original_lock.acquire()
+        try:
+            def hold_en_load():
+                entered.set()
+                ner._get_model("en")
+
+            holder = threading.Thread(target=hold_en_load)
+            holder.start()
+            entered.wait(timeout=1)
+
+            result = {}
+
+            def read_fr():
+                result["model"] = ner._get_model("fr")
+
+            reader = threading.Thread(target=read_fr)
+            reader.start()
+            reader.join(timeout=1)
+
+            assert result.get("model") is ner._models["fr"]
+        finally:
+            original_lock.release()
+            release.set()
+
 
 class TestAnnotateDoesNotPollutecaOnFailure:
     def test_language_failure_does_not_cache_nlp(self):

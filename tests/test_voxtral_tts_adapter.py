@@ -156,3 +156,16 @@ class TestCloseOnUnload:
 
         assert adapter._backend is None
         assert adapter.is_loaded is False
+
+    def test_close_completes_when_unload_called_with_running_loop(self):
+        backend = FakeOmniBackend(_make_chunks())
+        adapter = _make_adapter_with_backend(backend)
+
+        async def run() -> None:
+            with patch.dict("sys.modules", {"torch": MagicMock()}):
+                adapter.unload()
+
+        asyncio.run(run())
+
+        assert backend.close_called is True
+        assert adapter._backend is None

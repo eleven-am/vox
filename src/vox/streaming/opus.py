@@ -48,21 +48,22 @@ class OpusStreamEncoder:
     def __init__(self, source_rate: int = 24_000, target_rate: int = OPUS_SAMPLE_RATE, channels: int = 1) -> None:
         import opuslib
 
+        from vox.streaming.codecs import StreamResampler
+
         self.source_rate = source_rate
         self.target_rate = target_rate
         self.channels = channels
         self._frame_samples = target_rate * OPUS_FRAME_MS // 1000
         self._buffer = np.array([], dtype=np.int16)
         self._encoder = opuslib.Encoder(target_rate, channels, "audio")
+        self._resampler = StreamResampler(target_rate)
 
     def encode(self, pcm16: bytes) -> list[bytes]:
-        from vox.streaming.codecs import resample_audio
-
         samples = np.frombuffer(pcm16, dtype=np.int16)
 
         if self.source_rate != self.target_rate:
             float_audio = samples.astype(np.float32) / 32768.0
-            resampled = resample_audio(float_audio, self.source_rate, self.target_rate)
+            resampled = self._resampler.process(float_audio, self.source_rate)
             samples = (np.clip(resampled, -1.0, 1.0) * 32767).astype(np.int16)
 
         self._buffer = np.concatenate([self._buffer, samples])

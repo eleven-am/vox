@@ -184,18 +184,21 @@ class NeuTTSAirAdapter(TTSAdapter):
             ref_codes = self._model.encode_reference(ref_path)
             ref_text = reference_text or ""
 
-            yielded = False
+            emitted_any = False
+            stream_supported = True
             infer_stream = getattr(self._model, "infer_stream", None)
             if callable(infer_stream):
                 try:
                     for audio_chunk in infer_stream(text, ref_codes, ref_text):
                         audio = _audio_array(audio_chunk)
-                        yielded = True
+                        emitted_any = True
                         yield SynthesizeChunk(audio=audio.tobytes(), sample_rate=NEUTTS_SAMPLE_RATE, is_final=False)
                 except NotImplementedError:
-                    yielded = False
+                    stream_supported = False
+            else:
+                stream_supported = False
 
-            if not yielded:
+            if not stream_supported and not emitted_any:
                 audio = _audio_array(self._model.infer(text, ref_codes, ref_text))
                 yield SynthesizeChunk(audio=audio.tobytes(), sample_rate=NEUTTS_SAMPLE_RATE, is_final=False)
 

@@ -302,15 +302,18 @@ class PiperAdapter(TTSAdapter):
         audio_arrays: list[NDArray[np.float32]] = []
         for chunk in audio_chunks:
             audio = getattr(chunk, "audio_float_array", None)
-            if audio is None:
-                audio = getattr(chunk, "_audio_int16_array", None)
-                if audio is None:
-                    audio_bytes = getattr(chunk, "_audio_int16_bytes", None)
-                    if audio_bytes is not None:
-                        audio = np.frombuffer(audio_bytes, dtype=np.int16)
-            if audio is None:
+            if audio is not None:
+                audio_arrays.append(np.asarray(audio, dtype=np.float32).reshape(-1))
                 continue
-            audio_arrays.append(np.asarray(audio, dtype=np.float32).reshape(-1))
+
+            int16_audio = getattr(chunk, "_audio_int16_array", None)
+            if int16_audio is None:
+                audio_bytes = getattr(chunk, "_audio_int16_bytes", None)
+                if audio_bytes is not None:
+                    int16_audio = np.frombuffer(audio_bytes, dtype=np.int16)
+            if int16_audio is None:
+                continue
+            audio_arrays.append(np.asarray(int16_audio, dtype=np.float32).reshape(-1) / 32768.0)
 
         if not audio_arrays:
             raise RuntimeError("Piper produced no audio")
