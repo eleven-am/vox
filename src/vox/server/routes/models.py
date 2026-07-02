@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from vox.operations.models import (
     delete_model,
+    delete_model_payload,
     list_models,
     list_models_payload,
     pull_event_payload,
@@ -65,4 +66,4 @@ async def delete_model_route(name: str, request: Request):
     registry = request.app.state.registry
     with map_operation_errors_to_http():
         await delete_model(store=store, scheduler=scheduler, registry=registry, name=name)
-    return {"status": "success"}
+    return delete_model_payload()

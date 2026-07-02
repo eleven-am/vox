@@ -17,6 +17,7 @@ from vox.operations.models import (
     PullEvent,
     ShowResult,
     delete_model,
+    delete_model_payload,
     list_models,
     list_models_payload,
     pull_event_payload,
@@ -37,6 +38,10 @@ def test_list_models_returns_store_models(tmp_path: Path):
     fake = MagicMock()
     store.list_models.return_value = [fake]
     assert list_models(store=store) == [fake]
+
+
+def test_delete_model_payload_preserves_http_contract_shape():
+    assert delete_model_payload() == {"status": "success"}
 
 
 def test_show_model_raises_when_missing(tmp_path: Path):

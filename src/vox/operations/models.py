@@ -84,6 +84,10 @@ def pull_event_payload(event: PullEvent) -> dict[str, Any]:
     return payload
 
 
+def delete_model_payload() -> dict[str, str]:
+    return {"status": "success"}
+
+
 def list_models(*, store: Any) -> list[ModelInfo]:
     return list(store.list_models())
 
