@@ -4,15 +4,16 @@ import pytest
 
 from vox.grpc import vox_pb2
 from vox.grpc.conversation_commands import (
-    conversation_session_update_to_config,
+    conversation_session_update_to_message,
     converse_client_message_to_command,
     rtc_control_message_to_command,
 )
+from vox.operations.conversation import parse_session_update
 from vox.operations.errors import InvalidConfigError
 
 
-def test_grpc_session_update_decodes_to_operation_config():
-    config = conversation_session_update_to_config(
+def test_grpc_session_update_decodes_to_shared_command_shape():
+    command = conversation_session_update_to_message(
         vox_pb2.ConversationSessionUpdate(
             stt_model="parakeet-stt-onnx:tdt-0.6b-v3",
             tts_model="kokoro-tts-onnx:v1.0",
@@ -24,6 +25,19 @@ def test_grpc_session_update_decodes_to_operation_config():
         )
     )
 
+    assert command == {
+        "type": "session.update",
+        "session": {
+            "stt_model": "parakeet-stt-onnx:tdt-0.6b-v3",
+            "tts_model": "kokoro-tts-onnx:v1.0",
+            "voice": "af_heart",
+            "turn_profile": "headset",
+            "turn_policy": {
+                "speaking_interrupt_min_duration_ms": 300,
+            },
+        },
+    }
+    config = parse_session_update(command)
     assert config.stt_model == "parakeet-stt-onnx:tdt-0.6b-v3"
     assert config.tts_model == "kokoro-tts-onnx:v1.0"
     assert config.voice == "af_heart"
@@ -40,7 +54,6 @@ def test_converse_audio_append_decodes_to_shared_command_shape():
         )
     )
 
-    assert command.kind == "command"
     assert command.message == {
         "type": "input_audio_buffer.append",
         "audio_pcm16": b"abc",
@@ -74,7 +87,6 @@ def test_rtc_client_event_decodes_json_payload():
         )
     )
 
-    assert command.kind == "command"
     assert command.message == {
         "type": "client.event",
         "event": "app.marker",

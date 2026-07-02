@@ -4,75 +4,65 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Literal
 
-from vox.conversation.profiles import DEFAULT_TURN_PROFILE, resolve_turn_policy
 from vox.grpc import vox_pb2
-from vox.operations.conversation import ConversationSessionConfig
 from vox.operations.errors import InvalidConfigError
-from vox.streaming.types import TARGET_SAMPLE_RATE
 
-GrpcConversationCommandKind = Literal["session_update", "command"]
+_POLICY_FIELDS = (
+    "allow_interrupt_while_speaking",
+    "min_interrupt_duration_ms",
+    "max_endpointing_delay_ms",
+    "stable_speaking_min_ms",
+    "false_interruption_timeout_ms",
+    "min_interrupt_words",
+    "partial_interrupts",
+    "dynamic_endpointing",
+    "min_endpointing_delay_ms",
+    "speaking_interrupt_min_duration_ms",
+    "speaking_interrupt_min_words",
+    "self_echo_min_words",
+    "self_echo_min_overlap",
+    "aec_warmup_ms",
+    "backchannel_end_cooldown_ms",
+    "vad_min_silence_ms",
+)
 
 
 @dataclass(frozen=True)
 class GrpcConversationCommand:
-    kind: GrpcConversationCommandKind
-    config: ConversationSessionConfig | None = None
-    message: dict | None = None
+    message: dict
 
 
-def conversation_session_update_to_config(
+def conversation_session_update_to_message(
     update: vox_pb2.ConversationSessionUpdate,
-) -> ConversationSessionConfig:
-    if not update.stt_model:
-        raise InvalidConfigError("session_update requires stt_model")
-    if not update.tts_model:
-        raise InvalidConfigError("session_update requires tts_model")
-
-    policy_overrides: dict[str, int | float | bool] = {}
+) -> dict:
+    session: dict = {
+        "stt_model": update.stt_model,
+        "tts_model": update.tts_model,
+    }
+    if update.voice:
+        session["voice"] = update.voice
+    if update.language:
+        session["language"] = update.language
+    if update.sample_rate:
+        session["sample_rate"] = update.sample_rate
+    if update.turn_profile:
+        session["turn_profile"] = update.turn_profile
+    if update.vad_backend:
+        session["vad_backend"] = update.vad_backend
+    if update.turn_detector:
+        session["turn_detector"] = update.turn_detector
+    if update.include_word_timestamps:
+        session["include_word_timestamps"] = True
     if update.HasField("policy"):
+        policy_overrides: dict[str, int | float | bool] = {}
         policy_pb = update.policy
-        for field_name in (
-            "allow_interrupt_while_speaking",
-            "min_interrupt_duration_ms",
-            "max_endpointing_delay_ms",
-            "stable_speaking_min_ms",
-            "false_interruption_timeout_ms",
-            "min_interrupt_words",
-            "partial_interrupts",
-            "dynamic_endpointing",
-            "min_endpointing_delay_ms",
-            "speaking_interrupt_min_duration_ms",
-            "speaking_interrupt_min_words",
-            "self_echo_min_words",
-            "self_echo_min_overlap",
-            "aec_warmup_ms",
-            "backchannel_end_cooldown_ms",
-            "vad_min_silence_ms",
-        ):
+        for field_name in _POLICY_FIELDS:
             if policy_pb.HasField(field_name):
                 policy_overrides[field_name] = getattr(policy_pb, field_name)
-    try:
-        turn_profile, policy = resolve_turn_policy(
-            update.turn_profile or DEFAULT_TURN_PROFILE,
-            policy_overrides,
-        )
-    except ValueError as exc:
-        raise InvalidConfigError(str(exc)) from exc
-
-    return ConversationSessionConfig(
-        stt_model=update.stt_model,
-        tts_model=update.tts_model,
-        voice=update.voice or None,
-        language=update.language or "en",
-        sample_rate=update.sample_rate or TARGET_SAMPLE_RATE,
-        turn_profile=turn_profile,
-        vad_backend=update.vad_backend or "silero",
-        turn_detector=update.turn_detector or "livekit",
-        policy=policy,
-        include_word_timestamps=bool(update.include_word_timestamps),
-    )
+        if policy_overrides:
+            session["turn_policy"] = policy_overrides
+    return {"type": "session.update", "session": session}
 
 
 def converse_client_message_to_command(
@@ -81,12 +71,10 @@ def converse_client_message_to_command(
     kind = client_msg.WhichOneof("msg")
     if kind == "session_update":
         return GrpcConversationCommand(
-            kind="session_update",
-            config=conversation_session_update_to_config(client_msg.session_update),
+            message=conversation_session_update_to_message(client_msg.session_update),
         )
     if kind == "audio_append":
         return GrpcConversationCommand(
-            kind="command",
             message={
                 "type": "input_audio_buffer.append",
                 "audio_pcm16": client_msg.audio_append.pcm16,
@@ -102,8 +90,7 @@ def rtc_control_message_to_command(
     kind = client_msg.WhichOneof("msg")
     if kind == "session_update":
         return GrpcConversationCommand(
-            kind="session_update",
-            config=conversation_session_update_to_config(client_msg.session_update),
+            message=conversation_session_update_to_message(client_msg.session_update),
         )
     if kind == "client_event":
         event_name = client_msg.client_event.event.strip()
@@ -114,7 +101,6 @@ def rtc_control_message_to_command(
         except json.JSONDecodeError as exc:
             raise InvalidConfigError(f"client_event requires valid payload JSON: {exc}") from exc
         return GrpcConversationCommand(
-            kind="command",
             message={"type": "client.event", "event": event_name, "payload": payload},
         )
     return _response_command(kind, client_msg, unknown_message_label="unknown control message kind")
@@ -127,17 +113,16 @@ def _response_command(
     unknown_message_label: str,
 ) -> GrpcConversationCommand:
     if kind == "response_start":
-        return GrpcConversationCommand(kind="command", message={"type": "response.start"})
+        return GrpcConversationCommand(message={"type": "response.start"})
     if kind == "response_delta":
         return GrpcConversationCommand(
-            kind="command",
             message={
                 "type": "response.delta",
                 "delta": client_msg.response_delta.delta,
             },
         )
     if kind == "response_commit":
-        return GrpcConversationCommand(kind="command", message={"type": "response.commit"})
+        return GrpcConversationCommand(message={"type": "response.commit"})
     if kind == "response_cancel":
-        return GrpcConversationCommand(kind="command", message={"type": "response.cancel"})
+        return GrpcConversationCommand(message={"type": "response.cancel"})
     raise InvalidConfigError(f"{unknown_message_label}: {kind!r}")

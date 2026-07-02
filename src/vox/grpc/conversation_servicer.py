@@ -25,7 +25,6 @@ from vox.operations.conversation import (
     ConvDoneEvent,
     ConversationOrchestrator,
     execute_conversation_command,
-    execute_conversation_session_update,
 )
 from vox.operations.errors import OperationError
 
@@ -65,17 +64,12 @@ class ConversationServicer(vox_pb2_grpc.ConversationServiceServicer):
 
                     try:
                         command = converse_client_message_to_command(client_msg)
-                        if command.kind == "session_update":
-                            assert command.config is not None
-                            await execute_conversation_session_update(orchestrator, command.config)
-                        else:
-                            assert command.message is not None
-                            await execute_conversation_command(
-                                orchestrator,
-                                command.message,
-                                require_config_message="send session_update first",
-                                unknown_message_label="unknown message kind",
-                            )
+                        await execute_conversation_command(
+                            orchestrator,
+                            command.message,
+                            require_config_message="send session_update first",
+                            unknown_message_label="unknown message kind",
+                        )
                     except OperationError as exc:
                         await out_queue.put(conversation_error_pb(str(exc)))
             finally:
