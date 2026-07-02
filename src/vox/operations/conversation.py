@@ -433,6 +433,24 @@ async def execute_conversation_command(
     raise InvalidConfigError(f"{unknown_message_label}: {msg_type!r}")
 
 
+async def execute_rtc_control_command(
+    orchestrator: ConversationOrchestrator,
+    message: dict,
+    *,
+    client_event_handler: Callable[[str, Any], Awaitable[None] | None] | None,
+    require_config_message: str = "send session.update first",
+    unknown_message_label: str = "unknown control message type",
+) -> None:
+    await execute_conversation_command(
+        orchestrator,
+        message,
+        allow_input_audio=False,
+        client_event_handler=client_event_handler,
+        require_config_message=require_config_message,
+        unknown_message_label=unknown_message_label,
+    )
+
+
 async def execute_conversation_session_update(
     orchestrator: ConversationOrchestrator,
     config: ConversationSessionConfig,

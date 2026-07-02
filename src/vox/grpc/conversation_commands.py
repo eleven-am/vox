@@ -8,7 +8,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from vox.grpc import vox_pb2
-from vox.operations.conversation import ConversationOrchestrator, execute_conversation_command
+from vox.operations.conversation import (
+    ConversationOrchestrator,
+    execute_conversation_command,
+    execute_rtc_control_command,
+)
 from vox.operations.errors import InvalidConfigError
 
 _POLICY_FIELDS = (
@@ -129,10 +133,9 @@ async def execute_rtc_control_message(
     client_event_handler: Callable[[str, Any], Awaitable[None] | None],
 ) -> None:
     command = rtc_control_message_to_command(client_msg)
-    await execute_conversation_command(
+    await execute_rtc_control_command(
         orchestrator,
         command.message,
-        allow_input_audio=False,
         client_event_handler=client_event_handler,
         require_config_message="send session_update first",
         unknown_message_label="unknown control message kind",

@@ -30,6 +30,7 @@ from vox.operations.conversation import (
     ConvTurnEouPredictedEvent,
     _wire_event_to_session_event,
     execute_conversation_command,
+    execute_rtc_control_command,
     parse_session_update,
     pondsocket_event_to_conversation_command,
     serialize_conversation_event,
@@ -288,6 +289,38 @@ async def test_execute_conversation_command_can_disable_input_audio_for_control_
             allow_input_audio=False,
             unknown_message_label="unknown control message type",
         )
+
+
+@pytest.mark.asyncio
+async def test_execute_rtc_control_command_disables_input_audio_by_policy():
+    spy = CommandSpy()
+
+    with pytest.raises(InvalidConfigError, match="unknown control message type"):
+        await execute_rtc_control_command(
+            spy,
+            {"type": "input_audio_buffer.append", "audio": "AQIDBA=="},
+            client_event_handler=lambda *_: None,
+        )
+
+    assert spy.calls == []
+
+
+@pytest.mark.asyncio
+async def test_execute_rtc_control_command_dispatches_client_event():
+    spy = CommandSpy(configured=False)
+    received = []
+
+    def on_client_event(event_name: str, payload) -> None:
+        received.append((event_name, payload))
+
+    await execute_rtc_control_command(
+        spy,
+        {"type": "client.event", "event": "ui.toast", "payload": {"message": "hi"}},
+        client_event_handler=on_client_event,
+    )
+
+    assert received == [("ui.toast", {"message": "hi"})]
+    assert spy.calls == []
 
 
 def test_parse_session_update_accepts_turn_policy_overrides():

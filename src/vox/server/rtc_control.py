@@ -12,7 +12,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from vox.operations.conversation import (
     ConversationOrchestrator,
-    execute_conversation_command,
+    execute_rtc_control_command,
 )
 from vox.operations.errors import OperationError
 from vox.server.rtc_cleanup import close_rtc_runtime_resources
@@ -126,10 +126,9 @@ async def receive_rtc_control_commands(
 ) -> None:
     async for msg in iter_ws_json_messages(websocket):
         try:
-            await execute_conversation_command(
+            await execute_rtc_control_command(
                 orchestrator,
                 msg,
-                allow_input_audio=False,
                 client_event_handler=lambda event_name, payload: send_client_event_to_browser(
                     record,
                     event_name,

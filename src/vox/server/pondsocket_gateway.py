@@ -13,6 +13,7 @@ from vox.operations.conversation import (
     ConvDoneEvent,
     ConversationOrchestrator,
     execute_conversation_command,
+    execute_rtc_control_command,
     pondsocket_event_to_conversation_command,
     serialize_conversation_event,
 )
@@ -306,10 +307,9 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
             return
         try:
             message = pondsocket_event_to_conversation_command(ctx.event_name, ctx.get_payload())
-            await execute_conversation_command(
+            await execute_rtc_control_command(
                 runtime.orchestrator,
                 message,
-                allow_input_audio=False,
                 client_event_handler=lambda event_name, payload: send_client_event_to_browser(
                     runtime.record,
                     event_name,
