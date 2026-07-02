@@ -14,16 +14,13 @@ from vox.operations.conversation import (
     ConversationOrchestrator,
     execute_conversation_command,
 )
-from vox.operations.errors import OperationError, SessionAlreadyConfiguredError
+from vox.operations.errors import OperationError
 from vox.server.auth import configured_api_key, extract_api_key_from_connection, is_api_key_authorized
 from vox.server.routes.conversation import (
     _event_to_wire,
-    _parse_allow_interruptions,
-    _parse_response_text,
-    parse_session_update,
 )
 from vox.server.routes.rtc import _cancel_media_tasks
-from vox.server.rtc_client_events import parse_client_event_message, send_client_event_to_browser
+from vox.server.rtc_client_events import send_client_event_to_browser
 from vox.server.rtc_conversation import (
     clear_rtc_audio_if_needed,
     create_rtc_orchestrator,
@@ -284,7 +281,7 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
                 message,
                 unknown_message_label="unknown conversation message type",
             )
-        except (OperationError, SessionAlreadyConfiguredError, ValueError) as exc:
+        except (OperationError, ValueError) as exc:
             await reply_error(ctx, str(exc))
         except Exception as exc:  # noqa: BLE001
             logger.exception("PondSocket conversation event error")
@@ -325,45 +322,18 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
             return
         try:
             message = payload_as_message(ctx.event_name, ctx.get_payload())
-            msg_type = message["type"]
-            if msg_type == "session.update":
-                config = parse_session_update(message)
-                await runtime.orchestrator.start_session(config)
-                return
-
-            if msg_type == "client.event":
-                event_name, payload = parse_client_event_message(message)
-                send_client_event_to_browser(runtime.record, event_name, payload)
-                return
-
-            if runtime.orchestrator.config is None:
-                await reply_error(ctx, "send session.update first")
-                return
-
-            if msg_type == "response.start":
-                allow_interruptions = _parse_allow_interruptions(message)
-                await runtime.orchestrator.start_response(allow_interruptions=allow_interruptions)
-            elif msg_type == "response.delta":
-                text = _parse_response_text(message, "delta")
-                if not text:
-                    await reply_error(ctx, "response.delta requires 'delta' text")
-                    return
-                allow_interruptions = _parse_allow_interruptions(message)
-                await runtime.orchestrator.append_response_text(text, allow_interruptions=allow_interruptions)
-            elif msg_type == "response.commit":
-                await runtime.orchestrator.commit_response()
-            elif msg_type == "response.cancel":
-                await runtime.orchestrator.cancel_response()
-            elif msg_type == "response.replace_text":
-                text = _parse_response_text(message, "text")
-                if not text:
-                    await reply_error(ctx, "response.replace_text requires 'text'")
-                    return
-                allow_interruptions = _parse_allow_interruptions(message)
-                await runtime.orchestrator.replace_response_text(text, allow_interruptions=allow_interruptions)
-            else:
-                await reply_error(ctx, f"unknown RTC control message type: {msg_type!r}")
-        except (OperationError, SessionAlreadyConfiguredError, ValueError) as exc:
+            await execute_conversation_command(
+                runtime.orchestrator,
+                message,
+                allow_input_audio=False,
+                client_event_handler=lambda event_name, payload: send_client_event_to_browser(
+                    runtime.record,
+                    event_name,
+                    payload,
+                ),
+                unknown_message_label="unknown RTC control message type",
+            )
+        except (OperationError, ValueError) as exc:
             await reply_error(ctx, str(exc))
         except Exception as exc:  # noqa: BLE001
             logger.exception("PondSocket RTC control event error")
