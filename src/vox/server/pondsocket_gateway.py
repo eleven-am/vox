@@ -18,13 +18,13 @@ from vox.operations.conversation import (
 )
 from vox.operations.errors import OperationError
 from vox.server.auth import configured_api_key, extract_api_key_from_connection, is_api_key_authorized
+from vox.server.rtc_cleanup import close_rtc_runtime_resources
 from vox.server.rtc_client_events import send_client_event_to_browser
 from vox.server.rtc_conversation import (
     clear_rtc_audio_if_needed,
     create_rtc_orchestrator,
     forward_wire_event_to_browser,
 )
-from vox.server.rtc_media import cancel_and_drain_media_tasks
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 
 if TYPE_CHECKING:
@@ -155,25 +155,14 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
         await runtime.orchestrator.close()
 
     async def close_rtc_runtime(runtime: _RtcRuntime) -> None:
-        record = runtime.record
-        await runtime.orchestrator.end_of_stream(flush_response=False)
-        await drain_task(runtime.emit_task)
-        if record.control_events is not None:
-            await record.control_events.put(None)
-        await drain_task(runtime.client_event_task)
-        await runtime.orchestrator.close()
-        record.orchestrator = None
-        record.data_channel = None
-        if record.audio_output is not None:
-            await record.audio_output.put(None)
-        if record.media_events is not None:
-            await record.media_events.put(None)
-        await cancel_and_drain_media_tasks(record)
-        if record.rtc_peer is not None:
-            with suppress(Exception):
-                await record.rtc_peer.close()
-        rtc_registry.detach_control(runtime.session_id)
-        rtc_registry.close(runtime.session_id)
+        await close_rtc_runtime_resources(
+            session_id=runtime.session_id,
+            registry=rtc_registry,
+            record=runtime.record,
+            orchestrator=runtime.orchestrator,
+            emit_task=runtime.emit_task,
+            client_event_task=runtime.client_event_task,
+        )
 
     def conversation_session_id(ctx: JoinContext | EventContext | LeaveContext) -> str:
         return str(ctx.route.params.get("session_id") or ctx.channel.name.rsplit("/", 1)[-1])

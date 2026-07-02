@@ -11,7 +11,6 @@ from typing import Any
 
 from fastapi import WebSocket, WebSocketDisconnect
 
-from vox.core.tasks import drain_task
 from vox.operations.conversation import (
     ConvDoneEvent,
     ConversationOrchestrator,
@@ -19,13 +18,13 @@ from vox.operations.conversation import (
     serialize_conversation_event,
 )
 from vox.operations.errors import OperationError
+from vox.server.rtc_cleanup import close_rtc_runtime_resources
 from vox.server.rtc_client_events import send_client_event_to_browser
 from vox.server.rtc_conversation import (
     clear_rtc_audio_if_needed,
     create_rtc_orchestrator,
     forward_wire_event_to_browser,
 )
-from vox.server.rtc_media import cancel_and_drain_media_tasks
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 from vox.server.rtc_timeline import RtcTurnTimeline, rtc_audio_stats
 from vox.server.websocket import safe_send_ws_error, send_ws_error, send_ws_operation_error
@@ -171,23 +170,13 @@ async def close_rtc_control_runtime(
     emit_task: asyncio.Task,
     client_event_task: asyncio.Task,
 ) -> None:
-    await orchestrator.end_of_stream(flush_response=False)
-    await drain_task(emit_task)
-    if record.control_events is not None:
-        await record.control_events.put(None)
-    await drain_task(client_event_task)
-    await orchestrator.close()
-    record.orchestrator = None
-    record.data_channel = None
-    if record.audio_output is not None:
-        await record.audio_output.put(None)
-    if record.media_events is not None:
-        await record.media_events.put(None)
-    await cancel_and_drain_media_tasks(record)
-    if record.rtc_peer is not None:
-        with suppress(Exception):
-            await record.rtc_peer.close()
-    registry.detach_control(session_id)
-    registry.close(session_id)
+    await close_rtc_runtime_resources(
+        session_id=session_id,
+        registry=registry,
+        record=record,
+        orchestrator=orchestrator,
+        emit_task=emit_task,
+        client_event_task=client_event_task,
+    )
     with suppress(Exception):
         await websocket.close()
