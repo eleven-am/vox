@@ -41,6 +41,7 @@ from vox.conversation.interrupt import (
     looks_like_self_echo,
 )
 from vox.conversation.profiles import DEFAULT_TURN_PROFILE, resolve_turn_profile
+from vox.conversation.speech_guard import AssistantSpeechGuard
 from vox.conversation.state_machine import TurnStateMachine
 from vox.conversation.text_buffer import StreamingTextBuffer, split_for_tts
 from vox.conversation.timers import ConversationTimerRegistry
@@ -187,10 +188,7 @@ class ConversationSession:
         self._active_response_id: str | None = None
         self._last_cancelled_response_id: str | None = None
 
-        self._flutter_cooldown_until: float = 0.0
-        self._aec_warmup_until: float = 0.0
-        self._agent_speech_active: bool = False
-        self._agent_speech_end_monotonic: float = 0.0
+        self._speech_guard = AssistantSpeechGuard()
 
         self._last_eou_probability: float | None = None
 
@@ -448,7 +446,7 @@ class ConversationSession:
                 }
             )
 
-            if self._sm.state == TurnState.SPEAKING and time.monotonic() < self._flutter_cooldown_until:
+            if self._sm.state == TurnState.SPEAKING and self._speech_guard.flutter_cooldown_active():
                 logger.debug("flutter cooldown active; suppressing SPEECH_STARTED state transition")
                 return
             confirm_ms = self._config.interrupt_classifier.confirm_window_ms(
@@ -536,7 +534,7 @@ class ConversationSession:
                 logger.debug(
                     "dropping final transcript inside agent-speech window (state=%s, agent_speech_active=%s)",
                     self._sm.state.value,
-                    self._agent_speech_active,
+                    self._speech_guard.speech_active,
                 )
                 await self._emit(
                     {
@@ -788,15 +786,10 @@ class ConversationSession:
         self._mark_estimated_playout(encoded_audio, sample_rate)
 
     def _arm_aec_warmup(self) -> None:
-        warmup_ms = self._config.policy.aec_warmup_ms
-        if warmup_ms <= 0:
-            return
-        self._aec_warmup_until = time.monotonic() + warmup_ms / 1000.0
+        self._speech_guard.arm_aec_warmup(self._config.policy.aec_warmup_ms)
 
     def _aec_warmup_active(self) -> bool:
-        if self._aec_warmup_until <= 0.0:
-            return False
-        return time.monotonic() < self._aec_warmup_until
+        return self._speech_guard.aec_warmup_active()
 
     def _is_response_uninterruptible(self) -> bool:
         stream = self._response_stream
@@ -805,22 +798,17 @@ class ConversationSession:
         return self._sm.state in {TurnState.THINKING, TurnState.SPEAKING}
 
     def _mark_agent_speech_started(self) -> None:
-        self._agent_speech_active = True
+        self._speech_guard.mark_speech_started()
 
     def _mark_agent_speech_ended(self) -> None:
-        if self._agent_speech_active:
-            self._agent_speech_end_monotonic = time.monotonic()
-        self._agent_speech_active = False
+        self._speech_guard.mark_speech_ended()
 
     def _is_in_self_echo_window(self) -> bool:
         if self._sm.state not in {TurnState.SPEAKING, TurnState.THINKING}:
             return False
-        if self._agent_speech_active:
-            return True
-        cooldown_s = self._config.policy.backchannel_end_cooldown_ms / 1000.0
-        if cooldown_s <= 0.0:
-            return False
-        return time.monotonic() < self._agent_speech_end_monotonic + cooldown_s
+        return self._speech_guard.in_self_echo_window(
+            self._config.policy.backchannel_end_cooldown_ms
+        )
 
     def _looks_like_current_output_echo(self) -> bool:
         return self._audio_history.looks_like_current_output_echo()
@@ -841,8 +829,7 @@ class ConversationSession:
                 for pending in self._audio_output.pop_pending_batch():
                     await self._emit_output_audio(pending.audio, pending.sample_rate, pending.sequence)
             self._audio_output.finish_resume()
-            cooldown_s = self._config.policy.stable_speaking_min_ms / 1000.0
-            self._flutter_cooldown_until = time.monotonic() + cooldown_s
+            self._speech_guard.start_flutter_cooldown(self._config.policy.stable_speaking_min_ms)
             if stream is not None and stream.pending_done:
                 await self._complete_response_stream(stream)
 

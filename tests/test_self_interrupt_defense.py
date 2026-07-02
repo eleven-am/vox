@@ -232,7 +232,7 @@ class TestWarmupArmingAlignedToPlayout:
 
         assert session.state == TurnState.SPEAKING
         assert not session._aec_warmup_active()
-        assert session._aec_warmup_until == 0.0
+        assert session._speech_guard.aec_warmup_until == 0.0
 
         await session.close()
 
@@ -261,7 +261,7 @@ class TestPostSpeechTranscriptFilter:
         await session.submit_response_text("hello")
         await asyncio.sleep(0.1)
         assert session.state == TurnState.SPEAKING
-        assert session._agent_speech_active
+        assert session._speech_guard.speech_active
 
         await session._forward_stream_event(StreamTranscript(
             text="echo of myself",
@@ -288,7 +288,7 @@ class TestPostSpeechTranscriptFilter:
 
         session._mark_agent_speech_started()
         session._mark_agent_speech_ended()
-        assert not session._agent_speech_active
+        assert not session._speech_guard.speech_active
 
         session._sm._state = TurnState.SPEAKING
         await session._forward_stream_event(StreamTranscript(
