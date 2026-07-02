@@ -99,6 +99,32 @@ def module_available(import_name: str) -> bool:
         return False
 
 
+def module_available_in_runtime(
+    import_name: str,
+    runtime_path: Path | str,
+    *,
+    include_app_fallback: bool,
+) -> bool:
+    """Probe runtime availability without silently accepting app-env packages."""
+
+    try:
+        spec = find_spec(import_name)
+    except (ImportError, ValueError):
+        return False
+    if spec is None:
+        return False
+    if include_app_fallback:
+        return True
+
+    runtime = Path(runtime_path).resolve()
+    candidate_paths: list[Path] = []
+    if spec.origin and spec.origin not in {"built-in", "frozen"}:
+        candidate_paths.append(Path(spec.origin))
+    if spec.submodule_search_locations:
+        candidate_paths.extend(Path(path) for path in spec.submodule_search_locations)
+    return any(_is_relative_to(path, runtime) for path in candidate_paths)
+
+
 def ensure_pip_available(*, context: str = "adapter runtime") -> None:
     if find_spec("pip") is not None:
         return
@@ -152,15 +178,21 @@ def ensure_target_runtime(
     runtime.path.mkdir(parents=True, exist_ok=True)
     activate_runtime_path(runtime.path, root=runtime_root_path)
 
-    probe = module_probe or module_available
+    if include_app_fallback:
+        write_app_fallback_path(runtime.path)
+
+    probe = module_probe or (
+        lambda name: module_available_in_runtime(
+            name,
+            runtime.path,
+            include_app_fallback=include_app_fallback,
+        )
+    )
     if probe(import_name):
         return runtime.path
 
     if purge_modules:
         purge_runtime_modules(purge_modules)
-
-    if include_app_fallback:
-        write_app_fallback_path(runtime.path)
 
     packages = [package_spec, *extra_packages]
     install_context = context or f"{runtime_name} runtime"
@@ -316,3 +348,11 @@ def _default_install_runner(cmd: list[str], timeout: int) -> subprocess.Complete
 
 def _is_python_pip_command(cmd: list[str]) -> bool:
     return len(cmd) >= 3 and cmd[0] == sys.executable and cmd[1:3] == ["-m", "pip"]
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent)
+    except ValueError:
+        return False
+    return True

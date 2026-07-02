@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from importlib.machinery import ModuleSpec
 from types import ModuleType
 
 import pytest
@@ -59,6 +60,75 @@ def test_module_available_fails_closed_when_spec_probe_raises_value_error(monkey
     monkeypatch.setattr(adapter_runtime, "find_spec", lambda _name: (_ for _ in ()).throw(ValueError("bad spec")))
 
     assert adapter_runtime.module_available("broken_runtime") is False
+
+
+def test_module_available_in_runtime_rejects_app_env_module_without_explicit_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    runtime_path = tmp_path / "runtime" / "strict"
+    app_path = tmp_path / "app" / "site-packages" / "heavy_runtime" / "__init__.py"
+    spec = ModuleSpec("heavy_runtime", loader=None, origin=str(app_path))
+    monkeypatch.setattr(adapter_runtime, "find_spec", lambda _name: spec)
+
+    assert not adapter_runtime.module_available_in_runtime(
+        "heavy_runtime",
+        runtime_path,
+        include_app_fallback=False,
+    )
+    assert adapter_runtime.module_available_in_runtime(
+        "heavy_runtime",
+        runtime_path,
+        include_app_fallback=True,
+    )
+
+
+def test_module_available_in_runtime_accepts_target_runtime_package(monkeypatch, tmp_path):
+    runtime_path = tmp_path / "runtime" / "strict"
+    package_path = runtime_path / "heavy_runtime" / "__init__.py"
+    spec = ModuleSpec("heavy_runtime", loader=None, origin=str(package_path))
+    monkeypatch.setattr(adapter_runtime, "find_spec", lambda _name: spec)
+
+    assert adapter_runtime.module_available_in_runtime(
+        "heavy_runtime",
+        runtime_path,
+        include_app_fallback=False,
+    )
+
+
+def test_ensure_target_runtime_does_not_accept_app_env_module_as_strict_runtime(
+    monkeypatch,
+    tmp_path,
+):
+    calls: list[list[str]] = []
+    runtime_root = tmp_path / "runtime"
+    app_path = tmp_path / "app" / "site-packages" / "strict_runtime" / "__init__.py"
+
+    def find_spec(import_name: str):
+        assert import_name == "strict_runtime"
+        if not calls:
+            return ModuleSpec(import_name, loader=None, origin=str(app_path))
+        target_path = runtime_root / "strict-runtime" / "strict_runtime" / "__init__.py"
+        return ModuleSpec(import_name, loader=None, origin=str(target_path))
+
+    def runner(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(adapter_runtime, "find_spec", find_spec)
+
+    runtime_path = adapter_runtime.ensure_target_runtime(
+        "strict-runtime",
+        "strict-runtime==1.0.0",
+        "strict_runtime",
+        root=runtime_root,
+        install_runner=runner,
+        include_app_fallback=False,
+    )
+
+    assert runtime_path == runtime_root / "strict-runtime"
+    assert calls
+    assert not (runtime_path / "_vox_runtime_fallback_paths.pth").exists()
 
 
 def test_ensure_target_runtime_prefers_uv_and_writes_app_fallback(tmp_path):
