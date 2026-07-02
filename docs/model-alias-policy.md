@@ -40,6 +40,11 @@ family alias may resolve to a backend better suited for that runtime. This is a
 product choice owned by the alias resolver, not by HTTP, gRPC, scheduler, or
 adapter code.
 
+If the runtime profile cannot be matched, family alias resolution falls back to
+the `default` profile. This fallback is part of the alias policy and is exposed
+in `ModelAliasResolution.resolved_profile`; callers can compare it with
+`ModelAliasResolution.profile` to see that fallback occurred.
+
 ### Legacy Model Reference Aliases
 
 Legacy model reference aliases rewrite older `(name, tag)` pairs to canonical
@@ -79,5 +84,7 @@ alias resolution from becoming a hidden fallback layer.
 
 `resolve_model_alias(...)` returns structured metadata describing whether a
 reference was rewritten and which alias class performed the rewrite.
+For family aliases, `profile` records the inferred/requested runtime profile and
+`resolved_profile` records the profile entry that was actually used.
 `resolve_family_alias(...)` remains as the tuple-returning compatibility wrapper
 for existing call sites.

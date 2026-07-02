@@ -22,6 +22,7 @@ class ModelAliasResolution:
     original_name: str
     original_tag: str
     profile: str | None = None
+    resolved_profile: str | None = None
 
     @property
     def rewritten(self) -> bool:
@@ -253,7 +254,8 @@ def resolve_model_alias(
         aliases = _IMPLICIT_MODEL_ALIASES.get(name)
         if aliases is not None:
             profile = _runtime_profile()
-            resolved_name, resolved_tag = aliases.get(profile) or aliases["default"]
+            resolved_profile = profile if profile in aliases else "default"
+            resolved_name, resolved_tag = aliases[resolved_profile]
             return ModelAliasResolution(
                 name=resolved_name,
                 tag=resolved_tag,
@@ -261,6 +263,7 @@ def resolve_model_alias(
                 original_name=name,
                 original_tag=tag,
                 profile=profile,
+                resolved_profile=resolved_profile,
             )
 
     exact_alias = _LEGACY_MODEL_REF_ALIASES.get((name, tag))

@@ -34,6 +34,7 @@ class TestBareNameResolution:
         assert resolution.original_name == "parakeet"
         assert resolution.original_tag == "latest"
         assert resolution.profile == "default"
+        assert resolution.resolved_profile == "default"
         assert (resolution.name, resolution.tag) == ("parakeet-stt-onnx", "tdt-0.6b-v3")
 
     def test_bare_name_uses_spark_profile_when_cuda_on_arm(self, monkeypatch: pytest.MonkeyPatch):
@@ -54,7 +55,11 @@ class TestBareNameResolution:
             "vox.core.device_placement.infer_runtime_profile",
             return_value="unknown-profile",
         ):
-            assert resolve_family_alias("kokoro") == ("kokoro-tts-onnx", "v1.0")
+            resolution = resolve_model_alias("kokoro")
+
+        assert resolution.profile == "unknown-profile"
+        assert resolution.resolved_profile == "default"
+        assert (resolution.name, resolution.tag) == ("kokoro-tts-onnx", "v1.0")
 
     def test_all_bare_family_names_resolve(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("VOX_DEVICE", "cuda")
@@ -96,8 +101,13 @@ class TestProfileInference:
             "vox.core.device_placement.infer_runtime_profile",
             return_value="spark",
         ):
-            assert resolve_family_alias("parakeet") == ("parakeet-stt-nemo", "tdt-0.6b-v3")
-            assert resolve_family_alias("kokoro") == ("kokoro-tts-torch", "v1.0")
+            parakeet = resolve_model_alias("parakeet")
+            kokoro = resolve_model_alias("kokoro")
+
+        assert parakeet.resolved_profile == "spark"
+        assert kokoro.resolved_profile == "spark"
+        assert (parakeet.name, parakeet.tag) == ("parakeet-stt-nemo", "tdt-0.6b-v3")
+        assert (kokoro.name, kokoro.tag) == ("kokoro-tts-torch", "v1.0")
 
     def test_cuda_hint_on_arm_forces_spark_regardless_of_inference(
         self, monkeypatch: pytest.MonkeyPatch
