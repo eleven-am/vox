@@ -4,7 +4,6 @@ import logging
 
 import grpc
 
-from vox.core.errors import ModelNotFoundError, VoxError
 from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
@@ -49,12 +48,6 @@ class TranscriptionServicer(vox_pb2_grpc.TranscriptionServiceServicer):
         except OperationError as exc:
             code, msg = operation_error_status(exc)
             await context.abort(code, msg)
-            return
-        except ModelNotFoundError as exc:
-            await context.abort(grpc.StatusCode.NOT_FOUND, str(exc))
-            return
-        except VoxError as exc:
-            await context.abort(grpc.StatusCode.INTERNAL, str(exc))
             return
         except Exception:
             logger.exception("Transcription failed")

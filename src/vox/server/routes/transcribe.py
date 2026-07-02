@@ -6,7 +6,6 @@ import logging
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 
-from vox.core.errors import ModelNotFoundError, VoxError
 from vox.operations.errors import OperationError
 from vox.operations.transcription import (
     TranscriptionRequest,
@@ -62,10 +61,6 @@ async def _run_transcribe(
         )
     except OperationError as exc:
         raise operation_error_to_http(exc) from exc
-    except ModelNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except VoxError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
     except Exception as exc:
         logger.exception(f"Transcription failed for model {model}")
         raise HTTPException(status_code=500, detail="Internal transcription error") from exc

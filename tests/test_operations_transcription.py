@@ -13,6 +13,7 @@ from vox.core.types import TranscribeResult, TranscriptSegment, WordTimestamp
 from vox.operations.errors import (
     EmptyAudioError,
     NoDefaultModelError,
+    StoredModelNotFoundError,
     WrongModelTypeError,
 )
 from vox.operations.transcription import (
@@ -355,6 +356,20 @@ async def test_transcribe_raises_when_adapter_is_tts():
         await transcribe(
             scheduler=sched, registry=registry, store=None,
             request=TranscriptionRequest(audio=_wav_bytes(), model="fake-tts:latest"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_transcribe_translates_model_not_found_to_operation_error():
+    sched = DummyScheduler()
+    registry = MagicMock()
+
+    with pytest.raises(StoredModelNotFoundError):
+        await transcribe(
+            scheduler=sched,
+            registry=registry,
+            store=None,
+            request=TranscriptionRequest(audio=_wav_bytes(), model="missing:latest"),
         )
 
 
