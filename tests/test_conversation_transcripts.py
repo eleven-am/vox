@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 
 from vox.conversation.transcripts import (
+    TRANSCRIPT_CONTINUATION_COMMIT_MS,
     WIRE_TRANSCRIPT_DONE,
     WIRE_TURN_EOU_PREDICTED,
     EndpointCommitDelayPolicy,
@@ -10,9 +11,10 @@ from vox.conversation.transcripts import (
     coalesce_transcript_payload,
     final_transcript_decision,
     is_transcript_revision,
+    should_wait_for_pending_final_transcript,
     transcript_done_payload,
 )
-from vox.conversation.types import TurnPolicy
+from vox.conversation.types import TimerKey, TurnEvent, TurnEventType, TurnPolicy
 from vox.streaming.types import StreamTranscript
 
 
@@ -271,3 +273,76 @@ def test_final_transcript_decision_defers_missing_eou_without_emitting_eou_event
     assert decision.defer_commit
     assert not decision.eou_complete
     assert decision.eou_event is None
+
+
+def test_pending_final_transcript_wait_ignores_unrelated_events():
+    assert not should_wait_for_pending_final_transcript(
+        TurnEvent(type=TurnEventType.SPEECH_STOPPED),
+        awaiting_final_transcript=True,
+        awaiting_started_at=10.0,
+        max_endpointing_delay_ms=3000,
+        now=10.5,
+    )
+    assert not should_wait_for_pending_final_transcript(
+        TurnEvent(type=TurnEventType.TIMER_ELAPSED, payload={"key": TimerKey.CONFIRM_INTERRUPT.value}),
+        awaiting_final_transcript=True,
+        awaiting_started_at=10.0,
+        max_endpointing_delay_ms=3000,
+        now=10.5,
+    )
+
+
+def test_pending_final_transcript_wait_requires_pending_transcript():
+    assert not should_wait_for_pending_final_transcript(
+        TurnEvent(type=TurnEventType.TIMER_ELAPSED, payload={"key": TimerKey.ENDPOINTING.value}),
+        awaiting_final_transcript=False,
+        awaiting_started_at=10.0,
+        max_endpointing_delay_ms=3000,
+        now=10.5,
+    )
+
+
+def test_pending_final_transcript_wait_rechecks_until_max_delay_expires():
+    event = TurnEvent(type=TurnEventType.TIMER_ELAPSED, payload={"key": TimerKey.ENDPOINTING.value})
+
+    assert should_wait_for_pending_final_transcript(
+        event,
+        awaiting_final_transcript=True,
+        awaiting_started_at=0.0,
+        max_endpointing_delay_ms=3000,
+        now=10.0,
+    )
+    assert should_wait_for_pending_final_transcript(
+        event,
+        awaiting_final_transcript=True,
+        awaiting_started_at=10.0,
+        max_endpointing_delay_ms=3000,
+        now=12.9,
+    )
+    assert not should_wait_for_pending_final_transcript(
+        event,
+        awaiting_final_transcript=True,
+        awaiting_started_at=10.0,
+        max_endpointing_delay_ms=3000,
+        now=13.0,
+    )
+
+
+def test_pending_final_transcript_wait_uses_continuation_floor():
+    event = TurnEvent(type=TurnEventType.TIMER_ELAPSED, payload={"key": TimerKey.ENDPOINTING.value})
+    started_at = 10.0
+
+    assert should_wait_for_pending_final_transcript(
+        event,
+        awaiting_final_transcript=True,
+        awaiting_started_at=started_at,
+        max_endpointing_delay_ms=100,
+        now=started_at + ((TRANSCRIPT_CONTINUATION_COMMIT_MS - 1) / 1000),
+    )
+    assert not should_wait_for_pending_final_transcript(
+        event,
+        awaiting_final_transcript=True,
+        awaiting_started_at=started_at,
+        max_endpointing_delay_ms=100,
+        now=started_at + ((TRANSCRIPT_CONTINUATION_COMMIT_MS + 1) / 1000),
+    )

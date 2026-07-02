@@ -131,7 +131,6 @@ class ConversationConfig:
             )
 
 
-TRANSCRIPT_CONTINUATION_COMMIT_MS = transcript_finalization.TRANSCRIPT_CONTINUATION_COMMIT_MS
 TRANSCRIPT_PENDING_STT_RECHECK_MS = 100
 
 
@@ -1017,20 +1016,12 @@ class ConversationSession:
         await self._timer_registry.cancel(key)
 
     def _should_wait_for_final_transcript(self, event: TurnEvent) -> bool:
-        if event.type != TurnEventType.TIMER_ELAPSED:
-            return False
-        if event.payload.get("key") != TimerKey.ENDPOINTING.value:
-            return False
-        if not self._awaiting_final_transcript:
-            return False
-        if self._awaiting_final_transcript_started_at <= 0.0:
-            return True
-        max_wait_ms = max(
-            self._config.policy.max_endpointing_delay_ms,
-            TRANSCRIPT_CONTINUATION_COMMIT_MS,
+        return transcript_finalization.should_wait_for_pending_final_transcript(
+            event,
+            awaiting_final_transcript=self._awaiting_final_transcript,
+            awaiting_started_at=self._awaiting_final_transcript_started_at,
+            max_endpointing_delay_ms=self._config.policy.max_endpointing_delay_ms,
         )
-        waited_ms = int((time.monotonic() - self._awaiting_final_transcript_started_at) * 1000)
-        return waited_ms < max_wait_ms
 
     async def _emit(self, event: dict) -> None:
         if self._closed:

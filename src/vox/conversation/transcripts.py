@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
 
-from vox.conversation.types import TurnPolicy
+from vox.conversation.types import TimerKey, TurnEvent, TurnEventType, TurnPolicy
 from vox.streaming.types import StreamTranscript
 
 WIRE_TRANSCRIPT_DONE = "conversation.item.input_audio_transcription.completed"
@@ -249,3 +250,29 @@ def final_transcript_decision(
             "end_ms": transcript.end_ms,
         },
     )
+
+
+def should_wait_for_pending_final_transcript(
+    event: TurnEvent,
+    *,
+    awaiting_final_transcript: bool,
+    awaiting_started_at: float,
+    max_endpointing_delay_ms: int,
+    now: float | None = None,
+) -> bool:
+    if event.type != TurnEventType.TIMER_ELAPSED:
+        return False
+    if event.payload.get("key") != TimerKey.ENDPOINTING.value:
+        return False
+    if not awaiting_final_transcript:
+        return False
+    if awaiting_started_at <= 0.0:
+        return True
+
+    current_time = time.monotonic() if now is None else now
+    max_wait_ms = max(
+        max_endpointing_delay_ms,
+        TRANSCRIPT_CONTINUATION_COMMIT_MS,
+    )
+    waited_ms = int((current_time - awaiting_started_at) * 1000)
+    return waited_ms < max_wait_ms
