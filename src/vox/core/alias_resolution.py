@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from types import MappingProxyType
 
 from vox.core.device_placement import runtime_profile_for_alias
 
@@ -27,6 +29,26 @@ class ModelAliasResolution:
     @property
     def rewritten(self) -> bool:
         return self.kind is not AliasResolutionKind.NONE
+
+
+@dataclass(frozen=True)
+class FamilyAliasPolicy:
+    name: str
+    profiles: Mapping[str, tuple[str, str]]
+
+
+@dataclass(frozen=True)
+class LegacyModelRefAliasPolicy:
+    name: str
+    tag: str
+    target_name: str
+    target_tag: str
+
+
+@dataclass(frozen=True)
+class LegacyNameAliasPolicy:
+    name: str
+    target_name: str
 
 
 _IMPLICIT_MODEL_ALIASES: dict[str, dict[str, tuple[str, str]]] = {
@@ -247,6 +269,36 @@ def resolve_family_alias(
     return resolution.name, resolution.tag
 
 
+def family_alias_policy() -> tuple[FamilyAliasPolicy, ...]:
+    return tuple(
+        FamilyAliasPolicy(
+            name=name,
+            profiles=MappingProxyType(dict(profiles)),
+        )
+        for name, profiles in sorted(_IMPLICIT_MODEL_ALIASES.items())
+    )
+
+
+def legacy_model_ref_alias_policy() -> tuple[LegacyModelRefAliasPolicy, ...]:
+    return tuple(
+        LegacyModelRefAliasPolicy(
+            name=name,
+            tag=tag,
+            target_name=target_name,
+            target_tag=target_tag,
+        )
+        for (name, tag), (target_name, target_tag)
+        in sorted(_LEGACY_MODEL_REF_ALIASES.items())
+    )
+
+
+def legacy_name_alias_policy() -> tuple[LegacyNameAliasPolicy, ...]:
+    return tuple(
+        LegacyNameAliasPolicy(name=name, target_name=target_name)
+        for name, target_name in sorted(_LEGACY_NAME_ALIASES.items())
+    )
+
+
 def resolve_model_alias(
     name: str, tag: str = "latest", *, explicit_tag: bool = False
 ) -> ModelAliasResolution:
@@ -298,7 +350,13 @@ def resolve_model_alias(
 
 __all__ = [
     "AliasResolutionKind",
+    "FamilyAliasPolicy",
+    "LegacyModelRefAliasPolicy",
+    "LegacyNameAliasPolicy",
     "ModelAliasResolution",
+    "family_alias_policy",
+    "legacy_model_ref_alias_policy",
+    "legacy_name_alias_policy",
     "resolve_family_alias",
     "resolve_model_alias",
 ]

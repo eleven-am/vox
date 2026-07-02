@@ -6,6 +6,9 @@ import pytest
 
 from vox.core.alias_resolution import (
     AliasResolutionKind,
+    family_alias_policy,
+    legacy_model_ref_alias_policy,
+    legacy_name_alias_policy,
     resolve_family_alias,
     resolve_model_alias,
 )
@@ -193,6 +196,33 @@ class TestLegacyAliasRewrite:
         assert resolution.original_name == "qwen3-asr"
         assert resolution.original_tag == "0.6b"
         assert (resolution.name, resolution.tag) == ("qwen3-stt-torch", "0.6b")
+
+    def test_documented_legacy_model_ref_examples_are_public_policy(self):
+        policies = {
+            (policy.name, policy.tag): (policy.target_name, policy.target_tag)
+            for policy in legacy_model_ref_alias_policy()
+        }
+
+        assert policies[("parakeet", "tdt-0.6b-v3-cuda")] == (
+            "parakeet-stt-nemo",
+            "tdt-0.6b-v3",
+        )
+        assert policies[("voxtral", "tts-4b")] == ("voxtral-tts-vllm", "4b")
+
+    def test_documented_legacy_name_examples_are_public_policy(self):
+        policies = {
+            policy.name: policy.target_name
+            for policy in legacy_name_alias_policy()
+        }
+
+        assert policies["qwen3-asr"] == "qwen3-stt-torch"
+        assert policies["kokoro-torch"] == "kokoro-tts-torch"
+
+    def test_family_alias_policy_is_read_only(self):
+        parakeet = next(policy for policy in family_alias_policy() if policy.name == "parakeet")
+
+        with pytest.raises(TypeError):
+            parakeet.profiles["default"] = ("different", "latest")
 
 
 class TestUnknownNameFallthrough:

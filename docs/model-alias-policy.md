@@ -18,6 +18,16 @@ chatterbox-tts-turbo:0.1.7
 Alias resolution is owned by `vox.core.alias_resolution`. Other modules should
 not invent model-name translation rules.
 
+The resolver also exposes read-only policy snapshots:
+
+- `family_alias_policy()`
+- `legacy_model_ref_alias_policy()`
+- `legacy_name_alias_policy()`
+
+Tests and tooling should use these snapshots instead of reaching into private
+alias tables. This keeps compatibility aliases visible while preserving
+`vox.core.alias_resolution` as the single owner of rewrite behavior.
+
 ## Alias Classes
 
 Vox currently supports three explicit alias classes.
