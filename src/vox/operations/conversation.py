@@ -265,6 +265,7 @@ async def execute_conversation_command(
     message: dict,
     *,
     require_config_message: str = "send session.update first",
+    unknown_message_label: str = "unknown message type",
 ) -> None:
     msg_type = message.get("type")
     if not msg_type:
@@ -322,7 +323,7 @@ async def execute_conversation_command(
         await orchestrator.replace_response_text(text, allow_interruptions=allow_interruptions)
         return
 
-    raise InvalidConfigError(f"unknown message type: {msg_type!r}")
+    raise InvalidConfigError(f"{unknown_message_label}: {msg_type!r}")
 
 
 def _wire_event_to_session_event(event: dict) -> ConvEvent | None:

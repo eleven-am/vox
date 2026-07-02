@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 from contextlib import suppress
 from dataclasses import dataclass
@@ -13,6 +12,7 @@ from vox.core.tasks import drain_task
 from vox.operations.conversation import (
     ConvDoneEvent,
     ConversationOrchestrator,
+    execute_conversation_command,
 )
 from vox.operations.errors import OperationError, SessionAlreadyConfiguredError
 from vox.server.auth import configured_api_key, extract_api_key_from_connection, is_api_key_authorized
@@ -279,47 +279,11 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
             return
         try:
             message = payload_as_message(ctx.event_name, ctx.get_payload())
-            msg_type = message["type"]
-            if msg_type == "session.update":
-                config = parse_session_update(message)
-                await runtime.orchestrator.start_session(config)
-                return
-
-            if runtime.orchestrator.config is None:
-                await reply_error(ctx, "send session.update first")
-                return
-
-            if msg_type == "input_audio_buffer.append":
-                audio_b64 = message.get("audio")
-                if not audio_b64:
-                    await reply_error(ctx, "audio field required")
-                    return
-                pcm = base64.b64decode(audio_b64)
-                sample_rate = int(message.get("sample_rate", 0)) or None
-                await runtime.orchestrator.ingest_pcm16(pcm, sample_rate=sample_rate)
-            elif msg_type == "response.start":
-                allow_interruptions = _parse_allow_interruptions(message)
-                await runtime.orchestrator.start_response(allow_interruptions=allow_interruptions)
-            elif msg_type == "response.delta":
-                text = _parse_response_text(message, "delta")
-                if not text:
-                    await reply_error(ctx, "response.delta requires 'delta' text")
-                    return
-                allow_interruptions = _parse_allow_interruptions(message)
-                await runtime.orchestrator.append_response_text(text, allow_interruptions=allow_interruptions)
-            elif msg_type == "response.commit":
-                await runtime.orchestrator.commit_response()
-            elif msg_type == "response.cancel":
-                await runtime.orchestrator.cancel_response()
-            elif msg_type == "response.replace_text":
-                text = _parse_response_text(message, "text")
-                if not text:
-                    await reply_error(ctx, "response.replace_text requires 'text'")
-                    return
-                allow_interruptions = _parse_allow_interruptions(message)
-                await runtime.orchestrator.replace_response_text(text, allow_interruptions=allow_interruptions)
-            else:
-                await reply_error(ctx, f"unknown conversation message type: {msg_type!r}")
+            await execute_conversation_command(
+                runtime.orchestrator,
+                message,
+                unknown_message_label="unknown conversation message type",
+            )
         except (OperationError, SessionAlreadyConfiguredError, ValueError) as exc:
             await reply_error(ctx, str(exc))
         except Exception as exc:  # noqa: BLE001

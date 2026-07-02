@@ -199,6 +199,18 @@ async def test_execute_conversation_command_rejects_unknown_type():
         await execute_conversation_command(spy, {"type": "bogus"})
 
 
+@pytest.mark.asyncio
+async def test_execute_conversation_command_can_preserve_transport_unknown_label():
+    spy = CommandSpy()
+
+    with pytest.raises(InvalidConfigError, match="unknown conversation message type: 'bogus'"):
+        await execute_conversation_command(
+            spy,
+            {"type": "bogus"},
+            unknown_message_label="unknown conversation message type",
+        )
+
+
 def test_parse_session_update_accepts_turn_policy_overrides():
     config = parse_session_update({
         "session": {
