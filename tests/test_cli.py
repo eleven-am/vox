@@ -699,3 +699,18 @@ class TestStreamSynthesize:
         assert config["response_format"] == "pcm16"
         assert json.loads(ws.sent[1][0]) == {"type": "text", "text": "Hello world"}
         assert json.loads(ws.sent[-1][0]) == {"type": "end"}
+
+
+class TestSearch:
+    @patch("vox.core.registry.fetch_registry_index")
+    def test_search_hides_hard_cut_names(self, mock_index, runner):
+        mock_index.return_value = [
+            {"name": "whisper-stt", "tag": "base.en", "type": "stt", "description": "logical"},
+            {"name": "whisper-stt-ct2", "tag": "base.en", "type": "stt", "description": "hard-cut"},
+            {"name": "parakeet-stt-onnx", "tag": "tdt-0.6b", "type": "stt", "description": "hard-cut"},
+        ]
+        result = runner.invoke(cli, ["search"])
+        assert result.exit_code == 0
+        assert "whisper-stt:base.en" in result.output
+        assert "whisper-stt-ct2" not in result.output
+        assert "parakeet-stt-onnx" not in result.output

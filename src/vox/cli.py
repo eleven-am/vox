@@ -756,12 +756,14 @@ def voices(ctx, model: str):
 @click.option("--type", "model_type", default=None, help="Filter by type: stt or tts")
 def search(model_type: str | None):
     """Search available models from the registry."""
-    from vox.core.registry import fetch_registry_index
+    from vox.core.registry import _HIDDEN_PUBLIC_MODEL_NAMES, fetch_registry_index
 
     index = fetch_registry_index(force_refresh=True)
     if not index:
         click.echo("Error: could not reach the model registry", err=True)
         sys.exit(1)
+
+    index = [m for m in index if m.get("name") not in _HIDDEN_PUBLIC_MODEL_NAMES]
 
     if model_type:
         index = [m for m in index if m.get("type") == model_type]
