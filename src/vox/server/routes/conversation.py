@@ -25,19 +25,12 @@ from vox.operations.conversation import (
     execute_conversation_command,
     serialize_conversation_event,
 )
-from vox.operations.conversation import (
-    parse_session_update as _operation_parse_session_update,
-)
 from vox.operations.errors import OperationError
 from vox.server.websocket import safe_send_ws_error, send_ws_error
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 legacy_router = APIRouter()
-
-# Backward-compatible import surface for adjacent transports while command
-# dispatch moves into vox.operations.conversation.
-parse_session_update = _operation_parse_session_update
 
 
 @legacy_router.websocket("/v1/conversation")
