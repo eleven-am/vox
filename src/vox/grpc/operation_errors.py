@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 import grpc
 
 from vox.operations.errors import OperationError, OperationErrorKind, classify_operation_error
@@ -25,3 +28,12 @@ def operation_error_status(exc: OperationError) -> tuple[grpc.StatusCode, str]:
 async def abort_operation_error(context, exc: OperationError) -> None:
     code, message = operation_error_status(exc)
     await context.abort(code, message)
+
+
+@asynccontextmanager
+async def map_operation_errors_to_grpc(context) -> AsyncIterator[None]:
+    try:
+        yield
+    except OperationError as exc:
+        await abort_operation_error(context, exc)
+        raise RuntimeError("gRPC context.abort returned without raising") from exc

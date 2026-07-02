@@ -8,7 +8,7 @@ from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.grpc import vox_pb2, vox_pb2_grpc
-from vox.grpc.operation_errors import abort_operation_error
+from vox.grpc.operation_errors import abort_operation_error, map_operation_errors_to_grpc
 from vox.grpc.voice_messages import (
     create_voice_response,
     delete_voice_response,
@@ -63,15 +63,12 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
             await context.abort(grpc.StatusCode.INTERNAL, "Internal synthesis error")
 
     async def ListVoices(self, request, context):
-        try:
+        async with map_operation_errors_to_grpc(context):
             listed = await list_voices(
                 scheduler=self._scheduler,
                 store=self._store,
                 model=request.model or None,
             )
-        except OperationError as exc:
-            await abort_operation_error(context, exc)
-            return
 
         return list_voices_response(listed)
 
@@ -85,10 +82,8 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
             reference_text=request.reference_text or None,
         )
         try:
-            voice = create_voice(store=self._store, request=op_req)
-        except OperationError as exc:
-            await abort_operation_error(context, exc)
-            return
+            async with map_operation_errors_to_grpc(context):
+                voice = create_voice(store=self._store, request=op_req)
         except TypeError as exc:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
             return
@@ -96,9 +91,6 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
         return create_voice_response(voice)
 
     async def DeleteVoice(self, request, context):
-        try:
+        async with map_operation_errors_to_grpc(context):
             delete_voice(store=self._store, voice_id=request.id)
-        except OperationError as exc:
-            await abort_operation_error(context, exc)
-            return
         return delete_voice_response(request.id)

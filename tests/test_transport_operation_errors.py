@@ -3,7 +3,11 @@ from __future__ import annotations
 import grpc
 import pytest
 
-from vox.grpc.operation_errors import abort_operation_error, operation_error_status
+from vox.grpc.operation_errors import (
+    abort_operation_error,
+    map_operation_errors_to_grpc,
+    operation_error_status,
+)
 from vox.operations.errors import (
     EmptyInputError,
     ModelInUseError,
@@ -47,3 +51,33 @@ async def test_abort_operation_error_uses_shared_grpc_mapping():
     await abort_operation_error(context, error)
 
     assert context.abort_args == (grpc.StatusCode.NOT_FOUND, str(error))
+
+
+@pytest.mark.asyncio
+async def test_map_operation_errors_to_grpc_aborts_operation_errors():
+    class Context:
+        def __init__(self) -> None:
+            self.abort_args = None
+
+        async def abort(self, code, message):
+            self.abort_args = (code, message)
+
+    context = Context()
+    error = ModelInUseError("parakeet")
+
+    with pytest.raises(RuntimeError, match="context.abort returned without raising"):
+        async with map_operation_errors_to_grpc(context):
+            raise error
+
+    assert context.abort_args == (grpc.StatusCode.FAILED_PRECONDITION, str(error))
+
+
+@pytest.mark.asyncio
+async def test_map_operation_errors_to_grpc_does_not_hide_unexpected_errors():
+    class Context:
+        async def abort(self, code, message):
+            raise AssertionError("abort should not be called")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        async with map_operation_errors_to_grpc(Context()):
+            raise RuntimeError("boom")
