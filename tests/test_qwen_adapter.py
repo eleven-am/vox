@@ -18,6 +18,7 @@ from vox.core.types import ModelFormat, ModelType
 
 def _mock_torch(cuda_available: bool = True, mps_available: bool = False):
     torch_mock = MagicMock()
+    torch_mock.__version__ = "2.8.0"
     torch_mock.cuda.is_available.return_value = cuda_available
     torch_mock.backends.mps.is_available.return_value = mps_available
     torch_mock.bfloat16 = object()
@@ -42,6 +43,22 @@ def _mock_qwen_tts_module():
     model_cls = MagicMock()
     module.Qwen3TTSModel = model_cls
     return module, model_cls
+
+
+def _mock_faster_qwen_model():
+    model = MagicMock()
+    model.generate_custom_voice_streaming.return_value = iter(
+        [
+            (np.array([0.0, 0.25], dtype=np.float32), 24_000, {"ttfa_ms": 150}),
+            (np.array([0.5, 0.75], dtype=np.float32), 24_000, {"rtf": 4.0}),
+        ]
+    )
+    model.generate_voice_clone_streaming.return_value = iter(
+        [
+            (np.array([0.1, 0.2], dtype=np.float32), 24_000, {"ttfa_ms": 180}),
+        ]
+    )
+    return model
 
 
 class TestQwen3ASRAdapterInfo:
@@ -379,6 +396,125 @@ class TestQwen3TTSAdapterInfo:
 
             kwargs = model_cls.from_pretrained.call_args.kwargs
             assert "attn_implementation" not in kwargs
+
+    def test_load_uses_faster_qwen_backend_when_cuda_runtime_available(self):
+        torch_mock = _mock_torch()
+        faster_model = _mock_faster_qwen_model()
+        faster_cls = MagicMock()
+        faster_cls.from_pretrained.return_value = faster_model
+
+        with patch.dict("sys.modules", {"torch": torch_mock, "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            with (
+                patch("vox_qwen.tts_adapter._load_faster_qwen_tts_model", return_value=faster_cls),
+                patch("vox_qwen.tts_adapter._supports_flash_attention", return_value=False),
+            ):
+                adapter.load(
+                    "local-path",
+                    "cuda",
+                    _source="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+                    default_voice="Ryan",
+                )
+
+            faster_cls.from_pretrained.assert_called_once()
+            kwargs = faster_cls.from_pretrained.call_args.kwargs
+            assert kwargs["device"] == "cuda:0"
+            assert kwargs["dtype"] is torch_mock.bfloat16
+            assert kwargs["attn_implementation"] == "sdpa"
+            assert kwargs["backend"] == "torch"
+            assert adapter._backend == "faster-qwen3-tts"
+            assert adapter._model is faster_model
+
+    def test_load_falls_back_to_official_backend_when_faster_backend_fails(self):
+        torch_mock = _mock_torch()
+        qwen_tts_module, model_cls = _mock_qwen_tts_module()
+        model_instance = MagicMock()
+        model_instance.processor = MagicMock()
+        model_instance.get_supported_speakers.return_value = ["Ryan"]
+        model_cls.from_pretrained.return_value = model_instance
+
+        with patch.dict("sys.modules", {"torch": torch_mock, "qwen_asr": MagicMock(), "qwen_tts": qwen_tts_module}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            with (
+                patch("vox_qwen.tts_adapter._load_faster_qwen_tts_model", side_effect=RuntimeError("fast missing")),
+                patch("vox_qwen.tts_adapter._supports_flash_attention", return_value=False),
+            ):
+                adapter.load(
+                    "local-path",
+                    "cuda",
+                    _source="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+                    default_voice="Ryan",
+                )
+
+            model_cls.from_pretrained.assert_called_once()
+            assert adapter._backend == "qwen-tts"
+            assert adapter._model is model_instance
+
+    def test_synthesize_custom_streams_from_faster_backend(self):
+        with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            adapter._loaded = True
+            adapter._backend = "faster-qwen3-tts"
+            adapter._model = _mock_faster_qwen_model()
+            adapter._mode = "custom"
+            adapter._default_voice = "Ryan"
+            adapter._supported_speakers = ["Ryan"]
+
+            async def run():
+                chunks = []
+                async for chunk in adapter.synthesize("Hello", language="en"):
+                    chunks.append(chunk)
+                return chunks
+
+            chunks = asyncio.run(run())
+
+            adapter._model.generate_custom_voice_streaming.assert_called_once()
+            kwargs = adapter._model.generate_custom_voice_streaming.call_args.kwargs
+            assert kwargs["speaker"] == "Ryan"
+            assert kwargs["language"] == "English"
+            assert kwargs["chunk_size"] == 8
+            assert chunks[-1].is_final is True
+            assert len([chunk for chunk in chunks if chunk.audio]) == 2
+
+    def test_synthesize_clone_streams_from_faster_backend_with_temp_reference_wav(self):
+        with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            adapter._loaded = True
+            adapter._backend = "faster-qwen3-tts"
+            adapter._model = _mock_faster_qwen_model()
+            adapter._mode = "clone"
+
+            ref = np.linspace(0.0, 0.5, num=24_000, dtype=np.float32)
+
+            async def run():
+                chunks = []
+                async for chunk in adapter.synthesize(
+                    "Hello",
+                    language="en",
+                    reference_audio=ref,
+                    reference_text="reference text",
+                ):
+                    chunks.append(chunk)
+                return chunks
+
+            chunks = asyncio.run(run())
+
+            adapter._model.generate_voice_clone_streaming.assert_called_once()
+            kwargs = adapter._model.generate_voice_clone_streaming.call_args.kwargs
+            assert kwargs["language"] == "English"
+            assert kwargs["ref_text"] == "reference text"
+            assert kwargs["chunk_size"] == 8
+            assert isinstance(kwargs["ref_audio"], str)
+            assert chunks[-1].is_final is True
+            assert any(chunk.audio for chunk in chunks[:-1])
 
     def test_synthesize_uses_custom_voice_runtime_with_default_voice(self):
         torch_mock = _mock_torch()
@@ -817,6 +953,34 @@ class TestQwenRuntimeBootstrap:
                 "sox",
                 "einops",
             )
+
+    def test_faster_qwen_runtime_installs_into_qwen_tts_runtime(self):
+        faster_module = ModuleType("faster_qwen3_tts")
+        faster_module.FasterQwen3TTS = MagicMock()
+        with patch.dict(
+            "sys.modules",
+            {
+                "torch": _mock_torch(),
+                "qwen_asr": MagicMock(),
+                "qwen_tts": MagicMock(),
+                "faster_qwen3_tts": faster_module,
+            },
+        ):
+            from vox_qwen import tts_adapter
+
+            with patch.object(tts_adapter, "ensure_runtime") as ensure_runtime:
+                loaded = tts_adapter._load_faster_qwen_tts_model()
+
+            assert loaded is faster_module.FasterQwen3TTS
+            ensure_runtime.assert_called_once()
+            assert ensure_runtime.call_args.args[:3] == (
+                "qwen-tts",
+                "qwen-tts",
+                "faster_qwen3_tts",
+            )
+            assert ensure_runtime.call_args.kwargs["no_deps"] is True
+            assert "faster-qwen3-tts>=0.2.6" in ensure_runtime.call_args.kwargs["extra_packages"]
+            assert "qwen_tts" in ensure_runtime.call_args.kwargs["required_imports"]
 
     def test_qwen_asr_runtime_purges_accelerate(self):
         with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):

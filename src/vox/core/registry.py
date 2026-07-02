@@ -16,6 +16,23 @@ from vox.core.types import ModelInfo
 logger = logging.getLogger(__name__)
 
 
+_QWEN_TTS_BACKENDS = {
+    "preferred": [
+        {
+            "name": "faster-qwen3-tts",
+            "requires": {
+                "python_modules": ["torch", "faster_qwen3_tts"],
+                "accelerators": ["cuda"],
+                "min_versions": {"torch": "2.5.1"},
+            },
+        }
+    ],
+    "fallback": {
+        "name": "qwen-tts",
+        "requires": {"python_modules": ["torch"]},
+    },
+}
+
 
 
 
@@ -510,6 +527,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "license": "Apache-2.0",
             "parameters": {"sample_rate": 24000, "default_voice": "Ryan"},
             "adapter_package": "vox-qwen",
+            "backends": _QWEN_TTS_BACKENDS,
         },
         "0.6b": {
             "source": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
@@ -521,6 +539,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "license": "Apache-2.0",
             "parameters": {"sample_rate": 24000, "default_voice": "Ryan"},
             "adapter_package": "vox-qwen",
+            "backends": _QWEN_TTS_BACKENDS,
         },
         "1.7b-clone": {
             "source": "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
@@ -532,6 +551,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "license": "Apache-2.0",
             "parameters": {"sample_rate": 24000, "mode": "clone"},
             "adapter_package": "vox-qwen",
+            "backends": _QWEN_TTS_BACKENDS,
         },
         "0.6b-clone": {
             "source": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
@@ -543,6 +563,7 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "license": "Apache-2.0",
             "parameters": {"sample_rate": 24000, "mode": "clone"},
             "adapter_package": "vox-qwen",
+            "backends": _QWEN_TTS_BACKENDS,
         },
     },
 }

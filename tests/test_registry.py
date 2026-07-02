@@ -435,6 +435,16 @@ class TestAvailableModels:
         assert indextts["format"] == "pytorch"
         assert indextts["parameters"]["sample_rate"] == 24_000
 
+    def test_qwen_tts_catalog_entries_prefer_faster_backend_with_fallback(self):
+        for entry in CATALOG["qwen3-tts-torch"].values():
+            backends = entry["backends"]
+            preferred = backends["preferred"][0]
+            assert preferred["name"] == "faster-qwen3-tts"
+            assert preferred["requires"]["python_modules"] == ["torch", "faster_qwen3_tts"]
+            assert preferred["requires"]["accelerators"] == ["cuda"]
+            assert preferred["requires"]["min_versions"] == {"torch": "2.5.1"}
+            assert backends["fallback"]["name"] == "qwen-tts"
+
     def test_cosyvoice_catalog_entry_uses_cosyvoice_adapter_package(self):
         cosyvoice = CATALOG["cosyvoice2-tts-torch"]["0.5b"]
 

@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 from collections.abc import AsyncIterator
+from importlib import metadata
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,9 @@ QWEN_TTS_RUNTIME_PACKAGES = (
     "sox",
     "einops",
 )
+FASTER_QWEN_TTS_PACKAGE = "faster-qwen3-tts>=0.2.6"
+FASTER_QWEN_TTS_IMPORT = "faster_qwen3_tts"
+FASTER_QWEN_MIN_TORCH = (2, 5, 1)
 
 SUPPORTED_LANGUAGES = (
     "zh", "en", "ja", "ko", "fr", "de", "ru", "es", "pt", "it",
@@ -93,6 +97,43 @@ def _estimate_vram(model_id: str) -> int:
 
 def _supports_flash_attention() -> bool:
     return find_spec("flash_attn") is not None
+
+
+def _version_tuple(value: str | None) -> tuple[int, ...]:
+    if not value:
+        return ()
+    release = value.split("+", 1)[0]
+    parts: list[int] = []
+    for part in release.split("."):
+        if not part.isdigit():
+            digits = "".join(ch for ch in part if ch.isdigit())
+            if not digits:
+                break
+            part = digits
+        parts.append(int(part))
+    return tuple(parts)
+
+
+def _torch_version_at_least(minimum: tuple[int, ...]) -> bool:
+    torch = _torch()
+    version = getattr(torch, "__version__", None)
+    if not version:
+        try:
+            version = metadata.version("torch")
+        except metadata.PackageNotFoundError:
+            return False
+    current = _version_tuple(str(version))
+    return bool(current) and current >= minimum
+
+
+def _can_try_faster_qwen(device: str) -> bool:
+    if device != "cuda":
+        return False
+    torch = _torch()
+    cuda = getattr(torch, "cuda", None)
+    if cuda is None or not cuda.is_available():
+        return False
+    return _torch_version_at_least(FASTER_QWEN_MIN_TORCH)
 
 
 def _normalize_language(language: str | None) -> str | None:
@@ -190,6 +231,37 @@ async def _stream_model_output(output: Any, default_sample_rate: int) -> AsyncIt
     yield SynthesizeChunk(audio=b"", sample_rate=sample_rate, is_final=True)
 
 
+async def _stream_fast_model_output(
+    output: Any,
+    default_sample_rate: int,
+) -> AsyncIterator[SynthesizeChunk]:
+    emitted_audio = False
+    sample_rate = default_sample_rate
+
+    for item in output:
+        if not (isinstance(item, tuple) and len(item) >= 2):
+            raise RuntimeError("Unexpected Faster Qwen3-TTS streaming output shape")
+        wav, raw_sample_rate = item[0], item[1]
+        if raw_sample_rate is not None and int(raw_sample_rate) > 0:
+            sample_rate = int(raw_sample_rate)
+
+        audio = np.asarray(wav, dtype=np.float32)
+        if audio.ndim > 1:
+            audio = audio.squeeze()
+        if audio.size == 0:
+            continue
+        emitted_audio = True
+        yield SynthesizeChunk(
+            audio=audio.tobytes(),
+            sample_rate=sample_rate,
+            is_final=False,
+        )
+
+    if not emitted_audio:
+        raise RuntimeError("Faster Qwen3-TTS produced no audio")
+    yield SynthesizeChunk(audio=b"", sample_rate=sample_rate, is_final=True)
+
+
 def _load_qwen_tts_model() -> Any:
     ensure_runtime(
         "qwen-tts",
@@ -208,6 +280,31 @@ def _load_qwen_tts_model() -> Any:
         ) from exc
 
 
+def _load_faster_qwen_tts_model() -> Any:
+    ensure_runtime(
+        "qwen-tts",
+        "qwen-tts",
+        FASTER_QWEN_TTS_IMPORT,
+        purge_modules=(
+            "accelerate",
+            "transformers",
+            "tokenizers",
+            "qwen_tts",
+            FASTER_QWEN_TTS_IMPORT,
+        ),
+        no_deps=True,
+        extra_packages=(*QWEN_TTS_RUNTIME_PACKAGES, FASTER_QWEN_TTS_PACKAGE),
+        required_imports=("qwen_tts",),
+    )
+    try:
+        from faster_qwen3_tts import FasterQwen3TTS
+        return FasterQwen3TTS
+    except ImportError as exc:  # pragma: no cover - depends on runtime image
+        raise RuntimeError(
+            "Faster Qwen3-TTS requires the faster-qwen3-tts runtime package"
+        ) from exc
+
+
 class Qwen3TTSAdapter(TTSAdapter):
 
     def __init__(self) -> None:
@@ -221,6 +318,7 @@ class Qwen3TTSAdapter(TTSAdapter):
         self._supported_speakers: list[str] = []
         self._mode: str = "custom"
         self._subprocess_only = False
+        self._backend = "qwen-tts"
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
@@ -247,6 +345,42 @@ class Qwen3TTSAdapter(TTSAdapter):
         self._mode = _detect_mode(self._model_id, override=mode_override)
 
         self._device = device
+        if _can_try_faster_qwen(self._device):
+            try:
+                FasterQwen3TTS = _load_faster_qwen_tts_model()
+                dtype = _select_dtype(self._device)
+                device_map = _select_device_map(self._device)
+                attn_implementation = "flash_attention_2" if _supports_flash_attention() else "sdpa"
+
+                logger.info(
+                    "Loading Faster Qwen3-TTS backend: %s (device=%s, dtype=%s)",
+                    self._model_ref,
+                    device_map,
+                    dtype,
+                )
+                start = time.perf_counter()
+                self._model = FasterQwen3TTS.from_pretrained(
+                    self._model_ref,
+                    device=device_map,
+                    dtype=dtype,
+                    attn_implementation=attn_implementation,
+                    backend="torch",
+                )
+                elapsed = time.perf_counter() - start
+                logger.info("Faster Qwen3-TTS backend loaded in %.2fs", elapsed)
+                self._tokenizer = None
+                self._supported_speakers = [self._default_voice] if self._default_voice else []
+                self._backend = "faster-qwen3-tts"
+                self._subprocess_only = False
+                self._loaded = True
+                return
+            except Exception as exc:
+                logger.warning(
+                    "Faster Qwen3-TTS backend unavailable for %s; falling back to qwen-tts: %s",
+                    self._model_ref,
+                    exc,
+                )
+
         try:
             Qwen3TTSModel = _load_qwen_tts_model()
             dtype = _select_dtype(self._device)
@@ -276,6 +410,7 @@ class Qwen3TTSAdapter(TTSAdapter):
 
             elapsed = time.perf_counter() - start
             logger.info("Qwen3-TTS model loaded in %.2fs", elapsed)
+            self._backend = "qwen-tts"
             self._subprocess_only = False
             self._loaded = True
         except Exception as exc:
@@ -287,6 +422,7 @@ class Qwen3TTSAdapter(TTSAdapter):
             self._model = None
             self._tokenizer = None
             self._supported_speakers = [self._default_voice] if self._default_voice else []
+            self._backend = "qwen-tts-subprocess"
             self._subprocess_only = True
             self._loaded = True
 
@@ -296,6 +432,7 @@ class Qwen3TTSAdapter(TTSAdapter):
         self._loaded = False
         self._subprocess_only = False
         self._model_ref = ""
+        self._backend = "qwen-tts"
         torch = _torch()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -362,6 +499,18 @@ class Qwen3TTSAdapter(TTSAdapter):
                 yield chunk
             return
 
+        if self._backend == "faster-qwen3-tts":
+            output = self._model.generate_custom_voice_streaming(
+                text=text,
+                language=qwen_language,
+                speaker=speaker,
+                instruct=reference_text,
+                chunk_size=8,
+            )
+            async for chunk in _stream_fast_model_output(output, QWEN_TTS_SAMPLE_RATE):
+                yield chunk
+            return
+
         output = self._model.generate_custom_voice(
             text=text,
             language=qwen_language,
@@ -397,6 +546,16 @@ class Qwen3TTSAdapter(TTSAdapter):
                 yield chunk
             return
 
+        if self._backend == "faster-qwen3-tts":
+            async for chunk in self._stream_fast_clone(
+                text=text,
+                language=language,
+                reference_audio=reference_audio,
+                reference_text=reference_text,
+            ):
+                yield chunk
+            return
+
         output = self._model.generate_voice_clone(
             text=text,
             language=language,
@@ -405,6 +564,43 @@ class Qwen3TTSAdapter(TTSAdapter):
         )
         async for chunk in _stream_model_output(output, QWEN_TTS_SAMPLE_RATE):
             yield chunk
+
+    async def _stream_fast_clone(
+        self,
+        *,
+        text: str,
+        language: str,
+        reference_audio: NDArray[np.float32],
+        reference_text: str | None,
+    ) -> AsyncIterator[SynthesizeChunk]:
+        ref_tmp: Path | None = None
+        try:
+            import soundfile as sf
+
+            with tempfile.NamedTemporaryFile(
+                prefix="qwen3-fast-ref-", suffix=".wav", delete=False,
+            ) as fd:
+                ref_tmp = Path(fd.name)
+            sf.write(
+                str(ref_tmp),
+                np.asarray(reference_audio, dtype=np.float32),
+                QWEN_TTS_SAMPLE_RATE,
+            )
+            output = self._model.generate_voice_clone_streaming(
+                text=text,
+                language=language,
+                ref_audio=str(ref_tmp),
+                ref_text=reference_text or "",
+                chunk_size=8,
+            )
+            async for chunk in _stream_fast_model_output(output, QWEN_TTS_SAMPLE_RATE):
+                yield chunk
+        finally:
+            if ref_tmp is not None:
+                try:
+                    ref_tmp.unlink(missing_ok=True)
+                except OSError:
+                    logger.warning("Failed to remove temporary fast reference audio %s", ref_tmp)
 
     async def _stream_subprocess(
         self,

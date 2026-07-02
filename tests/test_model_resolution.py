@@ -213,6 +213,7 @@ def test_variant_records_preferred_backend_fallback_warning():
                             "requires": {
                                 "python_modules": ["torch", "faster_qwen3_tts"],
                                 "accelerators": ["cuda"],
+                                "min_versions": {"torch": "2.5.1"},
                             },
                         }
                     ],
