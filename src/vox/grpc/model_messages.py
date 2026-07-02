@@ -7,6 +7,7 @@ from vox.grpc import vox_pb2
 from vox.operations.models import (
     PullEvent,
     ShowResult,
+    delete_model_payload,
     list_models_payload,
     pull_event_payload,
     show_model_payload,
@@ -34,7 +35,7 @@ def show_model_response(result: ShowResult) -> vox_pb2.ShowResponse:
 
 
 def delete_model_response() -> vox_pb2.DeleteResponse:
-    return vox_pb2.DeleteResponse(status="success")
+    return vox_pb2.DeleteResponse(**delete_model_payload())
 
 
 def _string_config(config: dict[str, Any]) -> dict[str, str]:

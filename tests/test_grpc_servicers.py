@@ -30,6 +30,7 @@ from vox.operations.models import (
     ModelLayer,
     PullEvent,
     ShowResult,
+    delete_model_payload,
     list_models_payload,
     pull_event_payload,
     show_model_payload,
@@ -238,6 +239,15 @@ class TestGrpcModelMessages:
         event = PullEvent(status="downloading model.onnx", completed=1, total=3, error="slow")
         operation_payload = pull_event_payload(event)
         message = pull_progress_message(event)
+
+        for field, value in operation_payload.items():
+            assert getattr(message, field) == value
+
+    def test_delete_model_response_matches_operation_payload_fields(self):
+        from vox.grpc.model_messages import delete_model_response
+
+        operation_payload = delete_model_payload()
+        message = delete_model_response()
 
         for field, value in operation_payload.items():
             assert getattr(message, field) == value
