@@ -13,13 +13,56 @@ from vox.streaming.eou import (
     create_turn_detector,
 )
 from vox.streaming.pipeline import StreamPipeline, StreamPipelineConfig
-from vox.streaming.vad import TenVAD, VADConfig, create_vad_backend
+from vox.streaming.vad import (
+    SileroOnnxVAD,
+    SileroVAD,
+    TenVAD,
+    VADConfig,
+    _frames_to_timestamps,
+    create_vad_backend,
+)
 
 
 class TestVADBackends:
     def test_unknown_vad_backend_fails_fast(self):
         with pytest.raises(ValueError, match="unknown VAD backend"):
             create_vad_backend("missing")
+
+    def test_default_backend_is_silero_onnx(self):
+        assert isinstance(create_vad_backend("silero"), SileroOnnxVAD)
+        assert isinstance(create_vad_backend(""), SileroOnnxVAD)
+        assert isinstance(create_vad_backend("silero-onnx"), SileroOnnxVAD)
+
+    def test_silero_torch_backend_selectable(self):
+        assert isinstance(create_vad_backend("silero-torch"), SileroVAD)
+
+    def test_silero_onnx_returns_no_speech_on_silence(self):
+        vad = SileroOnnxVAD()
+        silence = np.zeros(16_000, dtype=np.float32)
+        assert vad.get_speech_timestamps(silence) == []
+        assert vad.get_speech_timestamps(np.array([], dtype=np.float32)) == []
+
+    def test_frames_to_timestamps_merges_and_pads(self):
+        # two speech spans separated by a gap larger than min_silence -> two segments
+        frames = [(0, 256), (256, 512), (4000, 4256)]
+        ts = _frames_to_timestamps(
+            frames,
+            total_samples=8000,
+            min_silence_duration_ms=100,   # 1600 samples; gap 4000-512 exceeds it
+            speech_pad_ms=0,
+            min_speech_duration_ms=1,
+        )
+        assert ts == [{"start": 0, "end": 512}, {"start": 4000, "end": 4256}]
+
+    def test_frames_to_timestamps_drops_short_segments(self):
+        ts = _frames_to_timestamps(
+            [(0, 256)],
+            total_samples=8000,
+            min_silence_duration_ms=100,
+            speech_pad_ms=0,
+            min_speech_duration_ms=100,   # 1600 samples; the 256-sample span is too short
+        )
+        assert ts == []
 
     def test_ten_vad_requires_optional_dependency(self, monkeypatch):
         monkeypatch.setattr("builtins.__import__", _missing_ten_vad_import)

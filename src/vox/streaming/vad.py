@@ -61,6 +61,41 @@ class VADBackend(Protocol):
     ) -> list[dict[str, int]]: ...
 
 
+def _frames_to_timestamps(
+    speech_frames: list[tuple[int, int]],
+    *,
+    total_samples: int,
+    min_silence_duration_ms: int,
+    speech_pad_ms: int,
+    min_speech_duration_ms: int,
+) -> list[dict[str, int]]:
+    """Group per-frame speech spans into padded Silero-style timestamp dicts."""
+    if not speech_frames:
+        return []
+
+    min_silence_samples = int(min_silence_duration_ms * MS_PER_SAMPLE)
+    pad_samples = int(speech_pad_ms * MS_PER_SAMPLE)
+    min_speech_samples = int(min_speech_duration_ms * MS_PER_SAMPLE)
+
+    timestamps: list[dict[str, int]] = []
+    current_start, current_end = speech_frames[0]
+    for start, end in speech_frames[1:]:
+        if start - current_end <= min_silence_samples:
+            current_end = end
+            continue
+        timestamps.append({
+            "start": max(0, current_start - pad_samples),
+            "end": min(total_samples, current_end + pad_samples),
+        })
+        current_start, current_end = start, end
+
+    timestamps.append({
+        "start": max(0, current_start - pad_samples),
+        "end": min(total_samples, current_end + pad_samples),
+    })
+    return [ts for ts in timestamps if ts["end"] - ts["start"] >= min_speech_samples]
+
+
 class SileroVAD:
     _instance: SileroVAD | None = None
     _model = None
@@ -118,6 +153,80 @@ class SileroVAD:
         )
 
 
+SILERO_ONNX_WINDOW_SAMPLES = 256
+
+
+class SileroOnnxVAD:
+    """Default VAD backend: the Silero model run on onnxruntime (no torch).
+
+    Uses the bundled ``silero_vad.onnx`` — same model as the torch backend, so
+    detection is equivalent — but avoids the ~2GB torch dependency and the
+    runtime torch.hub download. The onnxruntime session is a process-wide
+    singleton; each ``get_speech_timestamps`` call analyzes the passed window
+    from a fresh recurrent state, matching the torch utility's per-call
+    behavior.
+    """
+
+    _session = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def _ensure_session(cls):
+        if cls._session is not None:
+            return cls._session
+        with cls._lock:
+            if cls._session is None:
+                from importlib.resources import files
+
+                import onnxruntime as ort
+
+                model_path = files("vox.streaming.assets").joinpath("silero_vad.onnx")
+                options = ort.SessionOptions()
+                options.intra_op_num_threads = 1
+                options.inter_op_num_threads = 1
+                options.log_severity_level = 3
+                logger.info("Loading Silero VAD (onnxruntime)")
+                with model_path.open("rb") as handle:
+                    cls._session = ort.InferenceSession(
+                        handle.read(),
+                        sess_options=options,
+                        providers=["CPUExecutionProvider"],
+                    )
+        return cls._session
+
+    def get_speech_timestamps(
+        self,
+        audio: NDArray[np.float32],
+        threshold: float = 0.5,
+        min_silence_duration_ms: int = 500,
+        speech_pad_ms: int = 100,
+        min_speech_duration_ms: int = 250,
+    ) -> list[dict[str, int]]:
+        if audio.size == 0:
+            return []
+
+        session = self._ensure_session()
+        window = SILERO_ONNX_WINDOW_SAMPLES
+        audio = np.ascontiguousarray(audio, dtype=np.float32)
+        state = np.zeros((2, 1, 128), dtype=np.float32)
+        sr = np.array(TARGET_SAMPLE_RATE, dtype=np.int64)
+
+        speech_frames: list[tuple[int, int]] = []
+        for start in range(0, len(audio) - window + 1, window):
+            frame = audio[start:start + window]
+            output, state = session.run(None, {"input": frame[None, :], "state": state, "sr": sr})
+            if float(output.reshape(-1)[0]) >= threshold:
+                speech_frames.append((start, start + window))
+
+        return _frames_to_timestamps(
+            speech_frames,
+            total_samples=len(audio),
+            min_silence_duration_ms=min_silence_duration_ms,
+            speech_pad_ms=speech_pad_ms,
+            min_speech_duration_ms=min_speech_duration_ms,
+        )
+
+
 class TenVAD:
     """Optional TEN VAD backend.
 
@@ -171,39 +280,20 @@ class TenVAD:
             if is_speech:
                 speech_frames.append((start, end))
 
-        if not speech_frames:
-            return []
-
-        min_silence_samples = int(min_silence_duration_ms * MS_PER_SAMPLE)
-        pad_samples = int(speech_pad_ms * MS_PER_SAMPLE)
-        min_speech_samples = int(min_speech_duration_ms * MS_PER_SAMPLE)
-        timestamps: list[dict[str, int]] = []
-        current_start, current_end = speech_frames[0]
-
-        for start, end in speech_frames[1:]:
-            if start - current_end <= min_silence_samples:
-                current_end = end
-                continue
-
-            timestamps.append({
-                "start": max(0, current_start - pad_samples),
-                "end": min(len(pcm16), current_end + pad_samples),
-            })
-            current_start, current_end = start, end
-
-        timestamps.append({
-            "start": max(0, current_start - pad_samples),
-            "end": min(len(pcm16), current_end + pad_samples),
-        })
-        return [
-            ts for ts in timestamps
-            if ts["end"] - ts["start"] >= min_speech_samples
-        ]
+        return _frames_to_timestamps(
+            speech_frames,
+            total_samples=len(pcm16),
+            min_silence_duration_ms=min_silence_duration_ms,
+            speech_pad_ms=speech_pad_ms,
+            min_speech_duration_ms=min_speech_duration_ms,
+        )
 
 
 def create_vad_backend(name: str) -> VADBackend:
     normalized = (name or "silero").strip().lower().replace("_", "-")
-    if normalized == "silero":
+    if normalized in {"silero", "silero-onnx"}:
+        return SileroOnnxVAD()
+    if normalized in {"silero-torch", "silero-pytorch"}:
         return SileroVAD()
     if normalized in {"ten", "ten-vad", "tenvad"}:
         return TenVAD()
