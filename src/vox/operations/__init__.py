@@ -8,6 +8,7 @@ from vox.operations.errors import (
     NoAudioGeneratedError,
     NoDefaultModelError,
     OperationError,
+    OperationErrorKind,
     SessionAlreadyConfiguredError,
     SessionNotConfiguredError,
     StoredModelNotFoundError,
@@ -19,6 +20,7 @@ from vox.operations.errors import (
     VoiceNotFoundOperationError,
     VoiceReferenceNotFoundError,
     WrongModelTypeError,
+    classify_operation_error,
 )
 
 __all__ = [
@@ -31,6 +33,7 @@ __all__ = [
     "NoAudioGeneratedError",
     "NoDefaultModelError",
     "OperationError",
+    "OperationErrorKind",
     "SessionAlreadyConfiguredError",
     "SessionNotConfiguredError",
     "StoredModelNotFoundError",
@@ -42,4 +45,5 @@ __all__ = [
     "VoiceNotFoundOperationError",
     "VoiceReferenceNotFoundError",
     "WrongModelTypeError",
+    "classify_operation_error",
 ]

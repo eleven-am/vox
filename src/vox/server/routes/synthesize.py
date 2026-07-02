@@ -12,17 +12,12 @@ from vox.core.errors import (
     VoiceNotFoundError,
     VoxError,
 )
-from vox.operations.errors import (
-    EmptyInputError,
-    NoAudioGeneratedError,
-    NoDefaultModelError,
-    OperationError,
-    WrongModelTypeError,
-)
+from vox.operations.errors import OperationError
 from vox.operations.synthesis import (
     SynthesisRequest,
     synthesize_audio_response,
 )
+from vox.server.operation_errors import operation_error_to_http
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -46,14 +41,6 @@ class OpenAISpeechRequest(BaseModel):
     response_format: str = "wav"
     language: str | None = None
     stream: bool = False
-
-
-def _operation_error_to_http(exc: OperationError) -> HTTPException:
-    if isinstance(exc, NoDefaultModelError | EmptyInputError | WrongModelTypeError):
-        return HTTPException(status_code=400, detail=str(exc))
-    if isinstance(exc, NoAudioGeneratedError):
-        return HTTPException(status_code=500, detail=str(exc))
-    return HTTPException(status_code=500, detail=str(exc))
 
 
 def _voice_error_to_http(exc: Exception) -> HTTPException:
@@ -94,7 +81,7 @@ async def synthesize(req: SynthesizeRequest, request: Request):
     except HTTPException:
         raise
     except OperationError as exc:
-        raise _operation_error_to_http(exc) from exc
+        raise operation_error_to_http(exc) from exc
     except (VoiceCloningUnsupportedError, VoiceNotFoundError) as exc:
         raise _voice_error_to_http(exc) from exc
     except ModelNotFoundError as exc:

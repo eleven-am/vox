@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+from enum import StrEnum
+
+
+class OperationErrorKind(StrEnum):
+    INVALID_ARGUMENT = "invalid_argument"
+    NOT_FOUND = "not_found"
+    CONFLICT = "conflict"
+    INTERNAL = "internal"
+
 
 class OperationError(Exception):
     """Base class for transport-agnostic errors raised by operation modules."""
@@ -111,3 +120,31 @@ class UnsupportedFormatError(OperationError):
 class InvalidConfigError(OperationError):
     def __init__(self, message: str) -> None:
         super().__init__(message)
+
+
+def classify_operation_error(exc: OperationError) -> OperationErrorKind:
+    if isinstance(exc, (
+        NoDefaultModelError,
+        WrongModelTypeError,
+        EmptyAudioError,
+        EmptyInputError,
+        VoiceNameRequiredError,
+        VoiceAudioRequiredError,
+        VoiceIdRequiredError,
+        SessionAlreadyConfiguredError,
+        SessionNotConfiguredError,
+        UnknownMessageTypeError,
+        UnsupportedFormatError,
+        InvalidConfigError,
+    )):
+        return OperationErrorKind.INVALID_ARGUMENT
+    if isinstance(exc, (
+        CatalogEntryNotFoundError,
+        StoredModelNotFoundError,
+        VoiceNotFoundOperationError,
+        VoiceReferenceNotFoundError,
+    )):
+        return OperationErrorKind.NOT_FOUND
+    if isinstance(exc, ModelInUseError):
+        return OperationErrorKind.CONFLICT
+    return OperationErrorKind.INTERNAL

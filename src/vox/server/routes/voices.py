@@ -6,12 +6,6 @@ from fastapi.responses import Response
 from vox.core.errors import ModelNotFoundError, ReferenceAudioInvalidError, VoxError
 from vox.operations.errors import (
     OperationError,
-    VoiceAudioRequiredError,
-    VoiceIdRequiredError,
-    VoiceNameRequiredError,
-    VoiceNotFoundOperationError,
-    VoiceReferenceNotFoundError,
-    WrongModelTypeError,
 )
 from vox.operations.voices import (
     CreateVoiceRequest,
@@ -23,17 +17,10 @@ from vox.operations.voices import (
     list_voices,
     list_voices_payload,
 )
+from vox.server.operation_errors import operation_error_to_http
 
 router = APIRouter()
 AUDIO_SAMPLE_FILE = File(...)
-
-
-def _voice_op_error_to_http(exc: OperationError) -> HTTPException:
-    if isinstance(exc, (VoiceNameRequiredError, VoiceAudioRequiredError, VoiceIdRequiredError, WrongModelTypeError)):
-        return HTTPException(status_code=400, detail=str(exc))
-    if isinstance(exc, (VoiceNotFoundOperationError, VoiceReferenceNotFoundError)):
-        return HTTPException(status_code=404, detail=str(exc))
-    return HTTPException(status_code=500, detail=str(exc))
 
 
 @router.get("/v1/audio/voices")
@@ -43,7 +30,7 @@ async def list_voices_route(request: Request, model: str = ""):
     try:
         listed = await list_voices(scheduler=scheduler, store=store, model=model or None)
     except OperationError as exc:
-        raise _voice_op_error_to_http(exc) from exc
+        raise operation_error_to_http(exc) from exc
     except ModelNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except VoxError as exc:
@@ -74,7 +61,7 @@ async def create_voice_route(
     try:
         voice = create_voice(store=store, request=op_req)
     except OperationError as exc:
-        raise _voice_op_error_to_http(exc) from exc
+        raise operation_error_to_http(exc) from exc
     except ReferenceAudioInvalidError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (ValueError, RuntimeError) as exc:
@@ -89,7 +76,7 @@ async def get_voice_reference_route(request: Request, voice_id: str):
     try:
         data = get_voice_reference(store=store, voice_id=voice_id)
     except OperationError as exc:
-        raise _voice_op_error_to_http(exc) from exc
+        raise operation_error_to_http(exc) from exc
     return Response(
         content=data,
         media_type="audio/wav",
@@ -103,5 +90,5 @@ async def delete_voice_route(request: Request, voice_id: str):
     try:
         delete_voice(store=store, voice_id=voice_id)
     except OperationError as exc:
-        raise _voice_op_error_to_http(exc) from exc
+        raise operation_error_to_http(exc) from exc
     return deleted_voice_payload(voice_id)

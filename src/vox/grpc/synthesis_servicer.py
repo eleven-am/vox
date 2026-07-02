@@ -14,17 +14,8 @@ from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.grpc import vox_pb2, vox_pb2_grpc
-from vox.operations.errors import (
-    EmptyInputError,
-    NoAudioGeneratedError,
-    NoDefaultModelError,
-    OperationError,
-    VoiceAudioRequiredError,
-    VoiceIdRequiredError,
-    VoiceNameRequiredError,
-    VoiceNotFoundOperationError,
-    WrongModelTypeError,
-)
+from vox.grpc.operation_errors import operation_error_status
+from vox.operations.errors import OperationError
 from vox.operations.synthesis import SynthesisRequest, synthesize_raw
 from vox.operations.voices import (
     CreateVoiceRequest,
@@ -34,23 +25,6 @@ from vox.operations.voices import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _operation_error_status(exc: OperationError) -> tuple[grpc.StatusCode, str]:
-    if isinstance(exc, (
-        NoDefaultModelError,
-        EmptyInputError,
-        WrongModelTypeError,
-        VoiceNameRequiredError,
-        VoiceAudioRequiredError,
-        VoiceIdRequiredError,
-    )):
-        return grpc.StatusCode.INVALID_ARGUMENT, str(exc)
-    if isinstance(exc, VoiceNotFoundOperationError):
-        return grpc.StatusCode.NOT_FOUND, str(exc)
-    if isinstance(exc, NoAudioGeneratedError):
-        return grpc.StatusCode.INTERNAL, str(exc)
-    return grpc.StatusCode.INTERNAL, str(exc)
 
 
 class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
@@ -83,7 +57,7 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
                     is_final=chunk.is_final,
                 )
         except OperationError as exc:
-            code, msg = _operation_error_status(exc)
+            code, msg = operation_error_status(exc)
             await context.abort(code, msg)
             return
         except (VoiceCloningUnsupportedError, VoiceNotFoundError) as exc:
@@ -107,7 +81,7 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
                 model=request.model or None,
             )
         except OperationError as exc:
-            code, msg = _operation_error_status(exc)
+            code, msg = operation_error_status(exc)
             await context.abort(code, msg)
             return
         except ModelNotFoundError as exc:
@@ -143,7 +117,7 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
         try:
             voice = create_voice(store=self._store, request=op_req)
         except OperationError as exc:
-            code, msg = _operation_error_status(exc)
+            code, msg = operation_error_status(exc)
             await context.abort(code, msg)
             return
         except (TypeError, ValueError, RuntimeError) as exc:
@@ -166,7 +140,7 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
         try:
             delete_voice(store=self._store, voice_id=request.id)
         except OperationError as exc:
-            code, msg = _operation_error_status(exc)
+            code, msg = operation_error_status(exc)
             await context.abort(code, msg)
             return
         return vox_pb2.DeleteVoiceResponse(id=request.id, deleted=True)

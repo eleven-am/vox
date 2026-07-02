@@ -7,17 +7,13 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 
 from vox.core.errors import ModelNotFoundError, VoxError
-from vox.operations.errors import (
-    EmptyAudioError,
-    NoDefaultModelError,
-    OperationError,
-    WrongModelTypeError,
-)
+from vox.operations.errors import OperationError
 from vox.operations.transcription import (
     TranscriptionRequest,
     openai_transcription_payload,
     transcribe,
 )
+from vox.server.operation_errors import operation_error_to_http
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -34,16 +30,6 @@ def _mime_to_format(content_type: str | None) -> str | None:
     fmt = media_type.split("/")[-1].lower()
     replacements = {"mpeg": "mp3", "x-wav": "wav", "x-flac": "flac", "ogg": "ogg", "webm": "webm"}
     return replacements.get(fmt, fmt)
-
-
-def _operation_error_to_http(exc: OperationError) -> HTTPException:
-    if isinstance(exc, NoDefaultModelError):
-        return HTTPException(status_code=400, detail=str(exc))
-    if isinstance(exc, EmptyAudioError):
-        return HTTPException(status_code=400, detail=str(exc))
-    if isinstance(exc, WrongModelTypeError):
-        return HTTPException(status_code=400, detail=str(exc))
-    return HTTPException(status_code=500, detail=str(exc))
 
 
 async def _run_transcribe(
@@ -75,7 +61,7 @@ async def _run_transcribe(
             scheduler=scheduler, registry=registry, store=store, request=op_request,
         )
     except OperationError as exc:
-        raise _operation_error_to_http(exc) from exc
+        raise operation_error_to_http(exc) from exc
     except ModelNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except VoxError as exc:

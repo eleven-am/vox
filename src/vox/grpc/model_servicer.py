@@ -2,18 +2,12 @@ from __future__ import annotations
 
 import logging
 
-import grpc
-
 from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.grpc import vox_pb2, vox_pb2_grpc
-from vox.operations.errors import (
-    CatalogEntryNotFoundError,
-    ModelInUseError,
-    OperationError,
-    StoredModelNotFoundError,
-)
+from vox.grpc.operation_errors import operation_error_status
+from vox.operations.errors import CatalogEntryNotFoundError, OperationError
 from vox.operations.models import (
     delete_model,
     list_models,
@@ -22,14 +16,6 @@ from vox.operations.models import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _model_op_error_status(exc: OperationError) -> tuple[grpc.StatusCode, str]:
-    if isinstance(exc, (CatalogEntryNotFoundError, StoredModelNotFoundError)):
-        return grpc.StatusCode.NOT_FOUND, str(exc)
-    if isinstance(exc, ModelInUseError):
-        return grpc.StatusCode.FAILED_PRECONDITION, str(exc)
-    return grpc.StatusCode.INTERNAL, str(exc)
 
 
 class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
@@ -79,7 +65,7 @@ class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
         try:
             result = show_model(store=self._store, registry=self._registry, name=request.name)
         except OperationError as exc:
-            code, msg = _model_op_error_status(exc)
+            code, msg = operation_error_status(exc)
             await context.abort(code, msg)
             return
 
@@ -108,7 +94,7 @@ class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
                 name=request.name,
             )
         except OperationError as exc:
-            code, msg = _model_op_error_status(exc)
+            code, msg = operation_error_status(exc)
             await context.abort(code, msg)
             return
         return vox_pb2.DeleteResponse(status="success")

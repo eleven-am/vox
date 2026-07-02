@@ -3,16 +3,11 @@ from __future__ import annotations
 import json
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from vox.operations.errors import (
-    CatalogEntryNotFoundError,
-    ModelInUseError,
-    OperationError,
-    StoredModelNotFoundError,
-)
+from vox.operations.errors import OperationError
 from vox.operations.models import (
     delete_model,
     list_models,
@@ -22,6 +17,7 @@ from vox.operations.models import (
     show_model,
     show_model_payload,
 )
+from vox.server.operation_errors import operation_error_to_http
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -29,14 +25,6 @@ router = APIRouter()
 
 class PullRequest(BaseModel):
     name: str
-
-
-def _model_op_error_to_http(exc: OperationError) -> HTTPException:
-    if isinstance(exc, (CatalogEntryNotFoundError, StoredModelNotFoundError)):
-        return HTTPException(status_code=404, detail=str(exc))
-    if isinstance(exc, ModelInUseError):
-        return HTTPException(status_code=409, detail=str(exc))
-    return HTTPException(status_code=500, detail=str(exc))
 
 
 @router.post("/v1/models/pull")
@@ -48,7 +36,7 @@ async def pull_model_route(req: PullRequest, request: Request):
     try:
         events = pull_model(store=store, scheduler=scheduler, registry=registry, name=req.name)
     except OperationError as exc:
-        raise _model_op_error_to_http(exc) from exc
+        raise operation_error_to_http(exc) from exc
 
     async def stream():
         async for event in events:
@@ -71,7 +59,7 @@ async def show_model_route(name: str, request: Request):
     try:
         result = show_model(store=store, registry=registry, name=name)
     except OperationError as exc:
-        raise _model_op_error_to_http(exc) from exc
+        raise operation_error_to_http(exc) from exc
     return show_model_payload(result)
 
 
@@ -83,5 +71,5 @@ async def delete_model_route(name: str, request: Request):
     try:
         await delete_model(store=store, scheduler=scheduler, registry=registry, name=name)
     except OperationError as exc:
-        raise _model_op_error_to_http(exc) from exc
+        raise operation_error_to_http(exc) from exc
     return {"status": "success"}

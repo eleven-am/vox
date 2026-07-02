@@ -9,12 +9,8 @@ from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.grpc import vox_pb2, vox_pb2_grpc
-from vox.operations.errors import (
-    EmptyAudioError,
-    NoDefaultModelError,
-    OperationError,
-    WrongModelTypeError,
-)
+from vox.grpc.operation_errors import operation_error_status
+from vox.operations.errors import OperationError
 from vox.operations.transcription import (
     AnnotateRequest,
     TranscriptionRequest,
@@ -23,12 +19,6 @@ from vox.operations.transcription import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def _operation_error_status(exc: OperationError) -> tuple[grpc.StatusCode, str]:
-    if isinstance(exc, (NoDefaultModelError, EmptyAudioError, WrongModelTypeError)):
-        return grpc.StatusCode.INVALID_ARGUMENT, str(exc)
-    return grpc.StatusCode.INTERNAL, str(exc)
 
 
 class TranscriptionServicer(vox_pb2_grpc.TranscriptionServiceServicer):
@@ -56,7 +46,7 @@ class TranscriptionServicer(vox_pb2_grpc.TranscriptionServiceServicer):
                 request=op_request,
             )
         except OperationError as exc:
-            code, msg = _operation_error_status(exc)
+            code, msg = operation_error_status(exc)
             await context.abort(code, msg)
             return
         except ModelNotFoundError as exc:
