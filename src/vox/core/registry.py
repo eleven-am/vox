@@ -103,7 +103,6 @@ CATALOG: dict[str, dict[str, dict[str, Any]]] = {
                     "requires": {
                         "python_modules": ["torch"],
                         "accelerators": ["cuda"],
-                        "min_compute_capability": 70,
                     },
                     "source": "hexgrad/Kokoro-82M",
                     "architecture": "kokoro-torch",
@@ -633,7 +632,6 @@ class ModelRegistry:
         """Look up a model — local catalog first, then remote registry."""
         name, tag = self.resolve_model_ref(name, tag, explicit_tag=explicit_tag)
         if name in _HIDDEN_PUBLIC_MODEL_NAMES:
-            CATALOG.pop(name, None)
             return None
         tags = CATALOG.get(name)
         if tags is not None:
@@ -655,8 +653,6 @@ class ModelRegistry:
 
     def available_models(self) -> dict[str, dict[str, dict[str, Any]]]:
         """Return local catalog merged with remote index if available."""
-        for hidden_name in _HIDDEN_PUBLIC_MODEL_NAMES:
-            CATALOG.pop(hidden_name, None)
         remote = fetch_registry_index()
         if remote:
             for entry in remote:

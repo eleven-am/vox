@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -148,6 +149,24 @@ def _onnx_probe() -> _OnnxProbe:
         return _OnnxProbe(installed=_package_version("onnxruntime") is not None)
 
 
+def _nvidia_smi_cuda_version() -> str | None:
+    # cuda_version is not a valid --query-gpu field; it only appears in the
+    # header of plain `nvidia-smi` output ("CUDA Version: 12.4").
+    with suppress(Exception):
+        result = subprocess.run(
+            ["nvidia-smi"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if result.returncode == 0:
+            match = re.search(r"CUDA Version:\s*([0-9]+\.[0-9]+)", result.stdout)
+            if match:
+                return match.group(1)
+    return None
+
+
 def _nvidia_smi_probe() -> _NvidiaSmiProbe:
     if shutil.which("nvidia-smi") is None:
         return _NvidiaSmiProbe()
@@ -155,7 +174,7 @@ def _nvidia_smi_probe() -> _NvidiaSmiProbe:
         result = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=driver_version,cuda_version,memory.total",
+                "--query-gpu=driver_version,memory.total",
                 "--format=csv,noheader,nounits",
             ],
             capture_output=True,
@@ -167,29 +186,22 @@ def _nvidia_smi_probe() -> _NvidiaSmiProbe:
         return _NvidiaSmiProbe(available=True)
 
     if result.returncode != 0:
-        return _NvidiaSmiProbe(available=True)
-
-    lines = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    if not lines:
-        return _NvidiaSmiProbe(available=True)
+        return _NvidiaSmiProbe(available=True, cuda_version=_nvidia_smi_cuda_version())
 
     driver_versions: list[str] = []
-    cuda_versions: list[str] = []
     memory_values: list[float] = []
-    for line in lines:
+    for line in result.stdout.splitlines():
         parts = [part.strip() for part in line.split(",")]
-        if len(parts) >= 1 and parts[0]:
+        if parts and parts[0]:
             driver_versions.append(parts[0])
-        if len(parts) >= 2 and parts[1]:
-            cuda_versions.append(parts[1])
-        if len(parts) >= 3:
+        if len(parts) >= 2:
             with suppress(ValueError):
-                memory_values.append(float(parts[2]) / 1024)
+                memory_values.append(float(parts[1]) / 1024)
 
     return _NvidiaSmiProbe(
         available=True,
         driver_version=driver_versions[0] if driver_versions else None,
-        cuda_version=cuda_versions[0] if cuda_versions else None,
+        cuda_version=_nvidia_smi_cuda_version(),
         vram_gb=max(memory_values) if memory_values else None,
     )
 
