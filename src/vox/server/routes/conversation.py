@@ -23,14 +23,13 @@ from vox.operations.conversation import (
     ConvDoneEvent,
     ConversationOrchestrator,
     execute_conversation_command,
-    parse_allow_interruptions,
-    parse_response_text,
     serialize_conversation_event,
 )
 from vox.operations.conversation import (
     parse_session_update as _operation_parse_session_update,
 )
 from vox.operations.errors import OperationError
+from vox.server.websocket import safe_send_ws_error, send_ws_error
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -71,26 +70,25 @@ async def conversation_ws(websocket: WebSocket) -> None:
             if raw.get("type") == "websocket.disconnect":
                 break
             if "text" not in raw or raw["text"] is None:
-                await _send_error(websocket, "only JSON text frames are supported")
+                await send_ws_error(websocket, "only JSON text frames are supported")
                 continue
 
             try:
                 msg = json.loads(raw["text"])
             except json.JSONDecodeError as exc:
-                await _send_error(websocket, f"invalid JSON: {exc}")
+                await send_ws_error(websocket, f"invalid JSON: {exc}")
                 continue
 
             try:
                 await execute_conversation_command(orchestrator, msg)
             except OperationError as exc:
-                await _send_error(websocket, str(exc))
+                await send_ws_error(websocket, str(exc))
 
     except WebSocketDisconnect:
         pass
     except Exception:
         logger.exception("conversation WS error")
-        with suppress(Exception):
-            await _send_error(websocket, "internal error; closing")
+        await safe_send_ws_error(websocket, "internal error; closing")
     finally:
         await orchestrator.end_of_stream()
         await drain_task(emit_task)
@@ -99,16 +97,3 @@ async def conversation_ws(websocket: WebSocket) -> None:
             await websocket.close()
         logger.info("conversation ws closed")
         request_id_var.reset(token)
-
-
-async def _send_error(websocket: WebSocket, message: str) -> None:
-    with suppress(Exception):
-        await websocket.send_json({"type": "error", "message": message})
-
-
-def _parse_allow_interruptions(msg: dict) -> bool:
-    return parse_allow_interruptions(msg)
-
-
-def _parse_response_text(msg: dict, preferred_key: str) -> str | None:
-    return parse_response_text(msg, preferred_key)

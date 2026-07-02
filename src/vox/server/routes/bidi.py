@@ -41,6 +41,7 @@ from vox.operations.streaming_transcription_longform import (
     LongformTranscriptionSession,
     normalize_longform_config,
 )
+from vox.server.websocket import safe_send_ws_error, send_ws_error
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ async def transcriptions_stream(websocket: WebSocket):
                 store=websocket.app.state.store,
             )
         except OperationError as exc:
-            await _send_error(websocket, str(exc))
+            await send_ws_error(websocket, str(exc))
             return
 
         scheduler = websocket.app.state.scheduler
@@ -87,7 +88,7 @@ async def transcriptions_stream(websocket: WebSocket):
             try:
                 await session.configure(config)
             except OperationError as exc:
-                await _send_error(websocket, str(exc))
+                await send_ws_error(websocket, str(exc))
                 return
 
             while True:
@@ -99,13 +100,13 @@ async def transcriptions_stream(websocket: WebSocket):
                     msg_type = data.get("type", "")
                     if msg_type == "end":
                         break
-                    await _send_error(websocket, str(UnknownMessageTypeError(msg_type)))
+                    await send_ws_error(websocket, str(UnknownMessageTypeError(msg_type)))
                     continue
                 if "bytes" in raw and raw["bytes"]:
                     try:
                         await session.submit_chunk(raw["bytes"])
                     except SessionNotConfiguredError as exc:
-                        await _send_error(websocket, str(exc))
+                        await send_ws_error(websocket, str(exc))
 
             await session.end_of_stream()
         finally:
@@ -115,7 +116,7 @@ async def transcriptions_stream(websocket: WebSocket):
         logger.info("Long-form STT websocket disconnected")
     except Exception as exc:
         logger.exception("Long-form STT websocket error")
-        await _safe_send_error(websocket, str(exc))
+        await safe_send_ws_error(websocket, str(exc))
     finally:
         await _safe_close(websocket)
         logger.info("long-form STT ws closed")
@@ -146,7 +147,7 @@ async def speech_stream(websocket: WebSocket):
                 store=websocket.app.state.store,
             )
         except OperationError as exc:
-            await _send_error(websocket, str(exc))
+            await send_ws_error(websocket, str(exc))
             return
 
         scheduler = websocket.app.state.scheduler
@@ -160,10 +161,10 @@ async def speech_stream(websocket: WebSocket):
             try:
                 await session.configure(config)
             except (VoiceCloningUnsupportedError, VoiceNotFoundError) as exc:
-                await _send_error(websocket, str(exc))
+                await send_ws_error(websocket, str(exc))
                 return
             except OperationError as exc:
-                await _send_error(websocket, str(exc))
+                await send_ws_error(websocket, str(exc))
                 return
 
             while True:
@@ -171,7 +172,7 @@ async def speech_stream(websocket: WebSocket):
                 if raw.get("type") == "websocket.disconnect":
                     return
                 if "text" not in raw:
-                    await _send_error(websocket, "Binary messages are not supported for TTS input")
+                    await send_ws_error(websocket, "Binary messages are not supported for TTS input")
                     continue
                 data = json.loads(raw["text"])
                 msg_type = data.get("type", "")
@@ -182,7 +183,7 @@ async def speech_stream(websocket: WebSocket):
                     continue
                 if msg_type == "end":
                     break
-                await _send_error(websocket, str(UnknownMessageTypeError(msg_type)))
+                await send_ws_error(websocket, str(UnknownMessageTypeError(msg_type)))
 
             await session.end_of_stream()
         finally:
@@ -192,7 +193,7 @@ async def speech_stream(websocket: WebSocket):
         logger.info("Long-form TTS websocket disconnected")
     except Exception as exc:
         logger.exception("Long-form TTS websocket error")
-        await _safe_send_error(websocket, str(exc))
+        await safe_send_ws_error(websocket, str(exc))
     finally:
         await _safe_close(websocket)
         logger.info("long-form TTS ws closed")
@@ -205,11 +206,11 @@ async def _receive_config(websocket: WebSocket, downstream: str) -> dict | None:
         if raw.get("type") == "websocket.disconnect":
             return None
         if "text" not in raw:
-            await _send_error(websocket, f"Configuration message required before {downstream}")
+            await send_ws_error(websocket, f"Configuration message required before {downstream}")
             continue
         data = json.loads(raw["text"])
         if data.get("type") != "config":
-            await _send_error(websocket, f"Configuration message required before {downstream}")
+            await send_ws_error(websocket, f"Configuration message required before {downstream}")
             continue
         return data
 
@@ -244,7 +245,7 @@ async def _emit_longform_stt_events(websocket: WebSocket, session: LongformTrans
             })
             return
         elif isinstance(event, LongformErrorEvent):
-            await _send_error(websocket, event.message)
+            await send_ws_error(websocket, event.message)
             return
 
 
@@ -284,7 +285,7 @@ async def _emit_longform_tts_events(websocket: WebSocket, session: LongformSynth
             })
             return
         elif isinstance(event, TtsErrorEvent):
-            await _send_error(websocket, event.message)
+            await send_ws_error(websocket, event.message)
             return
 
 
@@ -297,15 +298,6 @@ _chunk_text = split_for_tts
 _split_long_sentence = split_long_sentence
 _split_by_words = split_by_words
 _split_by_chars = split_by_chars
-
-
-async def _send_error(websocket: WebSocket, message: str) -> None:
-    await websocket.send_json({"type": "error", "message": message})
-
-
-async def _safe_send_error(websocket: WebSocket, message: str) -> None:
-    with suppress(Exception):
-        await _send_error(websocket, message)
 
 
 async def _safe_close(websocket: WebSocket) -> None:

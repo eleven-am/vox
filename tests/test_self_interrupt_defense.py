@@ -426,19 +426,19 @@ class TestUninterruptibleResponse:
 
 class TestWireParseAllowInterruptions:
     def test_parses_top_level_field(self):
-        from vox.server.routes.conversation import _parse_allow_interruptions
+        from vox.operations.conversation import parse_allow_interruptions
 
-        assert _parse_allow_interruptions({"allow_interruptions": False}) is False
-        assert _parse_allow_interruptions({"allow_interruptions": True}) is True
+        assert parse_allow_interruptions({"allow_interruptions": False}) is False
+        assert parse_allow_interruptions({"allow_interruptions": True}) is True
 
     def test_parses_nested_response_field(self):
-        from vox.server.routes.conversation import _parse_allow_interruptions
+        from vox.operations.conversation import parse_allow_interruptions
 
         msg = {"response": {"allow_interruptions": False}}
-        assert _parse_allow_interruptions(msg) is False
+        assert parse_allow_interruptions(msg) is False
 
     def test_defaults_to_true_when_omitted(self):
-        from vox.server.routes.conversation import _parse_allow_interruptions
+        from vox.operations.conversation import parse_allow_interruptions
 
-        assert _parse_allow_interruptions({}) is True
-        assert _parse_allow_interruptions({"response": {}}) is True
+        assert parse_allow_interruptions({}) is True
+        assert parse_allow_interruptions({"response": {}}) is True

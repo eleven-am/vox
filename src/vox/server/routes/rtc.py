@@ -21,9 +21,6 @@ from vox.operations.conversation import (
 )
 from vox.operations.errors import OperationError
 from vox.server.auth import require_api_key
-from vox.server.routes.conversation import (
-    _send_error,
-)
 from vox.server.rtc_client_events import (
     emit_client_disconnected_to_control,
     flush_pending_client_events,
@@ -45,6 +42,7 @@ from vox.server.rtc_ice import (
 from vox.server.rtc_media import RtcAudioOutputTrack, cancel_and_drain_media_tasks, pump_input_audio
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 from vox.server.rtc_timeline import RtcTurnTimeline, rtc_audio_stats
+from vox.server.websocket import safe_send_ws_error, send_ws_error
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -313,13 +311,13 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
             if raw.get("type") == "websocket.disconnect":
                 break
             if "text" not in raw or raw["text"] is None:
-                await _send_error(websocket, "only JSON text frames are supported")
+                await send_ws_error(websocket, "only JSON text frames are supported")
                 continue
 
             try:
                 msg = json.loads(raw["text"])
             except json.JSONDecodeError as exc:
-                await _send_error(websocket, f"invalid JSON: {exc}")
+                await send_ws_error(websocket, f"invalid JSON: {exc}")
                 continue
 
             try:
@@ -335,14 +333,13 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
                     unknown_message_label="unknown control message type",
                 )
             except OperationError as exc:
-                await _send_error(websocket, str(exc))
+                await send_ws_error(websocket, str(exc))
 
     except WebSocketDisconnect:
         pass
     except Exception:
         logger.exception("RTC control WS error")
-        with suppress(Exception):
-            await _send_error(websocket, "internal error; closing")
+        await safe_send_ws_error(websocket, "internal error; closing")
     finally:
         await orchestrator.end_of_stream(flush_response=False)
         await drain_task(emit_task)
