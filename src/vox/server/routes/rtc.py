@@ -8,7 +8,6 @@ import logging
 from contextlib import suppress
 from datetime import UTC, datetime
 
-from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
@@ -21,9 +20,6 @@ from vox.operations.conversation import (
 from vox.operations.errors import OperationError
 from vox.server.auth import require_api_key
 from vox.server.rtc_client_events import (
-    emit_client_disconnected_to_control,
-    flush_pending_client_events,
-    handle_browser_data_channel_message,
     send_client_event_to_browser,
 )
 from vox.server.rtc_conversation import (
@@ -33,16 +29,13 @@ from vox.server.rtc_conversation import (
 )
 from vox.server.rtc_ice import (
     InvalidIceCandidateError,
-    candidate_events_from_sdp,
     ice_servers_from_env,
     parse_browser_ice_candidate,
-    patch_aioice_turn_error_code_parser,
-    rewrite_private_relay_candidates,
-    server_ice_servers_from_env,
 )
-from vox.server.rtc_media import RtcAudioOutputTrack, cancel_and_drain_media_tasks, pump_input_audio
-from vox.server.rtc_media_events import emit_media_event, iter_media_sse
-from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
+from vox.server.rtc_media import cancel_and_drain_media_tasks
+from vox.server.rtc_media_events import iter_media_sse
+from vox.server.rtc_registry import RtcSessionRegistry
+from vox.server.rtc_signaling import RtcSignalingError, create_browser_rtc_answer
 from vox.server.rtc_timeline import RtcTurnTimeline, rtc_audio_stats
 from vox.server.websocket import safe_send_ws_error, send_ws_error
 
@@ -84,131 +77,15 @@ async def create_rtc_answer(request: Request, session_id: str) -> dict:
     registry = get_rtc_registry(request)
     body = await request.json()
     client_token = _bearer_token(request) or str(body.get("client_token") or "")
-    attached = registry.attach_browser(client_token)
-    if attached is None:
-        raise HTTPException(status_code=401, detail="invalid or expired client token")
-    record, media_token = attached
-    if record.session_id != session_id:
-        registry.close(record.session_id)
-        raise HTTPException(status_code=404, detail="RTC session not found")
-
-    patch_aioice_turn_error_code_parser()
-    pc = RTCPeerConnection(configuration=_rtc_configuration(server_ice_servers_from_env()))
-    record.rtc_peer = pc
-    if record.audio_output is None:
-        record.audio_output = asyncio.Queue()
-    record.audio_output_track = RtcAudioOutputTrack(record.audio_output)
-    pc.addTrack(record.audio_output_track)
-
-    @pc.on("connectionstatechange")
-    async def on_connectionstatechange() -> None:
-        await emit_media_event(
-            record,
-            {
-                "type": "rtc.connection_state",
-                "state": pc.connectionState,
-            },
+    try:
+        return await create_browser_rtc_answer(
+            registry=registry,
+            session_id=session_id,
+            client_token=client_token,
+            offer=body,
         )
-        if pc.connectionState in {"closed", "failed"}:
-            await emit_client_disconnected_to_control(
-                record,
-                session_id,
-                reason=f"peer_connection_{pc.connectionState}",
-                connection_state=pc.connectionState,
-                ice_connection_state=pc.iceConnectionState,
-                data_channel_state=getattr(record.data_channel, "readyState", None),
-            )
-            registry.close(session_id)
-
-    @pc.on("iceconnectionstatechange")
-    async def on_iceconnectionstatechange() -> None:
-        await emit_media_event(
-            record,
-            {
-                "type": "rtc.ice_connection_state",
-                "state": pc.iceConnectionState,
-            },
-        )
-        if pc.iceConnectionState == "failed":
-            await emit_client_disconnected_to_control(
-                record,
-                session_id,
-                reason="ice_connection_failed",
-                connection_state=pc.connectionState,
-                ice_connection_state=pc.iceConnectionState,
-                data_channel_state=getattr(record.data_channel, "readyState", None),
-            )
-
-    @pc.on("icegatheringstatechange")
-    async def on_icegatheringstatechange() -> None:
-        await emit_media_event(
-            record,
-            {
-                "type": "rtc.ice_gathering_state",
-                "state": pc.iceGatheringState,
-            },
-        )
-
-    @pc.on("track")
-    def on_track(track) -> None:
-        if track.kind == "audio":
-            task = asyncio.create_task(pump_input_audio(track, lambda pcm, sr: _ingest_media_audio(record, pcm, sr)))
-            record.media_tasks.add(task)
-            task.add_done_callback(record.media_tasks.discard)
-
-    @pc.on("datachannel")
-    def on_datachannel(channel) -> None:
-        record.data_channel = channel
-
-        @channel.on("open")
-        def on_open() -> None:
-            flush_pending_client_events(record)
-
-        @channel.on("close")
-        def on_close() -> None:
-            if record.data_channel is channel:
-                record.data_channel = None
-            task = asyncio.create_task(
-                emit_client_disconnected_to_control(
-                    record,
-                    session_id,
-                    reason="data_channel_closed",
-                    connection_state=pc.connectionState,
-                    ice_connection_state=pc.iceConnectionState,
-                    data_channel_state=getattr(channel, "readyState", None),
-                )
-            )
-            record.media_tasks.add(task)
-            task.add_done_callback(record.media_tasks.discard)
-
-        @channel.on("message")
-        def on_message(message) -> None:
-            task = asyncio.create_task(handle_browser_data_channel_message(record, session_id, message))
-            record.media_tasks.add(task)
-            task.add_done_callback(record.media_tasks.discard)
-
-        flush_pending_client_events(record)
-
-    await pc.setRemoteDescription(
-        RTCSessionDescription(
-            sdp=str(body.get("sdp") or ""),
-            type=str(body.get("type") or "offer"),
-        )
-    )
-    answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
-    answer_sdp = rewrite_private_relay_candidates(pc.localDescription.sdp)
-    for event in candidate_events_from_sdp(answer_sdp):
-        await emit_media_event(record, event)
-    await emit_media_event(record, {"type": "rtc.ice_candidate", "candidate": None})
-
-    return {
-        "session_id": session_id,
-        "media_token": media_token,
-        "events_url": f"/v1/rtc/sessions/{session_id}/events?token={media_token}",
-        "type": pc.localDescription.type,
-        "sdp": answer_sdp,
-    }
+    except RtcSignalingError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.post("/v1/rtc/sessions/{session_id}/candidates")
@@ -350,22 +227,3 @@ def _bearer_token(request: Request) -> str | None:
     if auth.lower().startswith("bearer "):
         return auth[7:].strip()
     return None
-
-
-def _rtc_configuration(ice_servers: list[dict]) -> RTCConfiguration:
-    return RTCConfiguration(
-        iceServers=[
-            RTCIceServer(
-                urls=server["urls"],
-                username=server.get("username"),
-                credential=server.get("credential"),
-            )
-            for server in ice_servers
-        ]
-    )
-
-
-async def _ingest_media_audio(record: RtcSessionRecord, pcm16: bytes, sample_rate: int | None) -> None:
-    orchestrator = record.orchestrator
-    if orchestrator is not None and orchestrator.config is not None:
-        await orchestrator.ingest_pcm16(pcm16, sample_rate=sample_rate)
