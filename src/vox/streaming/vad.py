@@ -153,17 +153,22 @@ class SileroVAD:
         )
 
 
-SILERO_ONNX_WINDOW_SAMPLES = 256
+# Silero v5 at 16 kHz: 512-sample windows, each fed to the model with the
+# previous window's trailing 64 samples of context prepended.
+SILERO_ONNX_WINDOW_SAMPLES = 512
+SILERO_ONNX_CONTEXT_SAMPLES = 64
 
 
 class SileroOnnxVAD:
     """Default VAD backend: the Silero model run on onnxruntime (no torch).
 
-    Uses the bundled ``silero_vad.onnx`` — same model as the torch backend, so
-    detection is equivalent — but avoids the ~2GB torch dependency and the
-    runtime torch.hub download. The onnxruntime session is a process-wide
-    singleton; each ``get_speech_timestamps`` call analyzes the passed window
-    from a fresh recurrent state, matching the torch utility's per-call
+    Uses the bundled ``silero_vad.onnx`` — the same model the torch backend
+    loads — but avoids the ~2GB torch dependency and the runtime torch.hub
+    download. Replicates Silero's own preprocessing: 512-sample windows at
+    16 kHz, each prepended with the previous window's last 64 samples of
+    context, carrying the recurrent state across windows. The onnxruntime
+    session is a process-wide singleton; each ``get_speech_timestamps`` call
+    starts from fresh context/state, matching the torch utility's per-call
     behavior.
     """
 
@@ -207,14 +212,18 @@ class SileroOnnxVAD:
 
         session = self._ensure_session()
         window = SILERO_ONNX_WINDOW_SAMPLES
+        context_size = SILERO_ONNX_CONTEXT_SAMPLES
         audio = np.ascontiguousarray(audio, dtype=np.float32)
         state = np.zeros((2, 1, 128), dtype=np.float32)
+        context = np.zeros((1, context_size), dtype=np.float32)
         sr = np.array(TARGET_SAMPLE_RATE, dtype=np.int64)
 
         speech_frames: list[tuple[int, int]] = []
         for start in range(0, len(audio) - window + 1, window):
-            frame = audio[start:start + window]
-            output, state = session.run(None, {"input": frame[None, :], "state": state, "sr": sr})
+            chunk = audio[start:start + window][None, :]
+            model_input = np.concatenate([context, chunk], axis=1).astype(np.float32)
+            output, state = session.run(None, {"input": model_input, "state": state, "sr": sr})
+            context = model_input[:, -context_size:]
             if float(output.reshape(-1)[0]) >= threshold:
                 speech_frames.append((start, start + window))
 

@@ -78,15 +78,25 @@ class OpusStreamEncoder:
         return frames
 
     def flush(self) -> list[bytes]:
-        if len(self._buffer) == 0:
-            return []
+        if self.source_rate != self.target_rate:
+            tail = self._resampler.flush()
+            if tail.size:
+                samples = (np.clip(tail, -1.0, 1.0) * 32767).astype(np.int16)
+                self._buffer = np.concatenate([self._buffer, samples])
 
-        padded = np.zeros(self._frame_samples, dtype=np.int16)
-        padded[:len(self._buffer)] = self._buffer
-        self._buffer = np.array([], dtype=np.int16)
+        frames: list[bytes] = []
+        while len(self._buffer) >= self._frame_samples:
+            frame_data = self._buffer[:self._frame_samples]
+            self._buffer = self._buffer[self._frame_samples:]
+            frames.append(self._encoder.encode(frame_data.tobytes(), self._frame_samples))
 
-        encoded = self._encoder.encode(padded.tobytes(), self._frame_samples)
-        return [encoded]
+        if len(self._buffer) > 0:
+            padded = np.zeros(self._frame_samples, dtype=np.int16)
+            padded[:len(self._buffer)] = self._buffer
+            self._buffer = np.array([], dtype=np.int16)
+            frames.append(self._encoder.encode(padded.tobytes(), self._frame_samples))
+
+        return frames
 
     def close(self) -> None:
         self._buffer = np.array([], dtype=np.int16)

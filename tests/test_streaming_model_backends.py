@@ -14,6 +14,8 @@ from vox.streaming.eou import (
 )
 from vox.streaming.pipeline import StreamPipeline, StreamPipelineConfig
 from vox.streaming.vad import (
+    SILERO_ONNX_CONTEXT_SAMPLES,
+    SILERO_ONNX_WINDOW_SAMPLES,
     SileroOnnxVAD,
     SileroVAD,
     TenVAD,
@@ -36,11 +38,26 @@ class TestVADBackends:
     def test_silero_torch_backend_selectable(self):
         assert isinstance(create_vad_backend("silero-torch"), SileroVAD)
 
+    def test_silero_onnx_uses_16khz_window_and_context(self):
+        assert SILERO_ONNX_WINDOW_SAMPLES == 512
+        assert SILERO_ONNX_CONTEXT_SAMPLES == 64
+
     def test_silero_onnx_returns_no_speech_on_silence(self):
         vad = SileroOnnxVAD()
         silence = np.zeros(16_000, dtype=np.float32)
         assert vad.get_speech_timestamps(silence) == []
         assert vad.get_speech_timestamps(np.array([], dtype=np.float32)) == []
+
+    def test_silero_onnx_runs_windowed_inference_without_error(self):
+        vad = SileroOnnxVAD()
+        rng = np.random.default_rng(0)
+        # Multiple 512-sample windows so the context-prepend + state carry path
+        # is exercised end to end; result must be well-formed timestamps.
+        signal = rng.standard_normal(16_000).astype(np.float32) * 0.2
+        timestamps = vad.get_speech_timestamps(signal)
+        assert isinstance(timestamps, list)
+        for span in timestamps:
+            assert 0 <= span["start"] < span["end"] <= len(signal)
 
     def test_frames_to_timestamps_merges_and_pads(self):
         # two speech spans separated by a gap larger than min_silence -> two segments

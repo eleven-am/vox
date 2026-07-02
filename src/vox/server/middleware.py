@@ -37,19 +37,31 @@ _AUTH_EXEMPT_PATHS: frozenset[str] = frozenset({
     "/", "/health", "/healthz", "/readyz", "/v1/health",
 })
 
+# RTC follow-up routes (offer/candidates/events) authenticate with the
+# per-session client/media tokens issued by POST /v1/rtc/sessions (itself
+# key-protected), so the browser never carries the global API key. The base
+# /v1/rtc/sessions create route has no trailing slash and stays protected.
+_AUTH_EXEMPT_PREFIXES: tuple[str, ...] = ("/v1/rtc/sessions/",)
+
+
+def _is_auth_exempt(path: str) -> bool:
+    if path in _AUTH_EXEMPT_PATHS:
+        return True
+    return any(path.startswith(prefix) for prefix in _AUTH_EXEMPT_PREFIXES)
+
 
 class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
     """Enforce the API key on every HTTP route when one is configured.
 
     When ``VOX_API_KEY`` is unset the server stays open (unchanged behavior).
-    Health/probe paths are always exempt so orchestrator liveness checks work.
-    Websocket connections are authenticated in their own routes.
+    Health/probe paths and the token-authenticated RTC signaling routes are
+    exempt. Websocket connections are authenticated in their own routes.
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:
         if (
             api_key_required()
-            and request.url.path not in _AUTH_EXEMPT_PATHS
+            and not _is_auth_exempt(request.url.path)
             and not is_api_key_authorized(extract_api_key_from_http(request))
         ):
             return JSONResponse(
