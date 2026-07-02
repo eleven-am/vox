@@ -91,7 +91,7 @@ WIRE_RESPONSE_COMMITTED = "response.committed"
 WIRE_AUDIO_CLEAR = "response.audio.clear"
 WIRE_INTERRUPTION_DETECTED = "interruption.detected"
 WIRE_INTERRUPTION_FALSE_POSITIVE = "interruption.false_positive"
-WIRE_TURN_EOU_PREDICTED = "turn.eou.predicted"
+WIRE_TURN_EOU_PREDICTED = transcript_finalization.WIRE_TURN_EOU_PREDICTED
 WIRE_STATE_CHANGED = "turn.state_changed"
 WIRE_ERROR = "error"
 RESPONSE_STREAM_QUEUE_MAX = response_streams.RESPONSE_STREAM_QUEUE_MAX
@@ -560,38 +560,17 @@ class ConversationSession:
                 pause_ms = max(0, int((time.monotonic() - self._last_speech_stopped_at) * 1000))
                 self._recent_endpoint_pauses_ms.append(pause_ms)
                 self._recent_endpoint_pauses_ms = self._recent_endpoint_pauses_ms[-8:]
-            endpoint_timer_active = self._has_active_timer(TimerKey.ENDPOINTING.value)
             eou_threshold = EOUConfig().threshold
-            eou_complete = (
-                stream_event.eou_probability is not None and float(stream_event.eou_probability) >= eou_threshold
+            decision = transcript_finalization.final_transcript_decision(
+                stream_event,
+                endpoint_timer_active=self._has_active_timer(TimerKey.ENDPOINTING.value),
+                commit_delay_policy=self._endpoint_commit_delay,
+                recent_pause_ms=self._recent_endpoint_pauses_ms,
+                eou_threshold=eou_threshold,
+                turn_detector=self._config.turn_detector,
             )
-            commit_delay_ms = (
-                self._transcript_commit_delay_ms(
-                    eou_probability=(
-                        float(stream_event.eou_probability)
-                        if stream_event.eou_probability is not None
-                        else None
-                    ),
-                    eou_threshold=eou_threshold,
-                )
-                if endpoint_timer_active
-                else 0
-            )
-            defer_commit = endpoint_timer_active and commit_delay_ms > 0
-            if stream_event.eou_probability is not None:
-                await self._emit(
-                    {
-                        "type": WIRE_TURN_EOU_PREDICTED,
-                        "probability": float(stream_event.eou_probability),
-                        "threshold": eou_threshold,
-                        "decision": "complete" if eou_complete else "incomplete",
-                        "action": "wait" if defer_commit else "commit",
-                        "delay_ms": commit_delay_ms,
-                        "turn_detector": self._config.turn_detector,
-                        "start_ms": stream_event.start_ms,
-                        "end_ms": stream_event.end_ms,
-                    }
-                )
+            if decision.eou_event is not None:
+                await self._emit(decision.eou_event)
             self._transcript_finalizer.remember(stream_event)
             pending_text = self._transcript_finalizer.pending_text(stream_event.text)
 
@@ -604,8 +583,8 @@ class ConversationSession:
                     type=TurnEventType.USER_TRANSCRIPT_FINAL,
                     payload={
                         "text": pending_text,
-                        "defer_commit": defer_commit,
-                        "commit_delay_ms": commit_delay_ms,
+                        "defer_commit": decision.defer_commit,
+                        "commit_delay_ms": decision.commit_delay_ms,
                     },
                 )
             )

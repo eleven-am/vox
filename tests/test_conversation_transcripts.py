@@ -4,9 +4,11 @@ import logging
 
 from vox.conversation.transcripts import (
     WIRE_TRANSCRIPT_DONE,
+    WIRE_TURN_EOU_PREDICTED,
     EndpointCommitDelayPolicy,
     PendingTranscriptFinalizer,
     coalesce_transcript_payload,
+    final_transcript_decision,
     is_transcript_revision,
     transcript_done_payload,
 )
@@ -184,3 +186,88 @@ def test_endpoint_commit_delay_keeps_full_delay_for_low_or_missing_eou():
 
     assert policy.commit_delay_ms(eou_probability=0.3, eou_threshold=0.5) == 1200
     assert policy.commit_delay_ms(eou_probability=None, eou_threshold=0.5) == 1200
+
+
+def test_final_transcript_decision_emits_commit_eou_event_without_endpoint_timer():
+    policy = EndpointCommitDelayPolicy.from_turn_policy(
+        TurnPolicy(
+            max_endpointing_delay_ms=3000,
+            min_endpointing_delay_ms=400,
+            dynamic_endpointing=False,
+        )
+    )
+
+    decision = final_transcript_decision(
+        StreamTranscript(text="done", eou_probability=0.9, start_ms=100, end_ms=600),
+        endpoint_timer_active=False,
+        commit_delay_policy=policy,
+        recent_pause_ms=[],
+        eou_threshold=0.5,
+        turn_detector="livekit",
+    )
+
+    assert decision.commit_delay_ms == 0
+    assert not decision.defer_commit
+    assert decision.eou_complete
+    assert decision.eou_event == {
+        "type": WIRE_TURN_EOU_PREDICTED,
+        "probability": 0.9,
+        "threshold": 0.5,
+        "decision": "complete",
+        "action": "commit",
+        "delay_ms": 0,
+        "turn_detector": "livekit",
+        "start_ms": 100,
+        "end_ms": 600,
+    }
+
+
+def test_final_transcript_decision_defers_while_endpoint_timer_is_active():
+    policy = EndpointCommitDelayPolicy.from_turn_policy(
+        TurnPolicy(
+            max_endpointing_delay_ms=3000,
+            min_endpointing_delay_ms=400,
+            dynamic_endpointing=False,
+        )
+    )
+
+    decision = final_transcript_decision(
+        StreamTranscript(text="maybe done", eou_probability=0.3, start_ms=0, end_ms=1200),
+        endpoint_timer_active=True,
+        commit_delay_policy=policy,
+        recent_pause_ms=[],
+        eou_threshold=0.5,
+        turn_detector="livekit",
+    )
+
+    assert decision.commit_delay_ms == 1200
+    assert decision.defer_commit
+    assert not decision.eou_complete
+    assert decision.eou_event is not None
+    assert decision.eou_event["decision"] == "incomplete"
+    assert decision.eou_event["action"] == "wait"
+    assert decision.eou_event["delay_ms"] == 1200
+
+
+def test_final_transcript_decision_defers_missing_eou_without_emitting_eou_event():
+    policy = EndpointCommitDelayPolicy.from_turn_policy(
+        TurnPolicy(
+            max_endpointing_delay_ms=3000,
+            min_endpointing_delay_ms=400,
+            dynamic_endpointing=False,
+        )
+    )
+
+    decision = final_transcript_decision(
+        StreamTranscript(text="no eou", start_ms=0, end_ms=800),
+        endpoint_timer_active=True,
+        commit_delay_policy=policy,
+        recent_pause_ms=[],
+        eou_threshold=0.5,
+        turn_detector="livekit",
+    )
+
+    assert decision.commit_delay_ms == 1200
+    assert decision.defer_commit
+    assert not decision.eou_complete
+    assert decision.eou_event is None

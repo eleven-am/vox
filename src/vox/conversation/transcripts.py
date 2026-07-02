@@ -9,6 +9,7 @@ from vox.conversation.types import TurnPolicy
 from vox.streaming.types import StreamTranscript
 
 WIRE_TRANSCRIPT_DONE = "conversation.item.input_audio_transcription.completed"
+WIRE_TURN_EOU_PREDICTED = "turn.eou.predicted"
 TRANSCRIPT_REVISION_SIMILARITY = 0.78
 TRANSCRIPT_CONTINUATION_COMMIT_MS = 1200
 
@@ -192,3 +193,59 @@ class EndpointCommitDelayPolicy:
             return floor_ms
         confidence = min(1.0, max(0.0, (eou_probability - eou_threshold) / (1.0 - eou_threshold)))
         return int(base_ms - confidence * (base_ms - floor_ms))
+
+
+@dataclass(frozen=True)
+class FinalTranscriptDecision:
+    commit_delay_ms: int
+    defer_commit: bool
+    eou_complete: bool
+    eou_event: dict[str, Any] | None
+
+
+def final_transcript_decision(
+    transcript: StreamTranscript,
+    *,
+    endpoint_timer_active: bool,
+    commit_delay_policy: EndpointCommitDelayPolicy,
+    recent_pause_ms: list[int] | tuple[int, ...],
+    eou_threshold: float,
+    turn_detector: str,
+) -> FinalTranscriptDecision:
+    eou_probability = float(transcript.eou_probability) if transcript.eou_probability is not None else None
+    commit_delay_ms = (
+        commit_delay_policy.commit_delay_ms(
+            recent_pause_ms=recent_pause_ms,
+            eou_probability=eou_probability,
+            eou_threshold=eou_threshold,
+        )
+        if endpoint_timer_active
+        else 0
+    )
+    defer_commit = endpoint_timer_active and commit_delay_ms > 0
+    eou_complete = eou_probability is not None and eou_probability >= eou_threshold
+
+    if eou_probability is None:
+        return FinalTranscriptDecision(
+            commit_delay_ms=commit_delay_ms,
+            defer_commit=defer_commit,
+            eou_complete=False,
+            eou_event=None,
+        )
+
+    return FinalTranscriptDecision(
+        commit_delay_ms=commit_delay_ms,
+        defer_commit=defer_commit,
+        eou_complete=eou_complete,
+        eou_event={
+            "type": WIRE_TURN_EOU_PREDICTED,
+            "probability": eou_probability,
+            "threshold": eou_threshold,
+            "decision": "complete" if eou_complete else "incomplete",
+            "action": "wait" if defer_commit else "commit",
+            "delay_ms": commit_delay_ms,
+            "turn_detector": turn_detector,
+            "start_ms": transcript.start_ms,
+            "end_ms": transcript.end_ms,
+        },
+    )
