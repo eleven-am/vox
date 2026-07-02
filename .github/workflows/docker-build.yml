@@ -1,0 +1,117 @@
+name: Docker build check
+
+# Builds every image variant on GitHub (no push) to confirm they compile.
+# Runs only when Docker-relevant files change, plus on demand.
+on:
+  pull_request:
+    paths:
+      - "Dockerfile"
+      - "Dockerfile.spark"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "Makefile"
+      - ".github/workflows/docker-build.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "Dockerfile"
+      - "Dockerfile.spark"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/docker-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.image }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.experimental || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: gpu
+            arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+            file: Dockerfile
+            build_args: |
+              BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+              VOX_ACCELERATOR=gpu
+              VOX_INCLUDE_TORCH=1
+              VOX_DEFAULT_DEVICE=auto
+          - image: lean
+            arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+            file: Dockerfile
+            build_args: |
+              BASE_IMAGE=python:3.12-slim
+              VOX_ACCELERATOR=cpu
+              VOX_INCLUDE_TORCH=0
+              VOX_DEFAULT_DEVICE=cpu
+          - image: lean
+            arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            file: Dockerfile
+            build_args: |
+              BASE_IMAGE=python:3.12-slim
+              VOX_ACCELERATOR=cpu
+              VOX_INCLUDE_TORCH=0
+              VOX_DEFAULT_DEVICE=cpu
+          - image: cpu
+            arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+            file: Dockerfile
+            build_args: |
+              BASE_IMAGE=python:3.12-slim
+              VOX_ACCELERATOR=cpu
+              VOX_INCLUDE_TORCH=1
+              VOX_DEFAULT_DEVICE=cpu
+          - image: cpu
+            arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            file: Dockerfile
+            build_args: |
+              BASE_IMAGE=python:3.12-slim
+              VOX_ACCELERATOR=cpu
+              VOX_INCLUDE_TORCH=1
+              VOX_DEFAULT_DEVICE=cpu
+          - image: spark
+            arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            file: Dockerfile.spark
+            experimental: true
+            build_args: |
+              BASE_IMAGE=nvidia/cuda:12.9.1-cudnn-runtime-ubuntu24.04
+              VOX_DEFAULT_DEVICE=auto
+              SPARK_TORCH_INDEX_URL=https://download.pytorch.org/whl/cu129
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          platforms: ${{ matrix.platform }}
+          build-args: ${{ matrix.build_args }}
+          push: false
+          cache-from: type=gha,scope=check-${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=check-${{ matrix.image }}-${{ matrix.arch }}
