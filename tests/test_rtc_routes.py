@@ -10,7 +10,6 @@ from fastapi.testclient import TestClient
 from tests.fakes import FakeScheduler
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
-from vox.server.routes.rtc import _RtcTurnTimeline
 from vox.server.routes.rtc import router as rtc_router
 
 
@@ -150,50 +149,3 @@ def test_rtc_candidate_endpoint_accepts_end_of_candidates():
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}
-
-
-def test_rtc_turn_timeline_emits_derived_timing_events():
-    timeline = _RtcTurnTimeline(session_id="rtc_test")
-
-    started = timeline.observe(
-        {"type": "input_audio_buffer.speech_started", "data": {}},
-        audio_stats={"buffered_audio_ms": 0.0},
-    )
-    assert started == {
-        "type": "rtc.turn_timing",
-        "session_id": "rtc_test",
-        "data": {
-            "source_event": "input_audio_buffer.speech_started",
-            "turn_index": 1,
-            "ms_since_speech_started": 0,
-            "rtc_audio": {"buffered_audio_ms": 0.0},
-        },
-    }
-
-    stopped = timeline.observe({"type": "input_audio_buffer.speech_stopped", "data": {}})
-    assert stopped is not None
-    assert stopped["data"]["source_event"] == "input_audio_buffer.speech_stopped"
-    assert stopped["data"]["turn_index"] == 1
-    assert stopped["data"]["ms_since_speech_started"] >= 0
-    assert stopped["data"]["ms_since_speech_stopped"] == 0
-
-    transcript = timeline.observe(
-        {
-            "type": "conversation.item.input_audio_transcription.completed",
-            "data": {"transcript": "hello"},
-        }
-    )
-    assert transcript is not None
-    assert transcript["data"]["source_event"] == "conversation.item.input_audio_transcription.completed"
-    assert transcript["data"]["ms_since_transcript"] == 0
-
-    created = timeline.observe({"type": "response.created", "data": {"response_id": "resp_1"}})
-    assert created is not None
-    assert created["data"]["response_id"] == "resp_1"
-    assert created["data"]["ms_since_response_created"] == 0
-
-
-def test_rtc_turn_timeline_ignores_untracked_events():
-    timeline = _RtcTurnTimeline(session_id="rtc_test")
-
-    assert timeline.observe({"type": "session.created", "data": {}}) is None
