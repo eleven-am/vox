@@ -890,17 +890,6 @@ class ConversationSession:
             )
         )
 
-    def _transcript_commit_delay_ms(
-        self,
-        eou_probability: float | None = None,
-        eou_threshold: float | None = None,
-    ) -> int:
-        return self._endpoint_commit_delay.commit_delay_ms(
-            recent_pause_ms=self._recent_endpoint_pauses_ms,
-            eou_probability=eou_probability,
-            eou_threshold=eou_threshold,
-        )
-
     async def _evaluate_interrupt_candidate(self) -> None:
         """Consult the classifier before confirming a barge-in.
 

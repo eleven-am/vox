@@ -1108,54 +1108,11 @@ class TestEndpointingFallback:
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_dynamic_endpointing_uses_recent_pause_history(self):
-        session, _, _ = _build_session(
-            policy=TurnPolicy(
-                max_endpointing_delay_ms=3000,
-                min_endpointing_delay_ms=400,
-                dynamic_endpointing=True,
-            ),
-        )
-        session._recent_endpoint_pauses_ms = [800, 1000, 1200]
-        assert session._transcript_commit_delay_ms() == 1250
-
-        session._recent_endpoint_pauses_ms = [100]
-        assert session._transcript_commit_delay_ms() == 1200
-
-    @pytest.mark.asyncio
     async def test_policy_vad_min_silence_reaches_vad_config(self):
         session, _, _ = _build_session(
             policy=TurnPolicy(vad_min_silence_ms=550),
         )
         assert session._pipeline._vad.config.min_silence_duration_ms == 550
-
-    @pytest.mark.asyncio
-    async def test_eou_confidence_shrinks_commit_delay(self):
-        session, _, _ = _build_session(
-            policy=TurnPolicy(
-                max_endpointing_delay_ms=3000,
-                min_endpointing_delay_ms=400,
-                dynamic_endpointing=False,
-            ),
-        )
-        base_ms = session._transcript_commit_delay_ms()
-        assert base_ms == 1200
-
-        assert session._transcript_commit_delay_ms(eou_probability=1.0, eou_threshold=0.5) == 400
-        mid_ms = session._transcript_commit_delay_ms(eou_probability=0.75, eou_threshold=0.5)
-        assert 400 < mid_ms < base_ms
-
-    @pytest.mark.asyncio
-    async def test_low_eou_keeps_full_commit_delay(self):
-        session, _, _ = _build_session(
-            policy=TurnPolicy(
-                max_endpointing_delay_ms=3000,
-                min_endpointing_delay_ms=400,
-                dynamic_endpointing=False,
-            ),
-        )
-        assert session._transcript_commit_delay_ms(eou_probability=0.3, eou_threshold=0.5) == 1200
-        assert session._transcript_commit_delay_ms(eou_probability=None, eou_threshold=0.5) == 1200
 
 
 class TestAssistantTurnInEouHistory:
