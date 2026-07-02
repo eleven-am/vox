@@ -172,6 +172,7 @@ proto:
 	uv run python -m grpc_tools.protoc \
 		-I proto \
 		--python_out=src/vox/grpc \
+		--pyi_out=src/vox/grpc \
 		--grpc_python_out=src/vox/grpc \
 		proto/vox.proto
 	sed -i.bak 's/^import vox_pb2 as vox__pb2$$/from . import vox_pb2 as vox__pb2/' src/vox/grpc/vox_pb2_grpc.py

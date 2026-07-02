@@ -310,6 +310,7 @@ message ConverseClientMessage {
     ConversationResponseStart response_start = 5;
     ConversationResponseDelta response_delta = 6;
     ConversationResponseCommit response_commit = 7;
+    ConversationResponseReplaceText response_replace_text = 8;
   }
   reserved 3;
   reserved "response_create";
@@ -325,6 +326,7 @@ message RtcControlClientMessage {
     ConversationResponseDelta response_delta = 6;
     ConversationResponseCommit response_commit = 7;
     RtcClientEvent client_event = 8;
+    ConversationResponseReplaceText response_replace_text = 9;
   }
   reserved 3;
   reserved "response_create";
@@ -408,15 +410,23 @@ message ConversationAudioAppend {
   uint32 sample_rate = 2;
 }
 
-message ConversationResponseStart {}
+message ConversationResponseStart {
+  optional bool allow_interruptions = 1;
+}
 
 message ConversationResponseDelta {
   string delta = 1;
+  optional bool allow_interruptions = 2;
 }
 
 message ConversationResponseCommit {}
 
 message ConversationResponseCancel {}
+
+message ConversationResponseReplaceText {
+  string text = 1;
+  optional bool allow_interruptions = 2;
+}
 
 message ConversationSessionCreated {
   string turn_profile = 1;

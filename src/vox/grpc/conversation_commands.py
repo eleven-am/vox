@@ -113,16 +113,28 @@ def _response_command(
     unknown_message_label: str,
 ) -> GrpcConversationCommand:
     if kind == "response_start":
-        return GrpcConversationCommand(message={"type": "response.start"})
+        message: dict = {"type": "response.start"}
+        if client_msg.response_start.HasField("allow_interruptions"):
+            message["allow_interruptions"] = client_msg.response_start.allow_interruptions
+        return GrpcConversationCommand(message=message)
     if kind == "response_delta":
-        return GrpcConversationCommand(
-            message={
-                "type": "response.delta",
-                "delta": client_msg.response_delta.delta,
-            },
-        )
+        message = {
+            "type": "response.delta",
+            "delta": client_msg.response_delta.delta,
+        }
+        if client_msg.response_delta.HasField("allow_interruptions"):
+            message["allow_interruptions"] = client_msg.response_delta.allow_interruptions
+        return GrpcConversationCommand(message=message)
     if kind == "response_commit":
         return GrpcConversationCommand(message={"type": "response.commit"})
     if kind == "response_cancel":
         return GrpcConversationCommand(message={"type": "response.cancel"})
+    if kind == "response_replace_text":
+        message = {
+            "type": "response.replace_text",
+            "text": client_msg.response_replace_text.text,
+        }
+        if client_msg.response_replace_text.HasField("allow_interruptions"):
+            message["allow_interruptions"] = client_msg.response_replace_text.allow_interruptions
+        return GrpcConversationCommand(message=message)
     raise InvalidConfigError(f"{unknown_message_label}: {kind!r}")

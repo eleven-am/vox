@@ -77,6 +77,71 @@ def test_converse_and_rtc_response_delta_decode_to_same_command_shape():
     assert rtc.message == converse.message
 
 
+def test_converse_response_start_preserves_allow_interruptions():
+    command = converse_client_message_to_command(
+        vox_pb2.ConverseClientMessage(
+            response_start=vox_pb2.ConversationResponseStart(allow_interruptions=False),
+        )
+    )
+
+    assert command.message == {
+        "type": "response.start",
+        "allow_interruptions": False,
+    }
+
+
+def test_response_delta_preserves_allow_interruptions_for_both_grpc_transports():
+    converse = converse_client_message_to_command(
+        vox_pb2.ConverseClientMessage(
+            response_delta=vox_pb2.ConversationResponseDelta(
+                delta="hello",
+                allow_interruptions=False,
+            ),
+        )
+    )
+    rtc = rtc_control_message_to_command(
+        vox_pb2.RtcControlClientMessage(
+            response_delta=vox_pb2.ConversationResponseDelta(
+                delta="hello",
+                allow_interruptions=False,
+            ),
+        )
+    )
+
+    assert converse.message == {
+        "type": "response.delta",
+        "delta": "hello",
+        "allow_interruptions": False,
+    }
+    assert rtc.message == converse.message
+
+
+def test_converse_and_rtc_response_replace_text_decode_to_same_command_shape():
+    converse = converse_client_message_to_command(
+        vox_pb2.ConverseClientMessage(
+            response_replace_text=vox_pb2.ConversationResponseReplaceText(
+                text="replacement",
+                allow_interruptions=False,
+            ),
+        )
+    )
+    rtc = rtc_control_message_to_command(
+        vox_pb2.RtcControlClientMessage(
+            response_replace_text=vox_pb2.ConversationResponseReplaceText(
+                text="replacement",
+                allow_interruptions=False,
+            ),
+        )
+    )
+
+    assert converse.message == {
+        "type": "response.replace_text",
+        "text": "replacement",
+        "allow_interruptions": False,
+    }
+    assert rtc.message == converse.message
+
+
 def test_rtc_client_event_decodes_json_payload():
     command = rtc_control_message_to_command(
         vox_pb2.RtcControlClientMessage(
