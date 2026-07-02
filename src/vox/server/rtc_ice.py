@@ -11,6 +11,11 @@ from struct import unpack
 from urllib.parse import urlparse
 
 from aioice import stun
+from aiortc.sdp import candidate_from_sdp
+
+
+class InvalidIceCandidateError(ValueError):
+    pass
 
 
 def ice_servers_from_env(*, now: float | None = None) -> list[dict]:
@@ -88,6 +93,26 @@ def candidate_events_from_sdp(sdp: str) -> list[dict]:
                 }
             )
     return events
+
+
+def parse_browser_ice_candidate(body: dict) -> object | None:
+    candidate_payload = body.get("candidate")
+    if candidate_payload is None:
+        return None
+
+    candidate = candidate_payload.get("candidate") if isinstance(candidate_payload, dict) else str(candidate_payload)
+    try:
+        ice = candidate_from_sdp(str(candidate).removeprefix("candidate:"))
+    except (AssertionError, ValueError) as exc:
+        raise InvalidIceCandidateError("invalid ICE candidate") from exc
+
+    if isinstance(candidate_payload, dict):
+        ice.sdpMid = candidate_payload.get("sdpMid")
+        ice.sdpMLineIndex = candidate_payload.get("sdpMLineIndex")
+    else:
+        ice.sdpMid = body.get("sdpMid")
+        ice.sdpMLineIndex = body.get("sdpMLineIndex")
+    return ice
 
 
 def _ice_servers_from_env(*, now: float | None, stun_env: str, turn_env: str) -> list[dict]:

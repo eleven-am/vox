@@ -9,7 +9,6 @@ from contextlib import suppress
 from datetime import UTC, datetime
 
 from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
-from aiortc.sdp import candidate_from_sdp
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
@@ -33,8 +32,10 @@ from vox.server.rtc_conversation import (
     forward_wire_event_to_browser,
 )
 from vox.server.rtc_ice import (
+    InvalidIceCandidateError,
     candidate_events_from_sdp,
     ice_servers_from_env,
+    parse_browser_ice_candidate,
     patch_aioice_turn_error_code_parser,
     rewrite_private_relay_candidates,
     server_ice_servers_from_env,
@@ -218,22 +219,10 @@ async def add_rtc_candidate(request: Request, session_id: str) -> dict:
     if record is None or record.rtc_peer is None:
         raise HTTPException(status_code=401, detail="invalid RTC media token")
 
-    candidate_payload = body.get("candidate")
-    if candidate_payload is None:
-        await record.rtc_peer.addIceCandidate(None)
-        return {"ok": True}
-
-    candidate = candidate_payload.get("candidate") if isinstance(candidate_payload, dict) else str(candidate_payload)
     try:
-        ice = candidate_from_sdp(str(candidate).removeprefix("candidate:"))
-    except (AssertionError, ValueError) as exc:
+        ice = parse_browser_ice_candidate(body)
+    except InvalidIceCandidateError as exc:
         raise HTTPException(status_code=400, detail="invalid ICE candidate") from exc
-    if isinstance(candidate_payload, dict):
-        ice.sdpMid = candidate_payload.get("sdpMid")
-        ice.sdpMLineIndex = candidate_payload.get("sdpMLineIndex")
-    else:
-        ice.sdpMid = body.get("sdpMid")
-        ice.sdpMLineIndex = body.get("sdpMLineIndex")
     await record.rtc_peer.addIceCandidate(ice)
     return {"ok": True}
 

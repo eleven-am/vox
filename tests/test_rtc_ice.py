@@ -4,11 +4,14 @@ import base64
 import hashlib
 import hmac
 
+import pytest
 from aioice import stun
 
 from vox.server.rtc_ice import (
+    InvalidIceCandidateError,
     candidate_events_from_sdp,
     ice_servers_from_env,
+    parse_browser_ice_candidate,
     patch_aioice_turn_error_code_parser,
     rewrite_private_relay_candidates,
     server_ice_servers_from_env,
@@ -207,3 +210,46 @@ def test_candidate_events_from_sdp_handles_candidate_before_media_section():
             },
         }
     ]
+
+
+def test_parse_browser_ice_candidate_accepts_null_end_marker():
+    assert parse_browser_ice_candidate({"candidate": None}) is None
+
+
+def test_parse_browser_ice_candidate_preserves_dict_mid_and_mline():
+    ice = parse_browser_ice_candidate(
+        {
+            "candidate": {
+                "candidate": "candidate:host 1 udp 2130706431 10.0.0.1 40000 typ host",
+                "sdpMid": "audio",
+                "sdpMLineIndex": 0,
+            }
+        }
+    )
+
+    assert ice is not None
+    assert ice.ip == "10.0.0.1"
+    assert ice.port == 40000
+    assert ice.sdpMid == "audio"
+    assert ice.sdpMLineIndex == 0
+
+
+def test_parse_browser_ice_candidate_accepts_string_with_top_level_mid():
+    ice = parse_browser_ice_candidate(
+        {
+            "candidate": "candidate:host 1 udp 2130706431 10.0.0.1 40001 typ host",
+            "sdpMid": "data",
+            "sdpMLineIndex": 1,
+        }
+    )
+
+    assert ice is not None
+    assert ice.ip == "10.0.0.1"
+    assert ice.port == 40001
+    assert ice.sdpMid == "data"
+    assert ice.sdpMLineIndex == 1
+
+
+def test_parse_browser_ice_candidate_rejects_malformed_candidate():
+    with pytest.raises(InvalidIceCandidateError, match="invalid ICE candidate"):
+        parse_browser_ice_candidate({"candidate": {"candidate": "not a candidate"}})
