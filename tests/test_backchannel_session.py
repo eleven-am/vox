@@ -272,7 +272,7 @@ class TestBackchannelRejection:
     async def test_paused_output_buffers_audio_until_false_positive_resume(self):
         session, coll, _ = _build()
         session._active_response_id = "resp_1"
-        session._paused = True
+        session._audio_output.pause()
 
         audio = np.full(480, 0.01, dtype=np.float32).tobytes()
         await session._handle_tts_chunk(audio, 24_000)
@@ -291,7 +291,7 @@ class TestBackchannelRejection:
     async def test_resume_preserves_audio_order_when_new_chunks_arrive_mid_flush(self):
         session, coll, _ = _build()
         session._active_response_id = "resp_1"
-        session._paused = True
+        session._audio_output.pause()
 
         chunk_a = np.full(480, 0.01, dtype=np.float32).tobytes()
         chunk_b = np.full(480, 0.02, dtype=np.float32).tobytes()
@@ -325,7 +325,7 @@ class TestBackchannelRejection:
         sequences = [event["sequence"] for event in deltas]
         assert sequences == sorted(sequences)
         assert len(sequences) == 4
-        assert session._paused is False
+        assert session._audio_output.paused is False
         assert session.pending_audio_count == 0
 
         await session.close()

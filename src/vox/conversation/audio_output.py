@@ -17,10 +17,15 @@ class ResponseAudioOutput:
         self._pending: list[PendingAudio] = []
         self._sequence = 0
         self._playout_end_at = 0.0
+        self._paused = False
 
     @property
     def pending_count(self) -> int:
         return len(self._pending)
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
 
     def reset_for_response(self) -> None:
         self._sequence = 0
@@ -36,12 +41,30 @@ class ResponseAudioOutput:
         self.clear_pending()
         self.reset_playout()
 
+    def pause(self) -> None:
+        self._paused = True
+        self.reset_playout()
+
+    def finish_resume(self) -> None:
+        self._paused = False
+
+    def flush(self) -> None:
+        self.clear_pending()
+        self._paused = False
+        self.reset_playout()
+
     def next_sequence(self) -> int:
         self._sequence += 1
         return self._sequence
 
     def hold(self, audio: bytes, sample_rate: int, sequence: int) -> None:
         self._pending.append(PendingAudio(audio=audio, sample_rate=sample_rate, sequence=sequence))
+
+    def hold_if_paused(self, audio: bytes, sample_rate: int, sequence: int) -> bool:
+        if not self._paused:
+            return False
+        self.hold(audio, sample_rate, sequence)
+        return True
 
     def pop_pending_batch(self) -> list[PendingAudio]:
         pending = self._pending

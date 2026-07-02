@@ -11,7 +11,7 @@ Wires together:
 Concurrency model
 -----------------
 One `asyncio.Task` drives the state machine (`_run_loop`); it is the **only**
-mutator of `_paused` and `_tts_task`. The audio ingest path and the
+mutator of output pause state and `_tts_task`. The audio ingest path and the
 TTS task push work back through the main loop. When output is paused for an
 unconfirmed barge-in, newly generated TTS audio is held until the candidate is
 confirmed or rejected. The acoustic echo guard runs synchronously when VAD
@@ -179,7 +179,6 @@ class ConversationSession:
         self._timer_registry = ConversationTimerRegistry(self._on_timer_expired)
         self._tts_task: asyncio.Task | None = None
         self._runner: asyncio.Task | None = None
-        self._paused: bool = False
         self._audio_output = ResponseAudioOutput(pace_to_playout=config.pace_response_done_to_audio)
         self._response_stream: ResponseStream | None = None
         self._closed: bool = False
@@ -677,7 +676,7 @@ class ConversationSession:
                     self._pipeline.add_assistant_turn(assistant_text)
 
                 await self._wait_for_estimated_playout()
-                if self._paused and self._response_stream is stream:
+                if self._audio_output.paused and self._response_stream is stream:
                     stream.pending_done = True
                     return
                 await self._complete_response_stream(stream)
@@ -754,8 +753,7 @@ class ConversationSession:
             pcm_audio = resample_audio(pcm_audio, sample_rate, output_sample_rate)
         encoded_audio = float32_to_pcm16(pcm_audio)
         sequence = self._audio_output.next_sequence()
-        if self._paused:
-            self._audio_output.hold(encoded_audio, output_sample_rate, sequence)
+        if self._audio_output.hold_if_paused(encoded_audio, output_sample_rate, sequence):
             return
         await self._emit_output_audio(encoded_audio, output_sample_rate, sequence)
 
@@ -829,8 +827,7 @@ class ConversationSession:
 
     async def _execute(self, action: TurnAction) -> None:
         if action.type == TurnActionType.PAUSE_OUTPUT:
-            self._paused = True
-            self._audio_output.reset_playout()
+            self._audio_output.pause()
             await self._emit(
                 {
                     "type": WIRE_AUDIO_CLEAR,
@@ -843,16 +840,14 @@ class ConversationSession:
             while self._audio_output.pending_count:
                 for pending in self._audio_output.pop_pending_batch():
                     await self._emit_output_audio(pending.audio, pending.sample_rate, pending.sequence)
-            self._paused = False
+            self._audio_output.finish_resume()
             cooldown_s = self._config.policy.stable_speaking_min_ms / 1000.0
             self._flutter_cooldown_until = time.monotonic() + cooldown_s
             if stream is not None and stream.pending_done:
                 await self._complete_response_stream(stream)
 
         elif action.type == TurnActionType.FLUSH_OUTPUT:
-            self._audio_output.clear_pending()
-            self._paused = False
-            self._audio_output.reset_playout()
+            self._audio_output.flush()
             self._audio_history.clear()
             await self._emit(
                 {
