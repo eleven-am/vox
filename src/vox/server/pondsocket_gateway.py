@@ -10,7 +10,6 @@ from fastapi import APIRouter, FastAPI, WebSocket
 
 from vox.core.tasks import drain_task
 from vox.operations.conversation import (
-    ConvDoneEvent,
     ConversationOrchestrator,
     execute_conversation_command,
     execute_rtc_control_command,
@@ -179,8 +178,6 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
                 if wire is not None:
                     with suppress(Exception):
                         await emit_wire_to_user(channel, user_id, wire)
-                if isinstance(event, ConvDoneEvent):
-                    return
 
         emit_task = asyncio.create_task(emit_events())
         return _ConversationRuntime(

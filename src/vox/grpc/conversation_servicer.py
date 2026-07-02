@@ -22,7 +22,6 @@ from vox.grpc.conversation_events import (
     conversation_event_to_pb,
 )
 from vox.operations.conversation import (
-    ConvDoneEvent,
     ConversationOrchestrator,
 )
 from vox.operations.errors import OperationError
@@ -50,8 +49,6 @@ class ConversationServicer(vox_pb2_grpc.ConversationServiceServicer):
                     pb = conversation_event_to_pb(event)
                     if pb is not None:
                         await out_queue.put(pb)
-                    if isinstance(event, ConvDoneEvent):
-                        break
             finally:
                 await out_queue.put(None)
 

@@ -19,7 +19,6 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from vox.core.tasks import drain_task
 from vox.logging_context import new_request_id, request_id_var
 from vox.operations.conversation import (
-    ConvDoneEvent,
     ConversationOrchestrator,
     execute_conversation_command,
     serialize_conversation_event,
@@ -51,8 +50,6 @@ async def conversation_ws(websocket: WebSocket) -> None:
             if wire is not None:
                 with suppress(Exception):
                     await websocket.send_json(wire)
-            if isinstance(event, ConvDoneEvent):
-                return
 
     emit_task = asyncio.create_task(emit_events())
 
