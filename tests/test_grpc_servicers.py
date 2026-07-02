@@ -40,7 +40,7 @@ from vox.operations.transcription import (
     Entity,
     TranscriptionResultBundle,
 )
-from vox.operations.voices import ListedVoice, list_voices_payload
+from vox.operations.voices import ListedVoice, created_voice_payload, list_voices_payload
 from vox.streaming.types import StreamTranscript
 
 
@@ -542,14 +542,15 @@ class TestGrpcVoiceMessages:
             created_at=123,
         )
 
+        operation_payload = created_voice_payload(voice)
         message = create_voice_response(voice)
 
-        assert message.voice.id == "voice1234"
-        assert message.voice.name == "Roy"
+        assert message.voice.id == operation_payload["id"]
+        assert message.voice.name == operation_payload["name"]
         assert message.voice.language == ""
-        assert message.voice.gender == "male"
-        assert message.voice.is_cloned is True
-        assert message.created_at == 123
+        assert message.voice.gender == operation_payload["gender"]
+        assert message.voice.is_cloned == operation_payload["is_cloned"]
+        assert message.created_at == operation_payload["created_at"]
 
     def test_delete_voice_response_uses_deleted_voice_contract(self):
         from vox.grpc.voice_messages import delete_voice_response

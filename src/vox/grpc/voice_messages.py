@@ -21,7 +21,7 @@ def list_voices_response(listed: list[ListedVoice]) -> vox_pb2.ListVoicesRespons
 def create_voice_response(voice: Any) -> vox_pb2.CreateVoiceResponse:
     payload = created_voice_payload(voice)
     return vox_pb2.CreateVoiceResponse(
-        voice=_voice_info_message({**payload, "is_cloned": True}),
+        voice=_voice_info_message(payload),
         created_at=payload["created_at"],
     )
 

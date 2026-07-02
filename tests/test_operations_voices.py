@@ -305,6 +305,7 @@ def test_created_and_deleted_voice_payloads_preserve_http_contract_shape():
         "name": "Roy",
         "language": "en",
         "gender": "male",
+        "is_cloned": True,
         "created_at": "2026-07-02T10:00:00Z",
     }
     assert deleted_voice_payload("voice1234") == {"id": "voice1234", "deleted": True}

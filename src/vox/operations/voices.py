@@ -66,6 +66,7 @@ def created_voice_payload(voice: Any) -> dict[str, Any]:
         "name": voice.name,
         "language": voice.language,
         "gender": voice.gender,
+        "is_cloned": True,
         "created_at": voice.created_at,
     }
 
