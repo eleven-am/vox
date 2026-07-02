@@ -1,6 +1,7 @@
 REGISTRY := docker.io
 IMAGE := $(REGISTRY)/elevenam/vox
 PLATFORMS := linux/amd64,linux/arm64
+GPU_PLATFORM := linux/amd64
 SPARK_PLATFORM := linux/arm64
 VERSION = $(shell git tag --list 'v*' --sort=-version:refname | head -n1 || echo "v0.0.0")
 APP_VERSION = $(shell sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' pyproject.toml | head -n1)
@@ -23,7 +24,7 @@ build:
 	@test "$(patsubst v%,%,$(VERSION))" = "$(APP_VERSION)" || \
 		(echo "pyproject.toml version $(APP_VERSION) does not match release tag $(VERSION)"; exit 1)
 	docker buildx build \
-		--platform $(PLATFORMS) \
+		--platform $(GPU_PLATFORM) \
 		--build-arg BASE_IMAGE=$(GPU_BASE) \
 		--build-arg VOX_ACCELERATOR=gpu \
 		--build-arg VOX_DEFAULT_DEVICE=auto \

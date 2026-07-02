@@ -272,14 +272,19 @@ Models and dynamically installed adapters persist in a Docker volume across cont
 
 ### Image variants
 
-Published tags (all multi-arch `linux/amd64` + `linux/arm64` unless noted):
+Published tags:
 
-| Tag | Compute | Torch | Build | Use |
-|---|---|---|---|---|
-| `:latest` / `:vX.Y.Z` | CUDA | ✅ | `make build` | NVIDIA GPU, all models |
-| `:lean` | CPU | ❌ | `make build-lean` | Linux CPU + Apple-Silicon Docker; CT2/ONNX models + streaming |
-| `:cpu` | CPU | ✅ | `make build-cpu` | torch models on CPU (slow) |
-| `:spark` (arm64) | CUDA | ✅ | `make build-spark` | NVIDIA arm (Jetson/SBSA) |
+| Tag | Arch | Compute | Torch | Build | Use |
+|---|---|---|---|---|---|
+| `:latest` / `:vX.Y.Z` | amd64 | CUDA | ✅ | `make build` | NVIDIA GPU (x86), all models |
+| `:lean` | amd64 + arm64 | CPU | ❌ | `make build-lean` | Linux CPU + Apple-Silicon Docker; CT2/ONNX models + streaming |
+| `:cpu` | amd64 + arm64 | CPU | ✅ | `make build-cpu` | torch models on CPU (slow) |
+| `:spark` | arm64 | CUDA | ✅ | `make build-spark` | NVIDIA arm (Jetson/SBSA) |
+
+`:latest` is amd64/CUDA only — CUDA torch wheels are x86-only, so a generic
+arm64 CUDA image isn't possible (that's what `:spark` is for). On arm64 hosts
+(including Apple-Silicon Docker) use `:lean` or `:cpu`; for arm NVIDIA use
+`:spark`.
 
 The `:lean` image drops the ~2GB torch stack: VAD runs on onnxruntime, so the
 streaming/conversation path works, and `vox pull` refuses torch-based models up

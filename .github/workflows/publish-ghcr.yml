@@ -69,20 +69,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # gpu is amd64-only: CUDA torch wheels are amd64. arm NVIDIA uses spark;
+          # other arm64 hosts use lean/cpu.
           - image: gpu
             arch: amd64
             platform: linux/amd64
             runner: ubuntu-24.04
-            file: Dockerfile
-            build_args: |
-              BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
-              VOX_ACCELERATOR=gpu
-              VOX_INCLUDE_TORCH=1
-              VOX_DEFAULT_DEVICE=auto
-          - image: gpu
-            arch: arm64
-            platform: linux/arm64
-            runner: ubuntu-24.04-arm
             file: Dockerfile
             build_args: |
               BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
