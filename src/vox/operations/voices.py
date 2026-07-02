@@ -15,6 +15,7 @@ from vox.core.errors import ModelNotFoundError, ReferenceAudioInvalidError, VoxE
 from vox.core.types import VoiceInfo
 from vox.operations.errors import (
     InternalOperationError,
+    InvalidConfigError,
     StoredModelNotFoundError,
     VoiceAudioRequiredError,
     VoiceIdRequiredError,
@@ -165,6 +166,8 @@ def create_voice(*, store: Any, request: CreateVoiceRequest):
         )
     except ReferenceAudioInvalidError as exc:
         raise VoiceReferenceInvalidError(str(exc)) from exc
+    except (ValueError, RuntimeError) as exc:
+        raise InvalidConfigError(str(exc)) from exc
 
 
 def delete_voice(*, store: Any, voice_id: str) -> None:

@@ -457,6 +457,18 @@ class TestVoicesMapping:
         assert resp.status_code == 422
         assert "too short" in resp.json()["detail"]
 
+    def test_create_voice_decode_failure_maps_to_400(self, tmp_path: Path):
+        store = BlobStore(root=tmp_path)
+        client = TestClient(_build_app(store=store))
+
+        resp = client.post(
+            "/v1/audio/voices",
+            files={"audio_sample": ("sample.wav", io.BytesIO(b"not an audio file"), "audio/wav")},
+            data={"name": "Roy"},
+        )
+
+        assert resp.status_code == 400
+
     def test_delete_voice_route_removes_directory(self, tmp_path: Path):
         from vox.core.cloned_voices import create_stored_voice
 

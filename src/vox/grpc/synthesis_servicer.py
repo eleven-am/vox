@@ -92,7 +92,7 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
             code, msg = operation_error_status(exc)
             await context.abort(code, msg)
             return
-        except (TypeError, ValueError, RuntimeError) as exc:
+        except TypeError as exc:
             await context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(exc))
             return
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import Response
 
 from vox.operations.errors import (
@@ -57,8 +57,6 @@ async def create_voice_route(
         voice = create_voice(store=store, request=op_req)
     except OperationError as exc:
         raise operation_error_to_http(exc) from exc
-    except (ValueError, RuntimeError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return created_voice_payload(voice)
 

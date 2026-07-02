@@ -22,6 +22,7 @@ from vox.core.types import (
 )
 from vox.operations.errors import (
     InternalOperationError,
+    InvalidConfigError,
     StoredModelNotFoundError,
     VoiceAudioRequiredError,
     VoiceIdRequiredError,
@@ -174,6 +175,20 @@ def test_create_voice_translates_invalid_reference_audio(tmp_path: Path):
             request=CreateVoiceRequest(
                 name="Roy",
                 audio=short_wav,
+                content_type="audio/wav",
+            ),
+        )
+
+
+def test_create_voice_translates_decode_failure(tmp_path: Path):
+    store = BlobStore(root=tmp_path)
+
+    with pytest.raises(InvalidConfigError):
+        create_voice(
+            store=store,
+            request=CreateVoiceRequest(
+                name="Roy",
+                audio=b"not an audio file",
                 content_type="audio/wav",
             ),
         )
