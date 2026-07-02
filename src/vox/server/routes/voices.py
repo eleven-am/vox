@@ -3,9 +3,6 @@ from __future__ import annotations
 from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import Response
 
-from vox.operations.errors import (
-    OperationError,
-)
 from vox.operations.voices import (
     CreateVoiceRequest,
     create_voice,
@@ -16,7 +13,7 @@ from vox.operations.voices import (
     list_voices,
     list_voices_payload,
 )
-from vox.server.operation_errors import operation_error_to_http
+from vox.server.operation_errors import map_operation_errors_to_http
 
 router = APIRouter()
 AUDIO_SAMPLE_FILE = File(...)
@@ -26,10 +23,8 @@ AUDIO_SAMPLE_FILE = File(...)
 async def list_voices_route(request: Request, model: str = ""):
     scheduler = request.app.state.scheduler
     store = request.app.state.store
-    try:
+    with map_operation_errors_to_http():
         listed = await list_voices(scheduler=scheduler, store=store, model=model or None)
-    except OperationError as exc:
-        raise operation_error_to_http(exc) from exc
 
     return list_voices_payload(listed, include_model=not model)
 
@@ -53,10 +48,8 @@ async def create_voice_route(
         gender=gender,
         reference_text=reference_text,
     )
-    try:
+    with map_operation_errors_to_http():
         voice = create_voice(store=store, request=op_req)
-    except OperationError as exc:
-        raise operation_error_to_http(exc) from exc
 
     return created_voice_payload(voice)
 
@@ -64,10 +57,8 @@ async def create_voice_route(
 @router.get("/v1/audio/voices/{voice_id}/reference")
 async def get_voice_reference_route(request: Request, voice_id: str):
     store = request.app.state.store
-    try:
+    with map_operation_errors_to_http():
         data = get_voice_reference(store=store, voice_id=voice_id)
-    except OperationError as exc:
-        raise operation_error_to_http(exc) from exc
     return Response(
         content=data,
         media_type="audio/wav",
@@ -78,8 +69,6 @@ async def get_voice_reference_route(request: Request, voice_id: str):
 @router.delete("/v1/audio/voices/{voice_id}")
 async def delete_voice_route(request: Request, voice_id: str):
     store = request.app.state.store
-    try:
+    with map_operation_errors_to_http():
         delete_voice(store=store, voice_id=voice_id)
-    except OperationError as exc:
-        raise operation_error_to_http(exc) from exc
     return deleted_voice_payload(voice_id)

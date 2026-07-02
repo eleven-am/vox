@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from fastapi import HTTPException
 
 from vox.operations.errors import (
     CatalogEntryNotFoundError,
@@ -22,6 +23,7 @@ from vox.operations.errors import (
     WrongModelTypeError,
     classify_operation_error,
 )
+from vox.server.operation_errors import map_operation_errors_to_http
 
 
 @pytest.mark.parametrize(
@@ -47,3 +49,23 @@ from vox.operations.errors import (
 )
 def test_classify_operation_error(error, kind):
     assert classify_operation_error(error) is kind
+
+
+def test_map_operation_errors_to_http_maps_operation_errors():
+    with pytest.raises(HTTPException) as exc_info, map_operation_errors_to_http():
+        raise ModelInUseError("parakeet")
+
+    assert exc_info.value.status_code == 409
+    assert "parakeet" in exc_info.value.detail
+
+
+def test_map_operation_errors_to_http_preserves_success_path():
+    with map_operation_errors_to_http():
+        value = "ok"
+
+    assert value == "ok"
+
+
+def test_map_operation_errors_to_http_does_not_hide_unexpected_errors():
+    with pytest.raises(RuntimeError, match="boom"), map_operation_errors_to_http():
+        raise RuntimeError("boom")
