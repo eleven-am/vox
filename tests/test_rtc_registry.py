@@ -9,6 +9,7 @@ from vox.server.rtc_client_events import (
     WIRE_RTC_CLIENT_DISCONNECTED,
     emit_client_disconnected_to_control,
     handle_browser_data_channel_message,
+    parse_client_event_message,
 )
 from vox.server.rtc_registry import RtcSessionRegistry
 
@@ -71,6 +72,19 @@ def test_control_attach_is_exclusive():
 
     registry.detach_control(record.session_id)
     assert registry.attach_control(record.session_id, now=1001.0) is record
+
+
+def test_parse_client_event_message_uses_shared_command_validation():
+    assert parse_client_event_message({"event": "render.url", "payload": {"url": "https://example.com"}}) == (
+        "render.url",
+        {"url": "https://example.com"},
+    )
+
+    with pytest.raises(ValueError, match="client.event requires a JSON object"):
+        parse_client_event_message("not an object")
+
+    with pytest.raises(ValueError, match="client.event requires a non-empty string 'event'"):
+        parse_client_event_message({"payload": {}})
 
 
 @pytest.mark.asyncio

@@ -17,12 +17,10 @@ logger = logging.getLogger(__name__)
 
 
 def parse_client_event_message(message: Any) -> tuple[str, Any]:
-    if not isinstance(message, dict):
-        raise ValueError("client.event requires a JSON object")
-    event_name = message.get("event")
-    if not isinstance(event_name, str) or not event_name.strip():
-        raise ValueError("client.event requires a non-empty string 'event'")
-    return event_name.strip(), message.get("payload")
+    try:
+        return parse_client_event_command(message)
+    except OperationError as exc:
+        raise ValueError(str(exc)) from exc
 
 
 def client_event_payload(event_name: str, payload: Any) -> dict:
