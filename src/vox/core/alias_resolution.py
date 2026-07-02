@@ -1,8 +1,32 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
+from enum import StrEnum
 
 from vox.core.device_placement import runtime_profile_for_alias
+
+
+class AliasResolutionKind(StrEnum):
+    NONE = "none"
+    FAMILY = "family"
+    LEGACY_MODEL_REF = "legacy_model_ref"
+    LEGACY_NAME = "legacy_name"
+
+
+@dataclass(frozen=True)
+class ModelAliasResolution:
+    name: str
+    tag: str
+    kind: AliasResolutionKind
+    original_name: str
+    original_tag: str
+    profile: str | None = None
+
+    @property
+    def rewritten(self) -> bool:
+        return self.kind is not AliasResolutionKind.NONE
+
 
 _IMPLICIT_MODEL_ALIASES: dict[str, dict[str, tuple[str, str]]] = {
     "parakeet": {
@@ -218,18 +242,60 @@ def _runtime_profile() -> str:
 def resolve_family_alias(
     name: str, tag: str = "latest", *, explicit_tag: bool = False
 ) -> tuple[str, str]:
+    resolution = resolve_model_alias(name, tag, explicit_tag=explicit_tag)
+    return resolution.name, resolution.tag
+
+
+def resolve_model_alias(
+    name: str, tag: str = "latest", *, explicit_tag: bool = False
+) -> ModelAliasResolution:
     if not explicit_tag and tag == "latest":
         aliases = _IMPLICIT_MODEL_ALIASES.get(name)
         if aliases is not None:
             profile = _runtime_profile()
-            return aliases.get(profile) or aliases["default"]
+            resolved_name, resolved_tag = aliases.get(profile) or aliases["default"]
+            return ModelAliasResolution(
+                name=resolved_name,
+                tag=resolved_tag,
+                kind=AliasResolutionKind.FAMILY,
+                original_name=name,
+                original_tag=tag,
+                profile=profile,
+            )
 
     exact_alias = _LEGACY_MODEL_REF_ALIASES.get((name, tag))
     if exact_alias is not None:
-        return exact_alias
+        resolved_name, resolved_tag = exact_alias
+        return ModelAliasResolution(
+            name=resolved_name,
+            tag=resolved_tag,
+            kind=AliasResolutionKind.LEGACY_MODEL_REF,
+            original_name=name,
+            original_tag=tag,
+        )
 
     resolved_name = _LEGACY_NAME_ALIASES.get(name, name)
-    return resolved_name, tag
+    if resolved_name != name:
+        return ModelAliasResolution(
+            name=resolved_name,
+            tag=tag,
+            kind=AliasResolutionKind.LEGACY_NAME,
+            original_name=name,
+            original_tag=tag,
+        )
+
+    return ModelAliasResolution(
+        name=name,
+        tag=tag,
+        kind=AliasResolutionKind.NONE,
+        original_name=name,
+        original_tag=tag,
+    )
 
 
-__all__ = ["resolve_family_alias"]
+__all__ = [
+    "AliasResolutionKind",
+    "ModelAliasResolution",
+    "resolve_family_alias",
+    "resolve_model_alias",
+]

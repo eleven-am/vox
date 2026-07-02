@@ -11,6 +11,8 @@ For dependency pinning, `--upgrade`, verification, and repair rules inside
 For the concrete adapter package layout, `pyproject.toml` metadata, README
 sections, and review checklist, see
 [the adapter package template](adapter-package-template.md).
+For canonical model references and compatibility aliases, see
+[the model alias policy](model-alias-policy.md).
 
 ## Terms
 

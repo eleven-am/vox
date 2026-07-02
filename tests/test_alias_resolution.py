@@ -4,7 +4,11 @@ from unittest.mock import patch
 
 import pytest
 
-from vox.core.alias_resolution import resolve_family_alias
+from vox.core.alias_resolution import (
+    AliasResolutionKind,
+    resolve_family_alias,
+    resolve_model_alias,
+)
 
 
 class TestBareNameResolution:
@@ -16,6 +20,21 @@ class TestBareNameResolution:
         assert resolve_family_alias("kokoro") == ("kokoro-tts-onnx", "v1.0")
         assert resolve_family_alias("voxtral-stt") == ("voxtral-stt-torch", "mini-3b")
         assert resolve_family_alias("voxtral-tts") == ("voxtral-tts-vllm", "4b")
+
+    def test_bare_name_resolution_reports_family_alias_metadata(
+        self, monkeypatch: pytest.MonkeyPatch
+    ):
+        monkeypatch.setenv("VOX_DEVICE", "auto")
+        monkeypatch.setattr("vox.core.device_placement.platform.machine", lambda: "arm64")
+
+        resolution = resolve_model_alias("parakeet")
+
+        assert resolution.kind is AliasResolutionKind.FAMILY
+        assert resolution.rewritten is True
+        assert resolution.original_name == "parakeet"
+        assert resolution.original_tag == "latest"
+        assert resolution.profile == "default"
+        assert (resolution.name, resolution.tag) == ("parakeet-stt-onnx", "tdt-0.6b-v3")
 
     def test_bare_name_uses_spark_profile_when_cuda_on_arm(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("VOX_DEVICE", "cuda")
@@ -147,6 +166,24 @@ class TestLegacyAliasRewrite:
             "tdt-1.1b",
         )
 
+    def test_legacy_model_ref_resolution_reports_legacy_metadata(self):
+        resolution = resolve_model_alias("voxtral", "tts-4b", explicit_tag=True)
+
+        assert resolution.kind is AliasResolutionKind.LEGACY_MODEL_REF
+        assert resolution.rewritten is True
+        assert resolution.original_name == "voxtral"
+        assert resolution.original_tag == "tts-4b"
+        assert (resolution.name, resolution.tag) == ("voxtral-tts-vllm", "4b")
+
+    def test_legacy_name_resolution_reports_legacy_metadata(self):
+        resolution = resolve_model_alias("qwen3-asr", "0.6b", explicit_tag=True)
+
+        assert resolution.kind is AliasResolutionKind.LEGACY_NAME
+        assert resolution.rewritten is True
+        assert resolution.original_name == "qwen3-asr"
+        assert resolution.original_tag == "0.6b"
+        assert (resolution.name, resolution.tag) == ("qwen3-stt-torch", "0.6b")
+
 
 class TestUnknownNameFallthrough:
     def test_unknown_name_passes_through_unchanged(self):
@@ -155,6 +192,15 @@ class TestUnknownNameFallthrough:
             "latest",
         )
         assert resolve_family_alias("does-not-exist", "v9") == ("does-not-exist", "v9")
+
+    def test_unknown_name_reports_no_alias_metadata(self):
+        resolution = resolve_model_alias("does-not-exist", "v9")
+
+        assert resolution.kind is AliasResolutionKind.NONE
+        assert resolution.rewritten is False
+        assert resolution.original_name == "does-not-exist"
+        assert resolution.original_tag == "v9"
+        assert (resolution.name, resolution.tag) == ("does-not-exist", "v9")
 
     def test_unknown_bare_name_with_latest_passes_through(
         self, monkeypatch: pytest.MonkeyPatch
