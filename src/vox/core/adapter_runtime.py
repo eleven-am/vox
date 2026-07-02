@@ -136,11 +136,14 @@ def ensure_target_runtime(
     install_runner: InstallRunner | None = None,
     module_probe: ModuleProbe | None = None,
     context: str | None = None,
+    include_app_fallback: bool = True,
 ) -> Path:
     """Install and activate a ``--target`` adapter runtime if needed.
 
     This covers the common adapter pattern. Very heavy runtimes can still use a
-    full isolated venv, as Voxtral TTS does today.
+    full isolated venv, as Voxtral TTS does today. ``include_app_fallback`` is
+    the deliberate compatibility bridge that lets a target runtime import the
+    Vox app environment after its own isolated packages.
     """
 
     runtime_root_path = root or runtime_root(home=home)
@@ -155,7 +158,8 @@ def ensure_target_runtime(
     if purge_modules:
         purge_runtime_modules(purge_modules)
 
-    write_app_fallback_path(runtime.path)
+    if include_app_fallback:
+        write_app_fallback_path(runtime.path)
 
     packages = [package_spec, *extra_packages]
     install_context = context or f"{runtime_name} runtime"

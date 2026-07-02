@@ -96,6 +96,12 @@ runtimes off `sys.path`. It must not be used to satisfy adapter-owned heavy
 runtime dependencies. Those still belong in `$VOX_HOME/runtime/<runtime-name>`
 and must be verified after install.
 
+Adapters using `ensure_target_runtime(...)` must make this bridge visible at
+the call site with `include_app_fallback=True` or opt out with
+`include_app_fallback=False`. The default remains enabled for current target
+runtime compatibility, but new strict runtimes should opt out unless they
+actually need imports from the Vox application environment.
+
 If a backend requires a full virtual environment or process-level isolation,
 the adapter may use a custom runtime layout, but that exception must be
 documented and tested.

@@ -106,6 +106,29 @@ def test_ensure_target_runtime_prefers_uv_and_writes_app_fallback(tmp_path):
     assert (runtime_path / "_vox_runtime_fallback_paths.pth").read_text(encoding="utf-8").strip()
 
 
+def test_ensure_target_runtime_can_disable_app_fallback(tmp_path):
+    probe_calls = 0
+
+    def probe(import_name: str) -> bool:
+        nonlocal probe_calls
+        assert import_name == "strict_runtime"
+        probe_calls += 1
+        return probe_calls > 1
+
+    runtime_path = adapter_runtime.ensure_target_runtime(
+        "strict-runtime",
+        "strict-runtime==1.0.0",
+        "strict_runtime",
+        root=tmp_path / "runtime",
+        install_runner=lambda cmd, _timeout: subprocess.CompletedProcess(cmd, 0, "", ""),
+        module_probe=probe,
+        include_app_fallback=False,
+    )
+
+    assert runtime_path == tmp_path / "runtime" / "strict-runtime"
+    assert not (runtime_path / "_vox_runtime_fallback_paths.pth").exists()
+
+
 def test_ensure_target_runtime_falls_back_to_python_pip_when_uv_is_missing(tmp_path):
     calls: list[list[str]] = []
 

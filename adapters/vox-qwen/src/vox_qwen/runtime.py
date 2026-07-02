@@ -43,4 +43,5 @@ def ensure_runtime(
         root=_runtime_root(),
         module_probe=probe_runtime,
         context="Qwen runtime install",
+        include_app_fallback=True,
     )
