@@ -21,9 +21,8 @@ from vox.server.auth import configured_api_key, extract_api_key_from_connection,
 from vox.server.rtc_cleanup import close_rtc_runtime_resources
 from vox.server.rtc_client_events import send_client_event_to_browser
 from vox.server.rtc_conversation import (
-    clear_rtc_audio_if_needed,
     create_rtc_orchestrator,
-    forward_wire_event_to_browser,
+    prepare_rtc_control_event,
 )
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 
@@ -201,14 +200,16 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
 
         async def emit_events() -> None:
             async for event in orchestrator.events():
-                clear_rtc_audio_if_needed(record, event)
-                wire = serialize_conversation_event(event)
+                prepared = prepare_rtc_control_event(
+                    record=record,
+                    session_id=session_id,
+                    event=event,
+                )
+                wire = prepared.wire
                 if wire is not None:
-                    wire.setdefault("session_id", session_id)
-                    forward_wire_event_to_browser(record, wire)
                     with suppress(Exception):
                         await emit_wire_to_user(channel, user_id, wire)
-                if isinstance(event, ConvDoneEvent):
+                if prepared.done:
                     return
 
         async def emit_client_events() -> None:

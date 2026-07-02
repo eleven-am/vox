@@ -1,17 +1,26 @@
 from __future__ import annotations
 
 import base64
+import json
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
-from vox.operations.conversation import ConvAudioClearEvent, ConvAudioDeltaEvent
+from vox.operations.conversation import (
+    ConvAudioClearEvent,
+    ConvAudioDeltaEvent,
+    ConvDoneEvent,
+    ConvStateChangedEvent,
+)
 from vox.server.rtc_conversation import (
     clear_rtc_audio_if_needed,
     create_rtc_orchestrator,
     enqueue_rtc_audio,
+    prepare_rtc_control_event,
     wait_until_rtc_audio_drained,
 )
+from vox.server.rtc_registry import RtcSessionRecord
 
 
 class FakeAudioTrack:
@@ -70,3 +79,65 @@ def test_create_rtc_orchestrator_attaches_orchestrator_to_record():
     orchestrator = create_rtc_orchestrator(scheduler=object(), record=record)
 
     assert record.orchestrator is orchestrator
+
+
+def test_prepare_rtc_control_event_serializes_and_forwards_browser_event():
+    channel = MagicMock()
+    channel.readyState = "open"
+    record = RtcSessionRecord(
+        session_id="rtc_1",
+        client_token_hash="",
+        created_at=0.0,
+        expires_at=10.0,
+        data_channel=channel,
+    )
+
+    prepared = prepare_rtc_control_event(
+        record=record,
+        session_id="rtc_1",
+        event=ConvStateChangedEvent(state="thinking", previous_state="listening"),
+    )
+
+    assert prepared.done is False
+    assert prepared.wire == {
+        "type": "turn.state_changed",
+        "state": "thinking",
+        "previous_state": "listening",
+        "session_id": "rtc_1",
+    }
+    channel.send.assert_called_once()
+    sent = json.loads(channel.send.call_args[0][0])
+    assert sent["event"] == "turn.state_changed"
+    assert sent["payload"]["session_id"] == "rtc_1"
+
+
+def test_prepare_rtc_control_event_applies_audio_clear_side_effect():
+    track = FakeAudioTrack()
+    record = SimpleNamespace(audio_output_track=track, data_channel=None)
+
+    prepared = prepare_rtc_control_event(
+        record=record,
+        session_id="rtc_1",
+        event=ConvAudioClearEvent(response_id="resp_1"),
+    )
+
+    assert prepared.done is False
+    assert prepared.wire == {
+        "type": "response.audio.clear",
+        "response_id": "resp_1",
+        "session_id": "rtc_1",
+    }
+    assert track.clear_count == 1
+
+
+def test_prepare_rtc_control_event_marks_done_without_wire_event():
+    record = SimpleNamespace(audio_output_track=None, data_channel=None)
+
+    prepared = prepare_rtc_control_event(
+        record=record,
+        session_id="rtc_1",
+        event=ConvDoneEvent(),
+    )
+
+    assert prepared.done is True
+    assert prepared.wire is None

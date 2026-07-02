@@ -21,16 +21,13 @@ from vox.grpc.conversation_commands import execute_rtc_control_message
 from vox.grpc.conversation_events import conversation_error_pb, conversation_event_to_pb
 from vox.operations.conversation import (
     ConvAudioDeltaEvent,
-    ConvDoneEvent,
     ConversationOrchestrator,
-    serialize_conversation_event,
 )
 from vox.operations.errors import OperationError
 from vox.server.rtc_client_events import control_event_as_client_event, send_client_event_to_browser
 from vox.server.rtc_conversation import (
-    clear_rtc_audio_if_needed,
     create_rtc_orchestrator_with,
-    forward_wire_event_to_browser,
+    prepare_rtc_control_event,
 )
 from vox.server.rtc_media import cancel_and_drain_media_tasks
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
@@ -57,8 +54,11 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
             assert orchestrator is not None
             try:
                 async for event in orchestrator.events():
-                    clear_rtc_audio_if_needed(record, event)
-                    forward_wire_event_to_browser(record, serialize_conversation_event(event))
+                    prepared = prepare_rtc_control_event(
+                        record=record,
+                        session_id=session_id,
+                        event=event,
+                    )
                     if (
                         record is not None
                         and isinstance(event, ConvAudioDeltaEvent)
@@ -68,7 +68,7 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                     pb = conversation_event_to_pb(event)
                     if pb is not None:
                         await out_queue.put(pb)
-                    if isinstance(event, ConvDoneEvent):
+                    if prepared.done:
                         break
             finally:
                 await out_queue.put(None)

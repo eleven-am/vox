@@ -11,18 +11,15 @@ from typing import Any
 from fastapi import WebSocket, WebSocketDisconnect
 
 from vox.operations.conversation import (
-    ConvDoneEvent,
     ConversationOrchestrator,
     execute_conversation_command,
-    serialize_conversation_event,
 )
 from vox.operations.errors import OperationError
 from vox.server.rtc_cleanup import close_rtc_runtime_resources
 from vox.server.rtc_client_events import send_client_event_to_browser
 from vox.server.rtc_conversation import (
-    clear_rtc_audio_if_needed,
     create_rtc_orchestrator,
-    forward_wire_event_to_browser,
+    prepare_rtc_control_event,
 )
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 from vox.server.rtc_timeline import RtcTurnTimeline, rtc_audio_stats
@@ -97,18 +94,16 @@ async def emit_rtc_orchestrator_events(
     timeline: RtcTurnTimeline,
 ) -> None:
     async for event in orchestrator.events():
-        clear_rtc_audio_if_needed(record, event)
-        wire = serialize_conversation_event(event)
+        prepared = prepare_rtc_control_event(record=record, session_id=session_id, event=event)
+        wire = prepared.wire
         if wire is not None:
-            wire.setdefault("session_id", session_id)
-            forward_wire_event_to_browser(record, wire)
             with suppress(Exception):
                 await websocket.send_json(wire)
             timing = timeline.observe(wire, audio_stats=rtc_audio_stats(record))
             if timing is not None:
                 with suppress(Exception):
                     await websocket.send_json(timing)
-        if isinstance(event, ConvDoneEvent):
+        if prepared.done:
             return
 
 

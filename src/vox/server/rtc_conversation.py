@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass
 from typing import Any
 
 from vox.conversation.session import (
@@ -19,7 +20,10 @@ from vox.conversation.session import (
 from vox.operations.conversation import (
     ConvAudioClearEvent,
     ConvAudioDeltaEvent,
+    ConvDoneEvent,
     ConversationOrchestrator,
+    ConvEvent,
+    serialize_conversation_event,
 )
 from vox.server.rtc_client_events import send_client_event_to_browser
 
@@ -40,6 +44,12 @@ BROWSER_FORWARDED_EVENT_TYPES = frozenset(
 )
 
 
+@dataclass(frozen=True, slots=True)
+class RtcControlEvent:
+    wire: dict | None
+    done: bool
+
+
 def forward_wire_event_to_browser(record: Any, wire: dict | None) -> None:
     if record is None or wire is None:
         return
@@ -53,6 +63,20 @@ def forward_wire_event_to_browser(record: Any, wire: dict | None) -> None:
         return
     payload = {key: value for key, value in wire.items() if key != "type"}
     send_client_event_to_browser(record, str(event_type), payload)
+
+
+def prepare_rtc_control_event(
+    *,
+    record: Any,
+    session_id: str,
+    event: ConvEvent,
+) -> RtcControlEvent:
+    clear_rtc_audio_if_needed(record, event)
+    wire = serialize_conversation_event(event)
+    if wire is not None:
+        wire.setdefault("session_id", session_id)
+        forward_wire_event_to_browser(record, wire)
+    return RtcControlEvent(wire=wire, done=isinstance(event, ConvDoneEvent))
 
 
 def create_rtc_orchestrator(*, scheduler: Any, record: Any) -> ConversationOrchestrator:
