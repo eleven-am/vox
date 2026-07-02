@@ -264,6 +264,8 @@ async def execute_conversation_command(
     orchestrator: ConversationOrchestrator,
     message: dict,
     *,
+    allow_input_audio: bool = True,
+    client_event_handler: Callable[[str, Any], Awaitable[None] | None] | None = None,
     require_config_message: str = "send session.update first",
     unknown_message_label: str = "unknown message type",
 ) -> None:
@@ -279,10 +281,17 @@ async def execute_conversation_command(
             raise InvalidConfigError("session already configured") from exc
         return
 
+    if msg_type == "client.event" and client_event_handler is not None:
+        event_name, payload = parse_client_event_command(message)
+        result = client_event_handler(event_name, payload)
+        if result is not None:
+            await result
+        return
+
     if orchestrator.config is None:
         raise InvalidConfigError(require_config_message)
 
-    if msg_type == "input_audio_buffer.append":
+    if msg_type == "input_audio_buffer.append" and allow_input_audio:
         audio_b64 = message.get("audio")
         if not audio_b64:
             raise InvalidConfigError("audio field required")
@@ -324,6 +333,15 @@ async def execute_conversation_command(
         return
 
     raise InvalidConfigError(f"{unknown_message_label}: {msg_type!r}")
+
+
+def parse_client_event_command(message: Any) -> tuple[str, Any]:
+    if not isinstance(message, dict):
+        raise InvalidConfigError("client.event requires a JSON object")
+    event_name = message.get("event")
+    if not isinstance(event_name, str) or not event_name.strip():
+        raise InvalidConfigError("client.event requires a non-empty string 'event'")
+    return event_name.strip(), message.get("payload")
 
 
 def _wire_event_to_session_event(event: dict) -> ConvEvent | None:

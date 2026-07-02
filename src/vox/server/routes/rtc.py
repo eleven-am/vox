@@ -17,21 +17,19 @@ from fastapi.responses import StreamingResponse
 from vox.core.tasks import drain_task
 from vox.operations.conversation import (
     ConvDoneEvent,
+    execute_conversation_command,
+    parse_client_event_command,
 )
-from vox.operations.errors import OperationError, SessionAlreadyConfiguredError
+from vox.operations.errors import OperationError
 from vox.server.auth import require_api_key
 from vox.server.routes.conversation import (
     _event_to_wire,
-    _parse_allow_interruptions,
-    _parse_response_text,
     _send_error,
-    parse_session_update,
 )
 from vox.server.rtc_client_events import (
     emit_browser_event_to_control,
     emit_client_disconnected_to_control,
     flush_pending_client_events,
-    parse_client_event_message,
     send_client_event_to_browser,
 )
 from vox.server.rtc_conversation import (
@@ -324,57 +322,20 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
                 await _send_error(websocket, f"invalid JSON: {exc}")
                 continue
 
-            msg_type = msg.get("type")
-            if not msg_type:
-                await _send_error(websocket, "missing 'type' field")
-                continue
-
-            if msg_type == "session.update":
-                try:
-                    config = parse_session_update(msg)
-                    await orchestrator.start_session(config)
-                except SessionAlreadyConfiguredError:
-                    await _send_error(websocket, "session already configured")
-                except OperationError as exc:
-                    await _send_error(websocket, str(exc))
-                continue
-
-            if msg_type == "client.event":
-                try:
-                    event_name, payload = parse_client_event_message(msg)
-                except ValueError as exc:
-                    await _send_error(websocket, str(exc))
-                    continue
-                send_client_event_to_browser(record, event_name, payload)
-                continue
-
-            if orchestrator.config is None:
-                await _send_error(websocket, "send session.update first")
-                continue
-
-            if msg_type == "response.start":
-                allow_interruptions = _parse_allow_interruptions(msg)
-                await orchestrator.start_response(allow_interruptions=allow_interruptions)
-            elif msg_type == "response.delta":
-                text = _parse_response_text(msg, "delta")
-                if not text:
-                    await _send_error(websocket, "response.delta requires 'delta' text")
-                    continue
-                allow_interruptions = _parse_allow_interruptions(msg)
-                await orchestrator.append_response_text(text, allow_interruptions=allow_interruptions)
-            elif msg_type == "response.commit":
-                await orchestrator.commit_response()
-            elif msg_type == "response.cancel":
-                await orchestrator.cancel_response()
-            elif msg_type == "response.replace_text":
-                text = _parse_response_text(msg, "text")
-                if not text:
-                    await _send_error(websocket, "response.replace_text requires 'text'")
-                    continue
-                allow_interruptions = _parse_allow_interruptions(msg)
-                await orchestrator.replace_response_text(text, allow_interruptions=allow_interruptions)
-            else:
-                await _send_error(websocket, f"unknown control message type: {msg_type!r}")
+            try:
+                await execute_conversation_command(
+                    orchestrator,
+                    msg,
+                    allow_input_audio=False,
+                    client_event_handler=lambda event_name, payload: send_client_event_to_browser(
+                        record,
+                        event_name,
+                        payload,
+                    ),
+                    unknown_message_label="unknown control message type",
+                )
+            except OperationError as exc:
+                await _send_error(websocket, str(exc))
 
     except WebSocketDisconnect:
         pass
@@ -463,8 +424,8 @@ async def _handle_data_channel_message(record: RtcSessionRecord, session_id: str
         return
 
     try:
-        event_name, payload = parse_client_event_message(message_obj)
-    except ValueError:
+        event_name, payload = parse_client_event_command(message_obj)
+    except OperationError:
         logger.warning("dropping malformed RTC browser.event payload for %s", session_id)
         return
 

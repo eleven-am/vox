@@ -211,6 +211,49 @@ async def test_execute_conversation_command_can_preserve_transport_unknown_label
         )
 
 
+@pytest.mark.asyncio
+async def test_execute_conversation_command_dispatches_client_event_before_session_update():
+    spy = CommandSpy(configured=False)
+    received = []
+
+    def on_client_event(event_name: str, payload) -> None:
+        received.append((event_name, payload))
+
+    await execute_conversation_command(
+        spy,
+        {"type": "client.event", "event": "render.url", "payload": {"url": "https://example.com"}},
+        client_event_handler=on_client_event,
+    )
+
+    assert received == [("render.url", {"url": "https://example.com"})]
+    assert spy.calls == []
+
+
+@pytest.mark.asyncio
+async def test_execute_conversation_command_rejects_invalid_client_event():
+    spy = CommandSpy()
+
+    with pytest.raises(InvalidConfigError, match="client.event requires a non-empty string 'event'"):
+        await execute_conversation_command(
+            spy,
+            {"type": "client.event", "payload": {}},
+            client_event_handler=lambda *_: None,
+        )
+
+
+@pytest.mark.asyncio
+async def test_execute_conversation_command_can_disable_input_audio_for_control_only_transports():
+    spy = CommandSpy()
+
+    with pytest.raises(InvalidConfigError, match="unknown control message type"):
+        await execute_conversation_command(
+            spy,
+            {"type": "input_audio_buffer.append", "audio": "AQIDBA=="},
+            allow_input_audio=False,
+            unknown_message_label="unknown control message type",
+        )
+
+
 def test_parse_session_update_accepts_turn_policy_overrides():
     config = parse_session_update({
         "session": {
