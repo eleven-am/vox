@@ -333,6 +333,23 @@ Notes:
 
 More models at [vox-registry](https://github.com/eleven-am/vox-registry). Add a model by submitting a PR with a JSON file.
 
+## Security
+
+Vox is local-first and runs open by default. For deployments that expose the
+port beyond localhost, set these environment variables:
+
+- `VOX_API_KEY` — when set, every HTTP route, audio websocket, and gRPC call
+  requires the key (sent as `Authorization: Bearer <key>`, an `x-api-key`
+  header, or an `api_key` query param). Health/probe paths and gRPC health and
+  reflection stay open so orchestrator liveness checks keep working. When unset,
+  the server is fully open (unchanged behavior).
+- `VOX_ALLOW_UNVERIFIED_ADAPTERS=1` — pulling a model installs its adapter as a
+  pip package; by default only the built-in catalog's `vox-*` packages are
+  allowed. Set this only if you intentionally pull adapters outside that set.
+
+gRPC still uses an insecure port and reflection; terminate TLS at a proxy for
+untrusted networks.
+
 ## API
 
 All HTTP endpoints live under `/v1/`. STT/TTS endpoints are OpenAI-compatible by default; pass `response_format=verbose_json` on `/v1/audio/transcriptions` for the rich payload (segments, word timestamps, entities, topics).
