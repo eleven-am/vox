@@ -979,7 +979,7 @@ class TestEndpointingFallback:
 
         await session._forward_stream_event(SpeechStopped(timestamp_ms=2400))
         await asyncio.sleep(0.01)
-        assert TimerKey.ENDPOINTING.value in session._timers
+        assert session._timer_registry.has_active(TimerKey.ENDPOINTING.value)
 
         await session._forward_stream_event(
             StreamTranscript(

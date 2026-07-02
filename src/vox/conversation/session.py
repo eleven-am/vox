@@ -11,7 +11,7 @@ Wires together:
 Concurrency model
 -----------------
 One `asyncio.Task` drives the state machine (`_run_loop`); it is the **only**
-mutator of `_paused`, `_timers`, and `_tts_task`. The audio ingest path and the
+mutator of `_paused` and `_tts_task`. The audio ingest path and the
 TTS task push work back through the main loop. When output is paused for an
 unconfirmed barge-in, newly generated TTS audio is held until the candidate is
 confirmed or rejected. The acoustic echo guard runs synchronously when VAD
@@ -40,6 +40,7 @@ from vox.conversation.interrupt import (
 from vox.conversation.profiles import DEFAULT_TURN_PROFILE, resolve_turn_profile
 from vox.conversation.state_machine import TurnStateMachine
 from vox.conversation.text_buffer import StreamingTextBuffer, split_for_tts
+from vox.conversation.timers import ConversationTimerRegistry
 from vox.conversation.types import (
     TimerKey,
     TurnAction,
@@ -228,7 +229,7 @@ class ConversationSession:
             )
 
         self._event_queue: asyncio.Queue[TurnEvent] = asyncio.Queue()
-        self._timers: dict[str, asyncio.Task] = {}
+        self._timer_registry = ConversationTimerRegistry(self._on_timer_expired)
         self._tts_task: asyncio.Task | None = None
         self._runner: asyncio.Task | None = None
         self._paused: bool = False
@@ -270,9 +271,7 @@ class ConversationSession:
             return
         self._closed = True
 
-        for task in list(self._timers.values()):
-            task.cancel()
-        self._timers.clear()
+        self._timer_registry.cancel_all()
 
         if self._tts_task and not self._tts_task.done():
             self._tts_task.cancel()
@@ -295,12 +294,12 @@ class ConversationSession:
         means there is no pending work left that can emit additional events.
         """
         while True:
-            timers_active = any(not task.done() for task in self._timers.values())
+            timers_active = self._timer_registry.has_any_active()
             tts_active = self._tts_task is not None and not self._tts_task.done()
             queue_busy = not self._event_queue.empty()
             if not timers_active and not tts_active and not queue_busy:
                 await asyncio.sleep(0)
-                timers_active = any(not task.done() for task in self._timers.values())
+                timers_active = self._timer_registry.has_any_active()
                 tts_active = self._tts_task is not None and not self._tts_task.done()
                 queue_busy = not self._event_queue.empty()
                 if not timers_active and not tts_active and not queue_busy:
@@ -1021,16 +1020,7 @@ class ConversationSession:
             return
         done.set_result(None)
 
-    async def _timer_task(self, key: str, duration_ms: int) -> None:
-        try:
-            await asyncio.sleep(duration_ms / 1000.0)
-        except asyncio.CancelledError:
-            return
-
-        if self._timers.get(key) is not asyncio.current_task():
-            return
-        self._timers.pop(key, None)
-
+    async def _on_timer_expired(self, key: str) -> None:
         if key == TimerKey.CONFIRM_INTERRUPT.value:
             await self._evaluate_interrupt_candidate()
             return
@@ -1043,12 +1033,10 @@ class ConversationSession:
         )
 
     def _has_active_timer(self, key: str) -> bool:
-        task = self._timers.get(key)
-        return task is not None and not task.done()
+        return self._timer_registry.has_active(key)
 
     async def _start_timer(self, key: str, duration_ms: int) -> None:
-        await self._cancel_timer(key)
-        self._timers[key] = asyncio.create_task(self._timer_task(key, duration_ms))
+        await self._timer_registry.start(key, duration_ms)
 
     async def _emit_pending_transcript_done(self) -> None:
         payload = self._transcript_finalizer.pop()
@@ -1358,11 +1346,7 @@ class ConversationSession:
             )
 
     async def _cancel_timer(self, key: str) -> None:
-        task = self._timers.pop(key, None)
-        if task and not task.done():
-            task.cancel()
-            with suppress(asyncio.CancelledError, Exception):
-                await task
+        await self._timer_registry.cancel(key)
 
     def _should_wait_for_final_transcript(self, event: TurnEvent) -> bool:
         if event.type != TurnEventType.TIMER_ELAPSED:
