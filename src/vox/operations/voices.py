@@ -14,6 +14,8 @@ from vox.core.cloned_voices import (
 from vox.core.errors import ModelNotFoundError, VoxError
 from vox.core.types import VoiceInfo
 from vox.operations.errors import (
+    InternalOperationError,
+    StoredModelNotFoundError,
     VoiceAudioRequiredError,
     VoiceIdRequiredError,
     VoiceNameRequiredError,
@@ -77,6 +79,28 @@ def _voices_for_adapter(adapter: TTSAdapter, store: Any) -> list[VoiceInfo]:
     return voices
 
 
+async def _listed_voices_for_model(
+    *,
+    scheduler: Any,
+    store: Any,
+    model: str,
+    include_model: bool,
+) -> list[ListedVoice]:
+    try:
+        async with scheduler.acquire(model) as adapter:
+            if not isinstance(adapter, TTSAdapter):
+                raise WrongModelTypeError(model, "TTS")
+            listed_model = model if include_model else None
+            return [
+                ListedVoice(voice=voice, model=listed_model)
+                for voice in _voices_for_adapter(adapter, store)
+            ]
+    except ModelNotFoundError as exc:
+        raise StoredModelNotFoundError(exc.model) from exc
+    except VoxError as exc:
+        raise InternalOperationError(str(exc)) from exc
+
+
 async def list_voices(
     *,
     scheduler: Any,
@@ -89,20 +113,25 @@ async def list_voices(
             if loaded.type.value != "tts":
                 continue
             full_name = f"{loaded.name}:{loaded.tag}"
-            async with scheduler.acquire(full_name) as adapter:
-                if not isinstance(adapter, TTSAdapter):
-                    continue
-                for v in _voices_for_adapter(adapter, store):
-                    listed.append(ListedVoice(voice=v, model=full_name))
+            try:
+                listed.extend(
+                    await _listed_voices_for_model(
+                        scheduler=scheduler,
+                        store=store,
+                        model=full_name,
+                        include_model=True,
+                    )
+                )
+            except WrongModelTypeError:
+                continue
         return listed
 
-    try:
-        async with scheduler.acquire(model) as adapter:
-            if not isinstance(adapter, TTSAdapter):
-                raise WrongModelTypeError(model, "TTS")
-            return [ListedVoice(voice=v) for v in _voices_for_adapter(adapter, store)]
-    except (ModelNotFoundError, VoxError, WrongModelTypeError):
-        raise
+    return await _listed_voices_for_model(
+        scheduler=scheduler,
+        store=store,
+        model=model,
+        include_model=False,
+    )
 
 
 @dataclass(frozen=True)

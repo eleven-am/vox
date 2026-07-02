@@ -11,6 +11,7 @@ from tests.fakes import FakeSTTAdapter as FakeSTT
 from vox.audio.codecs import encode_wav
 from vox.core.adapter import TTSAdapter
 from vox.core.cloned_voices import create_stored_voice
+from vox.core.errors import VoxError
 from vox.core.store import BlobStore
 from vox.core.types import (
     AdapterInfo,
@@ -20,6 +21,8 @@ from vox.core.types import (
     VoiceInfo,
 )
 from vox.operations.errors import (
+    InternalOperationError,
+    StoredModelNotFoundError,
     VoiceAudioRequiredError,
     VoiceIdRequiredError,
     VoiceNameRequiredError,
@@ -66,6 +69,11 @@ class FakeTTS(TTSAdapter):
             yield
 
 
+class BrokenVoiceTTS(FakeTTS):
+    def list_voices(self):
+        raise VoxError("voice inventory failed")
+
+
 class DummyScheduler(FakeScheduler):
     def __init__(self, adapter, loaded=None):
         super().__init__(adapter)
@@ -110,6 +118,24 @@ async def test_list_voices_for_stt_raises_wrong_type(tmp_path: Path):
     store = BlobStore(root=tmp_path)
     with pytest.raises(WrongModelTypeError):
         await list_voices(scheduler=sched, store=store, model="fake-stt:latest")
+
+
+@pytest.mark.asyncio
+async def test_list_voices_translates_missing_model_to_operation_error(tmp_path: Path):
+    sched = FakeScheduler()
+    store = BlobStore(root=tmp_path)
+
+    with pytest.raises(StoredModelNotFoundError):
+        await list_voices(scheduler=sched, store=store, model="missing:latest")
+
+
+@pytest.mark.asyncio
+async def test_list_voices_translates_core_voice_failure_to_operation_error(tmp_path: Path):
+    sched = DummyScheduler(BrokenVoiceTTS())
+    store = BlobStore(root=tmp_path)
+
+    with pytest.raises(InternalOperationError, match="voice inventory failed"):
+        await list_voices(scheduler=sched, store=store, model="fake-tts:latest")
 
 
 def test_create_voice_persists_metadata_and_audio(tmp_path: Path):

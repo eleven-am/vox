@@ -14,6 +14,11 @@ class OperationError(Exception):
     """Base class for transport-agnostic errors raised by operation modules."""
 
 
+class InternalOperationError(OperationError):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
 class NoDefaultModelError(OperationError):
     def __init__(self, model_type: str) -> None:
         self.model_type = model_type

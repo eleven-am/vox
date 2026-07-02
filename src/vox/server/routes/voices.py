@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 
-from vox.core.errors import ModelNotFoundError, ReferenceAudioInvalidError, VoxError
+from vox.core.errors import ReferenceAudioInvalidError
 from vox.operations.errors import (
     OperationError,
 )
@@ -31,10 +31,6 @@ async def list_voices_route(request: Request, model: str = ""):
         listed = await list_voices(scheduler=scheduler, store=store, model=model or None)
     except OperationError as exc:
         raise operation_error_to_http(exc) from exc
-    except ModelNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except VoxError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return list_voices_payload(listed, include_model=not model)
 
