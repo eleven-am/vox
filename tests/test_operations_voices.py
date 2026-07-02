@@ -35,6 +35,7 @@ from vox.operations.voices import (
     CreateVoiceRequest,
     ListedVoice,
     create_voice,
+    create_voice_request_from_fields,
     created_voice_payload,
     delete_voice,
     deleted_voice_payload,
@@ -151,6 +152,39 @@ def test_create_voice_persists_metadata_and_audio(tmp_path: Path):
     )
     assert voice.name == "Roy"
     assert (store.voices_dir / voice.id / "reference.wav").is_file()
+
+
+def test_create_voice_request_from_fields_prefers_upload_content_type():
+    request = create_voice_request_from_fields(
+        name="Roy",
+        audio=b"wav",
+        content_type="audio/wav",
+        format_hint="mp3",
+        language="",
+        gender="male",
+        reference_text="",
+    )
+
+    assert request == CreateVoiceRequest(
+        name="Roy",
+        audio=b"wav",
+        content_type="audio/wav",
+        language=None,
+        gender="male",
+        reference_text=None,
+    )
+
+
+def test_create_voice_request_from_fields_uses_grpc_format_hint_without_content_type():
+    request = create_voice_request_from_fields(
+        name="Roy",
+        audio=b"wav",
+        format_hint="wav",
+        language="en",
+    )
+
+    assert request.content_type == "wav"
+    assert request.language == "en"
 
 
 def test_create_voice_requires_name(tmp_path: Path):

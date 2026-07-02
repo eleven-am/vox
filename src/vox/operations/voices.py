@@ -147,6 +147,26 @@ class CreateVoiceRequest:
     reference_text: str | None = None
 
 
+def create_voice_request_from_fields(
+    *,
+    name: str,
+    audio: bytes,
+    content_type: str | None = None,
+    format_hint: str | None = None,
+    language: str | None = None,
+    gender: str | None = None,
+    reference_text: str | None = None,
+) -> CreateVoiceRequest:
+    return CreateVoiceRequest(
+        name=name,
+        audio=audio,
+        content_type=(content_type or format_hint or None),
+        language=language or None,
+        gender=gender or None,
+        reference_text=reference_text or None,
+    )
+
+
 def create_voice(*, store: Any, request: CreateVoiceRequest):
     if not request.name or not request.name.strip():
         raise VoiceNameRequiredError()

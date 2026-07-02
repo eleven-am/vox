@@ -4,8 +4,8 @@ from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import Response
 
 from vox.operations.voices import (
-    CreateVoiceRequest,
     create_voice,
+    create_voice_request_from_fields,
     created_voice_payload,
     delete_voice,
     deleted_voice_payload,
@@ -40,7 +40,7 @@ async def create_voice_route(
 ):
     store = request.app.state.store
     data = await audio_sample.read()
-    op_req = CreateVoiceRequest(
+    op_req = create_voice_request_from_fields(
         name=name,
         audio=data,
         content_type=audio_sample.content_type,

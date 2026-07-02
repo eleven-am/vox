@@ -16,12 +16,7 @@ from vox.grpc.voice_messages import (
 )
 from vox.operations.errors import OperationError
 from vox.operations.synthesis import synthesis_request_from_fields, synthesize_raw
-from vox.operations.voices import (
-    CreateVoiceRequest,
-    create_voice,
-    delete_voice,
-    list_voices,
-)
+from vox.operations.voices import create_voice, create_voice_request_from_fields, delete_voice, list_voices
 
 logger = logging.getLogger(__name__)
 
@@ -73,10 +68,10 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
         return list_voices_response(listed)
 
     async def CreateVoice(self, request, context):
-        op_req = CreateVoiceRequest(
+        op_req = create_voice_request_from_fields(
             name=request.name,
             audio=request.audio,
-            content_type=request.format_hint or None,
+            format_hint=request.format_hint,
             language=request.language or None,
             gender=request.gender or None,
             reference_text=request.reference_text or None,
