@@ -147,7 +147,9 @@ class TestExplicitTags:
 class TestLegacyAliasRewrite:
     def test_legacy_model_ref_pairs_rewrite_to_canonical(self):
         assert resolve_family_alias("kokoro", "v1.0") == ("kokoro-tts", "v1.0")
-        assert resolve_family_alias("kokoro", "v1.0-torch") == ("kokoro-tts", "v1.0")
+        # The explicit-backend legacy ref is a hard cutoff: it no longer resolves,
+        # so it 404s at pull instead of silently picking the wrong backend.
+        assert resolve_family_alias("kokoro", "v1.0-torch") == ("kokoro", "v1.0-torch")
         assert resolve_family_alias("parakeet", "tdt-0.6b") == (
             "parakeet-stt-onnx",
             "tdt-0.6b",

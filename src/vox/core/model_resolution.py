@@ -59,12 +59,13 @@ def resolve_catalog_entry(
     snapshot = snapshot or detect_runtime_capabilities()
     variants = entry.get("variants")
     if not isinstance(variants, list):
+        preferred_backend, backend_warnings = _preferred_backend_for_variant(entry, snapshot)
         check = check_model_capabilities(entry, snapshot=snapshot)
         return VariantResolution(
             entry=dict(entry),
             missing=check.missing,
-            warnings=check.warnings,
-            preferred_backend=check.preferred_backend,
+            warnings=(*check.warnings, *backend_warnings),
+            preferred_backend=preferred_backend or check.preferred_backend,
             snapshot=snapshot,
         )
 

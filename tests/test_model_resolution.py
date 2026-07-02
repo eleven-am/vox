@@ -235,3 +235,38 @@ def test_variant_records_preferred_backend_fallback_warning():
     assert resolved.missing == ()
     assert resolved.warnings
     assert "faster-qwen3-tts" in resolved.warnings[0]
+
+
+def _concrete_entry_with_backends():
+    return {
+        "type": "tts",
+        "architecture": "demo",
+        "adapter": "demo-tts",
+        "adapter_package": "vox-demo",
+        "format": "pytorch",
+        "source": "demo/model",
+        "backends": {
+            "preferred": [
+                {"name": "fast", "requires": {"accelerators": ["cuda"]}},
+            ],
+            "fallback": {"name": "standard", "requires": {"python_modules": ["torch"]}},
+        },
+    }
+
+
+def test_concrete_entry_reports_preferred_backend_when_available():
+    resolution = resolve_catalog_entry(
+        _concrete_entry_with_backends(),
+        snapshot=_caps(torch_installed=True, torch_cuda=True),
+    )
+    assert resolution.preferred_backend == "fast"
+    assert resolution.warnings == ()
+
+
+def test_concrete_entry_falls_back_and_warns_when_preferred_unavailable():
+    resolution = resolve_catalog_entry(
+        _concrete_entry_with_backends(),
+        snapshot=_caps(torch_installed=True, torch_cuda=False),
+    )
+    assert resolution.preferred_backend == "standard"
+    assert any("fast" in warning for warning in resolution.warnings)

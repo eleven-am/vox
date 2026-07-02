@@ -131,7 +131,10 @@ def _torch_probe() -> _TorchProbe:
             vram_gb=max(vram_values) if vram_values else None,
         )
     except Exception:
-        return _TorchProbe(installed=_package_version("torch") is not None)
+        # torch metadata may exist while `import torch` fails (broken CUDA wheel,
+        # missing shared library). It is not usable, so report it unavailable
+        # rather than let the gate pass and fail later at load.
+        return _TorchProbe(installed=False)
 
 
 def _onnx_probe() -> _OnnxProbe:
@@ -146,7 +149,9 @@ def _onnx_probe() -> _OnnxProbe:
             providers=providers,
         )
     except Exception:
-        return _OnnxProbe(installed=_package_version("onnxruntime") is not None)
+        # As with torch: metadata may exist while `import onnxruntime` fails.
+        # Report it unavailable rather than pass the gate and fail at load.
+        return _OnnxProbe(installed=False)
 
 
 def _nvidia_smi_cuda_version() -> str | None:

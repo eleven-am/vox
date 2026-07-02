@@ -212,7 +212,6 @@ _IMPLICIT_MODEL_ALIASES: dict[str, dict[str, tuple[str, str]]] = {
 
 _LEGACY_MODEL_REF_ALIASES: dict[tuple[str, str], tuple[str, str]] = {
     ("kokoro", "v1.0"): ("kokoro-tts", "v1.0"),
-    ("kokoro", "v1.0-torch"): ("kokoro-tts", "v1.0"),
     ("parakeet", "tdt-0.6b"): ("parakeet-stt-onnx", "tdt-0.6b"),
     ("parakeet", "tdt-0.6b-v3"): ("parakeet-stt-onnx", "tdt-0.6b-v3"),
     ("parakeet", "tdt-0.6b-v3-nemo"): ("parakeet-stt-nemo", "tdt-0.6b-v3"),
