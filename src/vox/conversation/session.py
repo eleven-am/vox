@@ -44,6 +44,7 @@ from vox.conversation.interrupt import (
     transcript_word_count,
 )
 from vox.conversation.profiles import DEFAULT_TURN_PROFILE, resolve_turn_profile
+from vox.conversation.response_lifecycle import ConversationResponseLifecycle
 from vox.conversation.response_synthesis import synthesize_response_stream
 from vox.conversation.speech_guard import AssistantSpeechGuard
 from vox.conversation.state_machine import TurnStateMachine
@@ -184,12 +185,9 @@ class ConversationSession:
         self._tts_task: asyncio.Task | None = None
         self._runner: asyncio.Task | None = None
         self._audio_output = ResponseAudioOutput(pace_to_playout=config.pace_response_done_to_audio)
-        self._response_stream: ResponseStream | None = None
+        self._response_lifecycle = ConversationResponseLifecycle()
         self._closed: bool = False
         self._client_sample_rate: int = config.sample_rate
-        self._response_counter: int = 0
-        self._active_response_id: str | None = None
-        self._last_cancelled_response_id: str | None = None
 
         self._speech_guard = AssistantSpeechGuard()
 
@@ -617,8 +615,9 @@ class ConversationSession:
         *,
         allow_interruptions: bool = True,
     ) -> ResponseStream | None:
-        if self._response_stream is not None and not self._response_stream.committed:
-            return self._response_stream
+        existing = self._response_lifecycle.open_uncommitted_stream()
+        if existing is not None:
+            return existing
         if self._tts_task and not self._tts_task.done():
             logger.warning("response stream requested while response task already active; ignoring")
             await self._emit(
@@ -629,18 +628,10 @@ class ConversationSession:
             )
             return None
 
-        self._response_counter += 1
-        response_id = f"resp_{self._response_counter}"
-        stream = ResponseStream.create(
-            response_id=response_id,
-            allow_interruptions=allow_interruptions,
-        )
-        self._response_stream = stream
-        self._active_response_id = response_id
-        self._last_cancelled_response_id = None
+        stream = self._response_lifecycle.start_stream(allow_interruptions=allow_interruptions)
         self._audio_output.reset_for_response()
         await self._event_queue.put(TurnEvent(type=TurnEventType.RESPONSE_STARTED))
-        await self._emit({"type": WIRE_RESPONSE_CREATED, "response_id": response_id})
+        await self._emit({"type": WIRE_RESPONSE_CREATED, "response_id": stream.response_id})
         self._tts_task = asyncio.create_task(self._run_response_stream(stream))
         return stream
 
@@ -675,10 +666,7 @@ class ConversationSession:
             logger.exception("TTS synthesis failed")
             await self._fail_response(str(exc))
         finally:
-            if self._response_stream is stream and not stream.pending_done:
-                self._response_stream = None
-            if self._active_response_id == stream.response_id and not stream.pending_done:
-                self._active_response_id = None
+            self._response_lifecycle.clear_finished_stream_if_current(stream)
 
     async def _notify_tts_audio_started(self) -> None:
         await self._event_queue.put(TurnEvent(type=TurnEventType.TTS_AUDIO_STARTED))
@@ -693,10 +681,7 @@ class ConversationSession:
                 "response_id": stream.response_id,
             }
         )
-        if self._response_stream is stream:
-            self._response_stream = None
-        if self._active_response_id == stream.response_id:
-            self._active_response_id = None
+        self._response_lifecycle.finish_stream_if_current(stream)
 
     async def _fail_response(self, message: str) -> None:
         await self._emit({"type": WIRE_ERROR, "message": message})
@@ -754,7 +739,7 @@ class ConversationSession:
         return self._speech_guard.aec_warmup_active()
 
     def _is_response_uninterruptible(self) -> bool:
-        stream = self._response_stream
+        stream = self._response_lifecycle.stream
         if stream is None or stream.allow_interruptions:
             return False
         return self._sm.state in {TurnState.THINKING, TurnState.SPEAKING}
@@ -808,8 +793,7 @@ class ConversationSession:
         elif action.type == TurnActionType.STOP_TTS:
             self._mark_agent_speech_ended()
             stream = self._response_stream
-            response_id = stream.response_id if stream is not None else self._active_response_id
-            self._last_cancelled_response_id = response_id
+            self._response_lifecycle.remember_cancelled_response()
             if stream is not None:
                 assistant_text = stream.assistant_context_text()
                 if assistant_text:
@@ -820,9 +804,7 @@ class ConversationSession:
                     await self._tts_task
             self._tts_task = None
             self._audio_output.reset_playout()
-            if stream is not None and self._active_response_id == stream.response_id:
-                self._active_response_id = None
-            self._response_stream = None
+            self._response_lifecycle.clear_active_response(stream)
 
         elif action.type == TurnActionType.CANCEL_RESPONSE:
             await self._emit(
@@ -875,9 +857,7 @@ class ConversationSession:
         await self._emit(payload)
 
     def _active_assistant_text(self) -> str:
-        if self._response_stream is None:
-            return ""
-        return self._response_stream.assistant_context_text(separator=" ")
+        return self._response_lifecycle.assistant_context_text(separator=" ")
 
     def _current_interrupt_vad_ms(self) -> int:
         vad_active_ms = 0
@@ -1138,6 +1118,30 @@ class ConversationSession:
             await self._on_event(event)
         except Exception:
             logger.exception("on_event handler raised")
+
+    @property
+    def _response_stream(self) -> ResponseStream | None:
+        return self._response_lifecycle.stream
+
+    @_response_stream.setter
+    def _response_stream(self, stream: ResponseStream | None) -> None:
+        self._response_lifecycle.stream = stream
+
+    @property
+    def _active_response_id(self) -> str | None:
+        return self._response_lifecycle.active_response_id
+
+    @_active_response_id.setter
+    def _active_response_id(self, response_id: str | None) -> None:
+        self._response_lifecycle.active_response_id = response_id
+
+    @property
+    def _last_cancelled_response_id(self) -> str | None:
+        return self._response_lifecycle.last_cancelled_response_id
+
+    @_last_cancelled_response_id.setter
+    def _last_cancelled_response_id(self, response_id: str | None) -> None:
+        self._response_lifecycle.last_cancelled_response_id = response_id
 
     @property
     def state(self) -> TurnState:
