@@ -1,7 +1,14 @@
 from __future__ import annotations
 
 from vox.core.scheduler import Scheduler
-from vox.grpc import vox_pb2, vox_pb2_grpc
+from vox.grpc import vox_pb2_grpc
+from vox.grpc.health_messages import health_status_response, list_loaded_models_response
+from vox.operations.system import (
+    get_health_status,
+    health_status_request_from_fields,
+    list_loaded_models,
+    list_loaded_models_request_from_fields,
+)
 
 
 class HealthServicer(vox_pb2_grpc.HealthServiceServicer):
@@ -10,21 +17,12 @@ class HealthServicer(vox_pb2_grpc.HealthServiceServicer):
         self._scheduler = scheduler
 
     async def Health(self, request, context):
-        return vox_pb2.HealthResponse(status="ok")
+        result = get_health_status(request=health_status_request_from_fields())
+        return health_status_response(result)
 
     async def ListLoaded(self, request, context):
-        loaded = self._scheduler.list_loaded()
-        models = [
-            vox_pb2.LoadedModel(
-                name=m.name,
-                tag=m.tag,
-                type=m.type.value,
-                device=m.device,
-                vram_bytes=m.vram_bytes,
-                loaded_at=m.loaded_at,
-                last_used=m.last_used,
-                ref_count=m.ref_count,
-            )
-            for m in loaded
-        ]
-        return vox_pb2.ListLoadedResponse(models=models)
+        result = list_loaded_models(
+            scheduler=self._scheduler,
+            request=list_loaded_models_request_from_fields(),
+        )
+        return list_loaded_models_response(result)

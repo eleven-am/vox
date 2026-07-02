@@ -104,7 +104,6 @@ class TestAnnotateWithoutSpacyModel:
 class TestSpacyRuntimeBootstrap:
     def test_bootstrap_installs_english_runtime_wheel(self, tmp_path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv("VOX_HOME", str(tmp_path))
-        monkeypatch.setattr(ner.sys, "path", list(ner.sys.path))
 
         calls: list[tuple[str, list[str], bool]] = []
         spacy_model_checks = iter([False, True])
@@ -129,6 +128,22 @@ class TestSpacyRuntimeBootstrap:
             False,
         )]
         assert str(tmp_path / "runtime" / "ner") in sys.path
+
+    def test_ensure_runtime_path_does_not_prune_adapter_runtime_siblings(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        runtime_root = tmp_path / "runtime"
+        adapter_runtime = runtime_root / "chatterbox"
+        monkeypatch.setenv("VOX_HOME", str(tmp_path))
+        monkeypatch.setattr(sys, "path", [str(adapter_runtime), *sys.path])
+
+        runtime_path = ner._ensure_runtime_path()
+
+        assert runtime_path == str(runtime_root / "ner")
+        assert sys.path[0] == str(runtime_root / "ner")
+        assert str(adapter_runtime) in sys.path
 
     def test_get_model_bootstraps_english_model_when_missing(self, monkeypatch: pytest.MonkeyPatch):
         ner._models.clear()

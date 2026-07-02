@@ -130,6 +130,53 @@ def test_prepare_rtc_control_event_applies_audio_clear_side_effect():
     assert track.clear_count == 1
 
 
+def test_prepare_rtc_control_event_suppresses_audio_delta_when_media_track_exists():
+    track = FakeAudioTrack()
+    record = SimpleNamespace(audio_output_track=track, data_channel=None)
+
+    prepared = prepare_rtc_control_event(
+        record=record,
+        session_id="rtc_1",
+        event=ConvAudioDeltaEvent(
+            audio_b64=base64.b64encode(b"pcm").decode(),
+            sample_rate=24_000,
+            audio_format="pcm16",
+            response_id="resp_1",
+            sequence=2,
+        ),
+    )
+
+    assert prepared.done is False
+    assert prepared.wire is None
+
+
+def test_prepare_rtc_control_event_preserves_audio_delta_without_media_track():
+    record = SimpleNamespace(audio_output_track=None, data_channel=None)
+
+    prepared = prepare_rtc_control_event(
+        record=record,
+        session_id="rtc_1",
+        event=ConvAudioDeltaEvent(
+            audio_b64=base64.b64encode(b"pcm").decode(),
+            sample_rate=24_000,
+            audio_format="pcm16",
+            response_id="resp_1",
+            sequence=2,
+        ),
+    )
+
+    assert prepared.done is False
+    assert prepared.wire == {
+        "type": "response.audio.delta",
+        "audio": base64.b64encode(b"pcm").decode(),
+        "sample_rate": 24_000,
+        "audio_format": "pcm16",
+        "response_id": "resp_1",
+        "sequence": 2,
+        "session_id": "rtc_1",
+    }
+
+
 def test_prepare_rtc_control_event_marks_done_without_wire_event():
     record = SimpleNamespace(audio_output_track=None, data_channel=None)
 

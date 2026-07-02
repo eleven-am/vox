@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,12 +36,20 @@ from vox.operations.models import (
     pull_event_payload,
     show_model_payload,
 )
+from vox.operations.errors import InvalidConfigError
+from vox.operations.synthesis import SynthesisRawChunk
+from vox.operations.system import (
+    HealthStatusResult,
+    ListLoadedModelsResult,
+    health_status_payload,
+    list_loaded_models_payload,
+)
 from vox.operations.transcription import (
     AnnotateResult,
     Entity,
     TranscriptionResultBundle,
 )
-from vox.operations.voices import ListedVoice, created_voice_payload, list_voices_payload
+from vox.operations.voices import DeleteVoiceResult, ListedVoice, created_voice_payload, list_voices_payload
 from vox.streaming.types import StreamTranscript
 
 
@@ -243,6 +252,17 @@ class TestGrpcModelMessages:
         for field, value in operation_payload.items():
             assert getattr(message, field) == value
 
+    def test_pull_error_message_preserves_stream_error_contract(self):
+        from vox.grpc.model_messages import pull_error_message
+        from vox.operations.errors import CatalogEntryNotFoundError
+
+        message = pull_error_message(CatalogEntryNotFoundError("missing:v1"))
+
+        assert message.status == "error"
+        assert "missing:v1" in message.error
+        assert message.completed == 0
+        assert message.total == 0
+
     def test_delete_model_response_matches_operation_payload_fields(self):
         from vox.grpc.model_messages import delete_model_response
 
@@ -298,8 +318,68 @@ class TestTranscriptionServicerMapping:
                 FakeContext(),
             )
 
+    @pytest.mark.asyncio
+    async def test_transcribe_request_build_errors_are_mapped_to_grpc(self, tmp_path, monkeypatch):
+        from vox.grpc import transcription_servicer
+        from vox.grpc.transcription_servicer import TranscriptionServicer
+
+        def fail_build(**_kwargs):
+            raise InvalidConfigError("bad grpc transcription config")
+
+        monkeypatch.setattr(transcription_servicer, "transcription_request_from_fields", fail_build)
+
+        context = FakeContext()
+        servicer = TranscriptionServicer(_make_store(tmp_path), MagicMock(), MagicMock())
+        with pytest.raises(Exception, match="gRPC abort"):
+            await servicer.Transcribe(
+                vox_pb2.TranscribeRequest(model="whisper:large-v3", audio=b"abc"),
+                context,
+            )
+
+        assert context._code is grpc.StatusCode.INVALID_ARGUMENT
+        assert context._details == "bad grpc transcription config"
+
+    @pytest.mark.asyncio
+    async def test_annotate_request_build_errors_are_mapped_to_grpc(self, tmp_path, monkeypatch):
+        from vox.grpc import transcription_servicer
+        from vox.grpc.transcription_servicer import TranscriptionServicer
+
+        def fail_build(**_kwargs):
+            raise InvalidConfigError("bad grpc annotation config")
+
+        monkeypatch.setattr(transcription_servicer, "annotate_request_from_fields", fail_build)
+
+        context = FakeContext()
+        servicer = TranscriptionServicer(_make_store(tmp_path), MagicMock(), MagicMock())
+        with pytest.raises(Exception, match="gRPC abort"):
+            await servicer.Annotate(
+                vox_pb2.AnnotateRequest(text="Alice visited Paris", language="en"),
+                context,
+            )
+
+        assert context._code is grpc.StatusCode.INVALID_ARGUMENT
+        assert context._details == "bad grpc annotation config"
+
 
 class TestGrpcTranscriptMessages:
+    def test_transcript_segment_list_helper_reuses_single_segment_contract(self):
+        from vox.grpc.transcript_messages import (
+            transcript_segment_message,
+            transcript_segment_messages,
+        )
+
+        segment = TranscriptSegment(
+            text="Alice visited Paris",
+            start_ms=100,
+            end_ms=900,
+            words=(WordTimestamp(word="Alice", start_ms=100, end_ms=300),),
+        )
+
+        single = transcript_segment_message(segment)
+        listed = transcript_segment_messages((segment,))[0]
+
+        assert listed == single
+
     def test_transcribe_response_encodes_segments_words_entities_and_topics(self):
         from vox.grpc.transcript_messages import transcribe_response
 
@@ -388,6 +468,196 @@ class TestGrpcTranscriptMessages:
         assert list(message.topics) == ["voice"]
 
 
+class TestGrpcStreamingMessages:
+    def test_stream_config_request_decodes_defaults_and_explicit_fields(self):
+        from vox.grpc import vox_pb2
+        from vox.grpc.streaming_messages import stream_config_request
+
+        defaults = stream_config_request(vox_pb2.StreamConfig())
+        explicit = stream_config_request(
+            vox_pb2.StreamConfig(
+                model="parakeet",
+                language="fr",
+                sample_rate=48_000,
+                partials=True,
+                partial_window_ms=1200,
+                partial_stride_ms=400,
+                include_word_timestamps=True,
+                temperature=0.25,
+            )
+        )
+
+        assert defaults.model == ""
+        assert defaults.language == "en"
+        assert defaults.sample_rate == 16_000
+        assert defaults.partials is False
+        assert defaults.partial_window_ms == 1500
+        assert defaults.partial_stride_ms == 700
+        assert defaults.include_word_timestamps is False
+        assert defaults.temperature == 0.0
+
+        assert explicit.model == "parakeet"
+        assert explicit.language == "fr"
+        assert explicit.sample_rate == 48_000
+        assert explicit.partials is True
+        assert explicit.partial_window_ms == 1200
+        assert explicit.partial_stride_ms == 400
+        assert explicit.include_word_timestamps is True
+        assert explicit.temperature == pytest.approx(0.25)
+
+    def test_stream_output_message_encodes_event_variants(self):
+        from vox.grpc.streaming_messages import stream_output_message
+        from vox.operations.streaming_transcription import (
+            ErrorEvent,
+            SessionReadyEvent,
+            SpeechStartedEvent,
+            SpeechStoppedEvent,
+            TranscriptEvent,
+        )
+
+        transcript = StreamTranscript(
+            text="hello",
+            is_partial=False,
+            start_ms=100,
+            end_ms=300,
+            audio_duration_ms=200,
+            processing_duration_ms=20,
+            model="fake-stt:latest",
+        )
+
+        assert stream_output_message(SessionReadyEvent("model", "en", 16000)).WhichOneof("msg") == "ready"
+        assert stream_output_message(SpeechStartedEvent(10)).speech_started.timestamp_ms == 10
+        assert stream_output_message(SpeechStoppedEvent(20)).speech_stopped.timestamp_ms == 20
+        assert stream_output_message(TranscriptEvent(transcript)).transcript.text == "hello"
+        assert stream_output_message(ErrorEvent("boom")).error.message == "boom"
+
+    @pytest.mark.asyncio
+    async def test_execute_stream_input_message_dispatches_stream_commands(self):
+        from vox.grpc import vox_pb2
+        from vox.grpc.streaming_messages import execute_stream_input_message
+
+        class RecordingSession:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, tuple, dict]] = []
+
+            async def configure_or_report(self, config):
+                self.calls.append(("configure", (config,), {}))
+
+            async def submit_pcm16_or_report(self, *args, **kwargs):
+                self.calls.append(("pcm16", args, kwargs))
+
+            async def submit_opus_or_report(self, *args, **kwargs):
+                self.calls.append(("opus", args, kwargs))
+
+            async def submit_encoded_or_report(self, *args, **kwargs):
+                self.calls.append(("encoded", args, kwargs))
+
+        session = RecordingSession()
+
+        assert await execute_stream_input_message(
+            session,
+            vox_pb2.StreamInput(
+                config=vox_pb2.StreamConfig(model="parakeet", sample_rate=48_000)
+            ),
+        ) is True
+        assert await execute_stream_input_message(
+            session,
+            vox_pb2.StreamInput(audio=vox_pb2.AudioFrame(pcm16=b"pcm", sample_rate=44_100)),
+        ) is True
+        assert await execute_stream_input_message(
+            session,
+            vox_pb2.StreamInput(
+                opus_frame=vox_pb2.OpusFrame(data=b"opus", sample_rate=48_000, channels=2)
+            ),
+        ) is True
+        assert await execute_stream_input_message(
+            session,
+            vox_pb2.StreamInput(
+                encoded_audio=vox_pb2.EncodedAudioFrame(data=b"wav", format="wav")
+            ),
+        ) is True
+
+        assert session.calls[0][0] == "configure"
+        assert session.calls[0][1][0].model == "parakeet"
+        assert session.calls[0][1][0].sample_rate == 48_000
+        assert session.calls[1] == ("pcm16", (b"pcm",), {"sample_rate": 44_100})
+        assert session.calls[2] == (
+            "opus",
+            (b"opus",),
+            {"sample_rate": 48_000, "channels": 2},
+        )
+        assert session.calls[3] == ("encoded", (b"wav",), {"format_hint": "wav"})
+
+    @pytest.mark.asyncio
+    async def test_execute_stream_input_message_reports_end_without_side_effects(self):
+        from vox.grpc import vox_pb2
+        from vox.grpc.streaming_messages import execute_stream_input_message
+
+        class RecordingSession:
+            calls: list[str] = []
+
+        assert await execute_stream_input_message(
+            RecordingSession(),
+            vox_pb2.StreamInput(end_of_stream=vox_pb2.EndOfStream()),
+        ) is False
+
+        assert RecordingSession.calls == []
+
+    @pytest.mark.asyncio
+    async def test_execute_stream_input_message_preserves_empty_message_noop(self):
+        from vox.grpc import vox_pb2
+        from vox.grpc.streaming_messages import execute_stream_input_message
+
+        class RecordingSession:
+            calls: list[str] = []
+
+        assert await execute_stream_input_message(RecordingSession(), vox_pb2.StreamInput()) is True
+        assert RecordingSession.calls == []
+
+
+class TestGrpcConversationEvents:
+    def test_rtc_session_attached_message_uses_operation_contract(self):
+        from vox.grpc.conversation_events import rtc_session_attached_pb
+        from vox.operations.conversation import rtc_session_attached_payload
+
+        message = rtc_session_attached_pb("rtc_123")
+        payload = rtc_session_attached_payload("rtc_123")
+
+        assert message.WhichOneof("msg") == "rtc_session_attached"
+        assert message.rtc_session_attached.session_id == payload["session_id"]
+        assert message.rtc_session_attached.provider == "webrtc"
+
+    def test_rtc_client_event_message_preserves_payload_json(self):
+        from vox.grpc.conversation_events import rtc_client_event_pb
+
+        message = rtc_client_event_pb("browser.event", '{"ok":true}')
+
+        assert message.WhichOneof("msg") == "client_event"
+        assert message.client_event.event == "browser.event"
+        assert message.client_event.payload_json == '{"ok":true}'
+
+    def test_rtc_client_event_from_control_event_uses_operation_contract(self):
+        from vox.grpc.conversation_events import rtc_client_event_from_control_event
+        from vox.operations.conversation import WIRE_BROWSER_EVENT
+
+        message = rtc_client_event_from_control_event(
+            {
+                "type": WIRE_BROWSER_EVENT,
+                "session_id": "rtc_123",
+                "event": "ui.select",
+                "payload": {"id": "choice-a"},
+            }
+        )
+
+        assert message.WhichOneof("msg") == "client_event"
+        assert message.client_event.event == WIRE_BROWSER_EVENT
+        assert json.loads(message.client_event.payload_json) == {
+            "session_id": "rtc_123",
+            "event": "ui.select",
+            "payload": {"id": "choice-a"},
+        }
+
+
 class TestSynthesisServicerMapping:
     @pytest.mark.asyncio
     async def test_synthesize_no_input_aborts_with_invalid_argument(self, tmp_path):
@@ -399,6 +669,28 @@ class TestSynthesisServicerMapping:
                 vox_pb2.SynthesizeRequest(model="kokoro:v1.0", input=""), FakeContext(),
             ):
                 pass
+
+    @pytest.mark.asyncio
+    async def test_synthesize_request_build_errors_are_mapped_to_grpc(self, tmp_path, monkeypatch):
+        from vox.grpc import synthesis_servicer
+        from vox.grpc.synthesis_servicer import SynthesisServicer
+
+        def fail_build(**_kwargs):
+            raise InvalidConfigError("bad grpc synthesis config")
+
+        monkeypatch.setattr(synthesis_servicer, "synthesis_request_from_fields", fail_build)
+
+        context = FakeContext()
+        servicer = SynthesisServicer(_make_store(tmp_path), MagicMock(), MagicMock())
+        with pytest.raises(Exception, match="gRPC abort"):
+            async for _ in servicer.Synthesize(
+                vox_pb2.SynthesizeRequest(model="kokoro:v1.0", input="hello"),
+                context,
+            ):
+                pass
+
+        assert context._code is grpc.StatusCode.INVALID_ARGUMENT
+        assert context._details == "bad grpc synthesis config"
 
     @pytest.mark.asyncio
     async def test_list_voices_empty(self, tmp_path):
@@ -426,6 +718,27 @@ class TestSynthesisServicerMapping:
         )
         assert resp.voice.name == "Roy"
         assert resp.voice.is_cloned is True
+
+    @pytest.mark.asyncio
+    async def test_create_voice_request_build_errors_are_mapped_to_grpc(self, tmp_path, monkeypatch):
+        from vox.grpc import synthesis_servicer
+        from vox.grpc.synthesis_servicer import SynthesisServicer
+
+        def fail_build(**_kwargs):
+            raise InvalidConfigError("bad grpc voice config")
+
+        monkeypatch.setattr(synthesis_servicer, "create_voice_request_from_fields", fail_build)
+
+        context = FakeContext()
+        servicer = SynthesisServicer(_make_store(tmp_path), MagicMock(), MagicMock())
+        with pytest.raises(Exception, match="gRPC abort"):
+            await servicer.CreateVoice(
+                vox_pb2.CreateVoiceRequest(name="Roy", audio=b"abc"),
+                context,
+            )
+
+        assert context._code is grpc.StatusCode.INVALID_ARGUMENT
+        assert context._details == "bad grpc voice config"
 
     @pytest.mark.asyncio
     async def test_create_voice_invalid_reference_aborts_with_invalid_argument(self, tmp_path):
@@ -555,10 +868,64 @@ class TestGrpcVoiceMessages:
     def test_delete_voice_response_uses_deleted_voice_contract(self):
         from vox.grpc.voice_messages import delete_voice_response
 
-        message = delete_voice_response("voice1234")
+        message = delete_voice_response(DeleteVoiceResult(voice_id="voice1234"))
 
         assert message.id == "voice1234"
         assert message.deleted is True
+
+
+class TestGrpcHealthMessages:
+    def test_health_status_response_matches_operation_payload(self):
+        from vox.grpc.health_messages import health_status_response
+
+        result = HealthStatusResult()
+        operation_payload = health_status_payload(result)
+        message = health_status_response(result)
+
+        assert message.status == operation_payload["status"]
+
+    def test_list_loaded_models_response_matches_operation_payload_fields(self):
+        from vox.grpc.health_messages import list_loaded_models_response
+
+        result = ListLoadedModelsResult(
+            models=[
+                LoadedModelInfo(
+                    name="parakeet-stt-onnx",
+                    tag="tdt-0.6b-v3",
+                    type=ModelType.STT,
+                    device="cuda",
+                    vram_bytes=4096,
+                    loaded_at=1.5,
+                    last_used=2.5,
+                    ref_count=2,
+                    is_evictable=True,
+                    is_trimmable=True,
+                    backend_memory={"workspace_bytes": 128},
+                )
+            ]
+        )
+
+        operation_payload = list_loaded_models_payload(result)["models"][0]
+        message = list_loaded_models_response(result).models[0]
+
+        for field, value in operation_payload.items():
+            assert getattr(message, field) == value
+
+        assert not hasattr(message, "is_evictable")
+        assert not hasattr(message, "backend_memory")
+
+
+class TestGrpcSynthesisMessages:
+    def test_audio_chunk_message_uses_raw_synthesis_chunk_contract(self):
+        from vox.grpc.synthesis_messages import audio_chunk_message
+
+        chunk = SynthesisRawChunk(audio=b"abc", sample_rate=24_000, is_final=False)
+
+        message = audio_chunk_message(chunk)
+
+        assert message.audio == chunk.audio
+        assert message.sample_rate == chunk.sample_rate
+        assert message.is_final == chunk.is_final
 
 
 class TestProtoMessages:

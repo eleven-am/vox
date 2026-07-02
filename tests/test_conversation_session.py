@@ -31,6 +31,7 @@ from vox.conversation.session import (
     WIRE_INTERRUPTION_DETECTED,
     WIRE_INTERRUPTION_FALSE_POSITIVE,
     WIRE_RESPONSE_CANCELLED,
+    WIRE_RESPONSE_COMMITTED,
     WIRE_RESPONSE_CREATED,
     WIRE_RESPONSE_DONE,
     WIRE_STATE_CHANGED,
@@ -157,6 +158,67 @@ async def _drain_events(session: ConversationSession, max_iterations: int = 20) 
         await asyncio.sleep(0)
         if session._event_queue.empty() and (session._tts_task is None or session._tts_task.done()):
             break
+
+
+class TestInterruptionEventContracts:
+    @pytest.mark.asyncio
+    async def test_response_lifecycle_event_shapes_are_owned_by_session_helpers(self):
+        session, collector, _ = _build_session()
+        session._active_response_id = "resp_1"
+
+        await session._emit_response_created("resp_1")
+        await session._emit_response_committed("resp_1")
+        await session._emit_response_done("resp_1")
+        await session._emit_response_cancelled()
+        await session._emit_error("boom")
+
+        assert collector.events == [
+            {"type": WIRE_RESPONSE_CREATED, "response_id": "resp_1"},
+            {"type": WIRE_RESPONSE_COMMITTED, "response_id": "resp_1"},
+            {"type": WIRE_RESPONSE_DONE, "response_id": "resp_1"},
+            {"type": WIRE_RESPONSE_CANCELLED, "response_id": "resp_1"},
+            {"type": WIRE_ERROR, "message": "boom"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_detected_interrupt_event_shape_is_owned_by_session_helper(self):
+        session, collector, _ = _build_session()
+        session._active_response_id = "resp_1"
+
+        await session._emit_interruption_detected(
+            vad_active_ms=420,
+            partial_transcript="stop there",
+        )
+
+        assert collector.events == [
+            {
+                "type": WIRE_INTERRUPTION_DETECTED,
+                "response_id": "resp_1",
+                "vad_active_ms": 420,
+                "partial_transcript": "stop there",
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_false_positive_interrupt_event_shape_is_owned_by_session_helper(self):
+        session, collector, _ = _build_session()
+        session._active_response_id = "resp_1"
+
+        await session._emit_interruption_false_positive(
+            vad_active_ms=120,
+            partial_transcript="mhmm",
+            reason="backchannel",
+        )
+
+        assert collector.events == [
+            {
+                "type": WIRE_INTERRUPTION_FALSE_POSITIVE,
+                "response_id": "resp_1",
+                "vad_active_ms": 120,
+                "partial_transcript": "mhmm",
+                "reason": "backchannel",
+            }
+        ]
 
 
 class TestLifecycle:
@@ -637,7 +699,9 @@ class TestBargeIn:
 
         assert session.state == TurnState.INTERRUPTED
         assert collector.by_type(WIRE_INTERRUPTION_DETECTED)
-        assert collector.by_type(WIRE_AUDIO_CLEAR)
+        audio_clear = collector.by_type(WIRE_AUDIO_CLEAR)
+        assert audio_clear
+        assert audio_clear[-1]["response_id"] == collector.by_type(WIRE_RESPONSE_CREATED)[-1]["response_id"]
         assert collector.by_type(WIRE_RESPONSE_CANCELLED)
         assert tts.cancelled_at_chunk is not None
 
@@ -670,7 +734,9 @@ class TestBargeIn:
         assert tts.cancelled_at_chunk is None
 
         assert collector.by_type(WIRE_INTERRUPTION_FALSE_POSITIVE) == []
-        assert collector.by_type(WIRE_AUDIO_CLEAR)
+        audio_clear = collector.by_type(WIRE_AUDIO_CLEAR)
+        assert audio_clear
+        assert audio_clear[-1]["response_id"] == collector.by_type(WIRE_RESPONSE_CREATED)[-1]["response_id"]
         assert not collector.by_type(WIRE_RESPONSE_CANCELLED)
 
         await session.close()

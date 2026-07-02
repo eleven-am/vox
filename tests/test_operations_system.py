@@ -14,6 +14,10 @@ from vox.operations.errors import ModelInUseError
 from vox.operations.system import (
     EnforceMemoryBudgetRequest,
     EnforceMemoryBudgetResult,
+    HealthStatusRequest,
+    HealthStatusResult,
+    ListLoadedModelsRequest,
+    ListLoadedModelsResult,
     MemoryBudgetExceededError,
     MemoryStatusRequest,
     TrimIdleMemoryRequest,
@@ -24,14 +28,25 @@ from vox.operations.system import (
     UnloadIdleResult,
     enforce_memory_budget,
     enforce_memory_budget_payload,
+    enforce_memory_budget_request_from_fields,
+    get_health_status,
     get_memory_status,
+    health_status_payload,
+    health_status_request_from_fields,
+    list_loaded_models,
+    list_loaded_models_payload,
+    list_loaded_models_request_from_fields,
     memory_snapshot_payload,
     memory_status_payload,
+    memory_status_request_from_fields,
     trim_idle_memory,
+    trim_idle_memory_request_from_fields,
     trim_idle_payload,
     trim_model,
     trim_model_payload,
+    trim_model_request_from_fields,
     unload_idle_models,
+    unload_idle_models_request_from_fields,
     unload_idle_payload,
 )
 
@@ -123,6 +138,79 @@ def test_memory_status_payload_preserves_http_contract_shape():
     assert payload["estimated_loaded_vram_bytes"] == 3_072
     assert payload["active_model_count"] == 1
     assert payload["models"][0]["backend_memory"] == {"workspace_bytes": 128}
+
+
+def test_health_status_payload_preserves_http_contract_shape():
+    result = get_health_status(request=HealthStatusRequest())
+
+    assert result == HealthStatusResult()
+    assert health_status_payload(result) == {"status": "ok"}
+
+
+def test_list_loaded_models_payload_preserves_existing_contract_shape():
+    scheduler = FakeSystemScheduler()
+
+    result = list_loaded_models(scheduler=scheduler, request=ListLoadedModelsRequest())
+    payload = list_loaded_models_payload(result)
+
+    assert result == ListLoadedModelsResult(models=scheduler.loaded)
+    assert payload == {
+        "models": [
+            {
+                "name": "parakeet-stt-onnx",
+                "tag": "tdt-0.6b-v3",
+                "type": "stt",
+                "device": "cuda",
+                "vram_bytes": 1024,
+                "loaded_at": 0.0,
+                "last_used": 0.0,
+                "ref_count": 0,
+            },
+            {
+                "name": "chatterbox-tts-turbo",
+                "tag": "0.1.7",
+                "type": "tts",
+                "device": "cuda",
+                "vram_bytes": 2048,
+                "loaded_at": 0.0,
+                "last_used": 0.0,
+                "ref_count": 1,
+            },
+        ]
+    }
+    assert "backend_memory" not in payload["models"][0]
+    assert "is_evictable" not in payload["models"][0]
+    assert "is_trimmable" not in payload["models"][0]
+
+
+def test_memory_snapshot_loaded_model_payload_extends_loaded_model_summary_shape():
+    scheduler = FakeSystemScheduler()
+
+    summary = list_loaded_models_payload(
+        list_loaded_models(scheduler=scheduler, request=ListLoadedModelsRequest())
+    )["models"][0]
+    detailed = memory_snapshot_payload(scheduler.memory_snapshot())["models"][0]
+
+    assert {key: detailed[key] for key in summary} == summary
+    assert detailed["is_evictable"] is True
+    assert detailed["is_trimmable"] is True
+    assert detailed["backend_memory"] == {"workspace_bytes": 128}
+
+
+def test_system_operation_request_builders_preserve_transport_values():
+    assert health_status_request_from_fields() == HealthStatusRequest()
+    assert memory_status_request_from_fields() == MemoryStatusRequest()
+    assert list_loaded_models_request_from_fields() == ListLoadedModelsRequest()
+    assert trim_idle_memory_request_from_fields(
+        min_idle_seconds=-15,
+    ) == TrimIdleMemoryRequest(min_idle_seconds=-15)
+    assert enforce_memory_budget_request_from_fields(
+        additional_vram_bytes=-2048,
+    ) == EnforceMemoryBudgetRequest(additional_vram_bytes=-2048)
+    assert trim_model_request_from_fields(
+        model_name="kokoro-tts-onnx:v1.0",
+    ) == TrimModelRequest(model_name="kokoro-tts-onnx:v1.0")
+    assert unload_idle_models_request_from_fields() == UnloadIdleModelsRequest()
 
 
 def test_system_action_payloads_preserve_http_contract_shapes():

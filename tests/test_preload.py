@@ -8,49 +8,80 @@ from unittest.mock import MagicMock, patch
 import pytest
 from fastapi.testclient import TestClient
 
-from vox.server.app import (
-    _env_bool,
-    _parse_preload_list,
-    _preload_models,
-    _preload_vad,
-    create_app,
+from vox.server.app import create_app
+from vox.server.preload import (
+    env_bool,
+    merged_preload_models,
+    parse_preload_list,
+    preload_models,
+    preload_vad,
+    should_preload_vad,
 )
 
 
 class TestParsePreloadList:
     def test_none_returns_empty(self):
-        assert _parse_preload_list(None) == []
+        assert parse_preload_list(None) == []
 
     def test_empty_string_returns_empty(self):
-        assert _parse_preload_list("") == []
+        assert parse_preload_list("") == []
 
     def test_single_ref(self):
-        assert _parse_preload_list("parakeet-stt-onnx:0.6b") == ["parakeet-stt-onnx:0.6b"]
+        assert parse_preload_list("parakeet-stt-onnx:0.6b") == ["parakeet-stt-onnx:0.6b"]
 
     def test_comma_separated(self):
-        assert _parse_preload_list("a:1,b:2,c:3") == ["a:1", "b:2", "c:3"]
+        assert parse_preload_list("a:1,b:2,c:3") == ["a:1", "b:2", "c:3"]
 
     def test_strips_whitespace(self):
-        assert _parse_preload_list(" a:1 , b:2 ") == ["a:1", "b:2"]
+        assert parse_preload_list(" a:1 , b:2 ") == ["a:1", "b:2"]
 
     def test_ignores_empty_segments(self):
-        assert _parse_preload_list("a:1,,b:2,") == ["a:1", "b:2"]
+        assert parse_preload_list("a:1,,b:2,") == ["a:1", "b:2"]
 
 
 class TestEnvBool:
     def test_truthy_values(self):
         for v in ("1", "true", "TRUE", "yes", "YES", "on", "ON"):
             with patch.dict(os.environ, {"X": v}):
-                assert _env_bool("X") is True
+                assert env_bool("X") is True
 
     def test_falsy_values(self):
         for v in ("", "0", "false", "no", "off", "random"):
             with patch.dict(os.environ, {"X": v}):
-                assert _env_bool("X") is False
+                assert env_bool("X") is False
 
     def test_missing_is_false(self):
         with patch.dict(os.environ, {}, clear=True):
-            assert _env_bool("MISSING") is False
+            assert env_bool("MISSING") is False
+
+
+class TestMergedPreloadModels:
+    def test_preserves_explicit_order_before_env_models(self):
+        assert merged_preload_models(["explicit:1"], "env-a:1,env-b:2") == [
+            "explicit:1",
+            "env-a:1",
+            "env-b:2",
+        ]
+
+    def test_dedups_explicit_and_env_models(self):
+        assert merged_preload_models(["shared:1"], "shared:1,only-env:1") == [
+            "shared:1",
+            "only-env:1",
+        ]
+
+
+class TestShouldPreloadVAD:
+    def test_explicit_true_wins_without_env(self):
+        with patch.dict(os.environ, {}, clear=True):
+            assert should_preload_vad(True) is True
+
+    def test_env_can_enable_vad_preload(self):
+        with patch.dict(os.environ, {"VOX_PRELOAD_VAD": "yes"}):
+            assert should_preload_vad(False) is True
+
+    def test_defaults_false(self):
+        with patch.dict(os.environ, {}, clear=True):
+            assert should_preload_vad(False) is False
 
 
 class _FakeScheduler:
@@ -72,25 +103,22 @@ class _FakeScheduler:
 class TestPreloadModels:
     @pytest.mark.asyncio
     async def test_all_models_preloaded_in_order(self):
-        app = MagicMock()
-        app.state.scheduler = _FakeScheduler()
-        await _preload_models(app, ["a:1", "b:2", "c:3"])
-        assert app.state.scheduler.acquired == ["a:1", "b:2", "c:3"]
+        scheduler = _FakeScheduler()
+        await preload_models(scheduler, ["a:1", "b:2", "c:3"])
+        assert scheduler.acquired == ["a:1", "b:2", "c:3"]
 
     @pytest.mark.asyncio
     async def test_failed_preload_logged_not_raised(self, caplog):
-        app = MagicMock()
-        app.state.scheduler = _FakeScheduler(raise_on={"b:2"})
-        await _preload_models(app, ["a:1", "b:2", "c:3"])
-        assert app.state.scheduler.acquired == ["a:1", "b:2", "c:3"]
+        scheduler = _FakeScheduler(raise_on={"b:2"})
+        await preload_models(scheduler, ["a:1", "b:2", "c:3"])
+        assert scheduler.acquired == ["a:1", "b:2", "c:3"]
         assert any("Failed to preload b:2" in r.message for r in caplog.records)
 
     @pytest.mark.asyncio
     async def test_empty_list_is_noop(self):
-        app = MagicMock()
-        app.state.scheduler = _FakeScheduler()
-        await _preload_models(app, [])
-        assert app.state.scheduler.acquired == []
+        scheduler = _FakeScheduler()
+        await preload_models(scheduler, [])
+        assert scheduler.acquired == []
 
 
 class TestPreloadVAD:
@@ -100,7 +128,7 @@ class TestPreloadVAD:
         fake_cls = MagicMock(return_value=fake_vad)
 
         with patch("vox.streaming.vad.SileroVAD", fake_cls):
-            await _preload_vad()
+            await preload_vad()
 
         fake_cls.assert_called_once()
         fake_vad._ensure_model.assert_called_once()
@@ -111,7 +139,7 @@ class TestPreloadVAD:
         fake_vad._ensure_model.side_effect = RuntimeError("no torch")
 
         with patch("vox.streaming.vad.SileroVAD", return_value=fake_vad):
-            await _preload_vad()
+            await preload_vad()
 
         assert any("Failed to preload VAD" in r.message for r in caplog.records)
 

@@ -23,6 +23,7 @@ from vox.operations.conversation import (
     ConvDoneEvent,
     ConversationOrchestrator,
     ConvEvent,
+    conversation_wire_event_payload,
     serialize_conversation_event,
 )
 from vox.server.rtc_client_events import send_client_event_to_browser
@@ -61,8 +62,8 @@ def forward_wire_event_to_browser(record: Any, wire: dict | None) -> None:
     channel = getattr(record, "data_channel", None)
     if channel is None or getattr(channel, "readyState", None) != "open":
         return
-    payload = {key: value for key, value in wire.items() if key != "type"}
-    send_client_event_to_browser(record, str(event_type), payload)
+    event_name, payload = conversation_wire_event_payload(wire)
+    send_client_event_to_browser(record, event_name, payload)
 
 
 def prepare_rtc_control_event(
@@ -72,6 +73,12 @@ def prepare_rtc_control_event(
     event: ConvEvent,
 ) -> RtcControlEvent:
     clear_rtc_audio_if_needed(record, event)
+    if (
+        isinstance(event, ConvAudioDeltaEvent)
+        and record is not None
+        and getattr(record, "audio_output_track", None) is not None
+    ):
+        return RtcControlEvent(wire=None, done=False)
     wire = serialize_conversation_event(event)
     if wire is not None:
         wire.setdefault("session_id", session_id)

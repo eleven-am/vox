@@ -26,6 +26,22 @@ def current_request_id() -> str:
     return request_id_var.get()
 
 
+def request_id_from_incoming(incoming: object | None) -> str:
+    if incoming is None:
+        return new_request_id()
+    text = incoming.decode() if isinstance(incoming, bytes) else str(incoming)
+    text = text.strip()
+    return text or new_request_id()
+
+
+def bind_request_id(incoming: object | None = None) -> contextvars.Token[str]:
+    return request_id_var.set(request_id_from_incoming(incoming))
+
+
+def reset_request_id(token: contextvars.Token[str]) -> None:
+    request_id_var.reset(token)
+
+
 class RequestIdFilter(logging.Filter):
     """Injects the active request ID onto every log record."""
 

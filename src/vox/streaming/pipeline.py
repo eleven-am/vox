@@ -14,6 +14,7 @@ from numpy.typing import NDArray
 from vox.audio.merger import merge_transcripts
 from vox.audio.stt_runner import run_stt_with_leading_context
 from vox.core.adapter import STTAdapter
+from vox.core.adapter_acquisition import AdapterTypeMismatchError, acquire_typed_adapter
 from vox.core.scheduler import Scheduler
 from vox.core.types import TranscribeResult
 from vox.streaming.eou import ConversationTurn, EOUConfig, create_turn_detector
@@ -245,16 +246,22 @@ class StreamPipeline:
         word_timestamps = self._session_config.include_word_timestamps
 
         start = time.perf_counter()
-        async with self._scheduler.acquire(model) as adapter:
-            if not isinstance(adapter, STTAdapter):
-                return StreamTranscript()
-            result = await self._transcribe_audio_with_context(
-                adapter=adapter,
-                audio=segment.audio,
-                language=language or None,
-                word_timestamps=word_timestamps,
-                temperature=self._session_config.temperature,
-            )
+        try:
+            async with acquire_typed_adapter(
+                self._scheduler,
+                model=model,
+                adapter_type=STTAdapter,
+                expected_type="STT",
+            ) as adapter:
+                result = await self._transcribe_audio_with_context(
+                    adapter=adapter,
+                    audio=segment.audio,
+                    language=language or None,
+                    word_timestamps=word_timestamps,
+                    temperature=self._session_config.temperature,
+                )
+        except AdapterTypeMismatchError:
+            return StreamTranscript()
         processing_ms = int((time.perf_counter() - start) * 1000)
         segments, words = _segments_and_words(result)
 
@@ -281,17 +288,22 @@ class StreamPipeline:
         model = self._session_config.model
 
         start = time.perf_counter()
-        async with self._scheduler.acquire(model) as adapter:
-            if not isinstance(adapter, STTAdapter):
-                return StreamTranscript()
-
-            result = await self._transcribe_audio_with_context(
-                adapter=adapter,
-                audio=audio,
-                language=language or None,
-                word_timestamps=word_timestamps,
-                temperature=self._session_config.temperature,
-            )
+        try:
+            async with acquire_typed_adapter(
+                self._scheduler,
+                model=model,
+                adapter_type=STTAdapter,
+                expected_type="STT",
+            ) as adapter:
+                result = await self._transcribe_audio_with_context(
+                    adapter=adapter,
+                    audio=audio,
+                    language=language or None,
+                    word_timestamps=word_timestamps,
+                    temperature=self._session_config.temperature,
+                )
+        except AdapterTypeMismatchError:
+            return StreamTranscript()
         processing_ms = int((time.perf_counter() - start) * 1000)
         segments, words = _segments_and_words(result)
 

@@ -23,12 +23,17 @@ from vox.operations.transcription import (
     TranscriptionResultBundle,
     _choose_onset_result,
     _transcribe_chunk,
+    annotate_request_from_fields,
     annotate_text,
+    entity_payload,
     format_hint_from_content_type,
     openai_transcription_payload,
+    openai_transcription_response,
     parse_timestamp_granularities,
     transcribe,
+    transcript_segment_payload,
     transcription_request_from_fields,
+    word_timestamp_payload,
 )
 
 
@@ -111,6 +116,17 @@ def test_transcription_request_from_fields_preserves_positive_temperature():
     )
 
     assert request.temperature == 0.25
+
+
+def test_annotate_request_from_fields_normalizes_transport_input():
+    assert annotate_request_from_fields(text=None, language="") == AnnotateRequest(
+        text="",
+        language="en",
+    )
+    assert annotate_request_from_fields(text="Alice visited Paris", language="fr") == AnnotateRequest(
+        text="Alice visited Paris",
+        language="fr",
+    )
 
 
 def test_format_hint_from_content_type_normalizes_audio_mime_types():
@@ -359,6 +375,88 @@ def test_openai_transcription_payload_respects_granularity_flags():
     assert payload["text"] == "hello"
     assert "segments" not in payload
     assert "words" not in payload
+
+
+def test_openai_transcription_response_owns_response_format_policy():
+    bundle = TranscriptionResultBundle(
+        result=TranscribeResult(
+            text="hello",
+            language="en",
+            duration_ms=100,
+            model="fake-stt:latest",
+            segments=(
+                TranscriptSegment(
+                    text="hello",
+                    start_ms=0,
+                    end_ms=100,
+                    words=(WordTimestamp(word="hello", start_ms=0, end_ms=100),),
+                ),
+            ),
+        ),
+        processing_ms=1,
+    )
+
+    text_response = openai_transcription_response(
+        bundle,
+        response_format="text",
+        timestamp_granularities=set(),
+    )
+    assert text_response.is_text
+    assert text_response.payload == "hello"
+
+    default_response = openai_transcription_response(
+        bundle,
+        response_format="json",
+        timestamp_granularities=set(),
+    )
+    assert not default_response.is_text
+    assert default_response.payload == {"text": "hello"}
+
+    verbose_response = openai_transcription_response(
+        bundle,
+        response_format="verbose_json",
+        timestamp_granularities={"word"},
+    )
+    assert not verbose_response.is_text
+    assert "words" in verbose_response.payload
+    assert "segments" not in verbose_response.payload
+
+
+def test_transcript_payload_helpers_normalize_dataclass_and_dict_shapes():
+    entity = Entity(type="PERSON", text="Alice", start_char=0, end_char=5)
+    word = WordTimestamp(word="Alice", start_ms=10, end_ms=500, confidence=0.9)
+    segment = TranscriptSegment(text="Alice", start_ms=10, end_ms=500, words=(word,))
+
+    assert entity_payload(entity) == {
+        "type": "PERSON",
+        "text": "Alice",
+        "start_char": 0,
+        "end_char": 5,
+    }
+    assert word_timestamp_payload(word) == {
+        "word": "Alice",
+        "start_ms": 10,
+        "end_ms": 500,
+        "confidence": 0.9,
+    }
+    assert transcript_segment_payload(segment) == {
+        "text": "Alice",
+        "start_ms": 10,
+        "end_ms": 500,
+        "words": [{"word": "Alice", "start_ms": 10, "end_ms": 500, "confidence": 0.9}],
+    }
+
+    assert transcript_segment_payload({
+        "text": "Paris",
+        "start_ms": 20,
+        "end_ms": 700,
+        "words": [{"word": "Paris", "start_ms": 20, "end_ms": 700}],
+    }) == {
+        "text": "Paris",
+        "start_ms": 20,
+        "end_ms": 700,
+        "words": [{"word": "Paris", "start_ms": 20, "end_ms": 700}],
+    }
 
 
 @pytest.mark.asyncio

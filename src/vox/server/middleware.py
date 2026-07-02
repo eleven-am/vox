@@ -17,22 +17,21 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from vox.logging_context import new_request_id, request_id_var
+from vox.logging_context import bind_request_id, current_request_id, reset_request_id
 
 logger = logging.getLogger("vox.server.request")
 
 HEADER = "X-Request-ID"
 
 _QUIET_PATHS: frozenset[str] = frozenset({
-    "/", "/health", "/healthz", "/readyz", "/v1/health", "/api/health",
+    "/", "/health", "/healthz", "/readyz", "/v1/health",
 })
 
 
 class RequestIdMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next) -> Response:
-        incoming = request.headers.get(HEADER)
-        rid = incoming.strip() if incoming and incoming.strip() else new_request_id()
-        token = request_id_var.set(rid)
+        token = bind_request_id(request.headers.get(HEADER))
+        rid = current_request_id()
         start = time.perf_counter()
         path = request.url.path
         method = request.method
@@ -55,4 +54,4 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
                     "%s %s -> %d (%d ms)",
                     method, path, status_code, duration_ms,
                 )
-            request_id_var.reset(token)
+            reset_request_id(token)

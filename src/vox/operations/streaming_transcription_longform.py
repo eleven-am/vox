@@ -4,7 +4,6 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
-from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -13,16 +12,20 @@ import numpy as np
 from vox.audio.pipeline import prepare_for_stt
 from vox.audio.stt_runner import run_stt_with_leading_context
 from vox.core.adapter import STTAdapter
-from vox.operations.defaults import resolve_default_model
+from vox.operations.defaults import resolve_requested_or_default_model
 from vox.operations.errors import (
     EmptyAudioError,
     InvalidConfigError,
-    NoDefaultModelError,
     SessionAlreadyConfiguredError,
     SessionNotConfiguredError,
     UnsupportedFormatError,
-    WrongModelTypeError,
 )
+from vox.operations.model_acquisition import (
+    EnteredAdapter,
+    enter_typed_adapter,
+    release_entered_adapter_suppressing,
+)
+from vox.operations.streaming_reporting import StreamingOperationErrorReporter
 from vox.streaming.codecs import pcm16_to_float32, resample_audio
 from vox.streaming.types import TARGET_SAMPLE_RATE, samples_to_ms
 
@@ -87,6 +90,38 @@ LongformEvent = (
 )
 
 
+def longform_transcription_event_payload(event: LongformEvent) -> dict[str, Any] | None:
+    if isinstance(event, LongformReadyEvent):
+        return {
+            "type": "ready",
+            "model": event.model,
+            "sample_rate": event.sample_rate,
+            "input_format": event.input_format,
+            "chunk_ms": event.chunk_ms,
+            "overlap_ms": event.overlap_ms,
+        }
+    if isinstance(event, LongformProgressEvent):
+        return {
+            "type": "progress",
+            "uploaded_ms": event.uploaded_ms,
+            "processed_ms": event.processed_ms,
+            "chunks_completed": event.chunks_completed,
+        }
+    if isinstance(event, LongformDoneEvent):
+        return {
+            "type": "done",
+            "model": event.model,
+            "text": event.text,
+            "language": event.language,
+            "duration_ms": event.duration_ms,
+            "processing_ms": event.processing_ms,
+            "segments": list(event.segments),
+        }
+    if isinstance(event, LongformErrorEvent):
+        return {"type": "error", "message": event.message}
+    return None
+
+
 @dataclass
 class _LongformState:
     chunk_samples: int
@@ -122,9 +157,7 @@ def normalize_longform_config(
     registry: Any,
     store: Any | None,
 ) -> LongformTranscriptionConfig:
-    resolved_model = model or resolve_default_model("stt", registry, store) or ""
-    if not resolved_model:
-        raise NoDefaultModelError("stt")
+    resolved_model = resolve_requested_or_default_model("stt", model, registry, store)
 
     fmt = (input_format or "pcm16").lower()
     if fmt not in SUPPORTED_LONGFORM_INPUT_FORMATS:
@@ -151,7 +184,7 @@ def normalize_longform_config(
     )
 
 
-class LongformTranscriptionSession:
+class LongformTranscriptionSession(StreamingOperationErrorReporter):
 
     def __init__(self, *, scheduler: Any, registry: Any, store: Any | None) -> None:
         self._scheduler = scheduler
@@ -161,7 +194,7 @@ class LongformTranscriptionSession:
         self._config: LongformTranscriptionConfig | None = None
         self._state: _LongformState | None = None
         self._adapter: STTAdapter | None = None
-        self._scheduler_cm = None
+        self._adapter_lease: EnteredAdapter[STTAdapter] | None = None
         self._events: asyncio.Queue[LongformEvent] = asyncio.Queue()
         self._closed = False
 
@@ -170,14 +203,14 @@ class LongformTranscriptionSession:
             raise SessionAlreadyConfiguredError()
         self._config = config
 
-        cm = self._scheduler.acquire(config.model)
-        adapter = await cm.__aenter__()
-        self._scheduler_cm = cm
-        if not isinstance(adapter, STTAdapter):
-            await cm.__aexit__(None, None, None)
-            self._scheduler_cm = None
-            raise WrongModelTypeError(config.model, "STT")
-        self._adapter = adapter
+        entered = await enter_typed_adapter(
+            self._scheduler,
+            model=config.model,
+            adapter_type=STTAdapter,
+            expected_type="STT",
+        )
+        self._adapter_lease = entered
+        self._adapter = entered.adapter
 
         self._state = _LongformState(
             chunk_samples=int(config.chunk_ms * TARGET_SAMPLE_RATE / 1000),
@@ -192,13 +225,16 @@ class LongformTranscriptionSession:
             overlap_ms=config.overlap_ms,
         ))
 
+    async def configure_or_report(self, config: LongformTranscriptionConfig) -> bool:
+        return await self.run_or_report_operation_error(lambda: self.configure(config))
+
     async def submit_chunk(self, data: bytes) -> None:
         if self._config is None or self._state is None or self._adapter is None:
             raise SessionNotConfiguredError()
         try:
             audio = self._decode_chunk(data)
         except Exception as exc:
-            await self._events.put(LongformErrorEvent(message=str(exc)))
+            await self.report_error(str(exc))
             return
         if audio.size == 0:
             return
@@ -221,13 +257,16 @@ class LongformTranscriptionSession:
                 chunks_completed=state.chunks_completed,
             ))
 
+    async def submit_chunk_or_report(self, data: bytes) -> bool:
+        return await self.run_or_report_operation_error(lambda: self.submit_chunk(data))
+
     async def end_of_stream(self) -> None:
         if self._config is None or self._state is None or self._adapter is None:
             raise SessionNotConfiguredError()
         state = self._state
         config = self._config
         if state.uploaded_samples == 0:
-            await self._events.put(LongformErrorEvent(message=str(EmptyAudioError())))
+            await self.report_error(str(EmptyAudioError()))
             return
 
         if state.pending_audio.size > 0 and not (
@@ -245,14 +284,19 @@ class LongformTranscriptionSession:
             segments=tuple(state.segments),
         ))
 
+    async def end_of_stream_or_report(self) -> bool:
+        return await self.run_or_report_operation_error(self.end_of_stream)
+
+    async def report_error(self, message: str) -> None:
+        await self._events.put(LongformErrorEvent(message=message))
+
     async def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        if self._scheduler_cm is not None:
-            with suppress(Exception):
-                await self._scheduler_cm.__aexit__(None, None, None)
-            self._scheduler_cm = None
+        if self._adapter_lease is not None:
+            await release_entered_adapter_suppressing(self._adapter_lease)
+            self._adapter_lease = None
             self._adapter = None
 
     async def events(self) -> AsyncIterator[LongformEvent]:

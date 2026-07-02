@@ -3,80 +3,25 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import suppress
+from dataclasses import dataclass
 from typing import Any
 
-from vox.operations.conversation import parse_client_event_command
+from vox.operations.conversation import (
+    browser_event_wire,
+    client_disconnected_wire,
+    client_event_payload_json,
+    parse_client_event_command,
+)
 from vox.operations.errors import OperationError
 from vox.server.rtc_registry import RtcSessionRecord
-
-WIRE_CLIENT_EVENT = "client.event"
-WIRE_BROWSER_EVENT = "browser.event"
-WIRE_RTC_CLIENT_DISCONNECTED = "rtc.client.disconnected"
 
 logger = logging.getLogger(__name__)
 
 
-def parse_client_event_message(message: Any) -> tuple[str, Any]:
-    try:
-        return parse_client_event_command(message)
-    except OperationError as exc:
-        raise ValueError(str(exc)) from exc
-
-
-def client_event_payload(event_name: str, payload: Any) -> dict:
-    return {
-        "event": event_name,
-        "payload": payload,
-    }
-
-
-def client_event_wire(session_id: str, event_name: str, payload: Any) -> dict:
-    return {
-        "type": WIRE_CLIENT_EVENT,
-        "session_id": session_id,
-        "event": event_name,
-        "payload": payload,
-    }
-
-
-def browser_event_wire(session_id: str, event_name: str, payload: Any) -> dict:
-    return {
-        "type": WIRE_BROWSER_EVENT,
-        "session_id": session_id,
-        "event": event_name,
-        "payload": payload,
-    }
-
-
-def control_event_as_client_event(event: dict) -> tuple[str, Any]:
-    event_type = event.get("type")
-    if event_type == WIRE_CLIENT_EVENT:
-        return parse_client_event_message(event)
-    if not isinstance(event_type, str) or not event_type.strip():
-        raise ValueError("control event requires a non-empty string 'type'")
-    return event_type.strip(), {key: value for key, value in event.items() if key != "type"}
-
-
-def client_disconnected_wire(
-    session_id: str,
-    *,
-    reason: str,
-    connection_state: str | None = None,
-    ice_connection_state: str | None = None,
-    data_channel_state: str | None = None,
-) -> dict:
-    payload = {
-        "type": WIRE_RTC_CLIENT_DISCONNECTED,
-        "session_id": session_id,
-        "reason": reason,
-    }
-    if connection_state is not None:
-        payload["connection_state"] = connection_state
-    if ice_connection_state is not None:
-        payload["ice_connection_state"] = ice_connection_state
-    if data_channel_state is not None:
-        payload["data_channel_state"] = data_channel_state
-    return payload
+@dataclass(frozen=True)
+class BrowserDataChannelEvent:
+    name: str
+    payload: Any
 
 
 async def emit_client_disconnected_to_control(
@@ -109,10 +54,16 @@ def _data_channel_is_open(record: RtcSessionRecord) -> bool:
     return channel is not None and getattr(channel, "readyState", None) == "open"
 
 
-def send_client_event_to_browser(record: RtcSessionRecord, event_name: str, payload: Any) -> None:
-    raw = json.dumps(client_event_payload(event_name, payload))
+def _send_raw_client_event_to_browser(record: RtcSessionRecord, raw: str) -> bool:
     if _data_channel_is_open(record):
         record.data_channel.send(raw)
+        return True
+    return False
+
+
+def send_client_event_to_browser(record: RtcSessionRecord, event_name: str, payload: Any) -> None:
+    raw = client_event_payload_json(event_name, payload)
+    if _send_raw_client_event_to_browser(record, raw):
         return
     record.pending_client_events.append(raw)
 
@@ -124,7 +75,7 @@ def flush_pending_client_events(record: RtcSessionRecord) -> None:
     record.pending_client_events.clear()
     for raw in pending:
         with suppress(Exception):
-            record.data_channel.send(raw)
+            _send_raw_client_event_to_browser(record, raw)
 
 
 async def emit_browser_event_to_control(
@@ -139,6 +90,18 @@ async def emit_browser_event_to_control(
 
 
 async def handle_browser_data_channel_message(record: RtcSessionRecord, session_id: str, message: Any) -> None:
+    event = parse_browser_data_channel_message(message, session_id=session_id)
+    if event is None:
+        return
+
+    await emit_browser_event_to_control(record, session_id, event.name, event.payload)
+
+
+def parse_browser_data_channel_message(
+    message: Any,
+    *,
+    session_id: str,
+) -> BrowserDataChannelEvent | None:
     if isinstance(message, bytes):
         try:
             text = message.decode("utf-8")
@@ -158,6 +121,6 @@ async def handle_browser_data_channel_message(record: RtcSessionRecord, session_
         event_name, payload = parse_client_event_command(message_obj)
     except OperationError:
         logger.warning("dropping malformed RTC browser.event payload for %s", session_id)
-        return
+        return None
 
-    await emit_browser_event_to_control(record, session_id, event_name, payload)
+    return BrowserDataChannelEvent(name=event_name, payload=payload)

@@ -15,7 +15,13 @@ from vox.logging_config import (
     configure_logging,
     reset_for_tests,
 )
-from vox.logging_context import RequestIdFilter, request_id_var
+from vox.logging_context import (
+    RequestIdFilter,
+    bind_request_id,
+    request_id_from_incoming,
+    request_id_var,
+    reset_request_id,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -104,6 +110,27 @@ class TestConfigureLogging:
 
 
 class TestRequestIdFilter:
+    def test_request_id_from_incoming_preserves_non_empty_values(self):
+        assert request_id_from_incoming("  caller-rid  ") == "caller-rid"
+        assert request_id_from_incoming(b"  byte-rid  ") == "byte-rid"
+
+    def test_request_id_from_incoming_generates_missing_values(self):
+        assert request_id_from_incoming(None)
+        assert request_id_from_incoming("   ")
+        assert request_id_from_incoming(None) != request_id_from_incoming(None)
+
+    def test_bind_request_id_sets_and_resets_contextvar(self):
+        outer = request_id_var.set("outer")
+        try:
+            token = bind_request_id("  inbound  ")
+            assert request_id_var.get() == "inbound"
+
+            reset_request_id(token)
+
+            assert request_id_var.get() == "outer"
+        finally:
+            request_id_var.reset(outer)
+
     def test_injects_default_dash_when_unset(self):
         record = logging.LogRecord(
             "x", logging.INFO, "f", 1, "msg", None, None,

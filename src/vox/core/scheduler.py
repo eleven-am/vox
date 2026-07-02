@@ -4,7 +4,7 @@ import asyncio
 import gc
 import logging
 import time
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -18,6 +18,7 @@ from vox.core.device_placement import (
 )
 from vox.core.errors import ModelLoadError
 from vox.core.runtime import detect_runtime_capabilities
+from vox.core.tasks import reap_task
 from vox.core.types import DeviceMemoryInfo, LoadedModelInfo, ModelInfo, VramPolicy, VramSnapshot, parse_model_name
 
 logger = logging.getLogger(__name__)
@@ -210,9 +211,7 @@ class Scheduler:
     async def stop(self) -> None:
         """Stop cleanup and unload all models."""
         if self._cleanup_task:
-            self._cleanup_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._cleanup_task
+            await reap_task(self._cleanup_task)
             self._cleanup_task = None
         await self.unload_all()
 
@@ -248,12 +247,15 @@ class Scheduler:
                 loaded.device,
                 time.time() - loaded.last_used,
             )
-            try:
-                loaded.adapter.unload()
-            except Exception as error:
-                logger.error("Error unloading %s during memory eviction: %s", full_name, error)
+            self._unload_adapter(full_name, loaded, reason="memory eviction")
             del self._models[full_name]
             _clear_gpu_cache()
+
+    def _unload_adapter(self, full_name: str, loaded: _LoadedModel, *, reason: str) -> None:
+        try:
+            loaded.adapter.unload()
+        except Exception as error:
+            logger.error("Error unloading %s during %s: %s", full_name, reason, error)
 
     def _trim_loaded_model(self, full_name: str, loaded: _LoadedModel) -> bool:
         logger.info("Trimming non-essential memory for %s", full_name)
@@ -416,10 +418,7 @@ class Scheduler:
         candidates.sort(key=lambda x: x[1].last_used)
         lru_name, lru_model = candidates[0]
         logger.info(f"Evicting {lru_name} (idle since {time.time() - lru_model.last_used:.0f}s ago)")
-        try:
-            lru_model.adapter.unload()
-        except Exception as e:
-            logger.error(f"Error unloading {lru_name} during eviction: {e}")
+        self._unload_adapter(lru_name, lru_model, reason="eviction")
         del self._models[lru_name]
         _clear_gpu_cache()
 
@@ -471,10 +470,7 @@ class Scheduler:
                 if loaded.ref_count > 0:
                     logger.warning(f"Cannot unload {full_name}: {loaded.ref_count} active references")
                     return False
-                try:
-                    loaded.adapter.unload()
-                except Exception as e:
-                    logger.error(f"Error unloading {full_name}: {e}")
+                self._unload_adapter(full_name, loaded, reason="explicit unload")
                 del self._models[full_name]
                 _clear_gpu_cache()
         return True
@@ -505,10 +501,7 @@ class Scheduler:
         """Unload all models."""
         async with self._lock:
             for name, loaded in list(self._models.items()):
-                try:
-                    loaded.adapter.unload()
-                except Exception as e:
-                    logger.error(f"Error unloading {name}: {e}")
+                self._unload_adapter(name, loaded, reason="unload_all")
             self._models.clear()
             _clear_gpu_cache()
 
@@ -554,10 +547,11 @@ class Scheduler:
                     ]
                     for name in to_evict:
                         logger.info(f"TTL expired for {name}, unloading")
-                        try:
-                            self._models[name].adapter.unload()
-                        except Exception as e:
-                            logger.error(f"Error unloading {name} during TTL cleanup: {e}")
+                        self._unload_adapter(
+                            name,
+                            self._models[name],
+                            reason="TTL cleanup",
+                        )
                         del self._models[name]
                     if to_evict:
                         _clear_gpu_cache()

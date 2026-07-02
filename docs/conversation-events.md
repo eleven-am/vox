@@ -1,11 +1,11 @@
 # Vox Conversation Event Guide
 
 This guide describes how a client or agent process should use Vox conversation
-streaming over WebSocket, gRPC, or Vox-hosted WebRTC.
+streaming over PondSocket, gRPC, or Vox-hosted WebRTC.
 
 The conversation API is agent-facing. The caller owns LLM text generation. Vox
 owns VAD, STT, EOU scoring, turn state, TTS, and interruption signaling. With
-the WebSocket and gRPC APIs the caller also owns microphone capture and playback.
+the PondSocket and gRPC APIs the caller also owns microphone capture and playback.
 With the RTC API, Vox owns the browser media connection and the caller owns the
 control stream.
 
@@ -169,15 +169,15 @@ At end-of-candidates, send:
 }
 ```
 
-Developer backend can attach to the control-only stream over WebSocket:
+Developer backend can attach to the control-only stream over PondSocket:
 
 ```text
-ws://localhost:11435/v1/rtc/sessions/{session_id}/control
+/v1/socket channel /rtc/{session_id}
 ```
 
 This stream accepts `session.update`, `response.start`, `response.delta`,
 `response.commit`, `response.cancel`, and `client.event`. It emits the same
-conversation events as `/v1/conversation`, plus `client.event` for browser data
+conversation events as the conversation control channel, plus `client.event` for browser data
 channel payloads. It does not emit `response.audio.delta`; assistant audio
 belongs on the WebRTC media path for this session.
 
@@ -216,7 +216,7 @@ Expected gRPC control startup:
 3. Wait for `rtc_session_attached`.
 4. Send `session_update`.
 5. Drive `response_start`, `response_delta`, `response_commit`, and
-   `response_cancel` the same way as the WebSocket control stream.
+   `response_cancel` the same way as the PondSocket control stream.
 6. Use `RtcClientEvent.event` plus `RtcClientEvent.payload_json` for
    application events that should be relayed to the browser data channel.
 
@@ -233,11 +233,11 @@ The expected RTC startup order is:
 4. Browser applies Vox's SDP answer.
 5. Browser listens to `events_url` for Vox-side trickle ICE and posts browser ICE
    candidates to `/candidates`.
-6. Developer backend opens `/control` over WebSocket or attaches to
+6. Developer backend joins the PondSocket `/rtc/{session_id}` channel or attaches to
    `RtcService.Control` over gRPC, sends `session.update`, waits for
    `session.created`, and then drives assistant text with `response.delta` and
    `response.commit`.
-7. Vox sends user transcripts and interruption events over `/control`; Vox sends
+7. Vox sends user transcripts and interruption events over the control stream; Vox sends
    assistant audio over WebRTC.
 
 Optional data channel:
@@ -245,7 +245,7 @@ Optional data channel:
 - The browser may create a reliable ordered WebRTC data channel such as
   `vox-events`.
 - Backend to browser:
-  - WebSocket control: send
+  - PondSocket control: send
     `{ "type": "client.event", "event": "<name>", "payload": <any JSON> }`
   - gRPC control: send
     `RtcClientEvent { event: "<name>", payload_json: "<valid JSON>" }`
@@ -253,7 +253,7 @@ Optional data channel:
   - Browser sends JSON text shaped as
     `{ "event": "<name>", "payload": <any JSON> }` on the WebRTC data channel.
   - Vox relays that message to the control stream as `client.event`
-    (WebSocket) or `RtcClientEvent` (gRPC).
+    (PondSocket) or `RtcClientEvent` (gRPC).
 - Vox does not define the meaning of `event` names or payload contents. It only
   requires the transport envelope.
 
@@ -293,15 +293,16 @@ A minimal native browser client is available at
 `examples/rtc-browser-client.html`. It uses browser WebRTC APIs directly; no npm
 RTC client package is required.
 
-### WebSocket
+### PondSocket
 
-Connect to:
+Connect to the Vox PondSocket gateway and join:
 
 ```text
-ws://localhost:11435/v1/conversation
+/v1/socket channel /conversation/{session_id}
 ```
 
-Client messages are JSON text frames. Audio payloads are base64-encoded PCM16.
+Client events use the same conversation event names. Audio payloads are
+base64-encoded PCM16.
 
 ### gRPC
 
@@ -311,16 +312,17 @@ Use bidi streaming RPC:
 ConversationService.Converse(stream ConverseClientMessage) returns (stream ConverseServerMessage)
 ```
 
-The gRPC fields mirror the WebSocket event names. For example, WebSocket `response.audio.delta` maps to gRPC `audio_delta`.
+The gRPC fields mirror the conversation event names. For example,
+`response.audio.delta` maps to gRPC `audio_delta`.
 
 ## Startup
 
-1. Open the WebSocket or gRPC stream.
+1. Join the PondSocket channel or open the gRPC stream.
 2. Send `session.update` / `session_update`.
 3. Wait for `session.created` / `session_created`.
 4. Start sending user audio with `input_audio_buffer.append` / `audio_append`.
 
-Example WebSocket session update:
+Example session update:
 
 ```json
 {
@@ -376,6 +378,23 @@ tested against your own audio before becoming a default.
 `turn_detector` defaults to `livekit`, Vox's lightweight semantic EOU detector.
 Experimental values such as `ten-turn` are intended for benchmarking heavier
 semantic models, not for low-resource default deployments.
+
+### Session Update Compatibility Fields
+
+The canonical JSON fields for `session.update` are `stt_model`, `tts_model`,
+`turn_profile`, `vad_backend`, and `turn_detector`.
+
+For OpenAI Realtime-style clients and older Vox clients, the JSON parser also
+accepts these explicit compatibility fields:
+
+- `input_audio_transcription.model` for `stt_model`
+- `output_audio_generation.model` for `tts_model`
+- `profile` for `turn_profile`
+- `vad` for `vad_backend`
+- `eou_model` for `turn_detector`
+
+When both canonical and compatibility fields are present, the canonical field
+wins. gRPC uses the canonical protobuf fields only.
 
 ## Turn Profiles
 
@@ -446,7 +465,7 @@ When the client decides the assistant should speak:
 4. Play `response.audio.delta` chunks as they arrive.
 5. Treat `response.done` as the end of the TTS response.
 
-Minimal WebSocket example:
+Minimal PondSocket event sequence:
 
 ```json
 {"type":"response.start"}
@@ -660,7 +679,7 @@ Assistant audio chunk.
 
 Payload:
 
-- WebSocket: base64 `audio`, `sample_rate`, `audio_format`
+- PondSocket: base64 `audio`, `sample_rate`, `audio_format`
 - gRPC: raw PCM bytes and `sample_rate`
 - Newer Vox versions also include `response_id` and monotonic per-response `sequence`.
 
@@ -743,7 +762,7 @@ browser data channel.
 
 Payload includes:
 
-- WebSocket control:
+- PondSocket control:
   - `event`: string event name
   - `payload`: any valid JSON value
 - gRPC control:

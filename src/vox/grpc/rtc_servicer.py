@@ -1,35 +1,39 @@
 """gRPC RTC control service for Vox-hosted WebRTC sessions.
 
-This is the backend-facing counterpart to `/v1/rtc/sessions/{session_id}/control`.
-Media stays on WebRTC; the gRPC stream carries only conversation control and
-event signaling for an already-created RTC session.
+This is one backend-facing control surface for an already-created RTC session.
+Media stays on WebRTC; this stream carries only conversation control and event
+signaling.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import AsyncIterator
-from contextlib import suppress
 from functools import partial
 
 from vox.core.scheduler import Scheduler
-from vox.core.tasks import drain_task, reap_task
 from vox.grpc import vox_pb2, vox_pb2_grpc
 from vox.grpc.conversation_commands import execute_rtc_control_message
-from vox.grpc.conversation_events import conversation_error_pb, conversation_event_to_pb
-from vox.operations.conversation import (
-    ConvAudioDeltaEvent,
-    ConversationOrchestrator,
+from vox.grpc.conversation_events import (
+    conversation_error_pb,
+    conversation_event_to_pb,
+    rtc_client_event_from_control_event,
+    rtc_session_attached_pb,
 )
+from vox.grpc.streaming_queue import (
+    close_grpc_output_queue,
+    iter_grpc_stream_lifecycle,
+    start_grpc_event_pump,
+)
+from vox.operations.conversation import ConversationOrchestrator, ConvDoneEvent, ConvEvent
 from vox.operations.errors import OperationError
-from vox.server.rtc_client_events import control_event_as_client_event, send_client_event_to_browser
+from vox.server.rtc_cleanup import close_rtc_runtime_resources
+from vox.server.rtc_client_events import send_client_event_to_browser
 from vox.server.rtc_conversation import (
     create_rtc_orchestrator_with,
     prepare_rtc_control_event,
 )
-from vox.server.rtc_media import cancel_and_drain_media_tasks
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 
 logger = logging.getLogger(__name__)
@@ -50,28 +54,13 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
         orchestrator: ConversationOrchestrator | None = None
         session_id = ""
 
-        async def pump_events() -> None:
-            assert orchestrator is not None
-            try:
-                async for event in orchestrator.events():
-                    prepared = prepare_rtc_control_event(
-                        record=record,
-                        session_id=session_id,
-                        event=event,
-                    )
-                    if (
-                        record is not None
-                        and isinstance(event, ConvAudioDeltaEvent)
-                        and record.audio_output_track is not None
-                    ):
-                        continue
-                    pb = conversation_event_to_pb(event)
-                    if pb is not None:
-                        await out_queue.put(pb)
-                    if prepared.done:
-                        break
-            finally:
-                await out_queue.put(None)
+        def rtc_event_message(event: ConvEvent) -> vox_pb2.ConverseServerMessage | None:
+            prepared = prepare_rtc_control_event(
+                record=record,
+                session_id=session_id,
+                event=event,
+            )
+            return conversation_event_to_pb(event) if prepared.wire is not None else None
 
         async def pump_client_events() -> None:
             assert record is not None
@@ -81,15 +70,7 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                 event = await record.control_events.get()
                 if event is None:
                     return
-                event_name, payload = control_event_as_client_event(event)
-                await out_queue.put(
-                    vox_pb2.ConverseServerMessage(
-                        client_event=vox_pb2.RtcClientEvent(
-                            event=event_name,
-                            payload_json=json.dumps(payload),
-                        ),
-                    )
-                )
+                await out_queue.put(rtc_client_event_from_control_event(event))
 
         async def drain_client() -> None:
             nonlocal record, orchestrator, session_id
@@ -119,15 +100,13 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                             record=record,
                             orchestrator_cls=ConversationOrchestrator,
                         )
-                        await out_queue.put(
-                            vox_pb2.ConverseServerMessage(
-                                rtc_session_attached=vox_pb2.RtcSessionAttached(
-                                    session_id=session_id,
-                                    provider="webrtc",
-                                ),
-                            )
+                        await out_queue.put(rtc_session_attached_pb(session_id))
+                        emit_task = start_grpc_event_pump(
+                            orchestrator.events(),
+                            out_queue,
+                            message=rtc_event_message,
+                            terminal_types=(ConvDoneEvent,),
                         )
-                        emit_task = asyncio.create_task(pump_events())
                         client_event_task = asyncio.create_task(pump_client_events())
                         continue
 
@@ -142,37 +121,23 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                     except OperationError as exc:
                         await out_queue.put(conversation_error_pb(str(exc)))
             finally:
-                if orchestrator is not None:
-                    await orchestrator.end_of_stream(flush_response=False)
-                if emit_task is not None:
-                    await drain_task(emit_task)
-                if record is not None and record.control_events is not None:
-                    await record.control_events.put(None)
-                if client_event_task is not None:
-                    await drain_task(client_event_task)
-                else:
-                    await out_queue.put(None)
+                if (
+                    record is not None
+                    and orchestrator is not None
+                    and emit_task is not None
+                    and client_event_task is not None
+                ):
+                    await close_rtc_runtime_resources(
+                        session_id=session_id,
+                        registry=self._rtc_registry,
+                        record=record,
+                        orchestrator=orchestrator,
+                        emit_task=emit_task,
+                        client_event_task=client_event_task,
+                    )
+                elif client_event_task is None:
+                    await close_grpc_output_queue(out_queue)
 
         client_task = asyncio.create_task(drain_client())
-        try:
-            while True:
-                item = await out_queue.get()
-                if item is None:
-                    break
-                yield item
-        finally:
-            await reap_task(client_task)
-            if orchestrator is not None:
-                await orchestrator.close()
-            if record is not None:
-                record.orchestrator = None
-                if record.audio_output is not None:
-                    await record.audio_output.put(None)
-                if record.media_events is not None:
-                    await record.media_events.put(None)
-                await cancel_and_drain_media_tasks(record)
-                if record.rtc_peer is not None:
-                    with suppress(Exception):
-                        await record.rtc_peer.close()
-                self._rtc_registry.detach_control(session_id)
-                self._rtc_registry.close(session_id)
+        async for item in iter_grpc_stream_lifecycle(out_queue, client_task):
+            yield item

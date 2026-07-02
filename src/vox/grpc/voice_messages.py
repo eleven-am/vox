@@ -4,6 +4,7 @@ from typing import Any
 
 from vox.grpc import vox_pb2
 from vox.operations.voices import (
+    DeleteVoiceResult,
     ListedVoice,
     created_voice_payload,
     deleted_voice_payload,
@@ -26,8 +27,8 @@ def create_voice_response(voice: Any) -> vox_pb2.CreateVoiceResponse:
     )
 
 
-def delete_voice_response(voice_id: str) -> vox_pb2.DeleteVoiceResponse:
-    payload = deleted_voice_payload(voice_id)
+def delete_voice_response(result: DeleteVoiceResult) -> vox_pb2.DeleteVoiceResponse:
+    payload = deleted_voice_payload(result)
     return vox_pb2.DeleteVoiceResponse(**payload)
 
 

@@ -11,6 +11,11 @@ import numpy as np
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
 from vox.operations.synthesis import _split_for_adapter
+from vox.operations.tts_chunking import (
+    effective_tts_text_cap,
+    split_text_for_tts_adapter,
+    tts_adapter_text_cap,
+)
 
 
 class _CappedTTS(TTSAdapter):
@@ -48,6 +53,19 @@ class _CappedTTS(TTSAdapter):
 
 
 class TestSplitForAdapter:
+    def test_adapter_text_cap_normalizes_invalid_caps(self):
+        assert tts_adapter_text_cap(_CappedTTS(max_input_chars=200)) == 200
+        assert tts_adapter_text_cap(_CappedTTS(max_input_chars=0)) == 0
+        assert tts_adapter_text_cap(_CappedTTS(max_input_chars=-5)) == 0
+
+    def test_effective_text_cap_prefers_explicit_override(self):
+        adapter = _CappedTTS(max_input_chars=200)
+
+        assert effective_tts_text_cap(adapter, None) == 200
+        assert effective_tts_text_cap(adapter, 50) == 50
+        assert effective_tts_text_cap(adapter, 0) == 0
+        assert effective_tts_text_cap(adapter, -5) == 0
+
     def test_short_text_stays_single_chunk(self):
         adapter = _CappedTTS(max_input_chars=200)
         chunks = _split_for_adapter("hello world", adapter)
@@ -103,3 +121,13 @@ class TestSplitForAdapter:
         text = "abc"
         chunks = _split_for_adapter(text, adapter)
         assert chunks == [text]
+
+    def test_explicit_override_controls_shared_adapter_splitter(self):
+        adapter = _CappedTTS(max_input_chars=200)
+        text = "First sentence here. Second sentence here. Third sentence follows."
+
+        assert split_text_for_tts_adapter(text, adapter, override_chars=0) == [text]
+        chunks = split_text_for_tts_adapter(text, adapter, override_chars=25)
+
+        assert len(chunks) > 1
+        assert all(len(chunk) <= 25 for chunk in chunks)

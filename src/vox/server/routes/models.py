@@ -18,6 +18,7 @@ from vox.operations.models import (
     show_model,
     show_model_payload,
 )
+from vox.server.app_services import app_services, app_store
 from vox.server.operation_errors import map_operation_errors_to_http
 
 logger = logging.getLogger(__name__)
@@ -30,15 +31,13 @@ class PullRequest(BaseModel):
 
 @router.post("/v1/models/pull")
 async def pull_model_route(req: PullRequest, request: Request):
-    store = request.app.state.store
-    scheduler = request.app.state.scheduler
-    registry = request.app.state.registry
+    services = app_services(request)
 
     with map_operation_errors_to_http():
         events = pull_model(
-            store=store,
-            scheduler=scheduler,
-            registry=registry,
+            store=services.store,
+            scheduler=services.scheduler,
+            registry=services.registry,
             request=model_reference_request_from_fields(name=req.name),
         )
 
@@ -51,19 +50,18 @@ async def pull_model_route(req: PullRequest, request: Request):
 
 @router.get("/v1/models")
 async def list_models_route(request: Request):
-    store = request.app.state.store
+    store = app_store(request)
     models = list_models(store=store)
     return list_models_payload(models)
 
 
 @router.get("/v1/models/{name:path}")
 async def show_model_route(name: str, request: Request):
-    store = request.app.state.store
-    registry = request.app.state.registry
+    services = app_services(request)
     with map_operation_errors_to_http():
         result = show_model(
-            store=store,
-            registry=registry,
+            store=services.store,
+            registry=services.registry,
             request=model_reference_request_from_fields(name=name),
         )
     return show_model_payload(result)
@@ -71,14 +69,12 @@ async def show_model_route(name: str, request: Request):
 
 @router.delete("/v1/models/{name:path}")
 async def delete_model_route(name: str, request: Request):
-    store = request.app.state.store
-    scheduler = request.app.state.scheduler
-    registry = request.app.state.registry
+    services = app_services(request)
     with map_operation_errors_to_http():
         await delete_model(
-            store=store,
-            scheduler=scheduler,
-            registry=registry,
+            store=services.store,
+            scheduler=services.scheduler,
+            registry=services.registry,
             request=model_reference_request_from_fields(name=name),
         )
     return delete_model_payload()

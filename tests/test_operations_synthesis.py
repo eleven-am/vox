@@ -320,6 +320,29 @@ async def test_synthesize_incremental_does_not_concatenate_chunks(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_synthesize_incremental_uses_adapter_text_chunking(tmp_path: Path):
+    adapter = FakeTTS(max_input_chars=8)
+    sched = DummyScheduler(adapter)
+    store = BlobStore(root=tmp_path)
+    registry = MagicMock()
+
+    iterator = await synthesize_incremental(
+        scheduler=sched,
+        registry=registry,
+        store=store,
+        request=SynthesisRequest(
+            input="One. Two. Three.",
+            model="fake-tts:latest",
+            response_format="pcm",
+        ),
+    )
+    chunks = [chunk async for chunk in iterator]
+
+    assert chunks
+    assert adapter.calls == ["One.", "Two.", "Three."]
+
+
+@pytest.mark.asyncio
 async def test_synthesize_raw_yields_pcm_chunks_with_final_marker(tmp_path: Path):
     adapter = FakeTTS(max_input_chars=8)
     sched = DummyScheduler(adapter)

@@ -1,156 +1,99 @@
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-from contextlib import suppress
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket
 
-from vox.core.tasks import drain_task
-from vox.logging_context import new_request_id, request_id_var
-from vox.operations.errors import (
-    OperationError,
-    SessionNotConfiguredError,
-    UnknownMessageTypeError,
-)
+from vox.operations.errors import UnknownMessageTypeError
 from vox.operations.streaming_transcription import (
     DoneEvent,
-    ErrorEvent,
-    SessionReadyEvent,
-    SpeechStartedEvent,
-    SpeechStoppedEvent,
-    StreamingTranscriptionConfig,
     StreamingTranscriptionSession,
-    TranscriptEvent,
+    streaming_transcription_config_from_fields,
+    streaming_transcription_event_payload,
 )
-from vox.streaming.types import StreamTranscript
+from vox.server.app_services import app_services
+from vox.server.websocket import (
+    WsBytesFrame,
+    WsDisconnectFrame,
+    WsTextFrame,
+    emit_ws_session_events,
+    receive_ws_frame,
+    websocket_connection_scope,
+    websocket_route_error_scope,
+    websocket_session_event_scope,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
 
-def _config_from_message(data: dict) -> StreamingTranscriptionConfig:
-    return StreamingTranscriptionConfig(
-        model=data.get("model", "") or "",
-        language=data.get("language", "en") or "en",
-        sample_rate=int(data.get("sample_rate") or 0) or 16_000,
-        partials=bool(data.get("partials", False)),
-        partial_window_ms=int(data.get("partial_window_ms") or 1500),
-        partial_stride_ms=int(data.get("partial_stride_ms") or 700),
-        include_word_timestamps=bool(data.get("include_word_timestamps", False)),
-        temperature=float(data.get("temperature", 0.0) or 0.0),
-    )
-
-
-def _transcript_to_payload(transcript: StreamTranscript) -> dict:
-    payload = {
-        "type": "transcript",
-        "text": transcript.text,
-        "is_partial": transcript.is_partial,
-        "start_ms": transcript.start_ms,
-        "end_ms": transcript.end_ms,
-        "audio_duration_ms": transcript.audio_duration_ms,
-        "processing_duration_ms": transcript.processing_duration_ms,
-        "model": transcript.model,
-    }
-    if transcript.eou_probability is not None:
-        payload["eou_probability"] = transcript.eou_probability
-    if transcript.entities:
-        payload["entities"] = transcript.entities
-    if transcript.topics:
-        payload["topics"] = transcript.topics
-    if transcript.words:
-        payload["words"] = transcript.words
-    if transcript.segments:
-        payload["segments"] = transcript.segments
-    return payload
-
-
-def _event_to_wire(event) -> dict | None:
-    if isinstance(event, SessionReadyEvent):
-        return {"type": "ready"}
-    if isinstance(event, SpeechStartedEvent):
-        return {"type": "speech_started", "timestamp_ms": event.timestamp_ms}
-    if isinstance(event, SpeechStoppedEvent):
-        return {"type": "speech_stopped", "timestamp_ms": event.timestamp_ms}
-    if isinstance(event, TranscriptEvent):
-        return _transcript_to_payload(event.transcript)
-    if isinstance(event, ErrorEvent):
-        return {"type": "error", "message": event.message}
-    return None
-
-
 @router.websocket("/v1/audio/stream")
 async def audio_stream(websocket: WebSocket):
-    await websocket.accept()
-    incoming = websocket.headers.get("x-request-id")
-    rid = incoming.strip() if incoming and incoming.strip() else new_request_id()
-    token = request_id_var.set(rid)
-    logger.info("realtime STT ws connected")
+    async with websocket_connection_scope(websocket):
+        logger.info("realtime STT ws connected")
 
-    scheduler = websocket.app.state.scheduler
-    registry = websocket.app.state.registry
-    store = websocket.app.state.store
+        services = app_services(websocket)
 
-    session = StreamingTranscriptionSession(
-        scheduler=scheduler, registry=registry, store=store,
-    )
-    disconnected = False
+        session = StreamingTranscriptionSession(
+            scheduler=services.scheduler,
+            registry=services.registry,
+            store=services.store,
+        )
+        async def emit_events() -> None:
+            await emit_ws_session_events(
+                websocket,
+                session.events(),
+                json_payload=streaming_transcription_event_payload,
+                terminal_types=(DoneEvent,),
+                suppress_send_errors=True,
+            )
 
-    async def emit_events() -> None:
-        async for event in session.events():
-            wire = _event_to_wire(event)
-            if wire is not None:
-                with suppress(Exception):
-                    await websocket.send_json(wire)
-            if isinstance(event, DoneEvent):
-                return
+        async with websocket_route_error_scope(
+            websocket,
+            logger=logger,
+            disconnect_log_message="WS stream client disconnected",
+            error_log_message="WS stream error",
+            closed_log_message="realtime STT ws closed",
+        ):
+            async with websocket_session_event_scope(session, emit_events):
+                while True:
+                    frame = await receive_ws_frame(websocket)
+                    if frame is None:
+                        continue
 
-    emit_task = asyncio.create_task(emit_events())
+                    if isinstance(frame, WsDisconnectFrame):
+                        return
 
-    try:
-        while True:
-            raw = await websocket.receive()
+                    if isinstance(frame, WsTextFrame):
+                        data = frame.message
+                        msg_type = data.get("type", "")
 
-            if "text" in raw:
-                data = json.loads(raw["text"])
-                msg_type = data.get("type", "")
+                        if msg_type == "config":
+                            await session.configure_or_report(
+                                streaming_transcription_config_from_fields(
+                                    model=data.get("model", "") or "",
+                                    language=data.get("language", "en") or "en",
+                                    sample_rate=data.get("sample_rate") or 16_000,
+                                    partials=data.get("partials", False),
+                                    partial_window_ms=data.get("partial_window_ms") or 1500,
+                                    partial_stride_ms=data.get("partial_stride_ms") or 700,
+                                    include_word_timestamps=data.get(
+                                        "include_word_timestamps",
+                                        False,
+                                    ),
+                                    temperature=data.get("temperature", 0.0) or 0.0,
+                                )
+                            )
+                            continue
 
-                if msg_type == "config":
-                    try:
-                        await session.configure(_config_from_message(data))
-                    except OperationError as exc:
-                        await session.report_operation_error(exc)
-                    continue
+                        if msg_type == "end":
+                            break
 
-                if msg_type == "end":
-                    break
+                        await session.report_error(str(UnknownMessageTypeError(msg_type)))
+                        continue
 
-                await session.report_error(str(UnknownMessageTypeError(msg_type)))
-                continue
+                    if isinstance(frame, WsBytesFrame):
+                        await session.submit_pcm16_or_report(frame.data)
 
-            if "bytes" in raw and raw["bytes"]:
-                try:
-                    await session.submit_pcm16(raw["bytes"])
-                except SessionNotConfiguredError:
-                    await session.report_error("Session not configured")
-
-    except WebSocketDisconnect:
-        disconnected = True
-        logger.info("WS stream client disconnected")
-    except Exception as exc:
-        disconnected = True
-        logger.exception("WS stream error")
-        with suppress(Exception):
-            await websocket.send_json({"type": "error", "message": str(exc)})
-    finally:
-        if not disconnected:
-            await session.end_of_stream()
-        await drain_task(emit_task)
-        await session.close()
-        with suppress(Exception):
-            await websocket.close()
-        logger.info("realtime STT ws closed")
-        request_id_var.reset(token)
+                await session.end_of_stream()

@@ -1,53 +1,49 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
 from typing import Any
 
 from vox.grpc import vox_pb2
-from vox.operations.transcription import AnnotateResult, TranscriptionResultBundle
+from vox.operations.transcription import (
+    AnnotateResult,
+    TranscriptionResultBundle,
+    entity_payload,
+    entity_payloads,
+    transcript_segment_payload,
+    transcript_segment_payloads,
+    word_timestamp_payload,
+    word_timestamp_payloads,
+)
 from vox.streaming.types import StreamTranscript
 
 
 def entity_message(entity: Any) -> vox_pb2.Entity:
-    return vox_pb2.Entity(
-        type=str(_field(entity, "type", "")),
-        text=str(_field(entity, "text", "")),
-        start_char=_int_field(entity, "start_char"),
-        end_char=_int_field(entity, "end_char"),
-    )
+    return vox_pb2.Entity(**entity_payload(entity))
 
 
-def entity_messages(entities: Iterable[Any] | None) -> list[vox_pb2.Entity]:
-    return [entity_message(entity) for entity in entities or ()]
+def entity_messages(entities: Any) -> list[vox_pb2.Entity]:
+    return [vox_pb2.Entity(**payload) for payload in entity_payloads(entities)]
 
 
 def word_timestamp_message(word: Any) -> vox_pb2.WordTimestamp:
-    kwargs = {
-        "word": str(_field(word, "word", "")),
-        "start_ms": _int_field(word, "start_ms"),
-        "end_ms": _int_field(word, "end_ms"),
-    }
-    confidence = _field(word, "confidence", None)
-    if confidence is not None:
-        kwargs["confidence"] = float(confidence)
-    return vox_pb2.WordTimestamp(**kwargs)
+    return vox_pb2.WordTimestamp(**word_timestamp_payload(word))
 
 
-def word_timestamp_messages(words: Iterable[Any] | None) -> list[vox_pb2.WordTimestamp]:
-    return [word_timestamp_message(word) for word in words or ()]
+def word_timestamp_messages(words: Any) -> list[vox_pb2.WordTimestamp]:
+    return [vox_pb2.WordTimestamp(**payload) for payload in word_timestamp_payloads(words)]
 
 
 def transcript_segment_message(segment: Any) -> vox_pb2.TranscriptSegment:
+    payload = transcript_segment_payload(segment)
     return vox_pb2.TranscriptSegment(
-        text=str(_field(segment, "text", "")),
-        start_ms=_int_field(segment, "start_ms"),
-        end_ms=_int_field(segment, "end_ms"),
-        words=word_timestamp_messages(_field(segment, "words", ())),
+        text=payload["text"],
+        start_ms=payload["start_ms"],
+        end_ms=payload["end_ms"],
+        words=[vox_pb2.WordTimestamp(**word) for word in payload["words"]],
     )
 
 
-def transcript_segment_messages(segments: Iterable[Any] | None) -> list[vox_pb2.TranscriptSegment]:
-    return [transcript_segment_message(segment) for segment in segments or ()]
+def transcript_segment_messages(segments: Any) -> list[vox_pb2.TranscriptSegment]:
+    return [transcript_segment_message(payload) for payload in transcript_segment_payloads(segments)]
 
 
 def transcribe_response(bundle: TranscriptionResultBundle) -> vox_pb2.TranscribeResponse:
@@ -90,14 +86,3 @@ def stream_transcript_result(transcript: StreamTranscript) -> vox_pb2.StreamTran
     message.words.extend(word_timestamp_messages(transcript.words))
     message.segments.extend(transcript_segment_messages(transcript.segments))
     return message
-
-
-def _field(source: Any, key: str, default: Any = None) -> Any:
-    if isinstance(source, Mapping):
-        return source.get(key, default)
-    return getattr(source, key, default)
-
-
-def _int_field(source: Any, key: str) -> int:
-    value = _field(source, key, None)
-    return int(value) if value is not None else 0

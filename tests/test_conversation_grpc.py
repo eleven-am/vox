@@ -18,7 +18,7 @@ from vox.grpc import vox_pb2
 from vox.grpc.conversation_commands import conversation_session_update_to_message
 from vox.grpc.conversation_events import conversation_event_to_pb, conversation_wire_event_to_pb
 from vox.grpc.conversation_servicer import ConversationServicer
-from vox.operations.conversation import ConvAudioClearEvent, parse_session_update
+from vox.operations.conversation import ConvAudioClearEvent, ConvTranscriptDoneEvent, parse_session_update
 
 
 class ScriptedTTS(TTSAdapter):
@@ -275,6 +275,44 @@ def test_wire_event_to_pb_coerces_missing_numeric_fields_to_zero():
     assert transcript.transcript_done.end_ms == 0
     assert transcript.transcript_done.words[0].start_ms == 0
     assert transcript.transcript_done.words[0].end_ms == 0
+
+
+def test_transcript_done_event_maps_metadata_with_shared_transcript_converters():
+    msg = conversation_event_to_pb(
+        ConvTranscriptDoneEvent(
+            transcript="Alice visited Paris",
+            language="en",
+            start_ms=100,
+            end_ms=900,
+            eou_probability=0.72,
+            entities=(
+                {
+                    "type": "PERSON",
+                    "text": "Alice",
+                    "start_char": 0,
+                    "end_char": 5,
+                },
+            ),
+            topics=("travel",),
+            words=(
+                {
+                    "word": "Alice",
+                    "start_ms": 100,
+                    "end_ms": 240,
+                    "confidence": 0.91,
+                },
+            ),
+        )
+    )
+
+    assert msg is not None
+    assert msg.WhichOneof("msg") == "transcript_done"
+    transcript = msg.transcript_done
+    assert transcript.eou_probability == pytest.approx(0.72)
+    assert transcript.entities[0].text == "Alice"
+    assert list(transcript.topics) == ["travel"]
+    assert transcript.words[0].word == "Alice"
+    assert transcript.words[0].confidence == pytest.approx(0.91)
 
 
 def test_audio_clear_event_maps_to_proto_message():

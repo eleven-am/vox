@@ -33,15 +33,23 @@ from vox.operations.errors import (
 )
 from vox.operations.voices import (
     CreateVoiceRequest,
+    DeleteVoiceRequest,
+    DeleteVoiceResult,
+    GetVoiceReferenceRequest,
     ListedVoice,
+    ListVoicesRequest,
+    VoiceReferenceResult,
     create_voice,
     create_voice_request_from_fields,
     created_voice_payload,
     delete_voice,
+    delete_voice_request_from_fields,
     deleted_voice_payload,
     get_voice_reference,
+    get_voice_reference_request_from_fields,
     list_voices,
     list_voices_payload,
+    list_voices_request_from_fields,
     voice_payload,
 )
 
@@ -90,7 +98,11 @@ class DummyScheduler(FakeScheduler):
 async def test_list_voices_for_model(tmp_path: Path):
     sched = DummyScheduler(FakeTTS())
     store = BlobStore(root=tmp_path)
-    listed = await list_voices(scheduler=sched, store=store, model="fake-tts:latest")
+    listed = await list_voices(
+        scheduler=sched,
+        store=store,
+        request=ListVoicesRequest(model="fake-tts:latest"),
+    )
     assert len(listed) == 1
     assert listed[0].voice.id == "default"
     assert listed[0].model is None
@@ -101,7 +113,7 @@ async def test_list_voices_for_loaded_models_no_filter(tmp_path: Path):
     loaded = LoadedModelInfo(name="fake-tts", tag="latest", type=ModelType.TTS, device="cpu")
     sched = DummyScheduler(FakeTTS(), loaded=[loaded])
     store = BlobStore(root=tmp_path)
-    listed = await list_voices(scheduler=sched, store=store, model=None)
+    listed = await list_voices(scheduler=sched, store=store, request=ListVoicesRequest())
     assert len(listed) == 1
     assert listed[0].model == "fake-tts:latest"
 
@@ -111,7 +123,11 @@ async def test_list_voices_for_model_includes_stored_clones_when_supported(tmp_p
     store = BlobStore(root=tmp_path)
     create_stored_voice(store, voice_id="voice1234", name="Roy", audio_bytes=_wav(), content_type="audio/wav")
     sched = DummyScheduler(FakeTTS(cloning=True))
-    listed = await list_voices(scheduler=sched, store=store, model="fake-tts:latest")
+    listed = await list_voices(
+        scheduler=sched,
+        store=store,
+        request=ListVoicesRequest(model="fake-tts:latest"),
+    )
     assert any(v.voice.id == "voice1234" and v.voice.is_cloned for v in listed)
 
 
@@ -120,7 +136,11 @@ async def test_list_voices_for_stt_raises_wrong_type(tmp_path: Path):
     sched = DummyScheduler(FakeSTT())
     store = BlobStore(root=tmp_path)
     with pytest.raises(WrongModelTypeError):
-        await list_voices(scheduler=sched, store=store, model="fake-stt:latest")
+        await list_voices(
+            scheduler=sched,
+            store=store,
+            request=ListVoicesRequest(model="fake-stt:latest"),
+        )
 
 
 @pytest.mark.asyncio
@@ -129,7 +149,11 @@ async def test_list_voices_translates_missing_model_to_operation_error(tmp_path:
     store = BlobStore(root=tmp_path)
 
     with pytest.raises(StoredModelNotFoundError):
-        await list_voices(scheduler=sched, store=store, model="missing:latest")
+        await list_voices(
+            scheduler=sched,
+            store=store,
+            request=ListVoicesRequest(model="missing:latest"),
+        )
 
 
 @pytest.mark.asyncio
@@ -138,7 +162,11 @@ async def test_list_voices_translates_core_voice_failure_to_operation_error(tmp_
     store = BlobStore(root=tmp_path)
 
     with pytest.raises(InternalOperationError, match="voice inventory failed"):
-        await list_voices(scheduler=sched, store=store, model="fake-tts:latest")
+        await list_voices(
+            scheduler=sched,
+            store=store,
+            request=ListVoicesRequest(model="fake-tts:latest"),
+        )
 
 
 def test_create_voice_persists_metadata_and_audio(tmp_path: Path):
@@ -187,6 +215,19 @@ def test_create_voice_request_from_fields_uses_grpc_format_hint_without_content_
     assert request.language == "en"
 
 
+def test_voice_operation_request_builders_normalize_transport_input():
+    assert list_voices_request_from_fields(model="") == ListVoicesRequest(model=None)
+    assert list_voices_request_from_fields(model="kokoro-tts-onnx:v1.0") == ListVoicesRequest(
+        model="kokoro-tts-onnx:v1.0",
+    )
+    assert delete_voice_request_from_fields(voice_id="voice1234") == DeleteVoiceRequest(
+        voice_id="voice1234",
+    )
+    assert get_voice_reference_request_from_fields(voice_id="voice1234") == GetVoiceReferenceRequest(
+        voice_id="voice1234",
+    )
+
+
 def test_create_voice_requires_name(tmp_path: Path):
     store = BlobStore(root=tmp_path)
     with pytest.raises(VoiceNameRequiredError):
@@ -228,36 +269,56 @@ def test_create_voice_translates_decode_failure(tmp_path: Path):
         )
 
 
+def test_create_voice_translates_misconfigured_store_to_internal_error():
+    store = SimpleNamespace()
+
+    with pytest.raises(InternalOperationError, match="voices directory"):
+        create_voice(
+            store=store,
+            request=CreateVoiceRequest(
+                name="Roy",
+                audio=_wav(),
+                content_type="audio/wav",
+            ),
+        )
+
+
 def test_delete_voice_removes_directory(tmp_path: Path):
     store = BlobStore(root=tmp_path)
     create_stored_voice(store, voice_id="v1", name="Roy", audio_bytes=_wav(), content_type="audio/wav")
-    delete_voice(store=store, voice_id="v1")
+    result = delete_voice(store=store, request=DeleteVoiceRequest(voice_id="v1"))
     assert not (store.voices_dir / "v1").exists()
+    assert result == DeleteVoiceResult(voice_id="v1")
 
 
 def test_delete_voice_unknown_raises(tmp_path: Path):
     store = BlobStore(root=tmp_path)
     with pytest.raises(VoiceNotFoundOperationError):
-        delete_voice(store=store, voice_id="missing")
+        delete_voice(store=store, request=DeleteVoiceRequest(voice_id="missing"))
 
 
 def test_delete_voice_empty_id_raises(tmp_path: Path):
     store = BlobStore(root=tmp_path)
     with pytest.raises(VoiceIdRequiredError):
-        delete_voice(store=store, voice_id="")
+        delete_voice(store=store, request=DeleteVoiceRequest(voice_id=""))
 
 
-def test_get_voice_reference_returns_bytes(tmp_path: Path):
+def test_get_voice_reference_returns_operation_response_contract(tmp_path: Path):
     store = BlobStore(root=tmp_path)
     create_stored_voice(store, voice_id="v1", name="Roy", audio_bytes=_wav(), content_type="audio/wav")
-    data = get_voice_reference(store=store, voice_id="v1")
-    assert data[:4] == b"RIFF"
+    result = get_voice_reference(store=store, request=GetVoiceReferenceRequest(voice_id="v1"))
+
+    assert isinstance(result, VoiceReferenceResult)
+    assert result.voice_id == "v1"
+    assert result.audio[:4] == b"RIFF"
+    assert result.content_type == "audio/wav"
+    assert result.filename == "v1.wav"
 
 
 def test_get_voice_reference_unknown_raises(tmp_path: Path):
     store = BlobStore(root=tmp_path)
     with pytest.raises(VoiceNotFoundOperationError):
-        get_voice_reference(store=store, voice_id="missing")
+        get_voice_reference(store=store, request=GetVoiceReferenceRequest(voice_id="missing"))
 
 
 def test_voice_payload_preserves_http_contract_shape():
@@ -342,4 +403,7 @@ def test_created_and_deleted_voice_payloads_preserve_http_contract_shape():
         "is_cloned": True,
         "created_at": "2026-07-02T10:00:00Z",
     }
-    assert deleted_voice_payload("voice1234") == {"id": "voice1234", "deleted": True}
+    assert deleted_voice_payload(DeleteVoiceResult(voice_id="voice1234")) == {
+        "id": "voice1234",
+        "deleted": True,
+    }

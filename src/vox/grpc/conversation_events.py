@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import base64
 
-from vox.conversation import TurnPolicy
 from vox.grpc import vox_pb2
-from vox.grpc.transcript_messages import entity_message, word_timestamp_message
+from vox.grpc.conversation_policy import conversation_turn_policy_pb
+from vox.grpc.transcript_messages import entity_messages, word_timestamp_messages
 from vox.operations.conversation import (
     ConvAudioClearEvent,
     ConvAudioDeltaEvent,
@@ -25,6 +25,9 @@ from vox.operations.conversation import (
     ConvTranscriptDeltaEvent,
     ConvTranscriptDoneEvent,
     ConvTurnEouPredictedEvent,
+    control_event_client_payload_json,
+    control_event_as_client_event,
+    rtc_session_attached_payload,
 )
 
 
@@ -32,28 +35,35 @@ def conversation_error_pb(message: str) -> vox_pb2.ConverseServerMessage:
     return vox_pb2.ConverseServerMessage(error=vox_pb2.ConversationError(message=message))
 
 
+def rtc_session_attached_pb(session_id: str) -> vox_pb2.ConverseServerMessage:
+    return vox_pb2.ConverseServerMessage(
+        rtc_session_attached=vox_pb2.RtcSessionAttached(
+            **rtc_session_attached_payload(session_id),
+            provider="webrtc",
+        ),
+    )
+
+
+def rtc_client_event_pb(event_name: str, payload_json: str) -> vox_pb2.ConverseServerMessage:
+    return vox_pb2.ConverseServerMessage(
+        client_event=vox_pb2.RtcClientEvent(
+            event=event_name,
+            payload_json=payload_json,
+        ),
+    )
+
+
+def rtc_client_event_from_control_event(event: dict) -> vox_pb2.ConverseServerMessage:
+    event_name, payload = control_event_as_client_event(event)
+    return rtc_client_event_pb(event_name, control_event_client_payload_json(payload))
+
+
 def conversation_event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage | None:
     if isinstance(event, ConvSessionCreatedEvent):
-        policy = event.config.policy or TurnPolicy()
         session_created = vox_pb2.ConversationSessionCreated(
             turn_profile=event.config.turn_profile,
         )
-        session_created.policy.allow_interrupt_while_speaking = policy.allow_interrupt_while_speaking
-        session_created.policy.min_interrupt_duration_ms = policy.min_interrupt_duration_ms
-        session_created.policy.max_endpointing_delay_ms = policy.max_endpointing_delay_ms
-        session_created.policy.stable_speaking_min_ms = policy.stable_speaking_min_ms
-        session_created.policy.false_interruption_timeout_ms = policy.false_interruption_timeout_ms
-        session_created.policy.min_interrupt_words = policy.min_interrupt_words
-        session_created.policy.partial_interrupts = policy.partial_interrupts
-        session_created.policy.dynamic_endpointing = policy.dynamic_endpointing
-        session_created.policy.min_endpointing_delay_ms = policy.min_endpointing_delay_ms
-        session_created.policy.speaking_interrupt_min_duration_ms = policy.speaking_interrupt_min_duration_ms
-        session_created.policy.speaking_interrupt_min_words = policy.speaking_interrupt_min_words
-        session_created.policy.self_echo_min_words = policy.self_echo_min_words
-        session_created.policy.self_echo_min_overlap = policy.self_echo_min_overlap
-        session_created.policy.aec_warmup_ms = policy.aec_warmup_ms
-        session_created.policy.backchannel_end_cooldown_ms = policy.backchannel_end_cooldown_ms
-        session_created.policy.vad_min_silence_ms = policy.vad_min_silence_ms
+        session_created.policy.CopyFrom(conversation_turn_policy_pb(event.config.policy))
         return vox_pb2.ConverseServerMessage(session_created=session_created)
     if isinstance(event, ConvSpeechStartedEvent):
         return vox_pb2.ConverseServerMessage(
@@ -80,12 +90,9 @@ def conversation_event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage 
         )
         if event.eou_probability is not None:
             msg.eou_probability = event.eou_probability
-        for ent in event.entities:
-            msg.entities.append(entity_message(ent))
-        for topic in event.topics:
-            msg.topics.append(str(topic))
-        for word in event.words:
-            msg.words.append(word_timestamp_message(word))
+        msg.entities.extend(entity_messages(event.entities))
+        msg.topics.extend(str(topic) for topic in event.topics)
+        msg.words.extend(word_timestamp_messages(event.words))
         return vox_pb2.ConverseServerMessage(transcript_done=msg)
     if isinstance(event, ConvResponseCreatedEvent):
         return vox_pb2.ConverseServerMessage(
@@ -160,9 +167,9 @@ def conversation_event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage 
 
 
 def conversation_wire_event_to_pb(event: dict) -> vox_pb2.ConverseServerMessage | None:
-    from vox.operations.conversation import _wire_event_to_session_event
+    from vox.operations.conversation import parse_conversation_wire_event
 
-    mapped = _wire_event_to_session_event(event)
+    mapped = parse_conversation_wire_event(event)
     if mapped is None:
         return None
     return conversation_event_to_pb(mapped)

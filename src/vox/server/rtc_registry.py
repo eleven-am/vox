@@ -8,7 +8,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
-from vox.server.rtc_media import cancel_media_tasks
+from vox.server.rtc_tasks import cancel_media_tasks, track_task
 
 
 @dataclass
@@ -138,9 +138,7 @@ class RtcSessionRegistry:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        task = loop.create_task(self._close_peer(peer))
-        self._teardown_tasks.add(task)
-        task.add_done_callback(self._teardown_tasks.discard)
+        track_task(self._teardown_tasks, self._close_peer(peer))
 
     @staticmethod
     async def _close_peer(peer: Any) -> None:

@@ -75,3 +75,39 @@ class TestAudioStreamWireMapping:
 
         assert error["type"] == "error"
         assert "totally-unknown" in error["message"]
+
+    def test_malformed_json_uses_standard_websocket_error_shape(self):
+        with (
+            TestClient(_build_stream_app()) as client,
+            client.websocket_connect("/v1/audio/stream") as websocket,
+        ):
+            websocket.send_text("{")
+            error = websocket.receive_json()
+
+        assert error["type"] == "error"
+        assert "Expecting property name" in error["message"]
+
+    def test_malformed_json_after_config_reports_error_and_keeps_stream_open(self):
+        store = MagicMock()
+        store.list_models.return_value = []
+        registry = MagicMock()
+        registry.available_models.return_value = {
+            "whisper": {"large-v3": {"type": "stt"}},
+        }
+
+        with (
+            TestClient(_build_stream_app(store=store, registry=registry)) as client,
+            client.websocket_connect("/v1/audio/stream") as websocket,
+        ):
+            websocket.send_text(json.dumps({"type": "config"}))
+            websocket.receive_json()
+            websocket.send_text("{")
+            error = websocket.receive_json()
+            websocket.send_text(json.dumps({"type": "totally-unknown"}))
+            unknown = websocket.receive_json()
+            websocket.send_text(json.dumps({"type": "end"}))
+
+        assert error["type"] == "error"
+        assert "Expecting property name" in error["message"]
+        assert unknown["type"] == "error"
+        assert "totally-unknown" in unknown["message"]

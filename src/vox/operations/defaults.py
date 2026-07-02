@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from vox.operations.errors import NoDefaultModelError
+
 
 def resolve_default_model(model_type: str, registry: Any, store: Any | None = None) -> str | None:
     if store is not None:
@@ -13,3 +15,15 @@ def resolve_default_model(model_type: str, registry: Any, store: Any | None = No
             if entry.get("type") == model_type:
                 return f"{name}:{tag}"
     return None
+
+
+def resolve_requested_or_default_model(
+    model_type: str,
+    requested: str,
+    registry: Any,
+    store: Any | None = None,
+) -> str:
+    model = requested or resolve_default_model(model_type, registry, store) or ""
+    if not model:
+        raise NoDefaultModelError(model_type)
+    return model

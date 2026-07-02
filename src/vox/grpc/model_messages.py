@@ -14,6 +14,10 @@ from vox.operations.models import (
 )
 
 
+def pull_error_message(error: Exception | str) -> vox_pb2.PullProgress:
+    return vox_pb2.PullProgress(status="error", error=str(error))
+
+
 def pull_progress_message(event: PullEvent) -> vox_pb2.PullProgress:
     return vox_pb2.PullProgress(**pull_event_payload(event))
 

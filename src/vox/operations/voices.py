@@ -11,12 +11,11 @@ from vox.core.cloned_voices import (
     list_stored_voices,
     reference_audio_bytes,
 )
-from vox.core.errors import ModelNotFoundError, ReferenceAudioInvalidError, VoxError
+from vox.core.errors import ReferenceAudioInvalidError, VoxError
 from vox.core.types import VoiceInfo
 from vox.operations.errors import (
     InternalOperationError,
     InvalidConfigError,
-    StoredModelNotFoundError,
     VoiceAudioRequiredError,
     VoiceIdRequiredError,
     VoiceNameRequiredError,
@@ -25,12 +24,22 @@ from vox.operations.errors import (
     VoiceReferenceNotFoundError,
     WrongModelTypeError,
 )
+from vox.operations.model_acquisition import acquire_typed_adapter
 
 
 @dataclass(frozen=True)
 class ListedVoice:
     voice: VoiceInfo
     model: str | None = None
+
+
+@dataclass(frozen=True)
+class ListVoicesRequest:
+    model: str | None = None
+
+
+def list_voices_request_from_fields(*, model: str | None = None) -> ListVoicesRequest:
+    return ListVoicesRequest(model=model or None)
 
 
 def voice_payload(voice: VoiceInfo) -> dict[str, Any]:
@@ -71,8 +80,14 @@ def created_voice_payload(voice: Any) -> dict[str, Any]:
     }
 
 
-def deleted_voice_payload(voice_id: str) -> dict[str, Any]:
-    return {"id": voice_id, "deleted": True}
+@dataclass(frozen=True)
+class DeleteVoiceResult:
+    voice_id: str
+    deleted: bool = True
+
+
+def deleted_voice_payload(result: DeleteVoiceResult) -> dict[str, Any]:
+    return {"id": result.voice_id, "deleted": result.deleted}
 
 
 def _voices_for_adapter(adapter: TTSAdapter, store: Any) -> list[VoiceInfo]:
@@ -90,16 +105,17 @@ async def _listed_voices_for_model(
     include_model: bool,
 ) -> list[ListedVoice]:
     try:
-        async with scheduler.acquire(model) as adapter:
-            if not isinstance(adapter, TTSAdapter):
-                raise WrongModelTypeError(model, "TTS")
+        async with acquire_typed_adapter(
+            scheduler,
+            model=model,
+            adapter_type=TTSAdapter,
+            expected_type="TTS",
+        ) as adapter:
             listed_model = model if include_model else None
             return [
                 ListedVoice(voice=voice, model=listed_model)
                 for voice in _voices_for_adapter(adapter, store)
             ]
-    except ModelNotFoundError as exc:
-        raise StoredModelNotFoundError(exc.model) from exc
     except VoxError as exc:
         raise InternalOperationError(str(exc)) from exc
 
@@ -108,9 +124,9 @@ async def list_voices(
     *,
     scheduler: Any,
     store: Any,
-    model: str | None = None,
+    request: ListVoicesRequest,
 ) -> list[ListedVoice]:
-    if not model:
+    if not request.model:
         listed: list[ListedVoice] = []
         for loaded in scheduler.list_loaded():
             if loaded.type.value != "tts":
@@ -132,7 +148,7 @@ async def list_voices(
     return await _listed_voices_for_model(
         scheduler=scheduler,
         store=store,
-        model=model,
+        model=request.model,
         include_model=False,
     )
 
@@ -187,22 +203,54 @@ def create_voice(*, store: Any, request: CreateVoiceRequest):
         )
     except ReferenceAudioInvalidError as exc:
         raise VoiceReferenceInvalidError(str(exc)) from exc
+    except TypeError as exc:
+        raise InternalOperationError(str(exc)) from exc
     except (ValueError, RuntimeError) as exc:
         raise InvalidConfigError(str(exc)) from exc
 
 
-def delete_voice(*, store: Any, voice_id: str) -> None:
-    if not voice_id:
+@dataclass(frozen=True)
+class DeleteVoiceRequest:
+    voice_id: str
+
+
+def delete_voice_request_from_fields(*, voice_id: str) -> DeleteVoiceRequest:
+    return DeleteVoiceRequest(voice_id=voice_id)
+
+
+def delete_voice(*, store: Any, request: DeleteVoiceRequest) -> DeleteVoiceResult:
+    if not request.voice_id:
         raise VoiceIdRequiredError()
-    if not delete_stored_voice(store, voice_id):
-        raise VoiceNotFoundOperationError(voice_id)
+    if not delete_stored_voice(store, request.voice_id):
+        raise VoiceNotFoundOperationError(request.voice_id)
+    return DeleteVoiceResult(voice_id=request.voice_id)
 
 
-def get_voice_reference(*, store: Any, voice_id: str) -> bytes:
-    stored = get_stored_voice(store, voice_id)
+@dataclass(frozen=True)
+class GetVoiceReferenceRequest:
+    voice_id: str
+
+
+@dataclass(frozen=True)
+class VoiceReferenceResult:
+    voice_id: str
+    audio: bytes
+    content_type: str = "audio/wav"
+
+    @property
+    def filename(self) -> str:
+        return f"{self.voice_id}.wav"
+
+
+def get_voice_reference_request_from_fields(*, voice_id: str) -> GetVoiceReferenceRequest:
+    return GetVoiceReferenceRequest(voice_id=voice_id)
+
+
+def get_voice_reference(*, store: Any, request: GetVoiceReferenceRequest) -> VoiceReferenceResult:
+    stored = get_stored_voice(store, request.voice_id)
     if stored is None:
-        raise VoiceNotFoundOperationError(voice_id)
-    data = reference_audio_bytes(store, voice_id)
+        raise VoiceNotFoundOperationError(request.voice_id)
+    data = reference_audio_bytes(store, request.voice_id)
     if data is None:
-        raise VoiceReferenceNotFoundError(voice_id)
-    return data
+        raise VoiceReferenceNotFoundError(request.voice_id)
+    return VoiceReferenceResult(voice_id=request.voice_id, audio=data)

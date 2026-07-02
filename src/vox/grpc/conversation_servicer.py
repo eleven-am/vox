@@ -1,6 +1,5 @@
 """gRPC ConversationService: bidi streaming agent-facing voice orchestration.
 
-Mirrors the WS /v1/conversation protocol (see server/routes/conversation.py).
 One bidi RPC per call; client messages drive a `ConversationOrchestrator`; server
 messages are produced by the orchestrator's event stream.
 """
@@ -14,13 +13,13 @@ from collections.abc import AsyncIterator
 from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
-from vox.core.tasks import reap_task
 from vox.grpc import vox_pb2, vox_pb2_grpc
 from vox.grpc.conversation_commands import execute_converse_client_message
 from vox.grpc.conversation_events import (
     conversation_error_pb,
     conversation_event_to_pb,
 )
+from vox.grpc.streaming_queue import iter_grpc_stream_lifecycle, start_grpc_event_pump
 from vox.operations.conversation import (
     ConversationOrchestrator,
 )
@@ -43,15 +42,6 @@ class ConversationServicer(vox_pb2_grpc.ConversationServiceServicer):
         orchestrator = ConversationOrchestrator(scheduler=self._scheduler)
         out_queue: asyncio.Queue[vox_pb2.ConverseServerMessage | None] = asyncio.Queue()
 
-        async def pump_events() -> None:
-            try:
-                async for event in orchestrator.events():
-                    pb = conversation_event_to_pb(event)
-                    if pb is not None:
-                        await out_queue.put(pb)
-            finally:
-                await out_queue.put(None)
-
         async def drain_client() -> None:
             try:
                 async for client_msg in request_iterator:
@@ -65,17 +55,16 @@ class ConversationServicer(vox_pb2_grpc.ConversationServiceServicer):
             finally:
                 await orchestrator.end_of_stream()
 
-        emit_task = asyncio.create_task(pump_events())
+        emit_task = start_grpc_event_pump(
+            orchestrator.events(),
+            out_queue,
+            message=conversation_event_to_pb,
+        )
         client_task = asyncio.create_task(drain_client())
-        try:
-            while True:
-                item = await out_queue.get()
-                if item is None:
-                    break
-                yield item
-        finally:
-            client_task.cancel()
-            emit_task.cancel()
-            await reap_task(client_task)
-            await reap_task(emit_task)
-            await orchestrator.close()
+        async for item in iter_grpc_stream_lifecycle(
+            out_queue,
+            client_task,
+            emit_task,
+            cleanup=orchestrator.close,
+        ):
+            yield item

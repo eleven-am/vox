@@ -111,6 +111,21 @@ def test_rtc_offer_returns_answer_media_token_and_events_url():
     assert "m=audio" in payload["sdp"]
 
 
+def test_rtc_offer_accepts_client_token_from_bearer_header():
+    client = TestClient(_build_app())
+    session = client.post("/v1/rtc/sessions").json()
+    offer = asyncio.run(_make_offer())
+
+    response = client.post(
+        f"/v1/rtc/sessions/{session['session_id']}/offer",
+        headers={"authorization": f"Bearer {session['client_token']}"},
+        json=offer,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["session_id"] == session["session_id"]
+
+
 def test_rtc_offer_rejects_invalid_client_token():
     client = TestClient(_build_app())
     session = client.post("/v1/rtc/sessions").json()
@@ -145,6 +160,28 @@ def test_rtc_candidate_endpoint_accepts_end_of_candidates():
             "media_token": answer["media_token"],
             "candidate": None,
         },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+def test_rtc_candidate_endpoint_accepts_media_token_from_bearer_header():
+    client = TestClient(_build_app())
+    session = client.post("/v1/rtc/sessions").json()
+    offer = asyncio.run(_make_offer())
+
+    answer = client.post(
+        f"/v1/rtc/sessions/{session['session_id']}/offer",
+        json={
+            **offer,
+            "client_token": session["client_token"],
+        },
+    ).json()
+    response = client.post(
+        f"/v1/rtc/sessions/{session['session_id']}/candidates",
+        headers={"authorization": f"Bearer {answer['media_token']}"},
+        json={"candidate": None},
     )
 
     assert response.status_code == 200

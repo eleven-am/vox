@@ -10,12 +10,13 @@ from __future__ import annotations
 
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 
 import grpc
 from grpc.aio import ServerInterceptor
 
-from vox.logging_context import new_request_id, request_id_var
+from vox.logging_context import bind_request_id, reset_request_id
 
 logger = logging.getLogger("vox.grpc.request")
 
@@ -34,6 +35,22 @@ def _extract_rid(metadata: tuple | None) -> str | None:
     return None
 
 
+@contextmanager
+def _grpc_request_scope(method: str, incoming: str | None) -> Iterator[None]:
+    token = bind_request_id(incoming)
+    start = time.perf_counter()
+    status = "OK"
+    try:
+        yield
+    except Exception:
+        status = "ERROR"
+        raise
+    finally:
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        logger.info("%s %s (%d ms)", method, status, duration_ms)
+        reset_request_id(token)
+
+
 class RequestIdInterceptor(ServerInterceptor):
     async def intercept_service(
         self,
@@ -50,66 +67,22 @@ class RequestIdInterceptor(ServerInterceptor):
         incoming = _extract_rid(handler_call_details.invocation_metadata)
 
         async def _wrap_unary_unary(request, context):
-            rid = incoming or new_request_id()
-            token = request_id_var.set(rid)
-            start = time.perf_counter()
-            status = "OK"
-            try:
+            with _grpc_request_scope(method, incoming):
                 return await handler.unary_unary(request, context)
-            except Exception:
-                status = "ERROR"
-                raise
-            finally:
-                duration_ms = int((time.perf_counter() - start) * 1000)
-                logger.info("%s %s (%d ms)", method, status, duration_ms)
-                request_id_var.reset(token)
 
         async def _wrap_unary_stream(request, context):
-            rid = incoming or new_request_id()
-            token = request_id_var.set(rid)
-            start = time.perf_counter()
-            status = "OK"
-            try:
+            with _grpc_request_scope(method, incoming):
                 async for item in handler.unary_stream(request, context):
                     yield item
-            except Exception:
-                status = "ERROR"
-                raise
-            finally:
-                duration_ms = int((time.perf_counter() - start) * 1000)
-                logger.info("%s %s (%d ms)", method, status, duration_ms)
-                request_id_var.reset(token)
 
         async def _wrap_stream_unary(request_iterator, context):
-            rid = incoming or new_request_id()
-            token = request_id_var.set(rid)
-            start = time.perf_counter()
-            status = "OK"
-            try:
+            with _grpc_request_scope(method, incoming):
                 return await handler.stream_unary(request_iterator, context)
-            except Exception:
-                status = "ERROR"
-                raise
-            finally:
-                duration_ms = int((time.perf_counter() - start) * 1000)
-                logger.info("%s %s (%d ms)", method, status, duration_ms)
-                request_id_var.reset(token)
 
         async def _wrap_stream_stream(request_iterator, context):
-            rid = incoming or new_request_id()
-            token = request_id_var.set(rid)
-            start = time.perf_counter()
-            status = "OK"
-            try:
+            with _grpc_request_scope(method, incoming):
                 async for item in handler.stream_stream(request_iterator, context):
                     yield item
-            except Exception:
-                status = "ERROR"
-                raise
-            finally:
-                duration_ms = int((time.perf_counter() - start) * 1000)
-                logger.info("%s %s (%d ms)", method, status, duration_ms)
-                request_id_var.reset(token)
 
         if handler.unary_unary:
             return grpc.unary_unary_rpc_method_handler(

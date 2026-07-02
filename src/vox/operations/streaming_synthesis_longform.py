@@ -4,26 +4,30 @@ import asyncio
 import logging
 import time
 from collections.abc import AsyncIterator
-from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
-from vox.conversation.text_buffer import split_for_tts
 from vox.core.adapter import TTSAdapter
-from vox.core.cloned_voices import resolve_voice_request
-from vox.core.errors import VoiceCloningUnsupportedError, VoiceNotFoundError
-from vox.operations.defaults import resolve_default_model
+from vox.operations.defaults import resolve_requested_or_default_model
 from vox.operations.errors import (
     EmptyInputError,
     InvalidConfigError,
-    NoDefaultModelError,
+    OperationError,
     SessionAlreadyConfiguredError,
     SessionNotConfiguredError,
     UnsupportedFormatError,
-    WrongModelTypeError,
 )
+from vox.operations.model_acquisition import (
+    EnteredAdapter,
+    enter_typed_adapter,
+    release_entered_adapter,
+    release_entered_adapter_suppressing,
+)
+from vox.operations.streaming_reporting import StreamingOperationErrorReporter
+from vox.operations.tts_chunking import effective_tts_text_cap, split_text_for_tts_adapter
+from vox.operations.voice_resolution import resolve_tts_voice_request
 from vox.streaming.codecs import float32_to_pcm16
 from vox.streaming.mp3 import Mp3StreamEncoder
 from vox.streaming.opus import OpusStreamEncoder
@@ -85,6 +89,14 @@ class TtsErrorEvent:
     message: str
 
 
+@dataclass(frozen=True)
+class _ResolvedTtsVoice:
+    voice: str | None
+    language: str | None
+    reference_audio: bytes | None
+    reference_text: str | None
+
+
 TtsEvent = (
     TtsReadyEvent
     | TtsAudioStartEvent
@@ -93,6 +105,42 @@ TtsEvent = (
     | TtsDoneEvent
     | TtsErrorEvent
 )
+
+
+def longform_tts_event_payload(event: TtsEvent) -> dict[str, Any] | None:
+    if isinstance(event, TtsReadyEvent):
+        return {
+            "type": "ready",
+            "model": event.model,
+            "voice": event.voice,
+            "response_format": event.response_format,
+            "chunk_chars": event.chunk_chars,
+        }
+    if isinstance(event, TtsAudioStartEvent):
+        return {
+            "type": "audio_start",
+            "sample_rate": event.sample_rate,
+            "response_format": event.response_format,
+        }
+    if isinstance(event, TtsProgressEvent):
+        return {
+            "type": "progress",
+            "completed_chars": event.completed_chars,
+            "total_chars": event.total_chars,
+            "chunks_completed": event.chunks_completed,
+            "chunks_total": event.chunks_total,
+        }
+    if isinstance(event, TtsDoneEvent):
+        return {
+            "type": "done",
+            "response_format": event.response_format,
+            "audio_duration_ms": event.audio_duration_ms,
+            "processing_ms": event.processing_ms,
+            "text_length": event.text_length,
+        }
+    if isinstance(event, TtsErrorEvent):
+        return {"type": "error", "message": event.message}
+    return None
 
 
 def normalize_longform_tts_config(
@@ -106,9 +154,7 @@ def normalize_longform_tts_config(
     registry: Any,
     store: Any | None,
 ) -> LongformSynthesisConfig:
-    resolved_model = model or resolve_default_model("tts", registry, store) or ""
-    if not resolved_model:
-        raise NoDefaultModelError("tts")
+    resolved_model = resolve_requested_or_default_model("tts", model, registry, store)
 
     fmt = (response_format or "pcm16").lower()
     if fmt not in SUPPORTED_LONGFORM_TTS_FORMATS:
@@ -133,7 +179,7 @@ def normalize_longform_tts_config(
     )
 
 
-class LongformSynthesisSession:
+class LongformSynthesisSession(StreamingOperationErrorReporter):
 
     def __init__(self, *, scheduler: Any, registry: Any, store: Any | None) -> None:
         self._scheduler = scheduler
@@ -142,11 +188,8 @@ class LongformSynthesisSession:
 
         self._config: LongformSynthesisConfig | None = None
         self._adapter: TTSAdapter | None = None
-        self._scheduler_cm = None
-        self._voice_arg: str | None = None
-        self._language_arg: str | None = None
-        self._reference_audio: bytes | None = None
-        self._reference_text: str | None = None
+        self._adapter_lease: EnteredAdapter[TTSAdapter] | None = None
+        self._resolved_voice: _ResolvedTtsVoice | None = None
         self._effective_cap: int = 0
         self._text_parts: list[str] = []
         self._events: asyncio.Queue[TtsEvent] = asyncio.Queue()
@@ -157,31 +200,33 @@ class LongformSynthesisSession:
             raise SessionAlreadyConfiguredError()
         self._config = config
 
-        cm = self._scheduler.acquire(config.model)
-        adapter = await cm.__aenter__()
-        self._scheduler_cm = cm
-        if not isinstance(adapter, TTSAdapter):
-            await cm.__aexit__(None, None, None)
-            self._scheduler_cm = None
-            raise WrongModelTypeError(config.model, "TTS")
-        self._adapter = adapter
+        entered = await enter_typed_adapter(
+            self._scheduler,
+            model=config.model,
+            adapter_type=TTSAdapter,
+            expected_type="TTS",
+        )
+        self._adapter_lease = entered
+        self._adapter = entered.adapter
+        adapter = entered.adapter
 
         try:
-            voice_arg, language_arg, reference_audio, reference_text = resolve_voice_request(
+            voice_arg, language_arg, reference_audio, reference_text = resolve_tts_voice_request(
                 adapter, self._store, config.voice, config.language,
             )
-        except (VoiceCloningUnsupportedError, VoiceNotFoundError):
-            await cm.__aexit__(None, None, None)
-            self._scheduler_cm = None
+        except OperationError:
+            await release_entered_adapter(entered)
+            self._adapter_lease = None
             self._adapter = None
             raise
-        self._voice_arg = voice_arg
-        self._language_arg = language_arg
-        self._reference_audio = reference_audio
-        self._reference_text = reference_text
+        self._resolved_voice = _ResolvedTtsVoice(
+            voice=voice_arg,
+            language=language_arg,
+            reference_audio=reference_audio,
+            reference_text=reference_text,
+        )
 
-        adapter_cap = int(getattr(adapter.info(), "max_input_chars", 0) or 0)
-        self._effective_cap = config.chunk_chars if config.chunk_chars is not None else adapter_cap
+        self._effective_cap = effective_tts_text_cap(adapter, config.chunk_chars)
 
         await self._events.put(TtsReadyEvent(
             model=config.model,
@@ -189,6 +234,9 @@ class LongformSynthesisSession:
             response_format=config.response_format,
             chunk_chars=self._effective_cap,
         ))
+
+    async def configure_or_report(self, config: LongformSynthesisConfig) -> bool:
+        return await self.run_or_report_operation_error(lambda: self.configure(config))
 
     def append_text(self, text: str) -> None:
         if not text:
@@ -200,18 +248,23 @@ class LongformSynthesisSession:
             raise SessionNotConfiguredError()
         full_text = "".join(self._text_parts).strip()
         if not full_text:
-            await self._events.put(TtsErrorEvent(message=str(EmptyInputError())))
+            await self.report_error(str(EmptyInputError()))
             return
         await self._synthesize(full_text)
+
+    async def end_of_stream_or_report(self) -> bool:
+        return await self.run_or_report_operation_error(self.end_of_stream)
+
+    async def report_error(self, message: str) -> None:
+        await self._events.put(TtsErrorEvent(message=message))
 
     async def close(self) -> None:
         if self._closed:
             return
         self._closed = True
-        if self._scheduler_cm is not None:
-            with suppress(Exception):
-                await self._scheduler_cm.__aexit__(None, None, None)
-            self._scheduler_cm = None
+        if self._adapter_lease is not None:
+            await release_entered_adapter_suppressing(self._adapter_lease)
+            self._adapter_lease = None
             self._adapter = None
 
     async def events(self) -> AsyncIterator[TtsEvent]:
@@ -224,12 +277,13 @@ class LongformSynthesisSession:
     async def _synthesize(self, full_text: str) -> None:
         config = self._config
         adapter = self._adapter
-        assert config is not None and adapter is not None
+        resolved_voice = self._resolved_voice
+        assert config is not None and adapter is not None and resolved_voice is not None
 
-        text_chunks = (
-            [full_text]
-            if self._effective_cap <= 0
-            else split_for_tts(full_text, max_chars=self._effective_cap)
+        text_chunks = split_text_for_tts_adapter(
+            full_text,
+            adapter,
+            override_chars=self._effective_cap,
         )
         total_chars = sum(len(chunk) for chunk in text_chunks)
         completed_chars = 0
@@ -245,11 +299,11 @@ class LongformSynthesisSession:
             chunk_start = time.perf_counter()
             async for chunk in adapter.synthesize(
                 text_chunk,
-                voice=self._voice_arg,
+                voice=resolved_voice.voice,
                 speed=config.speed,
-                language=self._language_arg,
-                reference_audio=self._reference_audio,
-                reference_text=self._reference_text,
+                language=resolved_voice.language,
+                reference_audio=resolved_voice.reference_audio,
+                reference_text=resolved_voice.reference_text,
             ):
                 audio = np.frombuffer(chunk.audio, dtype=np.float32)
                 if audio.size == 0:

@@ -2,37 +2,19 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
 from vox.grpc import vox_pb2
+from vox.grpc.conversation_policy import conversation_turn_policy_overrides
 from vox.operations.conversation import (
     ConversationOrchestrator,
+    client_event_command_from_payload_json,
     execute_conversation_command,
     execute_rtc_control_command,
 )
 from vox.operations.errors import InvalidConfigError
-
-_POLICY_FIELDS = (
-    "allow_interrupt_while_speaking",
-    "min_interrupt_duration_ms",
-    "max_endpointing_delay_ms",
-    "stable_speaking_min_ms",
-    "false_interruption_timeout_ms",
-    "min_interrupt_words",
-    "partial_interrupts",
-    "dynamic_endpointing",
-    "min_endpointing_delay_ms",
-    "speaking_interrupt_min_duration_ms",
-    "speaking_interrupt_min_words",
-    "self_echo_min_words",
-    "self_echo_min_overlap",
-    "aec_warmup_ms",
-    "backchannel_end_cooldown_ms",
-    "vad_min_silence_ms",
-)
 
 
 @dataclass(frozen=True)
@@ -62,11 +44,7 @@ def conversation_session_update_to_message(
     if update.include_word_timestamps:
         session["include_word_timestamps"] = True
     if update.HasField("policy"):
-        policy_overrides: dict[str, int | float | bool] = {}
-        policy_pb = update.policy
-        for field_name in _POLICY_FIELDS:
-            if policy_pb.HasField(field_name):
-                policy_overrides[field_name] = getattr(policy_pb, field_name)
+        policy_overrides = conversation_turn_policy_overrides(update.policy)
         if policy_overrides:
             session["turn_policy"] = policy_overrides
     return {"type": "session.update", "session": session}
@@ -100,15 +78,13 @@ def rtc_control_message_to_command(
             message=conversation_session_update_to_message(client_msg.session_update),
         )
     if kind == "client_event":
-        event_name = client_msg.client_event.event.strip()
-        if not event_name:
-            raise InvalidConfigError("client_event requires a non-empty event")
-        try:
-            payload = json.loads(client_msg.client_event.payload_json or "null")
-        except json.JSONDecodeError as exc:
-            raise InvalidConfigError(f"client_event requires valid payload JSON: {exc}") from exc
         return GrpcConversationCommand(
-            message={"type": "client.event", "event": event_name, "payload": payload},
+            message=client_event_command_from_payload_json(
+                client_msg.client_event.event,
+                client_msg.client_event.payload_json,
+                invalid_json_message="client_event requires valid payload JSON",
+                non_empty_message="client_event requires a non-empty event",
+            ),
         )
     return _response_command(kind, client_msg, unknown_message_label="unknown control message kind")
 

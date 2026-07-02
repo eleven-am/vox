@@ -5,8 +5,8 @@ from contextlib import suppress
 from typing import Any
 
 from vox.core.tasks import drain_task
-from vox.server.rtc_media import cancel_and_drain_media_tasks
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
+from vox.server.rtc_tasks import cancel_and_drain_media_tasks
 
 
 async def close_rtc_runtime_resources(
@@ -23,6 +23,21 @@ async def close_rtc_runtime_resources(
     if record.control_events is not None:
         await record.control_events.put(None)
     await drain_task(client_event_task)
+    await close_attached_rtc_resources(
+        session_id=session_id,
+        registry=registry,
+        record=record,
+        orchestrator=orchestrator,
+    )
+
+
+async def close_attached_rtc_resources(
+    *,
+    session_id: str,
+    registry: RtcSessionRegistry,
+    record: RtcSessionRecord,
+    orchestrator: Any,
+) -> None:
     await orchestrator.close()
     record.orchestrator = None
     record.data_channel = None
@@ -32,7 +47,9 @@ async def close_rtc_runtime_resources(
         await record.media_events.put(None)
     await cancel_and_drain_media_tasks(record)
     if record.rtc_peer is not None:
+        peer = record.rtc_peer
+        record.rtc_peer = None
         with suppress(Exception):
-            await record.rtc_peer.close()
+            await peer.close()
     registry.detach_control(session_id)
     registry.close(session_id)

@@ -12,16 +12,12 @@ from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.logging_config import configure_logging
+from vox.server.app_services import app_rtc_registry, app_services
 from vox.server.middleware import RequestIdMiddleware
+from vox.server.preload import merged_preload_models, preload_models, preload_vad, should_preload_vad
 from vox.server.rtc_registry import RtcSessionRegistry
 
 logger = logging.getLogger(__name__)
-
-
-def _parse_preload_list(value: str | None) -> list[str]:
-    if not value:
-        return []
-    return [m.strip() for m in value.split(",") if m.strip()]
 
 
 def _parse_cors_origins(value: str | None) -> list[str]:
@@ -30,62 +26,32 @@ def _parse_cors_origins(value: str | None) -> list[str]:
     return [origin.strip() for origin in value.split(",") if origin.strip()]
 
 
-def _env_bool(name: str) -> bool:
-    raw = os.environ.get(name, "").strip().lower()
-    return raw in ("1", "true", "yes", "on")
-
-
-async def _preload_models(app: FastAPI, model_refs: list[str]) -> None:
-    for ref in model_refs:
-        try:
-            async with app.state.scheduler.acquire(ref):
-                pass
-            logger.info("Preloaded model: %s", ref)
-        except Exception as exc:
-            logger.warning("Failed to preload %s: %s", ref, exc)
-
-
-async def _preload_vad() -> None:
-    try:
-        from vox.streaming.vad import SileroVAD
-
-        SileroVAD()._ensure_model()
-        logger.info("Preloaded Silero VAD")
-    except Exception as exc:
-        logger.warning("Failed to preload VAD: %s", exc)
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     grpc_server = None
-    if getattr(app.state, "rtc_registry", None) is None:
-        app.state.rtc_registry = RtcSessionRegistry()
-    await app.state.scheduler.start()
+    services = app_services(app)
+    rtc_registry = app_rtc_registry(app)
+    await services.scheduler.start()
     try:
-        preload_refs = list(getattr(app.state, "preload_models", []))
-        env_preload = _parse_preload_list(os.environ.get("VOX_PRELOAD"))
-
-        seen: set[str] = set()
-        merged: list[str] = []
-        for ref in preload_refs + env_preload:
-            if ref not in seen:
-                seen.add(ref)
-                merged.append(ref)
+        merged = merged_preload_models(
+            list(getattr(app.state, "preload_models", [])),
+            os.environ.get("VOX_PRELOAD"),
+        )
         if merged:
-            await _preload_models(app, merged)
+            await preload_models(services.scheduler, merged)
 
-        if getattr(app.state, "preload_vad", False) or _env_bool("VOX_PRELOAD_VAD"):
-            await _preload_vad()
+        if should_preload_vad(getattr(app.state, "preload_vad", False)):
+            await preload_vad()
 
         grpc_port = getattr(app.state, "grpc_port", None)
         if grpc_port:
             from vox.grpc.server import start_grpc_server
 
             grpc_server = await start_grpc_server(
-                app.state.store,
-                app.state.registry,
-                app.state.scheduler,
-                app.state.rtc_registry,
+                services.store,
+                services.registry,
+                services.scheduler,
+                rtc_registry,
                 port=grpc_port,
             )
 
@@ -97,7 +63,7 @@ async def lifespan(app: FastAPI):
                 await grpc_server.stop(grace=5)
                 logger.info("gRPC server stopped")
         finally:
-            await app.state.scheduler.stop()
+            await services.scheduler.stop()
             logger.info("Vox server stopped")
 
 

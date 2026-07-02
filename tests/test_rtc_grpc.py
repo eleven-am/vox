@@ -304,7 +304,8 @@ async def test_rtc_grpc_rejects_unknown_session():
 async def test_rtc_grpc_relays_client_event_to_browser_data_channel():
     registry = RtcSessionRegistry()
     record, _ = registry.create_session()
-    record.data_channel = FakeDataChannel()
+    channel = FakeDataChannel()
+    record.data_channel = channel
     servicer = RtcServicer(
         scheduler=FakeScheduler(ScriptedTTS()),
         rtc_registry=registry,
@@ -326,13 +327,44 @@ async def test_rtc_grpc_relays_client_event_to_browser_data_channel():
     )
 
     assert any(m.WhichOneof("msg") == "rtc_session_attached" for m in out)
-    assert record.data_channel.sent
-    assert json.loads(record.data_channel.sent[0]) == {
+    assert channel.sent
+    assert json.loads(channel.sent[0]) == {
         "event": "render.image",
         "payload": {
             "url": "https://example.com/a.png",
         },
     }
+
+
+@pytest.mark.asyncio
+async def test_rtc_grpc_uses_shared_runtime_cleanup(monkeypatch):
+    registry = RtcSessionRegistry()
+    record, _ = registry.create_session()
+    servicer = RtcServicer(
+        scheduler=FakeScheduler(ScriptedTTS()),
+        rtc_registry=registry,
+    )
+    calls: list[str] = []
+    original_cleanup = rtc_servicer_module.close_rtc_runtime_resources
+
+    async def recording_cleanup(**kwargs):
+        calls.append(kwargs["session_id"])
+        await original_cleanup(**kwargs)
+
+    monkeypatch.setattr(rtc_servicer_module, "close_rtc_runtime_resources", recording_cleanup)
+
+    out = await _collect_all(
+        servicer,
+        messages=[
+            vox_pb2.RtcControlClientMessage(
+                attach=vox_pb2.RtcControlAttach(session_id=record.session_id),
+            ),
+        ],
+    )
+
+    assert any(m.WhichOneof("msg") == "rtc_session_attached" for m in out)
+    assert calls == [record.session_id]
+    assert registry.get(record.session_id) is None
 
 
 @pytest.mark.asyncio

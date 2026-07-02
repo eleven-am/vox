@@ -24,6 +24,7 @@ from vox.server.rtc_ice import (
 from vox.server.rtc_media import RtcAudioOutputTrack, pump_input_audio
 from vox.server.rtc_media_events import emit_media_event
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
+from vox.server.rtc_tasks import track_media_task
 
 
 @dataclass(frozen=True)
@@ -161,9 +162,10 @@ def bind_peer_connection_handlers(
     @pc.on("track")
     def on_track(track) -> None:
         if track.kind == "audio":
-            task = asyncio.create_task(pump_input_audio(track, lambda pcm, sr: ingest_media_audio(record, pcm, sr)))
-            record.media_tasks.add(task)
-            task.add_done_callback(record.media_tasks.discard)
+            track_media_task(
+                record,
+                pump_input_audio(track, lambda pcm, sr: ingest_media_audio(record, pcm, sr)),
+            )
 
     @pc.on("datachannel")
     def on_datachannel(channel) -> None:
@@ -177,7 +179,8 @@ def bind_peer_connection_handlers(
         def on_close() -> None:
             if record.data_channel is channel:
                 record.data_channel = None
-            task = asyncio.create_task(
+            track_media_task(
+                record,
                 emit_client_disconnected_to_control(
                     record,
                     session_id,
@@ -187,14 +190,13 @@ def bind_peer_connection_handlers(
                     data_channel_state=getattr(channel, "readyState", None),
                 )
             )
-            record.media_tasks.add(task)
-            task.add_done_callback(record.media_tasks.discard)
 
         @channel.on("message")
         def on_message(message) -> None:
-            task = asyncio.create_task(handle_browser_data_channel_message(record, session_id, message))
-            record.media_tasks.add(task)
-            task.add_done_callback(record.media_tasks.discard)
+            track_media_task(
+                record,
+                handle_browser_data_channel_message(record, session_id, message),
+            )
 
         flush_pending_client_events(record)
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -105,6 +106,23 @@ class _StoreModel:
         self.type = type("T", (), {"value": model_type})()
 
 
+def _make_store_with_voice(tmp_path: Path, *, full_name: str, voice_id: str = "clone") -> Any:
+    store = type("Store", (), {"list_models": lambda self: [_StoreModel(full_name, "tts")]})()
+    store.voices_dir = tmp_path
+    voice_dir = tmp_path / voice_id
+    voice_dir.mkdir(parents=True)
+    (voice_dir / "metadata.json").write_text(
+        json.dumps({
+            "id": voice_id,
+            "name": "Clone",
+            "language": "en",
+            "created_at": 1,
+        }),
+        encoding="utf-8",
+    )
+    return store
+
+
 def test_longform_stt_wire_round_trip_emits_ready_progress_done():
     scheduler = MockScheduler()
     adapter = FakeChunkingSTTAdapter()
@@ -205,6 +223,59 @@ def test_longform_tts_wire_rejects_unsupported_response_format():
 
     assert response["type"] == "error"
     assert "Unsupported response_format" in response["message"]
+
+
+def test_longform_tts_configure_reports_operation_error_for_unsupported_cloned_voice(tmp_path: Path):
+    scheduler = MockScheduler()
+    scheduler.register("test-tts:latest", FakeStreamingTTSAdapter())
+    store = _make_store_with_voice(tmp_path, full_name="test-tts:latest")
+    registry = type("Registry", (), {"available_models": lambda self: {}})()
+
+    with (
+        TestClient(_build_app(scheduler=scheduler, registry=registry, store=store)) as client,
+        client.websocket_connect("/v1/audio/speech/stream") as websocket,
+    ):
+        websocket.send_text(json.dumps({
+            "type": "config",
+            "response_format": "pcm16",
+            "voice": "clone",
+        }))
+        response = websocket.receive_json()
+
+    assert response["type"] == "error"
+    assert "does not support cloned voices" in response["message"]
+
+
+def test_longform_tts_malformed_json_after_config_reports_error_and_keeps_stream_open():
+    scheduler = MockScheduler()
+    scheduler.register("test-tts:latest", FakeStreamingTTSAdapter())
+    store = type("Store", (), {"list_models": lambda self: [_StoreModel("test-tts:latest", "tts")]})()
+    registry = type("Registry", (), {"available_models": lambda self: {}})()
+
+    with (
+        TestClient(_build_app(scheduler=scheduler, registry=registry, store=store)) as client,
+        client.websocket_connect("/v1/audio/speech/stream") as websocket,
+    ):
+        websocket.send_text(json.dumps({
+            "type": "config",
+            "response_format": "pcm16",
+        }))
+        ready = websocket.receive_json()
+        assert ready["type"] == "ready"
+
+        websocket.send_text("{")
+        error = websocket.receive_json()
+        websocket.send_text(json.dumps({"type": "definitely-unknown"}))
+        unknown = websocket.receive_json()
+        websocket.send_text(json.dumps({"type": "text", "text": "Hello world. " * 40}))
+        websocket.send_text(json.dumps({"type": "end"}))
+        audio_start = websocket.receive_json()
+
+    assert error["type"] == "error"
+    assert "Expecting property name" in error["message"]
+    assert unknown["type"] == "error"
+    assert "definitely-unknown" in unknown["message"]
+    assert audio_start["type"] == "audio_start"
 
 
 def test_longform_stt_wire_rejects_unsupported_input_format():

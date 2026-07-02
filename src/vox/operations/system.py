@@ -23,6 +23,26 @@ class MemoryStatus:
 
 
 @dataclass(frozen=True)
+class HealthStatusRequest:
+    pass
+
+
+@dataclass(frozen=True)
+class HealthStatusResult:
+    status: str = "ok"
+
+
+@dataclass(frozen=True)
+class ListLoadedModelsRequest:
+    pass
+
+
+@dataclass(frozen=True)
+class ListLoadedModelsResult:
+    models: list[LoadedModelInfo]
+
+
+@dataclass(frozen=True)
 class MemoryStatusRequest:
     pass
 
@@ -47,6 +67,37 @@ class UnloadIdleModelsRequest:
     pass
 
 
+def memory_status_request_from_fields() -> MemoryStatusRequest:
+    return MemoryStatusRequest()
+
+
+def health_status_request_from_fields() -> HealthStatusRequest:
+    return HealthStatusRequest()
+
+
+def list_loaded_models_request_from_fields() -> ListLoadedModelsRequest:
+    return ListLoadedModelsRequest()
+
+
+def trim_idle_memory_request_from_fields(*, min_idle_seconds: int = 0) -> TrimIdleMemoryRequest:
+    return TrimIdleMemoryRequest(min_idle_seconds=min_idle_seconds)
+
+
+def enforce_memory_budget_request_from_fields(
+    *,
+    additional_vram_bytes: int = 0,
+) -> EnforceMemoryBudgetRequest:
+    return EnforceMemoryBudgetRequest(additional_vram_bytes=additional_vram_bytes)
+
+
+def trim_model_request_from_fields(*, model_name: str) -> TrimModelRequest:
+    return TrimModelRequest(model_name=model_name)
+
+
+def unload_idle_models_request_from_fields() -> UnloadIdleModelsRequest:
+    return UnloadIdleModelsRequest()
+
+
 @dataclass(frozen=True)
 class TrimIdleResult:
     trimmed: list[str]
@@ -69,7 +120,7 @@ class UnloadIdleResult:
     snapshot: VramSnapshot
 
 
-def loaded_model_payload(model: LoadedModelInfo) -> dict[str, Any]:
+def _loaded_model_base_payload(model: LoadedModelInfo) -> dict[str, Any]:
     return {
         "name": model.name,
         "tag": model.tag,
@@ -79,10 +130,24 @@ def loaded_model_payload(model: LoadedModelInfo) -> dict[str, Any]:
         "loaded_at": model.loaded_at,
         "last_used": model.last_used,
         "ref_count": model.ref_count,
+    }
+
+
+def loaded_model_payload(model: LoadedModelInfo) -> dict[str, Any]:
+    return {
+        **_loaded_model_base_payload(model),
         "is_evictable": model.is_evictable,
         "is_trimmable": model.is_trimmable,
         "backend_memory": model.backend_memory,
     }
+
+
+def loaded_model_summary_payload(model: LoadedModelInfo) -> dict[str, Any]:
+    return _loaded_model_base_payload(model)
+
+
+def list_loaded_models_payload(result: ListLoadedModelsResult) -> dict[str, Any]:
+    return {"models": [loaded_model_summary_payload(model) for model in result.models]}
 
 
 def memory_snapshot_payload(snapshot: VramSnapshot) -> dict[str, Any]:
@@ -108,6 +173,10 @@ def memory_snapshot_payload(snapshot: VramSnapshot) -> dict[str, Any]:
 
 def memory_status_payload(result: MemoryStatus) -> dict[str, Any]:
     return memory_snapshot_payload(result.snapshot)
+
+
+def health_status_payload(result: HealthStatusResult) -> dict[str, str]:
+    return {"status": result.status}
 
 
 def trim_idle_payload(result: TrimIdleResult) -> dict[str, Any]:
@@ -142,6 +211,20 @@ def get_memory_status(
 ) -> MemoryStatus:
     _ = request
     return MemoryStatus(snapshot=scheduler.memory_snapshot())
+
+
+def get_health_status(*, request: HealthStatusRequest) -> HealthStatusResult:
+    _ = request
+    return HealthStatusResult()
+
+
+def list_loaded_models(
+    *,
+    scheduler: SystemScheduler,
+    request: ListLoadedModelsRequest,
+) -> ListLoadedModelsResult:
+    _ = request
+    return ListLoadedModelsResult(models=scheduler.list_loaded())
 
 
 async def trim_idle_memory(

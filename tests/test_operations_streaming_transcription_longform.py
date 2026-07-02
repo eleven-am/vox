@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from vox.core.adapter import STTAdapter
+from vox.core.errors import ModelNotFoundError
 from vox.core.types import (
     AdapterInfo,
     ModelFormat,
@@ -20,6 +21,7 @@ from vox.core.types import (
 from vox.operations.errors import (
     InvalidConfigError,
     NoDefaultModelError,
+    StoredModelNotFoundError,
     UnsupportedFormatError,
     WrongModelTypeError,
 )
@@ -29,6 +31,7 @@ from vox.operations.streaming_transcription_longform import (
     LongformProgressEvent,
     LongformReadyEvent,
     LongformTranscriptionSession,
+    longform_transcription_event_payload,
     normalize_longform_config,
 )
 
@@ -108,6 +111,11 @@ class FakeScheduler:
         yield self._adapter
 
 
+class MissingScheduler:
+    def acquire(self, model: str):
+        raise ModelNotFoundError(model)
+
+
 class _StoreModel:
     def __init__(self, full_name: str, mtype: str) -> None:
         self.full_name = full_name
@@ -165,6 +173,55 @@ def test_normalize_requires_model_or_default():
             chunk_ms=None, overlap_ms=None,
             registry=_make_registry(), store=_make_store(),
         )
+
+
+def test_longform_transcription_event_payloads_preserve_wire_contract():
+    assert longform_transcription_event_payload(
+        LongformReadyEvent(
+            model="m:1",
+            sample_rate=16_000,
+            input_format="pcm16",
+            chunk_ms=1000,
+            overlap_ms=200,
+        )
+    ) == {
+        "type": "ready",
+        "model": "m:1",
+        "sample_rate": 16_000,
+        "input_format": "pcm16",
+        "chunk_ms": 1000,
+        "overlap_ms": 200,
+    }
+    assert longform_transcription_event_payload(
+        LongformProgressEvent(uploaded_ms=2000, processed_ms=1600, chunks_completed=2)
+    ) == {
+        "type": "progress",
+        "uploaded_ms": 2000,
+        "processed_ms": 1600,
+        "chunks_completed": 2,
+    }
+    assert longform_transcription_event_payload(
+        LongformDoneEvent(
+            model="m:1",
+            text="hello",
+            language="en",
+            duration_ms=1000,
+            processing_ms=50,
+            segments=({"text": "hello", "start_ms": 0, "end_ms": 1000},),
+        )
+    ) == {
+        "type": "done",
+        "model": "m:1",
+        "text": "hello",
+        "language": "en",
+        "duration_ms": 1000,
+        "processing_ms": 50,
+        "segments": [{"text": "hello", "start_ms": 0, "end_ms": 1000}],
+    }
+    assert longform_transcription_event_payload(LongformErrorEvent(message="boom")) == {
+        "type": "error",
+        "message": "boom",
+    }
 
 
 @pytest.mark.asyncio
@@ -270,4 +327,79 @@ async def test_configure_rejects_non_stt_model():
     )
     with pytest.raises(WrongModelTypeError):
         await session.configure(config)
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_configure_maps_missing_stored_model_to_operation_error():
+    session = LongformTranscriptionSession(
+        scheduler=MissingScheduler(),
+        registry=_make_registry(), store=_make_store(stt="missing:latest"),
+    )
+    config = normalize_longform_config(
+        model="missing:latest", sample_rate=16_000, input_format="pcm16",
+        language=None, word_timestamps=False, temperature=0.0,
+        chunk_ms=1_000, overlap_ms=0,
+        registry=_make_registry(), store=_make_store(stt="missing:latest"),
+    )
+
+    with pytest.raises(StoredModelNotFoundError, match="missing:latest"):
+        await session.configure(config)
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_configure_or_report_emits_terminal_error_event():
+    session = LongformTranscriptionSession(
+        scheduler=MissingScheduler(),
+        registry=_make_registry(), store=_make_store(stt="missing:latest"),
+    )
+    config = normalize_longform_config(
+        model="missing:latest", sample_rate=16_000, input_format="pcm16",
+        language=None, word_timestamps=False, temperature=0.0,
+        chunk_ms=1_000, overlap_ms=0,
+        registry=_make_registry(), store=_make_store(stt="missing:latest"),
+    )
+
+    ok = await session.configure_or_report(config)
+    events = await _drain_events(session)
+
+    assert ok is False
+    assert len(events) == 1
+    assert isinstance(events[0], LongformErrorEvent)
+    assert "missing:latest" in events[0].message
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_submit_chunk_or_report_emits_not_configured_error():
+    session = LongformTranscriptionSession(
+        scheduler=FakeScheduler(FakeChunkingSTTAdapter()),
+        registry=_make_registry(), store=_make_store(stt="m:1"),
+    )
+
+    ok = await session.submit_chunk_or_report(b"\x00" * 16)
+    events = await _drain_events(session)
+
+    assert ok is False
+    assert len(events) == 1
+    assert isinstance(events[0], LongformErrorEvent)
+    assert events[0].message == "Session not configured"
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_end_of_stream_or_report_emits_not_configured_error():
+    session = LongformTranscriptionSession(
+        scheduler=FakeScheduler(FakeChunkingSTTAdapter()),
+        registry=_make_registry(), store=_make_store(stt="m:1"),
+    )
+
+    ok = await session.end_of_stream_or_report()
+    events = await _drain_events(session)
+
+    assert ok is False
+    assert len(events) == 1
+    assert isinstance(events[0], LongformErrorEvent)
+    assert events[0].message == "Session not configured"
     await session.close()

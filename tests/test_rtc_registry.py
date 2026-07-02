@@ -4,12 +4,14 @@ import asyncio
 
 import pytest
 
+from vox.operations.conversation import WIRE_BROWSER_EVENT, WIRE_RTC_CLIENT_DISCONNECTED
 from vox.server.rtc_client_events import (
-    WIRE_BROWSER_EVENT,
-    WIRE_RTC_CLIENT_DISCONNECTED,
+    BrowserDataChannelEvent,
     emit_client_disconnected_to_control,
+    flush_pending_client_events,
     handle_browser_data_channel_message,
-    parse_client_event_message,
+    parse_browser_data_channel_message,
+    send_client_event_to_browser,
 )
 from vox.server.rtc_registry import RtcSessionRegistry
 
@@ -74,17 +76,24 @@ def test_control_attach_is_exclusive():
     assert registry.attach_control(record.session_id, now=1001.0) is record
 
 
-def test_parse_client_event_message_uses_shared_command_validation():
-    assert parse_client_event_message({"event": "render.url", "payload": {"url": "https://example.com"}}) == (
-        "render.url",
-        {"url": "https://example.com"},
-    )
+@pytest.mark.asyncio
+async def test_close_tracks_peer_teardown_with_shared_task_owner():
+    registry = RtcSessionRegistry()
+    record, _ = registry.create_session(now=1000.0)
 
-    with pytest.raises(ValueError, match="client.event requires a JSON object"):
-        parse_client_event_message("not an object")
+    closed = asyncio.Event()
 
-    with pytest.raises(ValueError, match="client.event requires a non-empty string 'event'"):
-        parse_client_event_message({"payload": {}})
+    class Peer:
+        async def close(self) -> None:
+            closed.set()
+
+    record.rtc_peer = Peer()
+
+    registry.close(record.session_id)
+
+    await asyncio.wait_for(closed.wait(), timeout=0.1)
+    await asyncio.sleep(0)
+    assert registry._teardown_tasks == set()
 
 
 @pytest.mark.asyncio
@@ -144,6 +153,23 @@ async def test_data_channel_message_emits_browser_event_to_control():
     }
 
 
+def test_parse_browser_data_channel_message_accepts_text_and_bytes():
+    assert parse_browser_data_channel_message(
+        '{"event":"ui.select","payload":{"id":"choice-a"}}',
+        session_id="rtc_1",
+    ) == BrowserDataChannelEvent(name="ui.select", payload={"id": "choice-a"})
+    assert parse_browser_data_channel_message(
+        b'{"event":"ui.select","payload":{"id":"choice-a"}}',
+        session_id="rtc_1",
+    ) == BrowserDataChannelEvent(name="ui.select", payload={"id": "choice-a"})
+
+
+def test_parse_browser_data_channel_message_drops_malformed_payloads():
+    assert parse_browser_data_channel_message(b"\xff", session_id="rtc_1") is None
+    assert parse_browser_data_channel_message("not-json", session_id="rtc_1") is None
+    assert parse_browser_data_channel_message('{"payload":{}}', session_id="rtc_1") is None
+
+
 @pytest.mark.asyncio
 async def test_data_channel_message_drops_malformed_browser_events():
     registry = RtcSessionRegistry()
@@ -155,3 +181,47 @@ async def test_data_channel_message_drops_malformed_browser_events():
 
     assert record.control_events is not None
     assert record.control_events.empty()
+
+
+def test_client_events_queue_until_data_channel_opens():
+    registry = RtcSessionRegistry()
+    record, _ = registry.create_session(now=1000.0)
+
+    send_client_event_to_browser(record, "ui.toast", {"message": "hi"})
+
+    assert len(record.pending_client_events) == 1
+
+    class Channel:
+        readyState = "open"
+
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        def send(self, payload: str) -> None:
+            self.sent.append(payload)
+
+    channel = Channel()
+    record.data_channel = channel
+
+    flush_pending_client_events(record)
+
+    assert record.pending_client_events == []
+    assert channel.sent == ['{"event": "ui.toast", "payload": {"message": "hi"}}']
+
+
+def test_flush_pending_client_events_suppresses_send_errors():
+    registry = RtcSessionRegistry()
+    record, _ = registry.create_session(now=1000.0)
+    send_client_event_to_browser(record, "ui.toast", {"message": "hi"})
+
+    class FailingChannel:
+        readyState = "open"
+
+        def send(self, payload: str) -> None:
+            raise RuntimeError("browser channel closed during flush")
+
+    record.data_channel = FailingChannel()
+
+    flush_pending_client_events(record)
+
+    assert record.pending_client_events == []

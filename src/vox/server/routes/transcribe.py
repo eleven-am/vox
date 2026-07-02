@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 
 from vox.operations.transcription import (
     format_hint_from_content_type,
-    openai_transcription_payload,
+    openai_transcription_response,
     parse_timestamp_granularities,
     transcribe,
     transcription_request_from_fields,
 )
-from vox.server.operation_errors import map_operation_errors_to_http
+from vox.server.app_services import app_services
+from vox.server.operation_errors import map_route_errors_to_http
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -28,30 +29,29 @@ async def _run_transcribe(
     temperature: float,
     annotate_text: bool = False,
 ):
-    scheduler = request.app.state.scheduler
-    registry = request.app.state.registry
-    store = request.app.state.store
+    services = app_services(request)
 
     data = await file.read()
-    op_request = transcription_request_from_fields(
-        audio=data,
-        model=model or "",
-        format_hint=format_hint_from_content_type(file.content_type),
-        language=language,
-        word_timestamps=word_timestamps,
-        temperature=temperature,
-        annotate_text=annotate_text,
-    )
-    try:
-        with map_operation_errors_to_http():
-            bundle = await transcribe(
-                scheduler=scheduler, registry=registry, store=store, request=op_request,
-            )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception(f"Transcription failed for model {model}")
-        raise HTTPException(status_code=500, detail="Internal transcription error") from exc
+    with map_route_errors_to_http(
+        logger=logger,
+        unexpected_detail="Internal transcription error",
+        unexpected_log_message=f"Transcription failed for model {model}",
+    ):
+        op_request = transcription_request_from_fields(
+            audio=data,
+            model=model or "",
+            format_hint=format_hint_from_content_type(file.content_type),
+            language=language,
+            word_timestamps=word_timestamps,
+            temperature=temperature,
+            annotate_text=annotate_text,
+        )
+        bundle = await transcribe(
+            scheduler=services.scheduler,
+            registry=services.registry,
+            store=services.store,
+            request=op_request,
+        )
 
     return bundle
 
@@ -80,15 +80,13 @@ async def openai_transcribe(
         request=request, file=file, model=model, language=language,
         word_timestamps="word" in granularities, temperature=temperature, annotate_text=verbose,
     )
+    response = openai_transcription_response(
+        bundle,
+        response_format=response_format,
+        timestamp_granularities=granularities,
+    )
 
-    if response_format == "text":
-        return PlainTextResponse(bundle.result.text)
+    if response.is_text:
+        return PlainTextResponse(str(response.payload))
 
-    if verbose:
-        return openai_transcription_payload(
-            bundle,
-            include_segments="segment" in granularities,
-            include_words="word" in granularities,
-        )
-
-    return {"text": bundle.result.text}
+    return response.payload

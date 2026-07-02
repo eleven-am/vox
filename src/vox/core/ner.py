@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-import importlib
 import logging
-import os
 import re
-import subprocess
-import sys
 import threading
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from vox.core.adapter_runtime import (
+    activate_runtime_path,
+    install_target_runtime_requirements,
+    runtime_root,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -97,63 +99,30 @@ _lock = threading.Lock()
 
 
 def _runtime_root() -> Path:
-    vox_home = Path(os.environ.get("VOX_HOME", str(Path.home() / ".vox")))
-    return vox_home / "runtime" / "ner"
+    return runtime_root() / "ner"
 
 
 def _ensure_runtime_path() -> str:
-    runtime_path = str(_runtime_root())
-    _runtime_root().mkdir(parents=True, exist_ok=True)
-    if runtime_path in sys.path:
-        sys.path.remove(runtime_path)
-    sys.path.insert(0, runtime_path)
-    importlib.invalidate_caches()
-    return runtime_path
+    runtime_dir = _runtime_root()
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    return activate_runtime_path(
+        runtime_dir,
+        root=runtime_dir.parent,
+        prune_sibling_runtimes=False,
+    )
 
 
 def _install_runtime_requirements(runtime_path: str, requirements: list[str], *, no_deps: bool) -> bool:
-    installers = [
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "install",
-            "--target",
-            runtime_path,
-            "--upgrade",
-            *requirements,
-        ],
-        [
-            "uv",
-            "pip",
-            "install",
-            "--python",
-            sys.executable,
-            "--target",
-            runtime_path,
-            "--upgrade",
-            *requirements,
-        ],
-    ]
-    if no_deps:
-        for installer in installers:
-            installer.insert(-len(requirements), "--no-deps")
-
-    for installer in installers:
-        try:
-            result = subprocess.run(
-                installer,
-                capture_output=True,
-                text=True,
-                timeout=1800,
-            )
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            continue
-        if result.returncode == 0:
-            logger.info("NER: installed runtime requirements into %s: %s", runtime_path, requirements)
-            return True
-        logger.warning("NER: %s failed: %s", " ".join(installer), result.stderr)
-    return False
+    installed = install_target_runtime_requirements(
+        Path(runtime_path),
+        requirements,
+        no_deps=no_deps,
+        timeout=1800,
+        context="NER runtime",
+    )
+    if installed:
+        logger.info("NER: installed runtime requirements into %s: %s", runtime_path, requirements)
+    return installed
 
 
 def _spacy_model_installed(runtime_root: Path, model_name: str) -> bool:

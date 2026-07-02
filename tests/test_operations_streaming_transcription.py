@@ -25,12 +25,16 @@ from vox.operations.streaming_transcription import (
     DoneEvent,
     ErrorEvent,
     SessionReadyEvent,
+    SpeechStartedEvent,
+    SpeechStoppedEvent,
     StreamingTranscriptionConfig,
     StreamingTranscriptionSession,
     TranscriptEvent,
-    streaming_operation_error_message,
+    streaming_transcription_config_from_fields,
+    streaming_transcription_event_payload,
 )
-from vox.streaming.types import SpeechStarted
+from vox.operations.streaming_reporting import streaming_operation_error_message
+from vox.streaming.types import SpeechStarted, StreamTranscript
 
 
 class FakeSTTAdapter(STTAdapter):
@@ -168,6 +172,79 @@ def test_streaming_operation_error_message_special_cases_missing_default_stt():
     )
 
 
+def test_streaming_config_from_fields_preserves_transport_defaults():
+    config = streaming_transcription_config_from_fields(
+        model=None,
+        language="",
+        sample_rate=0,
+        partials=True,
+        partial_window_ms=0,
+        partial_stride_ms=0,
+        include_word_timestamps=True,
+        temperature=None,
+    )
+
+    assert config == StreamingTranscriptionConfig(
+        model="",
+        language="en",
+        sample_rate=16_000,
+        partials=True,
+        partial_window_ms=1500,
+        partial_stride_ms=700,
+        include_word_timestamps=True,
+        temperature=0.0,
+    )
+
+
+def test_streaming_event_payload_preserves_realtime_wire_contract():
+    transcript = StreamTranscript(
+        text="hello",
+        is_partial=False,
+        start_ms=100,
+        end_ms=400,
+        audio_duration_ms=300,
+        processing_duration_ms=20,
+        model="m:1",
+        eou_probability=0.8,
+        entities=[{"type": "PERSON", "text": "Roy"}],
+        topics=["topic"],
+        words=[{"word": "hello", "start_ms": 100, "end_ms": 400}],
+        segments=[{"text": "hello", "start_ms": 100, "end_ms": 400}],
+    )
+
+    assert streaming_transcription_event_payload(SessionReadyEvent("m:1", "en", 16_000)) == {
+        "type": "ready",
+    }
+    assert streaming_transcription_event_payload(SpeechStartedEvent(timestamp_ms=10)) == {
+        "type": "speech_started",
+        "timestamp_ms": 10,
+    }
+    assert streaming_transcription_event_payload(SpeechStoppedEvent(timestamp_ms=20)) == {
+        "type": "speech_stopped",
+        "timestamp_ms": 20,
+    }
+    assert streaming_transcription_event_payload(TranscriptEvent(transcript=transcript)) == {
+        "type": "transcript",
+        "text": "hello",
+        "is_partial": False,
+        "start_ms": 100,
+        "end_ms": 400,
+        "audio_duration_ms": 300,
+        "processing_duration_ms": 20,
+        "model": "m:1",
+        "eou_probability": 0.8,
+        "entities": [{"type": "PERSON", "text": "Roy"}],
+        "topics": ["topic"],
+        "words": [{"word": "hello", "start_ms": 100, "end_ms": 400}],
+        "segments": [{"text": "hello", "start_ms": 100, "end_ms": 400}],
+    }
+    assert streaming_transcription_event_payload(ErrorEvent(message="boom")) == {
+        "type": "error",
+        "message": "boom",
+    }
+    assert streaming_transcription_event_payload(DoneEvent()) is None
+
+
 @pytest.mark.asyncio
 async def test_report_operation_error_uses_streaming_message_policy():
     session = StreamingTranscriptionSession(
@@ -182,6 +259,52 @@ async def test_report_operation_error_uses_streaming_message_policy():
 
     errors = [event for event in events if isinstance(event, ErrorEvent)]
     assert errors[0].message == "No STT model specified and no default STT model available"
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_configure_or_report_emits_in_band_operation_error():
+    session = StreamingTranscriptionSession(
+        scheduler=FakeScheduler(FakeSTTAdapter()),
+        registry=_make_registry(),
+        store=_make_store(),
+    )
+
+    ok = await session.configure_or_report(StreamingTranscriptionConfig())
+    await session.end_of_stream()
+    events = await _collect_events(session)
+
+    assert ok is False
+    errors = [event for event in events if isinstance(event, ErrorEvent)]
+    assert errors[0].message == "No STT model specified and no default STT model available"
+    assert any(isinstance(event, DoneEvent) for event in events)
+    await session.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method_name", "args", "kwargs"),
+    [
+        ("submit_pcm16_or_report", (b"\x00" * 100,), {}),
+        ("submit_opus_or_report", (b"\x00" * 12,), {"sample_rate": 48_000, "channels": 1}),
+        ("submit_encoded_or_report", (b"not-audio",), {"format_hint": "wav"}),
+    ],
+)
+async def test_audio_submit_or_report_emits_not_configured_errors(method_name, args, kwargs):
+    session = StreamingTranscriptionSession(
+        scheduler=FakeScheduler(FakeSTTAdapter()),
+        registry=_make_registry(),
+        store=_make_store(),
+    )
+
+    method = getattr(session, method_name)
+    ok = await method(*args, **kwargs)
+    await session.end_of_stream()
+    events = await _collect_events(session)
+
+    assert ok is False
+    errors = [event for event in events if isinstance(event, ErrorEvent)]
+    assert errors[0].message == "Session not configured"
     await session.close()
 
 

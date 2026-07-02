@@ -16,6 +16,19 @@ from vox.core.types import (
     VoiceInfo,
 )
 from vox.operations.conversation import (
+    SESSION_UPDATE_STT_MODEL_FIELDS,
+    SESSION_UPDATE_TTS_MODEL_FIELDS,
+    SESSION_UPDATE_TURN_DETECTOR_FIELDS,
+    SESSION_UPDATE_TURN_PROFILE_FIELDS,
+    SESSION_UPDATE_VAD_BACKEND_FIELDS,
+    SESSION_UPDATE_POLICY_FIELDS,
+    RESPONSE_ALLOW_INTERRUPTION_FIELD,
+    RESPONSE_COMMAND_ENVELOPE_FIELDS,
+    RESPONSE_TEXT_COMPATIBILITY_FIELDS,
+    WIRE_BROWSER_EVENT,
+    WIRE_CLIENT_EVENT,
+    WIRE_RTC_CLIENT_DISCONNECTED,
+    WIRE_RTC_SESSION_ATTACHED,
     ConvAudioClearEvent,
     ConvAudioDeltaEvent,
     ConvDoneEvent,
@@ -28,13 +41,27 @@ from vox.operations.conversation import (
     ConvTranscriptDeltaEvent,
     ConvTranscriptDoneEvent,
     ConvTurnEouPredictedEvent,
-    _wire_event_to_session_event,
+    browser_event_wire,
+    client_disconnected_wire,
+    client_event_command_from_payload_json,
+    client_event_command_from_parts,
+    client_event_payload,
+    client_event_payload_json,
+    control_event_client_payload_json,
+    control_event_as_client_event,
+    conversation_wire_event_payload,
     execute_conversation_command,
     execute_rtc_control_command,
+    parse_conversation_wire_event,
     parse_session_update,
     pondsocket_event_to_conversation_command,
+    rtc_session_attached_payload,
+    rtc_session_attached_wire,
     serialize_conversation_event,
     serialize_session_config,
+    session_update_payload,
+    response_command_payloads,
+    response_text_fields,
 )
 from vox.operations.errors import (
     InvalidConfigError,
@@ -229,6 +256,33 @@ async def test_execute_conversation_command_replaces_response_text():
 
 
 @pytest.mark.asyncio
+async def test_response_command_compatibility_policy_is_named_and_ordered():
+    spy = CommandSpy()
+
+    message = {
+        "type": "response.delta",
+        "delta": "root fallback",
+        "allow_interruptions": True,
+        "response": {
+            "text": "nested compatibility",
+            "delta": "nested canonical",
+            "allow_interruptions": False,
+        },
+    }
+
+    await execute_conversation_command(spy, message)
+
+    assert RESPONSE_COMMAND_ENVELOPE_FIELDS == ("response",)
+    assert RESPONSE_TEXT_COMPATIBILITY_FIELDS == ("text", "delta")
+    assert RESPONSE_ALLOW_INTERRUPTION_FIELD == "allow_interruptions"
+    assert response_text_fields("delta") == ("delta", "text")
+    assert response_command_payloads(message) == (message["response"], message)
+    assert spy.calls == [
+        ("append_response_text", ("nested canonical",), {"allow_interruptions": False})
+    ]
+
+
+@pytest.mark.asyncio
 async def test_execute_conversation_command_rejects_unknown_type():
     spy = CommandSpy()
 
@@ -321,6 +375,94 @@ async def test_execute_rtc_control_command_dispatches_client_event():
 
     assert received == [("ui.toast", {"message": "hi"})]
     assert spy.calls == []
+
+
+def test_client_event_payloads_are_operation_owned_contracts():
+    assert client_event_command_from_parts(" ui.toast ", {"message": "hi"}) == {
+        "type": "client.event",
+        "event": "ui.toast",
+        "payload": {"message": "hi"},
+    }
+    assert client_event_payload("ui.toast", {"message": "hi"}) == {
+        "event": "ui.toast",
+        "payload": {"message": "hi"},
+    }
+    assert client_event_payload_json("ui.toast", {"message": "hi"}) == (
+        '{"event": "ui.toast", "payload": {"message": "hi"}}'
+    )
+    assert control_event_client_payload_json({"session_id": "rtc_1"}) == '{"session_id": "rtc_1"}'
+    assert browser_event_wire("rtc_1", "mic.level", {"value": 0.5}) == {
+        "type": WIRE_BROWSER_EVENT,
+        "session_id": "rtc_1",
+        "event": "mic.level",
+        "payload": {"value": 0.5},
+    }
+    assert client_disconnected_wire(
+        "rtc_1",
+        reason="peer_connection_closed",
+        connection_state="closed",
+        ice_connection_state="closed",
+        data_channel_state="closed",
+    ) == {
+        "type": WIRE_RTC_CLIENT_DISCONNECTED,
+        "session_id": "rtc_1",
+        "reason": "peer_connection_closed",
+        "connection_state": "closed",
+        "ice_connection_state": "closed",
+        "data_channel_state": "closed",
+    }
+
+
+def test_client_event_command_rejects_empty_event_name():
+    with pytest.raises(InvalidConfigError, match="non-empty string 'event'"):
+        client_event_command_from_parts(" ", {"message": "hi"})
+
+
+def test_client_event_command_from_payload_json_decodes_payload_at_operation_boundary():
+    assert client_event_command_from_payload_json("app.marker", '{"n": 1}') == {
+        "type": "client.event",
+        "event": "app.marker",
+        "payload": {"n": 1},
+    }
+    assert client_event_command_from_payload_json("app.marker", "") == {
+        "type": "client.event",
+        "event": "app.marker",
+        "payload": None,
+    }
+
+    with pytest.raises(InvalidConfigError, match="requires valid payload JSON"):
+        client_event_command_from_payload_json("app.marker", "{")
+
+
+def test_control_event_as_client_event_preserves_explicit_client_event_contract():
+    assert control_event_as_client_event(
+        {"type": WIRE_CLIENT_EVENT, "event": "render.url", "payload": {"url": "https://example.com"}}
+    ) == ("render.url", {"url": "https://example.com"})
+
+    assert control_event_as_client_event(
+        {"type": WIRE_RTC_CLIENT_DISCONNECTED, "session_id": "rtc_1", "reason": "closed"}
+    ) == (
+        WIRE_RTC_CLIENT_DISCONNECTED,
+        {"session_id": "rtc_1", "reason": "closed"},
+    )
+
+    with pytest.raises(InvalidConfigError, match="control event requires a non-empty string 'type'"):
+        control_event_as_client_event({"event": "missing.type"})
+
+
+def test_conversation_wire_event_payload_is_operation_owned_transport_contract():
+    assert conversation_wire_event_payload(
+        {"type": "response.created", "response_id": "resp_1", "session_id": "rtc_1"}
+    ) == (
+        "response.created",
+        {"response_id": "resp_1", "session_id": "rtc_1"},
+    )
+
+    with pytest.raises(
+        InvalidConfigError,
+        match="conversation wire event requires a non-empty string 'type'",
+    ):
+        conversation_wire_event_payload({"response_id": "resp_1"})
 
 
 def test_parse_session_update_accepts_turn_policy_overrides():
@@ -417,6 +559,92 @@ def test_parse_session_update_rejects_unknown_turn_profile():
         })
 
 
+def test_parse_session_update_compatibility_fields_are_explicit_policy():
+    assert SESSION_UPDATE_STT_MODEL_FIELDS == (
+        "stt_model",
+        "input_audio_transcription.model",
+    )
+    assert SESSION_UPDATE_TTS_MODEL_FIELDS == (
+        "tts_model",
+        "output_audio_generation.model",
+    )
+    assert SESSION_UPDATE_TURN_PROFILE_FIELDS == ("turn_profile", "profile")
+    assert SESSION_UPDATE_VAD_BACKEND_FIELDS == ("vad_backend", "vad")
+    assert SESSION_UPDATE_TURN_DETECTOR_FIELDS == ("turn_detector", "eou_model")
+    assert SESSION_UPDATE_POLICY_FIELDS == ("turn_policy", "policy")
+
+    config = parse_session_update({
+        "session": {
+            "input_audio_transcription": {"model": "legacy-stt:1"},
+            "output_audio_generation": {"model": "legacy-tts:1"},
+            "profile": "browser",
+            "vad": "silero",
+            "eou_model": "livekit",
+        },
+    })
+
+    assert config.stt_model == "legacy-stt:1"
+    assert config.tts_model == "legacy-tts:1"
+    assert config.turn_profile == "browser_default"
+    assert config.vad_backend == "silero"
+    assert config.turn_detector == "livekit"
+
+
+def test_session_update_payload_accepts_root_or_session_envelope_explicitly():
+    root = {"stt_model": "x:1", "tts_model": "y:1"}
+    wrapped = {"session": root}
+
+    assert session_update_payload(root) is root
+    assert session_update_payload(wrapped) is root
+    assert session_update_payload({"session": None, **root})["stt_model"] == "x:1"
+
+
+def test_parse_session_update_accepts_policy_alias_with_canonical_precedence():
+    canonical = parse_session_update({
+        "session": {
+            "stt_model": "x:1",
+            "tts_model": "y:1",
+            "turn_policy": {"vad_min_silence_ms": 550},
+            "policy": {"vad_min_silence_ms": 1200},
+        },
+    })
+    alias = parse_session_update({
+        "session": {
+            "stt_model": "x:1",
+            "tts_model": "y:1",
+            "policy": {"vad_min_silence_ms": 1200},
+        },
+    })
+
+    assert canonical.policy is not None
+    assert canonical.policy.vad_min_silence_ms == 550
+    assert alias.policy is not None
+    assert alias.policy.vad_min_silence_ms == 1200
+
+
+def test_parse_session_update_prefers_canonical_fields_over_compatibility_aliases():
+    config = parse_session_update({
+        "session": {
+            "stt_model": "canonical-stt:1",
+            "input_audio_transcription": {"model": "legacy-stt:1"},
+            "tts_model": "canonical-tts:1",
+            "output_audio_generation": {"model": "legacy-tts:1"},
+            "turn_profile": "headset",
+            "profile": "browser",
+            "vad_backend": "silero",
+            "vad": "other-vad",
+            "turn_detector": "livekit",
+            "eou_model": "other-eou",
+        },
+    })
+
+    assert config.stt_model == "canonical-stt:1"
+    assert config.tts_model == "canonical-tts:1"
+    assert config.turn_profile == "headset"
+    assert config.vad_backend == "silero"
+    assert config.turn_detector == "livekit"
+
+
 def test_serialize_session_config_round_trip_includes_policy_and_audio_format():
     config = parse_session_update({
         "session": {"stt_model": "x:1", "tts_model": "y:1", "sample_rate": 48_000},
@@ -491,14 +719,22 @@ def test_serialize_conversation_event_uses_operation_wire_error_constant():
     }
 
 
+def test_rtc_session_attached_contract_is_operation_owned():
+    assert rtc_session_attached_payload("rtc_123") == {"session_id": "rtc_123"}
+    assert rtc_session_attached_wire("rtc_123") == {
+        "type": WIRE_RTC_SESSION_ATTACHED,
+        "session_id": "rtc_123",
+    }
+
+
 def test_audio_clear_wire_event_maps_to_operation_event():
-    event = _wire_event_to_session_event({"type": "response.audio.clear", "response_id": "resp_1"})
+    event = parse_conversation_wire_event({"type": "response.audio.clear", "response_id": "resp_1"})
     assert isinstance(event, ConvAudioClearEvent)
     assert event.response_id == "resp_1"
 
 
 def test_interruption_detected_wire_event_maps_to_operation_event():
-    event = _wire_event_to_session_event({
+    event = parse_conversation_wire_event({
         "type": "interruption.detected",
         "response_id": "resp_1",
         "vad_active_ms": 320,
@@ -509,7 +745,7 @@ def test_interruption_detected_wire_event_maps_to_operation_event():
 
 
 def test_transcript_delta_wire_event_maps_to_operation_event():
-    event = _wire_event_to_session_event({
+    event = parse_conversation_wire_event({
         "type": "conversation.item.input_audio_transcription.delta",
         "delta": "hello there",
         "start_ms": 100,
@@ -522,7 +758,7 @@ def test_transcript_delta_wire_event_maps_to_operation_event():
 
 
 def test_interruption_false_positive_preserves_reason():
-    event = _wire_event_to_session_event({
+    event = parse_conversation_wire_event({
         "type": "interruption.false_positive",
         "response_id": "resp_1",
         "vad_active_ms": 120,
@@ -534,7 +770,7 @@ def test_interruption_false_positive_preserves_reason():
 
 
 def test_turn_eou_predicted_wire_event_maps_to_operation_event():
-    event = _wire_event_to_session_event({
+    event = parse_conversation_wire_event({
         "type": "turn.eou.predicted",
         "probability": 0.82,
         "threshold": 0.5,

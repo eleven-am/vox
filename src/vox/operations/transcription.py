@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
@@ -12,16 +13,15 @@ from vox.audio.merger import merge_transcripts
 from vox.audio.pipeline import prepare_for_stt_chunks
 from vox.audio.stt_runner import run_stt, run_stt_with_leading_context
 from vox.core.adapter import STTAdapter
-from vox.core.errors import ModelNotFoundError, VoxError
+from vox.core.errors import VoxError
 from vox.core.ner import annotate
 from vox.core.types import TranscribeResult
-from vox.operations.defaults import resolve_default_model
+from vox.operations.defaults import resolve_requested_or_default_model
 from vox.operations.errors import (
     EmptyAudioError,
-    NoDefaultModelError,
-    StoredModelNotFoundError,
     WrongModelTypeError,
 )
+from vox.operations.model_acquisition import acquire_typed_adapter
 
 logger = logging.getLogger(__name__)
 
@@ -122,10 +122,45 @@ class TranscriptionResultBundle:
     topics: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class OpenAITranscriptionResponse:
+    response_format: str
+    payload: str | dict[str, Any]
+
+    @property
+    def is_text(self) -> bool:
+        return self.response_format == "text"
+
+
 def milliseconds_to_seconds(value: int | None) -> float:
     if value is None:
         return 0.0
     return value / 1000.0
+
+
+def openai_transcription_response(
+    bundle: TranscriptionResultBundle,
+    *,
+    response_format: str,
+    timestamp_granularities: set[str],
+) -> OpenAITranscriptionResponse:
+    if response_format == "text":
+        return OpenAITranscriptionResponse(response_format="text", payload=bundle.result.text)
+
+    if response_format == "verbose_json":
+        return OpenAITranscriptionResponse(
+            response_format="verbose_json",
+            payload=openai_transcription_payload(
+                bundle,
+                include_segments="segment" in timestamp_granularities,
+                include_words="word" in timestamp_granularities,
+            ),
+        )
+
+    return OpenAITranscriptionResponse(
+        response_format=response_format or "json",
+        payload={"text": bundle.result.text},
+    )
 
 
 def openai_transcription_payload(
@@ -185,6 +220,59 @@ def openai_words_payload(result: TranscribeResult) -> list[dict[str, Any]]:
     ]
 
 
+def entity_payload(entity: Any) -> dict[str, Any]:
+    return {
+        "type": str(_field(entity, "type", "")),
+        "text": str(_field(entity, "text", "")),
+        "start_char": _int_field(entity, "start_char"),
+        "end_char": _int_field(entity, "end_char"),
+    }
+
+
+def entity_payloads(entities: Iterable[Any] | None) -> list[dict[str, Any]]:
+    return [entity_payload(entity) for entity in entities or ()]
+
+
+def word_timestamp_payload(word: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "word": str(_field(word, "word", "")),
+        "start_ms": _int_field(word, "start_ms"),
+        "end_ms": _int_field(word, "end_ms"),
+    }
+    confidence = _field(word, "confidence", None)
+    if confidence is not None:
+        payload["confidence"] = float(confidence)
+    return payload
+
+
+def word_timestamp_payloads(words: Iterable[Any] | None) -> list[dict[str, Any]]:
+    return [word_timestamp_payload(word) for word in words or ()]
+
+
+def transcript_segment_payload(segment: Any) -> dict[str, Any]:
+    return {
+        "text": str(_field(segment, "text", "")),
+        "start_ms": _int_field(segment, "start_ms"),
+        "end_ms": _int_field(segment, "end_ms"),
+        "words": word_timestamp_payloads(_field(segment, "words", ())),
+    }
+
+
+def transcript_segment_payloads(segments: Iterable[Any] | None) -> list[dict[str, Any]]:
+    return [transcript_segment_payload(segment) for segment in segments or ()]
+
+
+def _field(source: Any, key: str, default: Any = None) -> Any:
+    if isinstance(source, Mapping):
+        return source.get(key, default)
+    return getattr(source, key, default)
+
+
+def _int_field(source: Any, key: str) -> int:
+    value = _field(source, key, None)
+    return int(value) if value is not None else 0
+
+
 async def transcribe(
     *,
     scheduler: Any,
@@ -192,9 +280,7 @@ async def transcribe(
     store: Any | None,
     request: TranscriptionRequest,
 ) -> TranscriptionResultBundle:
-    model = request.model or resolve_default_model("stt", registry, store) or ""
-    if not model:
-        raise NoDefaultModelError("stt")
+    model = resolve_requested_or_default_model("stt", request.model, registry, store)
 
     if not request.audio:
         raise EmptyAudioError()
@@ -204,9 +290,12 @@ async def transcribe(
 
     start_time = time.perf_counter()
     try:
-        async with scheduler.acquire(model) as adapter:
-            if not isinstance(adapter, STTAdapter):
-                raise WrongModelTypeError(model, "STT")
+        async with acquire_typed_adapter(
+            scheduler,
+            model=model,
+            adapter_type=STTAdapter,
+            expected_type="STT",
+        ) as adapter:
             per_chunk: list[tuple] = []
             for chunk in chunks:
                 partial = await _transcribe_chunk(
@@ -221,8 +310,6 @@ async def transcribe(
                 )
                 per_chunk.append((partial, chunk.offset_ms))
             result = merge_transcripts(per_chunk)
-    except ModelNotFoundError as exc:
-        raise StoredModelNotFoundError(exc.model) from exc
     except (WrongModelTypeError, VoxError):
         raise
     except Exception:
@@ -392,6 +479,10 @@ def _first_signal_ms(audio, *, sample_rate: int) -> int | None:
 class AnnotateRequest:
     text: str = ""
     language: str = "en"
+
+
+def annotate_request_from_fields(*, text: str = "", language: str = "en") -> AnnotateRequest:
+    return AnnotateRequest(text=text or "", language=language or "en")
 
 
 @dataclass(frozen=True)

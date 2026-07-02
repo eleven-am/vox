@@ -1,34 +1,24 @@
 from fastapi import APIRouter, Request
 
+from vox.operations import system as system_operations
+from vox.server.app_services import app_scheduler
+
 router = APIRouter()
 
 
 @router.get("/v1/health")
 async def health():
-    return {"status": "ok"}
-
-
-@router.get("/api/health", include_in_schema=False)
-async def legacy_health():
-    return await health()
+    result = system_operations.get_health_status(
+        request=system_operations.health_status_request_from_fields(),
+    )
+    return system_operations.health_status_payload(result)
 
 
 @router.get("/v1/models/loaded")
 async def list_running(request: Request):
-    scheduler = request.app.state.scheduler
-    loaded = scheduler.list_loaded()
-    return {
-        "models": [
-            {
-                "name": m.name,
-                "tag": m.tag,
-                "type": m.type.value,
-                "device": m.device,
-                "vram_bytes": m.vram_bytes,
-                "loaded_at": m.loaded_at,
-                "last_used": m.last_used,
-                "ref_count": m.ref_count,
-            }
-            for m in loaded
-        ]
-    }
+    scheduler = app_scheduler(request)
+    result = system_operations.list_loaded_models(
+        scheduler=scheduler,
+        request=system_operations.list_loaded_models_request_from_fields(),
+    )
+    return system_operations.list_loaded_models_payload(result)

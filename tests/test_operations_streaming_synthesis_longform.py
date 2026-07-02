@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -9,6 +11,7 @@ import numpy as np
 import pytest
 
 from vox.core.adapter import TTSAdapter
+from vox.core.errors import ModelNotFoundError
 from vox.core.types import (
     AdapterInfo,
     ModelFormat,
@@ -19,7 +22,10 @@ from vox.core.types import (
 from vox.operations.errors import (
     InvalidConfigError,
     NoDefaultModelError,
+    StoredModelNotFoundError,
     UnsupportedFormatError,
+    VoiceCloningUnsupportedOperationError,
+    VoiceReferenceNotFoundError,
     WrongModelTypeError,
 )
 from vox.operations.streaming_synthesis_longform import (
@@ -30,17 +36,22 @@ from vox.operations.streaming_synthesis_longform import (
     TtsErrorEvent,
     TtsProgressEvent,
     TtsReadyEvent,
+    longform_tts_event_payload,
     normalize_longform_tts_config,
 )
 
 
 class FakeStreamingTTSAdapter(TTSAdapter):
+    def __init__(self, *, supports_voice_cloning: bool = False) -> None:
+        self.supports_voice_cloning = supports_voice_cloning
+
     def info(self) -> AdapterInfo:
         return AdapterInfo(
             name="fake-tts", type=ModelType.TTS,
             architectures=("fake",), default_sample_rate=24_000,
             supported_formats=(ModelFormat.ONNX,),
             supports_streaming=True,
+            supports_voice_cloning=self.supports_voice_cloning,
         )
 
     def load(self, *a: Any, **k: Any) -> None: ...
@@ -67,6 +78,11 @@ class FakeScheduler:
         yield self._adapter
 
 
+class MissingScheduler:
+    def acquire(self, model: str):
+        raise ModelNotFoundError(model)
+
+
 def _make_registry() -> Any:
     registry = MagicMock()
     registry.available_models.return_value = {}
@@ -82,6 +98,23 @@ class _StoreModel:
 def _make_store(tts: str | None = None) -> Any:
     store = MagicMock()
     store.list_models.return_value = [_StoreModel(tts, "tts")] if tts else []
+    return store
+
+
+def _make_voice_store(tmp_path: Path, *, tts: str = "t:1", voice_id: str = "clone") -> Any:
+    store = _make_store(tts=tts)
+    store.voices_dir = tmp_path
+    voice_dir = tmp_path / voice_id
+    voice_dir.mkdir(parents=True)
+    (voice_dir / "metadata.json").write_text(
+        json.dumps({
+            "id": voice_id,
+            "name": "Clone",
+            "language": "en",
+            "created_at": 1,
+        }),
+        encoding="utf-8",
+    )
     return store
 
 
@@ -121,6 +154,63 @@ def test_normalize_rejects_invalid_chunk_chars():
             response_format="pcm16", chunk_chars="not-an-int",
             registry=_make_registry(), store=_make_store(),
         )
+
+
+def test_longform_tts_event_payloads_preserve_wire_contract():
+    assert longform_tts_event_payload(
+        TtsReadyEvent(
+            model="t:1",
+            voice="default",
+            response_format="pcm16",
+            chunk_chars=500,
+        )
+    ) == {
+        "type": "ready",
+        "model": "t:1",
+        "voice": "default",
+        "response_format": "pcm16",
+        "chunk_chars": 500,
+    }
+    assert longform_tts_event_payload(
+        TtsAudioStartEvent(sample_rate=24_000, response_format="pcm16")
+    ) == {
+        "type": "audio_start",
+        "sample_rate": 24_000,
+        "response_format": "pcm16",
+    }
+    assert longform_tts_event_payload(
+        TtsProgressEvent(
+            completed_chars=10,
+            total_chars=20,
+            chunks_completed=1,
+            chunks_total=2,
+        )
+    ) == {
+        "type": "progress",
+        "completed_chars": 10,
+        "total_chars": 20,
+        "chunks_completed": 1,
+        "chunks_total": 2,
+    }
+    assert longform_tts_event_payload(
+        TtsDoneEvent(
+            response_format="pcm16",
+            audio_duration_ms=1000,
+            processing_ms=50,
+            text_length=20,
+        )
+    ) == {
+        "type": "done",
+        "response_format": "pcm16",
+        "audio_duration_ms": 1000,
+        "processing_ms": 50,
+        "text_length": 20,
+    }
+    assert longform_tts_event_payload(TtsErrorEvent(message="boom")) == {
+        "type": "error",
+        "message": "boom",
+    }
+    assert longform_tts_event_payload(TtsAudioChunkEvent(data=b"audio")) is None
 
 
 @pytest.mark.asyncio
@@ -184,4 +274,96 @@ async def test_configure_rejects_non_tts_model():
     )
     with pytest.raises(WrongModelTypeError):
         await session.configure(config)
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_configure_maps_missing_stored_model_to_operation_error():
+    session = LongformSynthesisSession(
+        scheduler=MissingScheduler(),
+        registry=_make_registry(), store=_make_store(tts="missing:latest"),
+    )
+    config = normalize_longform_tts_config(
+        model="missing:latest", voice="default", speed=1.0, language=None,
+        response_format="pcm16", chunk_chars=None,
+        registry=_make_registry(), store=_make_store(tts="missing:latest"),
+    )
+
+    with pytest.raises(StoredModelNotFoundError, match="missing:latest"):
+        await session.configure(config)
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_configure_maps_cloned_voice_unsupported_to_operation_error(tmp_path: Path):
+    store = _make_voice_store(tmp_path)
+    session = LongformSynthesisSession(
+        scheduler=FakeScheduler(FakeStreamingTTSAdapter()),
+        registry=_make_registry(), store=store,
+    )
+    config = normalize_longform_tts_config(
+        model="t:1", voice="clone", speed=1.0, language=None,
+        response_format="pcm16", chunk_chars=None,
+        registry=_make_registry(), store=store,
+    )
+
+    with pytest.raises(VoiceCloningUnsupportedOperationError):
+        await session.configure(config)
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_configure_maps_missing_reference_audio_to_operation_error(tmp_path: Path):
+    store = _make_voice_store(tmp_path)
+    session = LongformSynthesisSession(
+        scheduler=FakeScheduler(FakeStreamingTTSAdapter(supports_voice_cloning=True)),
+        registry=_make_registry(), store=store,
+    )
+    config = normalize_longform_tts_config(
+        model="t:1", voice="clone", speed=1.0, language=None,
+        response_format="pcm16", chunk_chars=None,
+        registry=_make_registry(), store=store,
+    )
+
+    with pytest.raises(VoiceReferenceNotFoundError):
+        await session.configure(config)
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_configure_or_report_emits_terminal_error_event():
+    session = LongformSynthesisSession(
+        scheduler=MissingScheduler(),
+        registry=_make_registry(), store=_make_store(tts="missing:latest"),
+    )
+    config = normalize_longform_tts_config(
+        model="missing:latest", voice="default", speed=1.0, language=None,
+        response_format="pcm16", chunk_chars=None,
+        registry=_make_registry(), store=_make_store(tts="missing:latest"),
+    )
+
+    ok = await session.configure_or_report(config)
+    events = await _drain_events(session)
+
+    assert ok is False
+    assert len(events) == 1
+    assert isinstance(events[0], TtsErrorEvent)
+    assert "missing:latest" in events[0].message
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_end_of_stream_or_report_emits_not_configured_error():
+    session = LongformSynthesisSession(
+        scheduler=FakeScheduler(FakeStreamingTTSAdapter()),
+        registry=_make_registry(), store=_make_store(tts="t:1"),
+    )
+
+    ok = await session.end_of_stream_or_report()
+    events = await _drain_events(session)
+
+    assert ok is False
+    assert len(events) == 1
+    assert isinstance(events[0], TtsErrorEvent)
+    assert events[0].message == "Session not configured"
     await session.close()

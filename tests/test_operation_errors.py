@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 from fastapi import HTTPException
 
@@ -24,6 +26,7 @@ from vox.operations.errors import (
     classify_operation_error,
 )
 from vox.server.operation_errors import map_operation_errors_to_http
+from vox.server.operation_errors import map_route_errors_to_http
 
 
 @pytest.mark.parametrize(
@@ -69,3 +72,30 @@ def test_map_operation_errors_to_http_preserves_success_path():
 def test_map_operation_errors_to_http_does_not_hide_unexpected_errors():
     with pytest.raises(RuntimeError, match="boom"), map_operation_errors_to_http():
         raise RuntimeError("boom")
+
+
+def test_map_route_errors_to_http_preserves_operation_http_mapping():
+    with pytest.raises(HTTPException) as exc_info, map_route_errors_to_http(
+        logger=logging.getLogger("tests.operation_errors"),
+        unexpected_detail="internal",
+        unexpected_log_message="unexpected route failure",
+    ):
+        raise ModelInUseError("parakeet")
+
+    assert exc_info.value.status_code == 409
+    assert "parakeet" in exc_info.value.detail
+
+
+def test_map_route_errors_to_http_converts_unexpected_errors(caplog):
+    logger = logging.getLogger("tests.operation_errors")
+
+    with pytest.raises(HTTPException) as exc_info, map_route_errors_to_http(
+        logger=logger,
+        unexpected_detail="internal failure",
+        unexpected_log_message="unexpected route failure",
+    ):
+        raise RuntimeError("boom")
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail == "internal failure"
+    assert "unexpected route failure" in caplog.text

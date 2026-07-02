@@ -11,14 +11,13 @@ import numpy as np
 from numpy.typing import NDArray
 
 from vox.audio.pipeline import prepare_for_stt
-from vox.operations.defaults import resolve_default_model
+from vox.operations.defaults import resolve_requested_or_default_model
 from vox.operations.errors import (
     InvalidConfigError,
-    NoDefaultModelError,
-    OperationError,
     SessionAlreadyConfiguredError,
     SessionNotConfiguredError,
 )
+from vox.operations.streaming_reporting import StreamingOperationErrorReporter
 from vox.streaming.annotation import enrich_transcript
 from vox.streaming.codecs import pcm16_to_float32, resample_audio
 from vox.streaming.opus import OPUS_SAMPLE_RATE, OpusStreamDecoder
@@ -84,13 +83,68 @@ class DoneEvent:
 SessionEvent = SessionReadyEvent | SpeechStartedEvent | SpeechStoppedEvent | TranscriptEvent | ErrorEvent | DoneEvent
 
 
-def streaming_operation_error_message(exc: OperationError) -> str:
-    if isinstance(exc, NoDefaultModelError):
-        return "No STT model specified and no default STT model available"
-    return str(exc)
+def streaming_transcription_config_from_fields(
+    *,
+    model: object = "",
+    language: object = "en",
+    sample_rate: object = TARGET_SAMPLE_RATE,
+    partials: object = False,
+    partial_window_ms: object = 1500,
+    partial_stride_ms: object = 700,
+    include_word_timestamps: object = False,
+    temperature: object = 0.0,
+) -> StreamingTranscriptionConfig:
+    return StreamingTranscriptionConfig(
+        model=str(model or ""),
+        language=str(language or "en"),
+        sample_rate=int(sample_rate or TARGET_SAMPLE_RATE),
+        partials=bool(partials),
+        partial_window_ms=int(partial_window_ms or 1500),
+        partial_stride_ms=int(partial_stride_ms or 700),
+        include_word_timestamps=bool(include_word_timestamps),
+        temperature=float(temperature or 0.0),
+    )
 
 
-class StreamingTranscriptionSession:
+def streaming_transcript_payload(transcript: StreamTranscript) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "type": "transcript",
+        "text": transcript.text,
+        "is_partial": transcript.is_partial,
+        "start_ms": transcript.start_ms,
+        "end_ms": transcript.end_ms,
+        "audio_duration_ms": transcript.audio_duration_ms,
+        "processing_duration_ms": transcript.processing_duration_ms,
+        "model": transcript.model,
+    }
+    if transcript.eou_probability is not None:
+        payload["eou_probability"] = transcript.eou_probability
+    if transcript.entities:
+        payload["entities"] = transcript.entities
+    if transcript.topics:
+        payload["topics"] = transcript.topics
+    if transcript.words:
+        payload["words"] = transcript.words
+    if transcript.segments:
+        payload["segments"] = transcript.segments
+    return payload
+
+
+def streaming_transcription_event_payload(event: SessionEvent) -> dict[str, Any] | None:
+    if isinstance(event, SessionReadyEvent):
+        return {"type": "ready"}
+    if isinstance(event, SpeechStartedEvent):
+        return {"type": "speech_started", "timestamp_ms": event.timestamp_ms}
+    if isinstance(event, SpeechStoppedEvent):
+        return {"type": "speech_stopped", "timestamp_ms": event.timestamp_ms}
+    if isinstance(event, TranscriptEvent):
+        return streaming_transcript_payload(event.transcript)
+    if isinstance(event, ErrorEvent):
+        return {"type": "error", "message": event.message}
+    return None
+
+
+class StreamingTranscriptionSession(StreamingOperationErrorReporter):
     def __init__(
         self,
         *,
@@ -117,9 +171,7 @@ class StreamingTranscriptionSession:
         if self._session_config is not None:
             raise SessionAlreadyConfiguredError()
 
-        model = config.model or resolve_default_model("stt", self._registry, self._store) or ""
-        if not model:
-            raise NoDefaultModelError("stt")
+        model = resolve_requested_or_default_model("stt", config.model, self._registry, self._store)
 
         sample_rate = int(config.sample_rate or TARGET_SAMPLE_RATE)
         if sample_rate <= 0:
@@ -153,6 +205,9 @@ class StreamingTranscriptionSession:
             )
         )
 
+    async def configure_or_report(self, config: StreamingTranscriptionConfig) -> bool:
+        return await self.run_or_report_operation_error(lambda: self.configure(config))
+
     async def submit_pcm16(self, pcm16: bytes, sample_rate: int | None = None) -> None:
         if self._pipeline is None or self._session_config is None:
             raise SessionNotConfiguredError()
@@ -163,6 +218,15 @@ class StreamingTranscriptionSession:
         if src_rate != TARGET_SAMPLE_RATE:
             audio = resample_audio(audio, src_rate, TARGET_SAMPLE_RATE)
         await self._ingest_audio(audio)
+
+    async def submit_pcm16_or_report(
+        self,
+        pcm16: bytes,
+        sample_rate: int | None = None,
+    ) -> bool:
+        return await self.run_or_report_operation_error(
+            lambda: self.submit_pcm16(pcm16, sample_rate=sample_rate)
+        )
 
     async def submit_opus(
         self,
@@ -182,7 +246,17 @@ class StreamingTranscriptionSession:
             audio = resample_audio(audio, OPUS_SAMPLE_RATE, TARGET_SAMPLE_RATE)
             await self._ingest_audio(audio)
         except Exception as exc:
-            await self._events.put(ErrorEvent(message=str(exc)))
+            await self.report_error(str(exc))
+
+    async def submit_opus_or_report(
+        self,
+        data: bytes,
+        sample_rate: int | None = None,
+        channels: int | None = None,
+    ) -> bool:
+        return await self.run_or_report_operation_error(
+            lambda: self.submit_opus(data, sample_rate=sample_rate, channels=channels)
+        )
 
     async def submit_encoded(self, data: bytes, format_hint: str | None = None) -> None:
         if self._pipeline is None or self._session_config is None:
@@ -191,7 +265,16 @@ class StreamingTranscriptionSession:
             audio = prepare_for_stt(data, format_hint=format_hint)
             await self._ingest_audio(audio)
         except Exception as exc:
-            await self._events.put(ErrorEvent(message=str(exc)))
+            await self.report_error(str(exc))
+
+    async def submit_encoded_or_report(
+        self,
+        data: bytes,
+        format_hint: str | None = None,
+    ) -> bool:
+        return await self.run_or_report_operation_error(
+            lambda: self.submit_encoded(data, format_hint=format_hint)
+        )
 
     async def end_of_stream(self) -> None:
         if self._pipeline is None or self._session_config is None:
@@ -204,7 +287,7 @@ class StreamingTranscriptionSession:
                     audio = resample_audio(tail, OPUS_SAMPLE_RATE, TARGET_SAMPLE_RATE)
                     await self._ingest_audio(audio)
             except Exception as exc:
-                await self._events.put(ErrorEvent(message=str(exc)))
+                await self.report_error(str(exc))
         if self._partial_service is not None:
             remaining = self._partial_service.flush_remaining_audio(self._session)
             if remaining is not None and len(remaining) > 0:
@@ -220,14 +303,11 @@ class StreamingTranscriptionSession:
                             enrich_transcript(transcript, self._session_config.language)
                             await self._events.put(TranscriptEvent(transcript=transcript))
                 except Exception as exc:
-                    await self._events.put(ErrorEvent(message=str(exc)))
+                    await self.report_error(str(exc))
         await self._events.put(DoneEvent())
 
     async def report_error(self, message: str) -> None:
         await self._events.put(ErrorEvent(message=message))
-
-    async def report_operation_error(self, exc: OperationError) -> None:
-        await self.report_error(streaming_operation_error_message(exc))
 
     async def close(self) -> None:
         if self._closed:
@@ -255,7 +335,7 @@ class StreamingTranscriptionSession:
             async for stream_event in self._pipeline.process_audio(audio):
                 self._dispatch_stream_event(stream_event)
         except Exception as exc:
-            await self._events.put(ErrorEvent(message=str(exc)))
+            await self.report_error(str(exc))
             return
         self._session.append_audio(audio)
         if self._session.is_active() and self._session_config.partials:
@@ -267,7 +347,7 @@ class StreamingTranscriptionSession:
                 if transcript:
                     await self._events.put(TranscriptEvent(transcript=transcript))
             except Exception as exc:
-                await self._events.put(ErrorEvent(message=str(exc)))
+                await self.report_error(str(exc))
 
     def _dispatch_stream_event(self, event) -> None:
         if isinstance(event, SpeechStarted):

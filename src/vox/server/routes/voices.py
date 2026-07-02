@@ -8,11 +8,15 @@ from vox.operations.voices import (
     create_voice_request_from_fields,
     created_voice_payload,
     delete_voice,
+    delete_voice_request_from_fields,
     deleted_voice_payload,
     get_voice_reference,
+    get_voice_reference_request_from_fields,
     list_voices,
     list_voices_payload,
+    list_voices_request_from_fields,
 )
+from vox.server.app_services import app_services, app_store
 from vox.server.operation_errors import map_operation_errors_to_http
 
 router = APIRouter()
@@ -21,10 +25,13 @@ AUDIO_SAMPLE_FILE = File(...)
 
 @router.get("/v1/audio/voices")
 async def list_voices_route(request: Request, model: str = ""):
-    scheduler = request.app.state.scheduler
-    store = request.app.state.store
+    services = app_services(request)
     with map_operation_errors_to_http():
-        listed = await list_voices(scheduler=scheduler, store=store, model=model or None)
+        listed = await list_voices(
+            scheduler=services.scheduler,
+            store=services.store,
+            request=list_voices_request_from_fields(model=model),
+        )
 
     return list_voices_payload(listed, include_model=not model)
 
@@ -38,17 +45,17 @@ async def create_voice_route(
     gender: str | None = Form(None),
     reference_text: str | None = Form(None),
 ):
-    store = request.app.state.store
+    store = app_store(request)
     data = await audio_sample.read()
-    op_req = create_voice_request_from_fields(
-        name=name,
-        audio=data,
-        content_type=audio_sample.content_type,
-        language=language,
-        gender=gender,
-        reference_text=reference_text,
-    )
     with map_operation_errors_to_http():
+        op_req = create_voice_request_from_fields(
+            name=name,
+            audio=data,
+            content_type=audio_sample.content_type,
+            language=language,
+            gender=gender,
+            reference_text=reference_text,
+        )
         voice = create_voice(store=store, request=op_req)
 
     return created_voice_payload(voice)
@@ -56,19 +63,25 @@ async def create_voice_route(
 
 @router.get("/v1/audio/voices/{voice_id}/reference")
 async def get_voice_reference_route(request: Request, voice_id: str):
-    store = request.app.state.store
+    store = app_store(request)
     with map_operation_errors_to_http():
-        data = get_voice_reference(store=store, voice_id=voice_id)
+        result = get_voice_reference(
+            store=store,
+            request=get_voice_reference_request_from_fields(voice_id=voice_id),
+        )
     return Response(
-        content=data,
-        media_type="audio/wav",
-        headers={"Content-Disposition": f'attachment; filename="{voice_id}.wav"'},
+        content=result.audio,
+        media_type=result.content_type,
+        headers={"Content-Disposition": f'attachment; filename="{result.filename}"'},
     )
 
 
 @router.delete("/v1/audio/voices/{voice_id}")
 async def delete_voice_route(request: Request, voice_id: str):
-    store = request.app.state.store
+    store = app_store(request)
     with map_operation_errors_to_http():
-        delete_voice(store=store, voice_id=voice_id)
-    return deleted_voice_payload(voice_id)
+        result = delete_voice(
+            store=store,
+            request=delete_voice_request_from_fields(voice_id=voice_id),
+        )
+    return deleted_voice_payload(result)

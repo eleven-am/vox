@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -10,19 +11,19 @@ import grpc
 from vox.operations.errors import OperationError, OperationErrorKind, classify_operation_error
 
 
+GRPC_STATUS_BY_OPERATION_ERROR_KIND: dict[OperationErrorKind, grpc.StatusCode] = {
+    OperationErrorKind.INVALID_ARGUMENT: grpc.StatusCode.INVALID_ARGUMENT,
+    OperationErrorKind.UNPROCESSABLE_ENTITY: grpc.StatusCode.INVALID_ARGUMENT,
+    OperationErrorKind.NOT_FOUND: grpc.StatusCode.NOT_FOUND,
+    OperationErrorKind.CONFLICT: grpc.StatusCode.FAILED_PRECONDITION,
+    OperationErrorKind.RESOURCE_EXHAUSTED: grpc.StatusCode.RESOURCE_EXHAUSTED,
+    OperationErrorKind.INTERNAL: grpc.StatusCode.INTERNAL,
+}
+
+
 def operation_error_status(exc: OperationError) -> tuple[grpc.StatusCode, str]:
     kind = classify_operation_error(exc)
-    if kind is OperationErrorKind.INVALID_ARGUMENT:
-        return grpc.StatusCode.INVALID_ARGUMENT, str(exc)
-    if kind is OperationErrorKind.UNPROCESSABLE_ENTITY:
-        return grpc.StatusCode.INVALID_ARGUMENT, str(exc)
-    if kind is OperationErrorKind.NOT_FOUND:
-        return grpc.StatusCode.NOT_FOUND, str(exc)
-    if kind is OperationErrorKind.CONFLICT:
-        return grpc.StatusCode.FAILED_PRECONDITION, str(exc)
-    if kind is OperationErrorKind.RESOURCE_EXHAUSTED:
-        return grpc.StatusCode.RESOURCE_EXHAUSTED, str(exc)
-    return grpc.StatusCode.INTERNAL, str(exc)
+    return GRPC_STATUS_BY_OPERATION_ERROR_KIND[kind], str(exc)
 
 
 async def abort_operation_error(context, exc: OperationError) -> None:
@@ -36,4 +37,23 @@ async def map_operation_errors_to_grpc(context) -> AsyncIterator[None]:
         yield
     except OperationError as exc:
         await abort_operation_error(context, exc)
+        raise RuntimeError("gRPC context.abort returned without raising") from exc
+
+
+@asynccontextmanager
+async def map_route_errors_to_grpc(
+    context,
+    *,
+    logger: logging.Logger,
+    unexpected_message: str,
+    unexpected_log_message: str,
+) -> AsyncIterator[None]:
+    try:
+        yield
+    except OperationError as exc:
+        await abort_operation_error(context, exc)
+        raise RuntimeError("gRPC context.abort returned without raising") from exc
+    except Exception as exc:
+        logger.exception(unexpected_log_message)
+        await context.abort(grpc.StatusCode.INTERNAL, unexpected_message)
         raise RuntimeError("gRPC context.abort returned without raising") from exc

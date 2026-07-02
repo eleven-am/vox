@@ -29,8 +29,9 @@ from vox.core.types import (
     VramSnapshot,
     WordTimestamp,
 )
+from vox.operations.defaults import resolve_default_model
+from vox.operations.errors import InvalidConfigError, MemoryBudgetExceededError, ModelInUseError
 from vox.operations.transcription import format_hint_from_content_type
-from vox.server.routes import get_default_model
 
 
 def _wav_bytes(dur_s: float = 1.0, sr: int = 16_000) -> bytes:
@@ -88,6 +89,8 @@ class MockScheduler(FakeScheduler):
         self._loaded = []
         self._unload = True
         self._enforce_error: Exception | None = None
+        self._trim_idle_error: Exception | None = None
+        self._unload_error: Exception | None = None
         self.preloaded: list[str] = []
         self.trimmed: list[str] = []
         self.enforced: list[int] = []
@@ -96,13 +99,20 @@ class MockScheduler(FakeScheduler):
     def set_loaded(self, ms): self._loaded = ms
     def set_unload_result(self, v: bool): self._unload = v
     def set_enforce_error(self, error: Exception): self._enforce_error = error
+    def set_trim_idle_error(self, error: Exception): self._trim_idle_error = error
+    def set_unload_error(self, error: Exception): self._unload_error = error
 
-    async def unload(self, name: str) -> bool: return self._unload
+    async def unload(self, name: str) -> bool:
+        if self._unload_error is not None:
+            raise self._unload_error
+        return self._unload
     async def preload(self, name: str) -> None: self.preloaded.append(name)
     async def trim(self, name: str) -> bool:
         self.trimmed.append(name)
         return self._unload
     async def trim_idle(self, *, min_idle_seconds: int = 0) -> list[str]:
+        if self._trim_idle_error is not None:
+            raise self._trim_idle_error
         self.trimmed.append(f"idle:{min_idle_seconds}")
         return ["fake:latest"]
     async def enforce_memory_budget(self, *, additional_vram_bytes: int = 0) -> None:
@@ -160,6 +170,44 @@ class TestHealth:
         assert resp.status_code == 200
         assert resp.json()["models"] == []
 
+    def test_ps_loaded_models_preserves_existing_contract_shape(self):
+        scheduler = MockScheduler()
+        scheduler.set_loaded(
+            [
+                LoadedModelInfo(
+                    name="parakeet-stt-onnx",
+                    tag="tdt-0.6b-v3",
+                    type=ModelType.STT,
+                    device="cuda",
+                    vram_bytes=4096,
+                    loaded_at=1.5,
+                    last_used=2.5,
+                    ref_count=3,
+                    is_evictable=True,
+                    backend_memory={"workspace_bytes": 256},
+                )
+            ]
+        )
+        client = TestClient(_build_app(scheduler=scheduler))
+
+        resp = client.get("/v1/models/loaded")
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "models": [
+                {
+                    "name": "parakeet-stt-onnx",
+                    "tag": "tdt-0.6b-v3",
+                    "type": "stt",
+                    "device": "cuda",
+                    "vram_bytes": 4096,
+                    "loaded_at": 1.5,
+                    "last_used": 2.5,
+                    "ref_count": 3,
+                }
+            ]
+        }
+
 
 class TestSystemMemory:
     def test_memory_status_returns_policy_and_models(self):
@@ -183,6 +231,16 @@ class TestSystemMemory:
         assert resp.status_code == 200
         assert resp.json()["trimmed"] == ["fake:latest"]
         assert scheduler.trimmed == ["idle:30"]
+
+    def test_trim_idle_endpoint_maps_operation_errors(self):
+        scheduler = MockScheduler()
+        scheduler.set_trim_idle_error(MemoryBudgetExceededError("Cannot satisfy VRAM budget"))
+        client = TestClient(_build_app(scheduler=scheduler))
+
+        resp = client.post("/v1/system/trim", json={"min_idle_seconds": 30})
+
+        assert resp.status_code == 507
+        assert "Cannot satisfy VRAM budget" in resp.json()["detail"]
 
     def test_enforce_memory_budget_endpoint(self):
         scheduler = MockScheduler()
@@ -225,6 +283,19 @@ class TestSystemMemory:
 
         assert resp.status_code == 200
         assert resp.json()["unloaded"] == ["fake:latest"]
+
+    def test_unload_idle_endpoint_maps_operation_errors(self):
+        scheduler = MockScheduler()
+        scheduler.set_loaded([
+            LoadedModelInfo(name="fake", tag="latest", type=ModelType.STT, device="cuda", ref_count=0),
+        ])
+        scheduler.set_unload_error(ModelInUseError("fake:latest"))
+        client = TestClient(_build_app(scheduler=scheduler))
+
+        resp = client.post("/v1/models/unload_idle")
+
+        assert resp.status_code == 409
+        assert "fake:latest" in resp.json()["detail"]
 
 
 class TestListModels:
@@ -396,6 +467,24 @@ class TestTranscribeMapping:
         assert resp.status_code == 400
         assert "not an STT model" in resp.json()["detail"]
 
+    def test_request_builder_operation_errors_are_mapped_to_http(self, monkeypatch):
+        from vox.server.routes import transcribe
+
+        def fail_build(**_kwargs):
+            raise InvalidConfigError("bad transcribe route config")
+
+        monkeypatch.setattr(transcribe, "transcription_request_from_fields", fail_build)
+
+        client = self._client()
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("a.wav", io.BytesIO(_wav_bytes()), "audio/wav")},
+            data={"model": "test-stt:latest"},
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "bad transcribe route config"
+
 
 class TestSynthesizeMapping:
     def _client(self) -> TestClient:
@@ -447,6 +536,23 @@ class TestSynthesizeMapping:
         )
         assert resp.status_code == 400
         assert "not a TTS model" in resp.json()["detail"]
+
+    def test_request_builder_operation_errors_are_mapped_to_http(self, monkeypatch):
+        from vox.server.routes import synthesize
+
+        def fail_build(**_kwargs):
+            raise InvalidConfigError("bad synthesize route config")
+
+        monkeypatch.setattr(synthesize, "synthesis_request_from_fields", fail_build)
+
+        client = self._client()
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"model": "test-tts:latest", "input": "hello"},
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "bad synthesize route config"
 
 
 class TestVoicesMapping:
@@ -501,6 +607,29 @@ class TestVoicesMapping:
 
         assert resp.status_code == 400
 
+    def test_create_voice_request_builder_operation_errors_are_mapped_to_http(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        from vox.server.routes import voices
+
+        def fail_build(**_kwargs):
+            raise InvalidConfigError("bad voice route config")
+
+        monkeypatch.setattr(voices, "create_voice_request_from_fields", fail_build)
+
+        store = BlobStore(root=tmp_path)
+        client = TestClient(_build_app(store=store))
+        resp = client.post(
+            "/v1/audio/voices",
+            files={"audio_sample": ("sample.wav", io.BytesIO(_wav_bytes()), "audio/wav")},
+            data={"name": "Roy"},
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "bad voice route config"
+
     def test_delete_voice_route_removes_directory(self, tmp_path: Path):
         from vox.core.cloned_voices import create_stored_voice
 
@@ -515,9 +644,27 @@ class TestVoicesMapping:
         assert resp.status_code == 200
         assert resp.json() == {"id": "voice1234", "deleted": True}
 
+    def test_get_voice_reference_route_adapts_operation_response(self, tmp_path: Path):
+        from vox.core.cloned_voices import create_stored_voice
 
-class TestGetDefaultModel:
-    def test_get_default_model_prefers_pulled(self):
+        store = BlobStore(root=tmp_path)
+        create_stored_voice(
+            store, voice_id="voice1234", name="Roy",
+            audio_bytes=encode_wav(np.full(16_000, 0.1, dtype=np.float32), 16_000),
+            content_type="audio/wav",
+        )
+        client = TestClient(_build_app(store=store))
+
+        resp = client.get("/v1/audio/voices/voice1234/reference")
+
+        assert resp.status_code == 200
+        assert "audio/wav" in resp.headers["content-type"]
+        assert resp.headers["content-disposition"] == 'attachment; filename="voice1234.wav"'
+        assert resp.content[:4] == b"RIFF"
+
+
+class TestResolveDefaultModel:
+    def test_resolve_default_model_prefers_pulled(self):
         pulled = ModelInfo(
             name="whisper", tag="large-v3", type=ModelType.STT,
             format=ModelFormat.ONNX, architecture="whisper", adapter="whisper",
@@ -526,27 +673,23 @@ class TestGetDefaultModel:
         store = MagicMock()
         store.list_models.return_value = [pulled]
         registry = MagicMock()
-        assert get_default_model("stt", registry, store) == "whisper:large-v3"
+        assert resolve_default_model("stt", registry, store) == "whisper:large-v3"
 
-    def test_get_default_model_falls_back_to_catalog(self):
+    def test_resolve_default_model_falls_back_to_catalog(self):
         store = MagicMock()
         store.list_models.return_value = []
         registry = MagicMock()
         registry.available_models.return_value = {
             "whisper": {"large-v3": {"type": "stt", "source": "test"}},
         }
-        assert get_default_model("stt", registry, store) == "whisper:large-v3"
+        assert resolve_default_model("stt", registry, store) == "whisper:large-v3"
 
-    def test_get_default_model_raises_when_none(self):
-        from fastapi import HTTPException
-
+    def test_resolve_default_model_returns_none_when_none_available(self):
         store = MagicMock()
         store.list_models.return_value = []
         registry = MagicMock()
         registry.available_models.return_value = {}
-        with pytest.raises(HTTPException) as exc:
-            get_default_model("stt", registry, store)
-        assert exc.value.status_code == 400
+        assert resolve_default_model("stt", registry, store) is None
 
 
 class TestFormatHintFromContentType:

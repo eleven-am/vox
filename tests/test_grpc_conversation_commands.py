@@ -10,7 +10,11 @@ from vox.grpc.conversation_commands import (
     execute_rtc_control_message,
     rtc_control_message_to_command,
 )
-from vox.operations.conversation import ConversationOrchestrator, parse_session_update
+from vox.operations.conversation import (
+    TURN_POLICY_OVERRIDE_FIELDS,
+    ConversationOrchestrator,
+    parse_session_update,
+)
 from vox.operations.errors import InvalidConfigError
 
 
@@ -47,6 +51,60 @@ def test_grpc_session_update_decodes_to_shared_command_shape():
     assert config.policy is not None
     assert config.policy.speaking_interrupt_min_duration_ms == 300
     assert config.policy.aec_warmup_ms == 250
+
+
+def test_grpc_session_update_preserves_every_operation_owned_policy_override():
+    command = conversation_session_update_to_message(
+        vox_pb2.ConversationSessionUpdate(
+            stt_model="parakeet-stt-onnx:tdt-0.6b-v3",
+            tts_model="kokoro-tts-onnx:v1.0",
+            policy=vox_pb2.ConversationTurnPolicy(
+                allow_interrupt_while_speaking=False,
+                min_interrupt_duration_ms=101,
+                max_endpointing_delay_ms=102,
+                stable_speaking_min_ms=103,
+                false_interruption_timeout_ms=104,
+                min_interrupt_words=105,
+                partial_interrupts=True,
+                dynamic_endpointing=False,
+                min_endpointing_delay_ms=106,
+                speaking_interrupt_min_duration_ms=107,
+                speaking_interrupt_min_words=108,
+                self_echo_min_words=109,
+                self_echo_min_overlap=0.72,
+                aec_warmup_ms=110,
+                backchannel_end_cooldown_ms=111,
+                vad_min_silence_ms=112,
+            ),
+        )
+    )
+
+    policy = command["session"]["turn_policy"]
+
+    assert tuple(policy) == TURN_POLICY_OVERRIDE_FIELDS
+    assert policy == {
+        "allow_interrupt_while_speaking": False,
+        "min_interrupt_duration_ms": 101,
+        "max_endpointing_delay_ms": 102,
+        "stable_speaking_min_ms": 103,
+        "false_interruption_timeout_ms": 104,
+        "min_interrupt_words": 105,
+        "partial_interrupts": True,
+        "dynamic_endpointing": False,
+        "min_endpointing_delay_ms": 106,
+        "speaking_interrupt_min_duration_ms": 107,
+        "speaking_interrupt_min_words": 108,
+        "self_echo_min_words": 109,
+        "self_echo_min_overlap": pytest.approx(0.72),
+        "aec_warmup_ms": 110,
+        "backchannel_end_cooldown_ms": 111,
+        "vad_min_silence_ms": 112,
+    }
+
+    config = parse_session_update(command)
+    assert config.policy is not None
+    assert config.policy.vad_min_silence_ms == 112
+    assert config.policy.self_echo_min_overlap == pytest.approx(0.72)
 
 
 def test_converse_audio_append_decodes_to_shared_command_shape():

@@ -5,10 +5,11 @@ import logging
 from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
-from vox.grpc import vox_pb2, vox_pb2_grpc
+from vox.grpc import vox_pb2_grpc
 from vox.grpc.model_messages import (
     delete_model_response,
     list_models_response,
+    pull_error_message,
     pull_progress_message,
     show_model_response,
 )
@@ -41,7 +42,7 @@ class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
                 request=model_reference_request_from_fields(name=request.name),
             )
         except CatalogEntryNotFoundError as exc:
-            yield vox_pb2.PullProgress(status="error", error=str(exc))
+            yield pull_error_message(exc)
             return
 
         async for event in events:

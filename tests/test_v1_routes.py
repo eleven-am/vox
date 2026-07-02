@@ -134,18 +134,17 @@ def _build_app(*, store: BlobStore, stt=None, tts=None, loaded=None):
     return app
 
 
-class TestV1HealthAlias:
+class TestV1Health:
     def test_v1_health_returns_ok(self, tmp_path: Path):
         client = TestClient(_build_app(store=BlobStore(root=tmp_path)))
         resp = client.get("/v1/health")
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
 
-    def test_legacy_api_health_returns_ok(self, tmp_path: Path):
+    def test_api_health_legacy_alias_is_removed(self, tmp_path: Path):
         client = TestClient(_build_app(store=BlobStore(root=tmp_path)))
         resp = client.get("/api/health")
-        assert resp.status_code == 200
-        assert resp.json() == {"status": "ok"}
+        assert resp.status_code == 404
 
 
 class TestV1ModelsMapping:

@@ -11,6 +11,7 @@ from vox.core.types import AdapterInfo, ModelFormat, ModelType, TranscribeResult
 from vox.streaming.pipeline import StreamPipeline
 from vox.streaming.types import TARGET_SAMPLE_RATE, StreamSessionConfig
 from vox.streaming.vad import SpeechSegment
+from tests.fakes import FakeTTSAdapter
 
 
 class GapSensitiveSTTAdapter(STTAdapter):
@@ -97,6 +98,24 @@ class FakeScheduler:
         yield self._adapter
 
 
+class TrackingWrongTypeScheduler:
+    def __init__(self) -> None:
+        self.closed = False
+
+    def acquire(self, _model: str):
+        scheduler = self
+
+        class Manager:
+            async def __aenter__(self):
+                return FakeTTSAdapter()
+
+            async def __aexit__(self, _exc_type, _exc, _tb):
+                scheduler.closed = True
+                return False
+
+        return Manager()
+
+
 def _without_leading_context(audio: np.ndarray) -> np.ndarray:
     context_samples = 5 * TARGET_SAMPLE_RATE
     if audio.size > context_samples and np.allclose(audio[:context_samples], 0):
@@ -116,6 +135,26 @@ def _has_internal_silence_gap(audio: np.ndarray) -> bool:
             return True
         run = 0
     return False
+
+
+@pytest.mark.asyncio
+async def test_transcribe_segment_keeps_wrong_adapter_type_as_empty_transcript_and_closes():
+    scheduler = TrackingWrongTypeScheduler()
+    pipeline = StreamPipeline(scheduler=scheduler)
+    pipeline.configure(StreamSessionConfig(model="fake-tts:latest", language="en"))
+
+    transcript = await pipeline._transcribe_segment(
+        SpeechSegment(
+            audio=np.full(int(0.8 * TARGET_SAMPLE_RATE), 0.25, dtype=np.float32),
+            start_ms=0,
+            end_ms=800,
+        )
+    )
+
+    assert transcript.text == ""
+    assert scheduler.closed
+
+    pipeline.shutdown()
 
 
 @pytest.mark.asyncio

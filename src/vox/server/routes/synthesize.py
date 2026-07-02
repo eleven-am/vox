@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -10,7 +10,8 @@ from vox.operations.synthesis import (
     synthesis_request_from_fields,
     synthesize_audio_response,
 )
-from vox.server.operation_errors import map_operation_errors_to_http
+from vox.server.app_services import app_services
+from vox.server.operation_errors import map_route_errors_to_http
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -27,38 +28,33 @@ class SpeechRequest(BaseModel):
 
 
 async def synthesize(req: SpeechRequest, request: Request):
-    scheduler = request.app.state.scheduler
-    registry = request.app.state.registry
-    store = request.app.state.store
+    services = app_services(request)
 
-    op_req = synthesis_request_from_fields(
-        input=req.input,
-        model=req.model,
-        voice=req.voice,
-        speed=req.speed,
-        language=req.language,
-        response_format=req.response_format,
-    )
-
-    try:
-        with map_operation_errors_to_http():
-            result = await synthesize_audio_response(
-                scheduler=scheduler,
-                registry=registry,
-                store=store,
-                request=op_req,
-                stream=req.stream,
-            )
+    with map_route_errors_to_http(
+        logger=logger,
+        unexpected_detail="Internal synthesis error",
+        unexpected_log_message=f"Synthesis failed for model {req.model}",
+    ):
+        op_req = synthesis_request_from_fields(
+            input=req.input,
+            model=req.model,
+            voice=req.voice,
+            speed=req.speed,
+            language=req.language,
+            response_format=req.response_format,
+        )
+        result = await synthesize_audio_response(
+            scheduler=services.scheduler,
+            registry=services.registry,
+            store=services.store,
+            request=op_req,
+            stream=req.stream,
+        )
         return StreamingResponse(
             result.chunks,
             media_type=result.content_type,
             headers={"Content-Disposition": f"attachment; filename={result.filename}"},
         )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        logger.exception(f"Synthesis failed for model {req.model}")
-        raise HTTPException(status_code=500, detail="Internal synthesis error") from exc
 
 
 @router.post("/v1/audio/speech")

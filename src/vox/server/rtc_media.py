@@ -14,6 +14,8 @@ from aiortc import MediaStreamTrack
 from aiortc.mediastreams import MediaStreamError
 from av.audio.resampler import AudioResampler
 
+from vox.server.rtc_tasks import cancel_and_drain_media_tasks, cancel_media_tasks
+
 
 @dataclass
 class RtcAudioDrain:
@@ -168,22 +170,6 @@ class RtcAudioOutputTrack(MediaStreamTrack):
 def _pcm16_duration_ms(pcm16: bytes, sample_rate: int) -> float:
     rate = int(sample_rate) or 48_000
     return (len(pcm16) // np.dtype(np.int16).itemsize) / max(1, rate) * 1000.0
-
-
-def cancel_media_tasks(record: Any) -> list[asyncio.Task]:
-    tasks = list(getattr(record, "media_tasks", ()))
-    for task in tasks:
-        task.cancel()
-    media_tasks = getattr(record, "media_tasks", None)
-    if media_tasks is not None:
-        media_tasks.clear()
-    return tasks
-
-
-async def cancel_and_drain_media_tasks(record: Any) -> None:
-    tasks = cancel_media_tasks(record)
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 async def pump_input_audio(
