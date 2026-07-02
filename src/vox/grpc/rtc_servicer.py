@@ -14,6 +14,7 @@ from collections.abc import AsyncIterator
 from contextlib import suppress
 
 from vox.core.scheduler import Scheduler
+from vox.core.tasks import drain_task, reap_task
 from vox.grpc import vox_pb2, vox_pb2_grpc
 from vox.grpc.conversation_servicer import _error_pb, _event_to_pb, _pb_to_config
 from vox.operations.conversation import (
@@ -22,8 +23,13 @@ from vox.operations.conversation import (
     ConversationOrchestrator,
 )
 from vox.operations.errors import OperationError, SessionAlreadyConfiguredError
+from vox.server.routes.conversation import _event_to_wire
 from vox.server.rtc_client_events import control_event_as_client_event, send_client_event_to_browser
-from vox.server.rtc_conversation import clear_rtc_audio_if_needed, create_rtc_orchestrator_with
+from vox.server.rtc_conversation import (
+    clear_rtc_audio_if_needed,
+    create_rtc_orchestrator_with,
+    forward_wire_event_to_browser,
+)
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 
 logger = logging.getLogger(__name__)
@@ -59,6 +65,7 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
             try:
                 async for event in orchestrator.events():
                     clear_rtc_audio_if_needed(record, event)
+                    forward_wire_event_to_browser(record, _event_to_wire(event))
                     if (
                         record is not None
                         and isinstance(event, ConvAudioDeltaEvent)
@@ -174,21 +181,11 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                 if orchestrator is not None:
                     await orchestrator.end_of_stream(flush_response=False)
                 if emit_task is not None:
-                    with suppress(asyncio.CancelledError):
-                        await asyncio.wait_for(emit_task, timeout=5.0)
-                    if not emit_task.done():
-                        emit_task.cancel()
-                        with suppress(Exception):
-                            await emit_task
+                    await drain_task(emit_task)
                 if record is not None and record.control_events is not None:
                     await record.control_events.put(None)
                 if client_event_task is not None:
-                    with suppress(asyncio.CancelledError):
-                        await asyncio.wait_for(client_event_task, timeout=5.0)
-                    if not client_event_task.done():
-                        client_event_task.cancel()
-                        with suppress(Exception):
-                            await client_event_task
+                    await drain_task(client_event_task)
                 else:
                     await out_queue.put(None)
 
@@ -200,9 +197,7 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                     break
                 yield item
         finally:
-            client_task.cancel()
-            with suppress(Exception):
-                await client_task
+            await reap_task(client_task)
             if orchestrator is not None:
                 await orchestrator.close()
             if record is not None:

@@ -40,6 +40,7 @@ class VADState:
     audio_start_ms: int | None = None
     audio_end_ms: int | None = None
     active: bool = False
+    carryover: bool = False
 
 
 @dataclass
@@ -229,7 +230,11 @@ class VADProcessor:
         audio_window = self.buffer.get_last_n(VAD_WINDOW_SIZE_SAMPLES)
         window_duration_ms = len(audio_window) // MS_PER_SAMPLE
 
-        threshold = self.config.start_threshold if not self.state.active else self.config.continue_threshold
+        threshold = (
+            self.config.continue_threshold
+            if self.state.active or self.state.carryover
+            else self.config.start_threshold
+        )
 
         raw_timestamps = self._vad_model.get_speech_timestamps(
             audio_window,
@@ -251,15 +256,20 @@ class VADProcessor:
 
         if self.state.audio_start_ms is None:
             if speech_ts is None:
+                self.state.carryover = False
                 return None, None
 
-            detected_start_ms = (
-                self._duration_ms() - window_duration_ms + (speech_ts["start"] // MS_PER_SAMPLE)
-            )
-            self.state.audio_start_ms = max(
-                0,
-                detected_start_ms - max(0, int(self.config.speech_pre_roll_ms)),
-            )
+            if self.state.carryover:
+                self.state.audio_start_ms = 0
+                self.state.carryover = False
+            else:
+                detected_start_ms = (
+                    self._duration_ms() - window_duration_ms + (speech_ts["start"] // MS_PER_SAMPLE)
+                )
+                self.state.audio_start_ms = max(
+                    0,
+                    detected_start_ms - max(0, int(self.config.speech_pre_roll_ms)),
+                )
             self.state.active = True
             return SpeechStarted(timestamp_ms=self.state.audio_start_ms), None
 
@@ -281,6 +291,7 @@ class VADProcessor:
             self._clear_buffer()
             if len(overflow_audio) > 0:
                 self.buffer.append(overflow_audio)
+                self.state.carryover = True
             if segment.end_ms - segment.start_ms < self.config.min_audio_duration_ms:
                 logger.debug(
                     "Segment too short after max_utterance cap (%dms), skipping",

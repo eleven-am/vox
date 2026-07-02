@@ -3,11 +3,11 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
-from contextlib import suppress
 
 from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
+from vox.core.tasks import reap_task
 from vox.grpc import vox_pb2, vox_pb2_grpc
 from vox.operations.errors import (
     OperationError,
@@ -215,8 +215,6 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
         finally:
             client_task.cancel()
             emit_task.cancel()
-            with suppress(Exception):
-                await client_task
-            with suppress(Exception):
-                await emit_task
+            await reap_task(client_task)
+            await reap_task(emit_task)
             await session.close()

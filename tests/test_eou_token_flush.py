@@ -142,7 +142,7 @@ class TestEOUContextWindow:
 
 
 class TestEOUFailureFallback:
-    def test_pipeline_disables_eou_and_flushes_on_predict_failure(self):
+    def test_pipeline_flushes_on_predict_failure_without_immediate_disable(self):
         pipeline = StreamPipeline(scheduler=MagicMock())
         pipeline._eou_model = MagicMock()
         pipeline._eou_model.predict.side_effect = RuntimeError("broken eou backend")
@@ -150,6 +150,31 @@ class TestEOUFailureFallback:
         transcript = pipeline._add_eou_probability(type("T", (), {"text": "hello world", "eou_probability": 0.9})())
 
         assert transcript.eou_probability is None
-        assert pipeline._eou_disabled is True
+        assert pipeline._eou_disabled is False
+        assert pipeline._eou_failure_streak == 1
         assert pipeline._pending_user_text == ""
         assert [turn.content for turn in pipeline._conversation_history] == ["hello world"]
+
+    def test_pipeline_disables_eou_after_consecutive_predict_failures(self):
+        pipeline = StreamPipeline(scheduler=MagicMock())
+        pipeline._eou_model = MagicMock()
+        pipeline._eou_model.predict.side_effect = RuntimeError("broken eou backend")
+
+        for idx in range(3):
+            pipeline._add_eou_probability(type("T", (), {"text": f"turn {idx}", "eou_probability": 0.9})())
+
+        assert pipeline._eou_disabled is True
+
+    def test_pipeline_eou_failure_streak_resets_on_success(self):
+        pipeline = StreamPipeline(scheduler=MagicMock())
+        pipeline._eou_model = MagicMock()
+        pipeline._eou_model.predict.side_effect = [RuntimeError("transient"), 0.95]
+        pipeline._eou_model.token_count.return_value = 1
+
+        pipeline._add_eou_probability(type("T", (), {"text": "first", "eou_probability": None})())
+        assert pipeline._eou_failure_streak == 1
+
+        transcript = pipeline._add_eou_probability(type("T", (), {"text": "second", "eou_probability": None})())
+        assert pipeline._eou_failure_streak == 0
+        assert pipeline._eou_disabled is False
+        assert transcript.eou_probability == 0.95

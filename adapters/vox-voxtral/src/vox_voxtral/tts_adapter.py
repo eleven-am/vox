@@ -34,7 +34,6 @@ from vox_voxtral.runtime import (
     voxtral_tts_tier_extras,
 )
 
-
 VOXTRAL_TTS_TIERS: tuple[PlacementTier, ...] = (
     PlacementTier(
         name=VOXTRAL_TIER_SPARK_16GB,
@@ -223,6 +222,7 @@ class VoxtralTTSAdapter(TTSAdapter):
 
     def unload(self) -> None:
         import asyncio
+        from contextlib import suppress
 
         if self._backend is not None:
             backend = self._backend
@@ -231,10 +231,8 @@ class VoxtralTTSAdapter(TTSAdapter):
                 loop = asyncio.get_running_loop()
                 loop.create_task(backend.close())
             except RuntimeError:
-                try:
+                with suppress(Exception):
                     asyncio.run(backend.close())
-                except Exception:
-                    pass
 
         self._runtime = None
         self._tokenizer = None

@@ -22,7 +22,9 @@ from vox.operations.conversation import (
     ConvErrorEvent,
     ConversationOrchestrator,
     ConvInterruptionDetectedEvent,
+    ConvInterruptionFalsePositiveEvent,
     ConvSessionCreatedEvent,
+    ConvTranscriptDeltaEvent,
     ConvTurnEouPredictedEvent,
     _wire_event_to_session_event,
     parse_session_update,
@@ -123,6 +125,19 @@ def test_parse_session_update_applies_turn_profile_defaults():
     assert config.policy.min_interrupt_duration_ms == 180
     assert config.policy.speaking_interrupt_min_words == 1
     assert config.policy.aec_warmup_ms == 250
+    assert config.policy.vad_min_silence_ms == 600
+
+
+def test_parse_session_update_allows_vad_min_silence_override():
+    config = parse_session_update({
+        "session": {
+            "stt_model": "x:1",
+            "tts_model": "y:1",
+            "turn_policy": {"vad_min_silence_ms": 550},
+        },
+    })
+    assert config.policy is not None
+    assert config.policy.vad_min_silence_ms == 550
 
 
 def test_parse_session_update_allows_profile_with_explicit_overrides():
@@ -142,6 +157,18 @@ def test_parse_session_update_allows_profile_with_explicit_overrides():
     assert config.policy.speaking_interrupt_min_words == 4
     assert config.policy.aec_warmup_ms == 600
     assert config.policy.backchannel_end_cooldown_ms == 1800
+
+
+def test_parse_session_update_accepts_noisy_alias():
+    config = parse_session_update({
+        "session": {
+            "stt_model": "x:1",
+            "tts_model": "y:1",
+            "turn_profile": "noisy",
+        },
+    })
+    assert config.turn_profile == "noisy_room"
+    assert config.policy.vad_min_silence_ms == 1200
 
 
 def test_parse_session_update_rejects_unknown_turn_profile():
@@ -189,6 +216,31 @@ def test_interruption_detected_wire_event_maps_to_operation_event():
     })
     assert isinstance(event, ConvInterruptionDetectedEvent)
     assert event.response_id == "resp_1"
+
+
+def test_transcript_delta_wire_event_maps_to_operation_event():
+    event = _wire_event_to_session_event({
+        "type": "conversation.item.input_audio_transcription.delta",
+        "delta": "hello there",
+        "start_ms": 100,
+        "end_ms": 700,
+    })
+    assert isinstance(event, ConvTranscriptDeltaEvent)
+    assert event.delta == "hello there"
+    assert event.start_ms == 100
+    assert event.end_ms == 700
+
+
+def test_interruption_false_positive_preserves_reason():
+    event = _wire_event_to_session_event({
+        "type": "interruption.false_positive",
+        "response_id": "resp_1",
+        "vad_active_ms": 120,
+        "partial_transcript": "mhmm",
+        "reason": "backchannel",
+    })
+    assert isinstance(event, ConvInterruptionFalsePositiveEvent)
+    assert event.reason == "backchannel"
 
 
 def test_turn_eou_predicted_wire_event_maps_to_operation_event():

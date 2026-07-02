@@ -8,10 +8,6 @@ import pytest
 from vox.audio.codecs import decode_audio, encode_wav
 from vox.audio.pipeline import get_content_type, prepare_for_output, prepare_for_stt
 
-
-
-
-
 SOURCE_RATE = 44100
 TARGET_STT_RATE = 16000
 

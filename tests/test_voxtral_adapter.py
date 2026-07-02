@@ -426,7 +426,6 @@ class TestVoxtralTTSAdapterInfo:
             assert "/tmp/voxtral-local" in popen.call_args.args[0]
 
     def test_synthesize_uses_subprocess_worker(self):
-        import base64
 
         audio_bytes = b"\x00\x00\x80?\x00\x00\x00@"
 

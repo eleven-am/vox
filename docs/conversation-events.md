@@ -181,6 +181,28 @@ conversation events as `/v1/conversation`, plus `client.event` for browser data
 channel payloads. It does not emit `response.audio.delta`; assistant audio
 belongs on the WebRTC media path for this session.
 
+### Browser-native events
+
+Vox also forwards a curated subset of conversation events directly to the
+browser data channel, so a browser client can render captions, state
+indicators, and barge-in feedback without a hand-built backend relay. Each is
+delivered as a data-channel message `{"event": "<wire type>", "payload": {...}}`
+where `<wire type>` and payload match the control-stream event minus `type`:
+
+- `turn.state_changed`
+- `input_audio_buffer.speech_started` / `input_audio_buffer.speech_stopped`
+- `conversation.item.input_audio_transcription.delta` and `.completed`
+- `interruption.detected` / `interruption.false_positive`
+- `response.created` / `response.done` / `response.cancelled`
+- `response.audio.clear` — mute or duck local playback immediately; in-flight
+  RTP plus the jitter buffer can otherwise play 100-300 ms of stale assistant
+  audio after a barge-in
+
+`response.audio.delta` is never forwarded; assistant audio stays on the media
+path. Forwarding only happens while the data channel is open (missed events are
+not buffered). Disable it by creating the session with
+`POST /v1/rtc/sessions {"browser_events": false}`.
+
 Developer backends can also attach over gRPC:
 
 ```text
@@ -311,6 +333,7 @@ Example WebSocket session update:
     "sample_rate": 16000,
     "vad_backend": "silero",
     "turn_detector": "livekit",
+    "include_word_timestamps": false,
     "turn_policy": {
       "allow_interrupt_while_speaking": true,
       "min_interrupt_duration_ms": 250,
@@ -324,11 +347,27 @@ Example WebSocket session update:
       "speaking_interrupt_min_duration_ms": 500,
       "speaking_interrupt_min_words": 2,
       "self_echo_min_words": 3,
-      "self_echo_min_overlap": 0.7
+      "self_echo_min_overlap": 0.7,
+      "vad_min_silence_ms": 1000
     }
   }
 }
 ```
+
+`include_word_timestamps` (default `false`) asks the STT adapter for word-level
+timings on final transcripts; when enabled, `words` appears on
+`conversation.item.input_audio_transcription.completed`.
+
+`vad_min_silence_ms` controls how much trailing silence the VAD requires before
+declaring end of speech. It is the dominant fixed contributor to endpointing
+latency; profiles tune it (`headset` 600, `browser_default` 800, `noisy_room`
+1200, otherwise 1000).
+
+Endpointing is EOU-aware: when the semantic turn detector reports a probability
+at or above its threshold, the transcript commit delay shrinks from the
+continuation wait toward `min_endpointing_delay_ms` in proportion to the model's
+confidence. Low-probability (incomplete) turns keep the full continuation wait,
+bounded by `max_endpointing_delay_ms`.
 
 `vad_backend` defaults to `silero`. Experimental values such as `ten-vad` are
 available only when the matching optional dependency is installed and should be
@@ -358,6 +397,7 @@ Aliases accepted by the API:
 - `headphones` -> `headset`
 - `speaker` -> `speakerphone`
 - `loudspeaker` -> `speakerphone`
+- `noisy` -> `noisy_room`
 
 Use `turn_profile` on `session.update` / `session_update`:
 
@@ -519,6 +559,25 @@ Client behavior:
 - Show that user speech ended.
 - Keep waiting for transcript and turn state events.
 
+### `conversation.item.input_audio_transcription.delta`
+
+An interim transcript fragment for in-progress user speech. Emitted while the
+user is still speaking, roughly every partial stride (~700 ms), carrying only
+newly confirmed words.
+
+Payload includes:
+
+- `delta`: the newly confirmed text fragment
+- `start_ms`, `end_ms`
+
+Client behavior:
+
+- Append `delta` fragments to build a live caption of the current user turn.
+- Reset the caption on the next `conversation.item.input_audio_transcription.completed`,
+  which remains the authoritative final text.
+- Partials require `partial_interrupts` (on by default) or an interrupt keyword
+  classifier; with both disabled no delta events are produced.
+
 ### `conversation.item.input_audio_transcription.completed`
 
 STT completed for a user speech segment.
@@ -648,6 +707,9 @@ Payload includes:
 - `response_id`
 - `vad_active_ms`
 - optional `partial_transcript`
+- optional `reason`: why the candidate was rejected — one of `backchannel`,
+  `output_echo`, `self_echo_transcript`, `self_echo_transcript_window`,
+  `insufficient_interrupt_evidence`
 
 Client behavior:
 

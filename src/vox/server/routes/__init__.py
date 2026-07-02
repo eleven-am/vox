@@ -1,7 +1,5 @@
 from fastapi import HTTPException
 
-from vox.core.types import parse_model_name
-
 
 def get_default_model(model_type: str, registry, store=None) -> str:
     """Get the first available model of the given type — prefer pulled models."""

@@ -125,7 +125,7 @@ class TestFakeOmniBackendErrorPropagation:
         backend = FakeOmniBackend(_make_chunks())
         adapter = _make_adapter_with_backend(backend)
 
-        chunks = asyncio.run(_collect(adapter))
+        asyncio.run(_collect(adapter))
 
         async def synthesize_empty():
             result = []

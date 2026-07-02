@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import grpc
-
 from vox.core.scheduler import Scheduler
 from vox.grpc import vox_pb2, vox_pb2_grpc
 

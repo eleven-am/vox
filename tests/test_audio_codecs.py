@@ -17,10 +17,6 @@ from vox.audio.codecs import (
     to_mono,
 )
 
-
-
-
-
 SAMPLE_RATE = 44100
 
 
@@ -141,6 +137,7 @@ def test_decode_audio_pydub_fallback():
     fake_segment = MagicMock()
     fake_segment.frame_rate = 16000
     fake_segment.channels = 1
+    fake_segment.sample_width = 2
     fake_segment.get_array_of_samples.return_value = [0, 1000, -1000, 500]
 
     mock_pydub, mock_AudioSegment = _mock_pydub_module()
@@ -158,6 +155,28 @@ def test_decode_audio_pydub_fallback():
     np.testing.assert_allclose(audio, np.array([0, 1000, -1000, 500], dtype=np.float32) / 32768.0, atol=1e-6)
 
 
+def test_decode_audio_pydub_fallback_scales_by_sample_width():
+    import soundfile as sf
+
+    fake_segment = MagicMock()
+    fake_segment.frame_rate = 16000
+    fake_segment.channels = 1
+    fake_segment.sample_width = 4
+    fake_segment.get_array_of_samples.return_value = [0, 1_073_741_824, -1_073_741_824]
+
+    mock_pydub, mock_AudioSegment = _mock_pydub_module()
+    mock_AudioSegment.from_file.return_value = fake_segment
+
+    with (
+        patch("soundfile.read", side_effect=sf.SoundFileError("unsupported format")),
+        patch.dict(sys.modules, {"pydub": mock_pydub, "pydub.AudioSegment": mock_AudioSegment}),
+    ):
+        audio, sr = decode_audio(b"\x00" * 10)
+
+    assert sr == 16000
+    np.testing.assert_allclose(audio, np.array([0.0, 0.5, -0.5], dtype=np.float32), atol=1e-6)
+
+
 def test_decode_audio_pydub_fallback_stereo():
     """Pydub fallback should correctly reshape interleaved stereo samples."""
     import soundfile as sf
@@ -165,6 +184,7 @@ def test_decode_audio_pydub_fallback_stereo():
     fake_segment = MagicMock()
     fake_segment.frame_rate = 44100
     fake_segment.channels = 2
+    fake_segment.sample_width = 2
     fake_segment.get_array_of_samples.return_value = [100, 200, 300, 400]
 
     mock_pydub, mock_AudioSegment = _mock_pydub_module()

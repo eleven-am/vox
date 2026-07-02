@@ -166,6 +166,21 @@ async def test_synthesize_stream_yields_encoded_chunks(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_synthesize_stream_multichunk_wav_has_single_container_header(tmp_path: Path):
+    sched = DummyScheduler(MultiChunkTTS(chunks=3))
+    store = BlobStore(root=tmp_path)
+    registry = MagicMock()
+    iterator = await synthesize_stream(
+        scheduler=sched, registry=registry, store=store,
+        request=SynthesisRequest(input="hello", model="fake-tts:latest", response_format="wav"),
+    )
+    body = b"".join([chunk async for chunk in iterator])
+    assert body[:4] == b"RIFF"
+    assert body.count(b"RIFF") == 1
+    assert body.count(b"WAVE") == 1
+
+
+@pytest.mark.asyncio
 async def test_synthesize_incremental_wav_streams_single_header_and_pcm_chunks(tmp_path: Path):
     adapter = MultiChunkTTS(chunks=3)
     sched = DummyScheduler(adapter)

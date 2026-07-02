@@ -8,7 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from vox.logging_config import configure_logging, reset_for_tests
+from vox.logging_config import reset_for_tests
 from vox.logging_context import request_id_var
 from vox.server.middleware import HEADER, RequestIdMiddleware
 

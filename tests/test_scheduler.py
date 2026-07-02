@@ -752,3 +752,40 @@ async def test_cpu_fallback_also_fails():
     with pytest.raises(ModelLoadError, match="CPU also broken"):
         async with sched.acquire("whisper:large-v3"):
             pass
+
+
+@pytest.mark.asyncio
+async def test_acquire_resident_model_not_blocked_by_cold_load():
+    import asyncio
+    import threading
+
+    release_load = threading.Event()
+
+    class SlowLoadAdapter(FakeSTTAdapter):
+        def load(self, model_path: str, device: str, **kwargs) -> None:
+            release_load.wait(timeout=10)
+            super().load(model_path, device, **kwargs)
+
+    registry = FakeRegistry()
+    registry.add_model("fast", "latest", adapter_cls=FakeSTTAdapter)
+    registry.add_model("slow", "latest", adapter_name="slow-stt", adapter_cls=SlowLoadAdapter)
+    sched = Scheduler(registry, default_device="cpu", max_loaded=3)
+
+    async with sched.acquire("fast:latest"):
+        pass
+
+    async def cold_load():
+        async with sched.acquire("slow:latest"):
+            pass
+
+    cold_task = asyncio.create_task(cold_load())
+    await asyncio.sleep(0.05)
+    assert not cold_task.done()
+
+    try:
+        async with asyncio.timeout(2):
+            async with sched.acquire("fast:latest") as adapter:
+                assert adapter.is_loaded
+    finally:
+        release_load.set()
+        await cold_task

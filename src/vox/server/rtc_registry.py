@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import secrets
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -28,6 +29,7 @@ class RtcSessionRecord:
     audio_output: asyncio.Queue[Any] | None = None
     pending_client_events: list[str] = field(default_factory=list)
     media_tasks: set[asyncio.Task] = field(default_factory=set)
+    forward_browser_events: bool = True
 
 
 class RtcSessionRegistry:
@@ -41,6 +43,7 @@ class RtcSessionRegistry:
     def __init__(self, *, join_token_ttl_s: int = 120) -> None:
         self._join_token_ttl_s = join_token_ttl_s
         self._sessions: dict[str, RtcSessionRecord] = {}
+        self._teardown_tasks: set[asyncio.Task] = set()
 
     @property
     def join_token_ttl_s(self) -> int:
@@ -117,10 +120,32 @@ class RtcSessionRegistry:
             record.control_attached = False
 
     def close(self, session_id: str) -> None:
-        record = self._sessions.get(session_id)
-        if record is not None:
-            record.closed = True
-        self._sessions.pop(session_id, None)
+        record = self._sessions.pop(session_id, None)
+        if record is None:
+            return
+        record.closed = True
+        self._release_resources(record)
+
+    def _release_resources(self, record: RtcSessionRecord) -> None:
+        for task in list(record.media_tasks):
+            task.cancel()
+        record.media_tasks.clear()
+        peer = record.rtc_peer
+        record.rtc_peer = None
+        if peer is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(self._close_peer(peer))
+        self._teardown_tasks.add(task)
+        task.add_done_callback(self._teardown_tasks.discard)
+
+    @staticmethod
+    async def _close_peer(peer: Any) -> None:
+        with suppress(Exception):
+            await peer.close()
 
     def _prune_expired(self, *, now: float) -> None:
         for session_id, record in list(self._sessions.items()):

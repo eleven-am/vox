@@ -16,6 +16,7 @@ from vox.conversation.text_buffer import (
     split_sentences,
 )
 from vox.core.errors import VoiceCloningUnsupportedError, VoiceNotFoundError
+from vox.core.tasks import drain_task
 from vox.logging_context import new_request_id, request_id_var
 from vox.operations.errors import (
     OperationError,
@@ -108,12 +109,7 @@ async def transcriptions_stream(websocket: WebSocket):
 
             await session.end_of_stream()
         finally:
-            with suppress(asyncio.CancelledError):
-                await asyncio.wait_for(emit_task, timeout=5.0)
-            if not emit_task.done():
-                emit_task.cancel()
-                with suppress(Exception):
-                    await emit_task
+            await drain_task(emit_task)
             await session.close()
     except WebSocketDisconnect:
         logger.info("Long-form STT websocket disconnected")
@@ -190,12 +186,7 @@ async def speech_stream(websocket: WebSocket):
 
             await session.end_of_stream()
         finally:
-            with suppress(asyncio.CancelledError):
-                await asyncio.wait_for(emit_task, timeout=10.0)
-            if not emit_task.done():
-                emit_task.cancel()
-                with suppress(Exception):
-                    await emit_task
+            await drain_task(emit_task, timeout=10.0)
             await session.close()
     except WebSocketDisconnect:
         logger.info("Long-form TTS websocket disconnected")

@@ -14,6 +14,7 @@ from aiortc.sdp import candidate_from_sdp
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
+from vox.core.tasks import drain_task
 from vox.operations.conversation import (
     ConvDoneEvent,
 )
@@ -33,7 +34,11 @@ from vox.server.rtc_client_events import (
     parse_client_event_message,
     send_client_event_to_browser,
 )
-from vox.server.rtc_conversation import clear_rtc_audio_if_needed, create_rtc_orchestrator
+from vox.server.rtc_conversation import (
+    clear_rtc_audio_if_needed,
+    create_rtc_orchestrator,
+    forward_wire_event_to_browser,
+)
 from vox.server.rtc_ice import (
     ice_servers_from_env,
     patch_aioice_turn_error_code_parser,
@@ -61,6 +66,12 @@ async def create_rtc_session(request: Request) -> dict:
     require_api_key(request)
     registry = get_rtc_registry(request)
     record, client_token = registry.create_session()
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if isinstance(body, dict) and "browser_events" in body:
+        record.forward_browser_events = bool(body["browser_events"])
     return {
         "session_id": record.session_id,
         "client_token": client_token,
@@ -269,6 +280,7 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
             wire = _event_to_wire(event)
             if wire is not None:
                 wire.setdefault("session_id", session_id)
+                forward_wire_event_to_browser(record, wire)
                 with suppress(Exception):
                     await websocket.send_json(wire)
                 timing = timeline.observe(wire, audio_stats=_rtc_audio_stats(record))
@@ -372,20 +384,10 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
             await _send_error(websocket, "internal error; closing")
     finally:
         await orchestrator.end_of_stream(flush_response=False)
-        with suppress(asyncio.CancelledError):
-            await asyncio.wait_for(emit_task, timeout=5.0)
-        if not emit_task.done():
-            emit_task.cancel()
-            with suppress(Exception):
-                await emit_task
+        await drain_task(emit_task)
         if record.control_events is not None:
             await record.control_events.put(None)
-        with suppress(asyncio.CancelledError):
-            await asyncio.wait_for(client_event_task, timeout=5.0)
-        if not client_event_task.done():
-            client_event_task.cancel()
-            with suppress(Exception):
-                await client_event_task
+        await drain_task(client_event_task)
         await orchestrator.close()
         record.orchestrator = None
         record.data_channel = None

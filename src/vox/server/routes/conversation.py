@@ -18,6 +18,7 @@ from contextlib import suppress
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from vox.core.tasks import drain_task
 from vox.logging_context import new_request_id, request_id_var
 from vox.operations.conversation import (
     ConvAudioClearEvent,
@@ -36,6 +37,7 @@ from vox.operations.conversation import (
     ConvSpeechStartedEvent,
     ConvSpeechStoppedEvent,
     ConvStateChangedEvent,
+    ConvTranscriptDeltaEvent,
     ConvTranscriptDoneEvent,
     ConvTurnEouPredictedEvent,
     parse_session_update,
@@ -55,6 +57,7 @@ WIRE_SESSION_CREATED = "session.created"
 WIRE_SPEECH_STARTED = "input_audio_buffer.speech_started"
 WIRE_SPEECH_STOPPED = "input_audio_buffer.speech_stopped"
 WIRE_TRANSCRIPT_DONE = "conversation.item.input_audio_transcription.completed"
+WIRE_TRANSCRIPT_DELTA = "conversation.item.input_audio_transcription.delta"
 WIRE_RESPONSE_CREATED = "response.created"
 WIRE_AUDIO_DELTA = "response.audio.delta"
 WIRE_RESPONSE_DONE = "response.done"
@@ -77,6 +80,13 @@ def _event_to_wire(event: ConvEvent) -> dict | None:
         return {"type": WIRE_SPEECH_STARTED, "timestamp_ms": event.timestamp_ms}
     if isinstance(event, ConvSpeechStoppedEvent):
         return {"type": WIRE_SPEECH_STOPPED, "timestamp_ms": event.timestamp_ms}
+    if isinstance(event, ConvTranscriptDeltaEvent):
+        return {
+            "type": WIRE_TRANSCRIPT_DELTA,
+            "delta": event.delta,
+            "start_ms": event.start_ms,
+            "end_ms": event.end_ms,
+        }
     if isinstance(event, ConvTranscriptDoneEvent):
         payload: dict = {
             "type": WIRE_TRANSCRIPT_DONE,
@@ -121,12 +131,15 @@ def _event_to_wire(event: ConvEvent) -> dict | None:
             "partial_transcript": event.partial_transcript,
         }
     if isinstance(event, ConvInterruptionFalsePositiveEvent):
-        return {
+        payload_fp: dict = {
             "type": WIRE_INTERRUPTION_FALSE_POSITIVE,
             "response_id": event.response_id,
             "vad_active_ms": event.vad_active_ms,
             "partial_transcript": event.partial_transcript,
         }
+        if event.reason:
+            payload_fp["reason"] = event.reason
+        return payload_fp
     if isinstance(event, ConvTurnEouPredictedEvent):
         return {
             "type": WIRE_TURN_EOU_PREDICTED,
@@ -258,12 +271,7 @@ async def conversation_ws(websocket: WebSocket) -> None:
             await _send_error(websocket, "internal error; closing")
     finally:
         await orchestrator.end_of_stream()
-        with suppress(asyncio.CancelledError):
-            await asyncio.wait_for(emit_task, timeout=5.0)
-        if not emit_task.done():
-            emit_task.cancel()
-            with suppress(Exception):
-                await emit_task
+        await drain_task(emit_task)
         await orchestrator.close()
         with suppress(Exception):
             await websocket.close()

@@ -7,6 +7,7 @@ import numpy as np
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tests.fakes import FakeScheduler
 from vox.core.adapter import STTAdapter, TTSAdapter
 from vox.core.types import (
     AdapterInfo,
@@ -17,8 +18,6 @@ from vox.core.types import (
     TranscriptSegment,
 )
 from vox.server.routes import bidi
-
-from tests.fakes import FakeScheduler
 
 
 class FakeChunkingSTTAdapter(STTAdapter):

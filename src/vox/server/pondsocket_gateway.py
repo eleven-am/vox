@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, FastAPI, WebSocket
 
+from vox.core.tasks import drain_task
 from vox.operations.conversation import (
     ConvDoneEvent,
     ConversationOrchestrator,
@@ -23,7 +24,11 @@ from vox.server.routes.conversation import (
 )
 from vox.server.routes.rtc import _cancel_media_tasks
 from vox.server.rtc_client_events import parse_client_event_message, send_client_event_to_browser
-from vox.server.rtc_conversation import clear_rtc_audio_if_needed, create_rtc_orchestrator
+from vox.server.rtc_conversation import (
+    clear_rtc_audio_if_needed,
+    create_rtc_orchestrator,
+    forward_wire_event_to_browser,
+)
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 
 if TYPE_CHECKING:
@@ -155,31 +160,16 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
 
     async def close_conversation_runtime(runtime: _ConversationRuntime) -> None:
         await runtime.orchestrator.end_of_stream()
-        with suppress(asyncio.CancelledError):
-            await asyncio.wait_for(runtime.emit_task, timeout=5.0)
-        if not runtime.emit_task.done():
-            runtime.emit_task.cancel()
-            with suppress(Exception):
-                await runtime.emit_task
+        await drain_task(runtime.emit_task)
         await runtime.orchestrator.close()
 
     async def close_rtc_runtime(runtime: _RtcRuntime) -> None:
         record = runtime.record
         await runtime.orchestrator.end_of_stream(flush_response=False)
-        with suppress(asyncio.CancelledError):
-            await asyncio.wait_for(runtime.emit_task, timeout=5.0)
-        if not runtime.emit_task.done():
-            runtime.emit_task.cancel()
-            with suppress(Exception):
-                await runtime.emit_task
+        await drain_task(runtime.emit_task)
         if record.control_events is not None:
             await record.control_events.put(None)
-        with suppress(asyncio.CancelledError):
-            await asyncio.wait_for(runtime.client_event_task, timeout=5.0)
-        if not runtime.client_event_task.done():
-            runtime.client_event_task.cancel()
-            with suppress(Exception):
-                await runtime.client_event_task
+        await drain_task(runtime.client_event_task)
         await runtime.orchestrator.close()
         record.orchestrator = None
         record.data_channel = None
@@ -235,6 +225,7 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
                 wire = _event_to_wire(event)
                 if wire is not None:
                     wire.setdefault("session_id", session_id)
+                    forward_wire_event_to_browser(record, wire)
                     with suppress(Exception):
                         await emit_wire_to_user(channel, user_id, wire)
                 if isinstance(event, ConvDoneEvent):

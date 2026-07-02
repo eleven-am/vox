@@ -3,13 +3,9 @@
 from __future__ import annotations
 
 import time
-from typing import Any
 from unittest.mock import patch
 
-import pytest
-
 from vox.core.device_placement import (
-    DEVICE_MEMORY_HEADROOM_BYTES,
     LoadedModelView,
     Placement,
     PlacementTier,

@@ -7,6 +7,7 @@ from contextlib import suppress
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from vox.core.tasks import drain_task
 from vox.logging_context import new_request_id, request_id_var
 from vox.operations.errors import (
     NoDefaultModelError,
@@ -154,12 +155,7 @@ async def audio_stream(websocket: WebSocket):
     finally:
         if not disconnected:
             await session.end_of_stream()
-        with suppress(asyncio.CancelledError):
-            await asyncio.wait_for(emit_task, timeout=5.0)
-        if not emit_task.done():
-            emit_task.cancel()
-            with suppress(Exception):
-                await emit_task
+        await drain_task(emit_task)
         await session.close()
         with suppress(Exception):
             await websocket.close()

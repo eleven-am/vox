@@ -5,7 +5,6 @@ import json
 
 import numpy as np
 import pytest
-
 from vox_voxtral.protocol import (
     OP_SHUTDOWN,
     OP_SYNTHESIZE,

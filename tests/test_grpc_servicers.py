@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import numpy as np
 import pytest
 
+from tests.fakes import FakeCloneableTTSAdapter
 from vox.audio.codecs import encode_wav
 from vox.core.adapter import STTAdapter
 from vox.core.cloned_voices import create_stored_voice
@@ -20,8 +21,6 @@ from vox.core.types import (
     TranscriptSegment,
 )
 from vox.grpc import vox_pb2
-
-from tests.fakes import FakeCloneableTTSAdapter
 
 
 def _make_store(tmp_path: Path) -> BlobStore:

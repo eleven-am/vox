@@ -3,11 +3,56 @@ from __future__ import annotations
 import base64
 from typing import Any
 
+from vox.conversation.session import (
+    WIRE_AUDIO_CLEAR,
+    WIRE_INTERRUPTION_DETECTED,
+    WIRE_INTERRUPTION_FALSE_POSITIVE,
+    WIRE_RESPONSE_CANCELLED,
+    WIRE_RESPONSE_CREATED,
+    WIRE_RESPONSE_DONE,
+    WIRE_SPEECH_STARTED,
+    WIRE_SPEECH_STOPPED,
+    WIRE_STATE_CHANGED,
+    WIRE_TRANSCRIPT_DELTA,
+    WIRE_TRANSCRIPT_DONE,
+)
 from vox.operations.conversation import (
     ConvAudioClearEvent,
     ConvAudioDeltaEvent,
     ConversationOrchestrator,
 )
+from vox.server.rtc_client_events import send_client_event_to_browser
+
+BROWSER_FORWARDED_EVENT_TYPES = frozenset(
+    {
+        WIRE_STATE_CHANGED,
+        WIRE_SPEECH_STARTED,
+        WIRE_SPEECH_STOPPED,
+        WIRE_TRANSCRIPT_DELTA,
+        WIRE_TRANSCRIPT_DONE,
+        WIRE_INTERRUPTION_DETECTED,
+        WIRE_INTERRUPTION_FALSE_POSITIVE,
+        WIRE_RESPONSE_CREATED,
+        WIRE_RESPONSE_DONE,
+        WIRE_RESPONSE_CANCELLED,
+        WIRE_AUDIO_CLEAR,
+    }
+)
+
+
+def forward_wire_event_to_browser(record: Any, wire: dict | None) -> None:
+    if record is None or wire is None:
+        return
+    if not getattr(record, "forward_browser_events", True):
+        return
+    event_type = wire.get("type")
+    if event_type not in BROWSER_FORWARDED_EVENT_TYPES:
+        return
+    channel = getattr(record, "data_channel", None)
+    if channel is None or getattr(channel, "readyState", None) != "open":
+        return
+    payload = {key: value for key, value in wire.items() if key != "type"}
+    send_client_event_to_browser(record, str(event_type), payload)
 
 
 def create_rtc_orchestrator(*, scheduler: Any, record: Any) -> ConversationOrchestrator:

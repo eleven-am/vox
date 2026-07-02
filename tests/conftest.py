@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_DIRS = [ROOT / "src", *sorted((ROOT / "adapters").glob("*/src"))]
 for source_dir in reversed(SOURCE_DIRS):

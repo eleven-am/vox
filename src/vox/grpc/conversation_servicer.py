@@ -11,13 +11,13 @@ import asyncio
 import base64
 import logging
 from collections.abc import AsyncIterator
-from contextlib import suppress
 
 from vox.conversation import TurnPolicy
 from vox.conversation.profiles import DEFAULT_TURN_PROFILE, resolve_turn_policy
 from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
+from vox.core.tasks import reap_task
 from vox.grpc import vox_pb2, vox_pb2_grpc
 from vox.operations.conversation import (
     ConvAudioClearEvent,
@@ -37,6 +37,7 @@ from vox.operations.conversation import (
     ConvSpeechStartedEvent,
     ConvSpeechStoppedEvent,
     ConvStateChangedEvent,
+    ConvTranscriptDeltaEvent,
     ConvTranscriptDoneEvent,
     ConvTurnEouPredictedEvent,
 )
@@ -80,6 +81,7 @@ def _pb_to_config(update: vox_pb2.ConversationSessionUpdate) -> ConversationSess
             "self_echo_min_overlap",
             "aec_warmup_ms",
             "backchannel_end_cooldown_ms",
+            "vad_min_silence_ms",
         ):
             if policy_pb.HasField(field_name):
                 policy_overrides[field_name] = getattr(policy_pb, field_name)
@@ -101,6 +103,7 @@ def _pb_to_config(update: vox_pb2.ConversationSessionUpdate) -> ConversationSess
         vad_backend=update.vad_backend or "silero",
         turn_detector=update.turn_detector or "livekit",
         policy=policy,
+        include_word_timestamps=bool(update.include_word_timestamps),
     )
 
 
@@ -129,6 +132,7 @@ def _event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage | None:
         session_created.policy.self_echo_min_overlap = policy.self_echo_min_overlap
         session_created.policy.aec_warmup_ms = policy.aec_warmup_ms
         session_created.policy.backchannel_end_cooldown_ms = policy.backchannel_end_cooldown_ms
+        session_created.policy.vad_min_silence_ms = policy.vad_min_silence_ms
         return vox_pb2.ConverseServerMessage(
             session_created=session_created,
         )
@@ -139,6 +143,14 @@ def _event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage | None:
     if isinstance(event, ConvSpeechStoppedEvent):
         return vox_pb2.ConverseServerMessage(
             speech_stopped=vox_pb2.ConversationSpeechStopped(timestamp_ms=event.timestamp_ms),
+        )
+    if isinstance(event, ConvTranscriptDeltaEvent):
+        return vox_pb2.ConverseServerMessage(
+            transcript_delta=vox_pb2.ConversationTranscriptDelta(
+                delta=event.delta,
+                start_ms=event.start_ms,
+                end_ms=event.end_ms,
+            ),
         )
     if isinstance(event, ConvTranscriptDoneEvent):
         msg = vox_pb2.ConversationTranscriptDone(
@@ -212,6 +224,7 @@ def _event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage | None:
                 response_id=event.response_id,
                 vad_active_ms=event.vad_active_ms,
                 partial_transcript=event.partial_transcript or "",
+                reason=event.reason or "",
             ),
         )
     if isinstance(event, ConvTurnEouPredictedEvent):
@@ -322,8 +335,6 @@ class ConversationServicer(vox_pb2_grpc.ConversationServiceServicer):
         finally:
             client_task.cancel()
             emit_task.cancel()
-            with suppress(Exception):
-                await client_task
-            with suppress(Exception):
-                await emit_task
+            await reap_task(client_task)
+            await reap_task(emit_task)
             await orchestrator.close()

@@ -4,14 +4,12 @@ import numpy as np
 import pytest
 
 from vox.streaming.buffer import AudioRingBuffer
-from vox.streaming.codecs import pcm16_to_float32, float32_to_pcm16, resample_audio
+from vox.streaming.codecs import float32_to_pcm16, pcm16_to_float32, resample_audio
 from vox.streaming.partials import deduplicate_words
 from vox.streaming.session import SpeechSession
 from vox.streaming.types import (
-    TARGET_SAMPLE_RATE,
-    StreamSessionConfig,
     SpeechStarted,
-    SpeechStopped,
+    StreamSessionConfig,
     StreamTranscript,
     samples_to_ms,
 )

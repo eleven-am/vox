@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from pathlib import Path
 
 import numpy as np
 import pytest
 
+from tests.fakes import FakeScheduler
+from tests.fakes import FakeSTTAdapter as FakeSTT
 from vox.audio.codecs import encode_wav
 from vox.core.adapter import TTSAdapter
 from vox.core.cloned_voices import create_stored_voice
@@ -31,8 +32,6 @@ from vox.operations.voices import (
     get_voice_reference,
     list_voices,
 )
-
-from tests.fakes import FakeSTTAdapter as FakeSTT, FakeScheduler
 
 
 def _wav() -> bytes:

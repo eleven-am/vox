@@ -11,7 +11,6 @@ from typing import Any
 
 import numpy as np
 
-
 VOXTRAL_TTS_SAMPLE_RATE = 24_000
 
 OP_SYNTHESIZE = "synthesize"

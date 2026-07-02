@@ -72,6 +72,7 @@ logger = logging.getLogger(__name__)
 WIRE_SPEECH_STARTED = "input_audio_buffer.speech_started"
 WIRE_SPEECH_STOPPED = "input_audio_buffer.speech_stopped"
 WIRE_TRANSCRIPT_DONE = "conversation.item.input_audio_transcription.completed"
+WIRE_TRANSCRIPT_DELTA = "conversation.item.input_audio_transcription.delta"
 WIRE_RESPONSE_CREATED = "response.created"
 WIRE_AUDIO_DELTA = "response.audio.delta"
 WIRE_RESPONSE_DONE = "response.done"
@@ -100,6 +101,7 @@ class ConversationConfig:
     turn_profile: str = DEFAULT_TURN_PROFILE
     vad_backend: str = "silero"
     turn_detector: str = "livekit"
+    include_word_timestamps: bool = False
 
     interrupt_classifier: InterruptClassifier | None = None
     audio_preprocessor: AudioPreprocessor | None = None
@@ -226,7 +228,10 @@ class ConversationSession:
         self._pipeline = StreamPipeline(
             scheduler=scheduler,
             config=StreamPipelineConfig(
-                vad_config=VADConfig(backend=config.vad_backend),
+                vad_config=VADConfig(
+                    backend=config.vad_backend,
+                    min_silence_duration_ms=max(0, int(config.policy.vad_min_silence_ms)),
+                ),
                 eou_config=EOUConfig(model=config.turn_detector),
             ),
         )
@@ -235,7 +240,7 @@ class ConversationSession:
             sample_rate=TARGET_SAMPLE_RATE,
             model=config.stt_model,
             partials=self._wants_partials,
-            include_word_timestamps=False,
+            include_word_timestamps=config.include_word_timestamps,
         )
         self._pipeline.configure(self._stream_session_config)
 
@@ -591,6 +596,15 @@ class ConversationSession:
             )
         elif isinstance(stream_event, StreamTranscript) and stream_event.is_partial:
             self._latest_partial = stream_event
+            if stream_event.text and stream_event.text.strip() and not self._is_in_self_echo_window():
+                await self._emit(
+                    {
+                        "type": WIRE_TRANSCRIPT_DELTA,
+                        "delta": stream_event.text,
+                        "start_ms": stream_event.start_ms,
+                        "end_ms": stream_event.end_ms,
+                    }
+                )
             if (
                 self._sm.state in {TurnState.PAUSED, TurnState.SPEAKING}
                 and self._active_response_id is not None
@@ -637,7 +651,18 @@ class ConversationSession:
             eou_complete = (
                 stream_event.eou_probability is not None and float(stream_event.eou_probability) >= eou_threshold
             )
-            commit_delay_ms = self._transcript_commit_delay_ms() if endpoint_timer_active else 0
+            commit_delay_ms = (
+                self._transcript_commit_delay_ms(
+                    eou_probability=(
+                        float(stream_event.eou_probability)
+                        if stream_event.eou_probability is not None
+                        else None
+                    ),
+                    eou_threshold=eou_threshold,
+                )
+                if endpoint_timer_active
+                else 0
+            )
             defer_commit = endpoint_timer_active and commit_delay_ms > 0
             if stream_event.eou_probability is not None:
                 await self._emit(
@@ -1228,7 +1253,11 @@ class ConversationSession:
             )
         )
 
-    def _transcript_commit_delay_ms(self) -> int:
+    def _transcript_commit_delay_ms(
+        self,
+        eou_probability: float | None = None,
+        eou_threshold: float | None = None,
+    ) -> int:
         max_delay_ms = max(0, int(self._config.policy.max_endpointing_delay_ms))
         min_delay_ms = max(0, int(self._config.policy.min_endpointing_delay_ms))
         continuation_delay_ms = max(
@@ -1238,14 +1267,26 @@ class ConversationSession:
         if self._config.policy.dynamic_endpointing and self._recent_endpoint_pauses_ms:
             avg_pause = sum(self._recent_endpoint_pauses_ms) / len(self._recent_endpoint_pauses_ms)
             dynamic_ms = int(avg_pause * 1.25)
-            return min(
+            base_ms = min(
                 max_delay_ms,
                 max(
                     continuation_delay_ms,
                     dynamic_ms,
                 ),
             )
-        return min(max_delay_ms, continuation_delay_ms)
+        else:
+            base_ms = min(max_delay_ms, continuation_delay_ms)
+
+        if eou_probability is None or eou_threshold is None:
+            return base_ms
+        if eou_probability < eou_threshold:
+            return base_ms
+
+        floor_ms = min(min_delay_ms, base_ms)
+        if eou_threshold >= 1.0:
+            return floor_ms
+        confidence = min(1.0, max(0.0, (eou_probability - eou_threshold) / (1.0 - eou_threshold)))
+        return int(base_ms - confidence * (base_ms - floor_ms))
 
     async def _evaluate_interrupt_candidate(self) -> None:
         """Consult the classifier before confirming a barge-in.
@@ -1299,6 +1340,7 @@ class ConversationSession:
                     "response_id": self._active_response_id,
                     "vad_active_ms": vad_active_ms,
                     "partial_transcript": partial_transcript,
+                    "reason": "self_echo_transcript",
                 }
             )
             await self._event_queue.put(
@@ -1361,6 +1403,7 @@ class ConversationSession:
                         "response_id": self._active_response_id,
                         "vad_active_ms": vad_active_ms,
                         "partial_transcript": partial_transcript,
+                        "reason": "insufficient_interrupt_evidence",
                     }
                 )
                 await self._event_queue.put(
@@ -1411,6 +1454,7 @@ class ConversationSession:
                     "response_id": self._active_response_id,
                     "vad_active_ms": vad_active_ms,
                     "partial_transcript": partial_transcript,
+                    "reason": "backchannel",
                 }
             )
             await self._event_queue.put(

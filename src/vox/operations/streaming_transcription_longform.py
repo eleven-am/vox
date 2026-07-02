@@ -297,13 +297,13 @@ class LongformTranscriptionSession:
         chunk_start_ms = samples_to_ms(state.next_chunk_start_samples)
         if result.segments:
             for segment in result.segments:
-                if overlap_ms and segment.end_ms <= overlap_ms:
+                if overlap_ms and segment.start_ms + segment.end_ms <= 2 * overlap_ms:
                     continue
                 start_ms = chunk_start_ms + max(segment.start_ms, overlap_ms)
                 end_ms = chunk_start_ms + segment.end_ms
                 words = []
                 for word in segment.words:
-                    if overlap_ms and word.end_ms <= overlap_ms:
+                    if overlap_ms and word.start_ms + word.end_ms <= 2 * overlap_ms:
                         continue
                     words.append({
                         "word": word.word,

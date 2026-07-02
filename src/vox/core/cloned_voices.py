@@ -148,7 +148,8 @@ def validate_reference_audio(
 
     samples = np.asarray(audio, dtype=np.float32)
     if samples.ndim > 1:
-        samples = samples.reshape(-1) if samples.shape[0] == 1 else samples.mean(axis=-1 if samples.shape[-1] <= 2 else 0)
+        channel_axis = int(np.argmin(samples.shape))
+        samples = samples.reshape(-1) if samples.shape[channel_axis] == 1 else samples.mean(axis=channel_axis)
 
     if samples.size == 0:
         raise ReferenceAudioInvalidError("Reference audio is empty")

@@ -6,7 +6,6 @@ import numpy as np
 import pytest
 
 from vox.streaming.partials import (
-    PARTIAL_OVERLAP_MS,
     PartialTranscriptService,
     _dedup_by_timestamp,
     _shift_segments,
@@ -232,7 +231,7 @@ class TestPartialServiceEdgeCases:
 
         svc = PartialTranscriptService(transcribe)
 
-        results = await asyncio.gather(*[
+        await asyncio.gather(*[
             svc.generate_partial_async(session, config) for _ in range(5)
         ])
 

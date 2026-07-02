@@ -7,7 +7,6 @@ import threading
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -15,13 +14,14 @@ import numpy as np
 from vox.core.types import SynthesizeChunk
 from vox_voxtral.protocol import (
     VOXTRAL_TTS_SAMPLE_RATE as _SAMPLE_RATE,
+)
+from vox_voxtral.protocol import (
     OkResponse,
     ShutdownRequest,
     SynthesizeRequest,
     accumulate_chunk,
     decode_response,
     extract_audio_chunk,
-    is_error,
     is_ok,
     is_ready,
 )
@@ -123,7 +123,7 @@ class SubprocessOmniBackend(OmniBackend):
         stage_configs_path: str,
         default_voice: str,
         env: dict[str, str] | None = None,
-    ) -> "SubprocessOmniBackend":
+    ) -> SubprocessOmniBackend:
         proc = subprocess.Popen(
             [
                 python_executable,

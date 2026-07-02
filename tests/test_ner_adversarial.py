@@ -3,14 +3,10 @@ from __future__ import annotations
 import threading
 from unittest.mock import patch
 
-import pytest
-
 from vox.core import ner
 from vox.core.ner import (
     EMAIL_REGEX,
     MAX_TOPICS,
-    PHONE_REGEX,
-    URL_REGEX,
     _clean_chunk,
     _regex_entities,
     annotate,
@@ -155,7 +151,7 @@ class TestMockedTopicRanking:
                 self.pos_, self.lemma_, self.i, self.is_stop, self.is_punct = pos, lemma, i, is_stop, is_punct
                 self.text = text if text is not None else lemma
 
-        _DETERMINERS = {"the", "a", "an", "my", "el", "la", "der", "die", "das", "le", "la", "les"}
+        _DETERMINERS = {"the", "a", "an", "my", "el", "la", "der", "die", "das", "le", "les"}
 
         def _chunk_from_text(text: str, start: int):
             words = text.split()
@@ -258,8 +254,6 @@ class TestConcurrentModelLoad:
         ner._models.clear()
         ner._missing_languages.clear()
         counter = {"calls": 0}
-
-        original_get = ner._get_model
 
         def counting_get(lang):
             counter["calls"] += 1

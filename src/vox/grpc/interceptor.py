@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
 
 import grpc
 from grpc.aio import ServerInterceptor

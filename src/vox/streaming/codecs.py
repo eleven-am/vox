@@ -4,8 +4,6 @@ import numpy as np
 import soxr
 from numpy.typing import NDArray
 
-from vox.streaming.types import TARGET_SAMPLE_RATE
-
 
 def pcm16_to_float32(pcm_bytes: bytes) -> NDArray[np.float32]:
     return np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0

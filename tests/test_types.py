@@ -16,11 +16,6 @@ from vox.core.types import (
 )
 
 
-
-
-
-
-
 class TestModelRef:
     def test_model_ref_parse_with_tag(self):
         ref = ModelRef.parse("whisper:large-v3")

@@ -52,13 +52,14 @@ def decode_audio(
 
     sample_rate = segment.frame_rate
     channels = segment.channels
-    samples = np.array(segment.get_array_of_samples(), dtype=np.int16)
+    samples = np.array(segment.get_array_of_samples())
 
 
     if channels > 1:
         samples = samples.reshape(-1, channels)
 
-    audio = samples.astype(np.float32) / 32768.0
+    scale = float(1 << (8 * segment.sample_width - 1))
+    audio = samples.astype(np.float32) / scale
     return audio, sample_rate
 
 

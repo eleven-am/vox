@@ -8,10 +8,6 @@ from vox.core.speechfile import SpeechfileParseError, parse_speechfile
 from vox.core.types import ModelFormat, ModelType, VoiceInfo
 
 
-
-
-
-
 class TestBasicParsing:
     def test_parse_minimal_only_from(self):
         sf = parse_speechfile("FROM openai/whisper-large-v3")

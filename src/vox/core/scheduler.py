@@ -176,6 +176,7 @@ class Scheduler:
         )
         self._models: dict[str, _LoadedModel] = {}
         self._lock = asyncio.Lock()
+        self._load_lock = asyncio.Lock()
         self._cleanup_task: asyncio.Task | None = None
 
     def _normalize_model_ref(self, model_name: str) -> str:
@@ -422,17 +423,26 @@ class Scheduler:
         del self._models[lru_name]
         _clear_gpu_cache()
 
+    async def _acquire_loaded(self, full_name: str) -> _LoadedModel:
+        while True:
+            async with self._lock:
+                loaded = self._models.get(full_name)
+                if loaded is not None:
+                    loaded.ref_count += 1
+                    loaded.last_used = time.time()
+                    return loaded
+            async with self._load_lock:
+                async with self._lock:
+                    needs_load = full_name not in self._models
+                if needs_load:
+                    await self._load_model(full_name)
+
     @asynccontextmanager
     async def acquire(self, model_name: str):
         """Acquire a loaded model adapter. Loads on first use, ref-counted."""
         full_name = self._normalize_model_ref(model_name)
 
-        async with self._lock:
-            if full_name not in self._models:
-                await self._load_model(full_name)
-            loaded = self._models[full_name]
-            loaded.ref_count += 1
-            loaded.last_used = time.time()
+        loaded = await self._acquire_loaded(full_name)
 
         try:
             yield loaded.adapter
@@ -446,8 +456,10 @@ class Scheduler:
     async def preload(self, model_name: str) -> None:
         """Pre-load a model into memory."""
         full_name = self._normalize_model_ref(model_name)
-        async with self._lock:
-            if full_name not in self._models:
+        async with self._load_lock:
+            async with self._lock:
+                needs_load = full_name not in self._models
+            if needs_load:
                 await self._load_model(full_name)
 
     async def unload(self, model_name: str) -> bool:

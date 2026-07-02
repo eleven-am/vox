@@ -5,6 +5,9 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
+from numpy.typing import NDArray
+
 VOXTRAL_TTS_SAMPLE_RATE = 24_000
 
 OP_SYNTHESIZE = "synthesize"
@@ -25,7 +28,7 @@ class SynthesizeRequest:
         return json.dumps({"op": self.op, "text": self.text, "voice": self.voice})
 
     @classmethod
-    def make(cls, text: str, voice: str) -> "SynthesizeRequest":
+    def make(cls, text: str, voice: str) -> SynthesizeRequest:
         return cls(op=OP_SYNTHESIZE, text=text, voice=voice)
 
 
@@ -37,7 +40,7 @@ class ShutdownRequest:
         return json.dumps({"op": self.op})
 
     @classmethod
-    def make(cls) -> "ShutdownRequest":
+    def make(cls) -> ShutdownRequest:
         return cls(op=OP_SHUTDOWN)
 
 
@@ -46,7 +49,7 @@ class ReadyResponse:
     status: str
 
     @classmethod
-    def decode(cls, payload: dict[str, Any]) -> "ReadyResponse":
+    def decode(cls, payload: dict[str, Any]) -> ReadyResponse:
         return cls(status=payload["status"])
 
 
@@ -60,7 +63,7 @@ class OkResponse:
         return base64.b64decode(self.audio_b64)
 
     @classmethod
-    def decode(cls, payload: dict[str, Any]) -> "OkResponse":
+    def decode(cls, payload: dict[str, Any]) -> OkResponse:
         return cls(
             status=payload["status"],
             sample_rate=int(payload.get("sample_rate", 24_000)),
@@ -84,7 +87,7 @@ class ErrorResponse:
     error: str
 
     @classmethod
-    def decode(cls, payload: dict[str, Any]) -> "ErrorResponse":
+    def decode(cls, payload: dict[str, Any]) -> ErrorResponse:
         return cls(status=payload["status"], error=payload.get("error", "unknown error"))
 
     @classmethod
@@ -106,10 +109,6 @@ def is_ok(payload: dict[str, Any]) -> bool:
 
 def is_error(payload: dict[str, Any]) -> bool:
     return payload.get("status") == STATUS_ERROR
-
-
-import numpy as np
-from numpy.typing import NDArray
 
 
 def extract_audio_chunk(audio_chunk: Any, chunk_idx: int) -> NDArray[np.float32]:

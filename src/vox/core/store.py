@@ -18,13 +18,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
-
-import logging
 
 from vox.core.types import ModelInfo
 
@@ -126,31 +125,35 @@ class BlobStore:
 
         h = hashlib.sha256()
 
-        fd = tempfile.NamedTemporaryFile(
+        with tempfile.NamedTemporaryFile(
             dir=self.blobs_dir, delete=False, suffix=".tmp",
-        )
-        try:
-            while True:
-                chunk = data.read(_READ_CHUNK)
-                if not chunk:
-                    break
-                h.update(chunk)
-                fd.write(chunk)
-            fd.flush()
-            fd.close()
+        ) as fd:
+            tmp_path = Path(fd.name)
+            try:
+                while True:
+                    chunk = data.read(_READ_CHUNK)
+                    if not chunk:
+                        break
+                    h.update(chunk)
+                    fd.write(chunk)
+                fd.flush()
+            except BaseException:
+                fd.close()
+                tmp_path.unlink(missing_ok=True)
+                raise
 
+        try:
             digest = f"sha256-{h.hexdigest()}"
             final_path = self.get_blob_path(digest)
 
             if final_path.exists():
-
-                Path(fd.name).unlink(missing_ok=True)
+                tmp_path.unlink(missing_ok=True)
             else:
-                Path(fd.name).rename(final_path)
+                tmp_path.rename(final_path)
 
             return digest
         except BaseException:
-            Path(fd.name).unlink(missing_ok=True)
+            tmp_path.unlink(missing_ok=True)
             raise
 
 
@@ -163,7 +166,7 @@ class BlobStore:
         path = self._manifest_path(name, tag)
         if not path.is_file():
             return None
-        with open(path, "r") as f:
+        with open(path) as f:
             return _manifest_from_dict(json.load(f))
 
     def save_manifest(self, name: str, tag: str, manifest: Manifest) -> None:

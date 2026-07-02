@@ -19,9 +19,6 @@ from vox.cli import (
 )
 
 
-
-
-
 @pytest.fixture
 def runner():
     return CliRunner()

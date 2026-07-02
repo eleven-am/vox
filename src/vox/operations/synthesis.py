@@ -157,31 +157,12 @@ async def synthesize_stream(
     store: Any,
     request: SynthesisRequest,
 ) -> AsyncIterator[bytes]:
-    model = _resolve_model(registry, store, request.model)
-    _validate_input(request.input)
-
-    async def _gen() -> AsyncIterator[bytes]:
-        async with scheduler.acquire(model) as adapter:
-            if not isinstance(adapter, TTSAdapter):
-                raise WrongModelTypeError(model, "TTS")
-            voice, language, reference_audio, reference_text = resolve_voice_request(
-                adapter, store, request.voice, request.language
-            )
-            for text_chunk in _split_for_adapter(request.input, adapter):
-                async for chunk in adapter.synthesize(
-                    text_chunk,
-                    voice=voice,
-                    speed=request.speed,
-                    language=language,
-                    reference_audio=reference_audio,
-                    reference_text=reference_text,
-                ):
-                    audio_data = np.frombuffer(chunk.audio, dtype=np.float32)
-                    if audio_data.size > 0:
-                        encoded, _ = prepare_for_output(audio_data, chunk.sample_rate, request.response_format)
-                        yield encoded
-
-    return _gen()
+    return await synthesize_incremental(
+        scheduler=scheduler,
+        registry=registry,
+        store=store,
+        request=request,
+    )
 
 
 def supports_incremental_output(response_format: str) -> bool:

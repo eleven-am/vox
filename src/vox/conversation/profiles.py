@@ -13,6 +13,7 @@ TURN_PROFILE_ALIASES: dict[str, str] = {
     "headphones": "headset",
     "loudspeaker": "speakerphone",
     "speaker": "speakerphone",
+    "noisy": "noisy_room",
 }
 
 TURN_PROFILES: dict[str, TurnPolicy] = {
@@ -28,6 +29,7 @@ TURN_PROFILES: dict[str, TurnPolicy] = {
         self_echo_min_overlap=0.72,
         aec_warmup_ms=900,
         backchannel_end_cooldown_ms=1600,
+        vad_min_silence_ms=800,
     ),
     "headset": TurnPolicy(
         min_interrupt_duration_ms=180,
@@ -38,6 +40,7 @@ TURN_PROFILES: dict[str, TurnPolicy] = {
         speaking_interrupt_min_words=1,
         aec_warmup_ms=250,
         backchannel_end_cooldown_ms=900,
+        vad_min_silence_ms=600,
     ),
     "speakerphone": TurnPolicy(
         min_interrupt_duration_ms=260,
@@ -62,6 +65,7 @@ TURN_PROFILES: dict[str, TurnPolicy] = {
         self_echo_min_overlap=0.78,
         aec_warmup_ms=900,
         backchannel_end_cooldown_ms=2200,
+        vad_min_silence_ms=1200,
     ),
 }
 

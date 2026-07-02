@@ -1,37 +1,28 @@
 from __future__ import annotations
 
-import asyncio
 import threading
-from concurrent.futures import ThreadPoolExecutor
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
 
 from vox.streaming.buffer import AudioRingBuffer
-from vox.streaming.codecs import pcm16_to_float32, float32_to_pcm16, resample_audio
+from vox.streaming.codecs import float32_to_pcm16, pcm16_to_float32, resample_audio
+from vox.streaming.eou import MAX_HISTORY_TURNS, ConversationTurn, EOUConfig
 from vox.streaming.partials import PartialTranscriptService, deduplicate_words
-from vox.streaming.session import SpeechSession, MAX_SESSION_BUFFER_SAMPLES
+from vox.streaming.session import MAX_SESSION_BUFFER_SAMPLES, SpeechSession
 from vox.streaming.types import (
-    TARGET_SAMPLE_RATE,
-    StreamSessionConfig,
     SpeechStarted,
     SpeechStopped,
+    StreamSessionConfig,
     StreamTranscript,
-    StreamError,
-    samples_to_ms,
-    MS_PER_SAMPLE,
 )
 from vox.streaming.vad import (
+    SpeechSegment,
     VADConfig,
     VADProcessor,
     VADState,
-    SpeechSegment,
-    AudioRingBuffer as VADRingBuffer,
-    MAX_BUFFER_SAMPLES,
-    VAD_WINDOW_SIZE_SAMPLES,
 )
-from vox.streaming.eou import EOUModel, EOUConfig, ConversationTurn, MAX_HISTORY_TURNS
 
 
 class TestAudioRingBufferEdgeCases:
@@ -448,8 +439,8 @@ class TestStreamPipelineConfig:
 class TestStreamingGRPCServicerEdgeCases:
     @pytest.mark.asyncio
     async def test_servicer_unconfigured_audio(self):
-        from vox.grpc.streaming_servicer import StreamingServiceServicer
         from vox.grpc import vox_pb2
+        from vox.grpc.streaming_servicer import StreamingServiceServicer
 
         store = MagicMock()
         registry = MagicMock()
@@ -477,8 +468,8 @@ class TestStreamingGRPCServicerEdgeCases:
 
     @pytest.mark.asyncio
     async def test_servicer_double_config(self):
-        from vox.grpc.streaming_servicer import StreamingServiceServicer
         from vox.grpc import vox_pb2
+        from vox.grpc.streaming_servicer import StreamingServiceServicer
 
         store = MagicMock()
         store.list_models.return_value = []
@@ -505,8 +496,8 @@ class TestStreamingGRPCServicerEdgeCases:
 
     @pytest.mark.asyncio
     async def test_servicer_end_of_stream(self):
-        from vox.grpc.streaming_servicer import StreamingServiceServicer
         from vox.grpc import vox_pb2
+        from vox.grpc.streaming_servicer import StreamingServiceServicer
 
         store = MagicMock()
         store.list_models.return_value = []

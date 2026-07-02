@@ -136,13 +136,17 @@ def parse_speechfile(content: str) -> Speechfile:
 
     try:
         type_enum = ModelType(model_type) if model_type else ModelType.STT
-    except ValueError:
-        raise SpeechfileParseError(f"Invalid TYPE value: {model_type!r}. Must be one of: {', '.join(t.value for t in ModelType)}")
+    except ValueError as exc:
+        raise SpeechfileParseError(
+            f"Invalid TYPE value: {model_type!r}. Must be one of: {', '.join(t.value for t in ModelType)}"
+        ) from exc
 
     try:
         format_enum = ModelFormat(fmt) if fmt else ModelFormat.ONNX
-    except ValueError:
-        raise SpeechfileParseError(f"Invalid FORMAT value: {fmt!r}. Must be one of: {', '.join(f.value for f in ModelFormat)}")
+    except ValueError as exc:
+        raise SpeechfileParseError(
+            f"Invalid FORMAT value: {fmt!r}. Must be one of: {', '.join(f.value for f in ModelFormat)}"
+        ) from exc
 
     return Speechfile(
         source=source,

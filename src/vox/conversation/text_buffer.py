@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import re
 
-
 _SENTENCE_TERMINATORS = ".!?。！？．।؟"
 
 _CLAUSE_BREAKS = ",;:，；：、"

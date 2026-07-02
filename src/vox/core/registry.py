@@ -559,18 +559,30 @@ def fetch_from_registry(name: str, tag: str) -> dict[str, Any] | None:
         return None
 
 
-def fetch_registry_index() -> list[dict[str, Any]] | None:
+_INDEX_CACHE_TTL_S = 300.0
+_index_cache: tuple[float, list[dict[str, Any]] | None] | None = None
+
+
+def fetch_registry_index(*, force_refresh: bool = False) -> list[dict[str, Any]] | None:
     """Fetch the full model index from the remote registry."""
+    global _index_cache
+    import time
+
     import httpx
+
+    now = time.monotonic()
+    if not force_refresh and _index_cache is not None and now - _index_cache[0] < _INDEX_CACHE_TTL_S:
+        return _index_cache[1]
 
     url = f"{REGISTRY_BASE_URL}/index.json"
     try:
         resp = httpx.get(url, timeout=10, follow_redirects=True)
-        if resp.status_code == 200:
-            return resp.json()
-        return None
+        result = resp.json() if resp.status_code == 200 else None
     except (httpx.HTTPError, ValueError):
-        return None
+        result = None
+
+    _index_cache = (now, result)
+    return result
 
 
 
@@ -677,7 +689,7 @@ class ModelRegistry:
             blob_path = self._store.get_blob_path(layer.digest)
             link_path.parent.mkdir(parents=True, exist_ok=True)
 
-            if link_path.is_symlink() and not link_path.exists():
+            if link_path.is_symlink() and (not link_path.exists() or link_path.resolve() != blob_path.resolve()):
                 link_path.unlink()
             if not link_path.exists():
                 try:

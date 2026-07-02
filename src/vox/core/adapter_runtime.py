@@ -208,7 +208,8 @@ def install_target_runtime_requirements(
             if _is_python_pip_command(installer):
                 ensure_pip_available(context=context)
             result = runner(installer, timeout)
-        except (FileNotFoundError, subprocess.TimeoutExpired):
+        except (FileNotFoundError, subprocess.TimeoutExpired, RuntimeError) as exc:
+            logger.warning("Installer %s unavailable for %s: %s", installer[0], context, exc)
             continue
 
         if result.returncode == 0:

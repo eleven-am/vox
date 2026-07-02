@@ -353,6 +353,7 @@ message ConverseServerMessage {
     ConversationTurnEouPredicted turn_eou_predicted = 15;
     RtcSessionAttached rtc_session_attached = 16;
     RtcClientEvent client_event = 17;
+    ConversationTranscriptDelta transcript_delta = 18;
   }
 }
 
@@ -386,6 +387,7 @@ message ConversationTurnPolicy {
   optional float self_echo_min_overlap = 13;
   optional uint32 aec_warmup_ms = 14;
   optional uint32 backchannel_end_cooldown_ms = 15;
+  optional uint32 vad_min_silence_ms = 16;
 }
 
 message ConversationSessionUpdate {
@@ -398,6 +400,7 @@ message ConversationSessionUpdate {
   string vad_backend = 7;
   string turn_detector = 8;
   string turn_profile = 9;
+  bool include_word_timestamps = 10;
 }
 
 message ConversationAudioAppend {
@@ -426,6 +429,12 @@ message ConversationSpeechStarted {
 
 message ConversationSpeechStopped {
   uint32 timestamp_ms = 1;
+}
+
+message ConversationTranscriptDelta {
+  string delta = 1;
+  uint32 start_ms = 2;
+  uint32 end_ms = 3;
 }
 
 message ConversationTranscriptDone {
@@ -464,6 +473,7 @@ message ConversationInterruptionFalsePositive {
   string response_id = 1;
   uint32 vad_active_ms = 2;
   string partial_transcript = 3;
+  string reason = 4;
 }
 
 message ConversationTurnEouPredicted {

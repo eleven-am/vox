@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
@@ -55,6 +56,8 @@ def _segments_and_words(result: TranscribeResult) -> tuple[list[dict] | None, li
     return segments, (all_words or None)
 
 logger = logging.getLogger(__name__)
+
+_EOU_FAILURE_LIMIT = 3
 
 INTERNAL_SILENCE_SPLIT_MIN_AUDIO_MS = 2_500
 INTERNAL_SILENCE_FRAME_MS = 40
@@ -175,8 +178,10 @@ class StreamPipeline:
         self._vad = VADProcessor(config=self._config.vad_config)
         self._eou_model = create_turn_detector(self._config.eou_config.model)
         self._conversation_history: list[ConversationTurn] = []
+        self._history_lock = threading.Lock()
         self._pending_user_text = ""
         self._low_eou_streak = 0
+        self._eou_failure_streak = 0
         self._eou_disabled = False
         self._session_config: StreamSessionConfig | None = None
         self._executor = ThreadPoolExecutor(max_workers=self._config.stt_workers, thread_name_prefix="stt")
@@ -184,7 +189,8 @@ class StreamPipeline:
     def configure(self, config: StreamSessionConfig) -> None:
         self._session_config = config
         self._vad.reset()
-        self._conversation_history.clear()
+        with self._history_lock:
+            self._conversation_history.clear()
         self._pending_user_text = ""
         self._low_eou_streak = 0
 
@@ -193,10 +199,11 @@ class StreamPipeline:
 
     def add_assistant_turn(self, text: str) -> None:
         if text.strip():
-            self._conversation_history.append(ConversationTurn(role="assistant", content=text.strip()))
-            history_limit = self._history_limit() * 2
-            if len(self._conversation_history) > history_limit:
-                self._conversation_history = self._conversation_history[-history_limit:]
+            with self._history_lock:
+                self._conversation_history.append(ConversationTurn(role="assistant", content=text.strip()))
+                history_limit = self._history_limit() * 2
+                if len(self._conversation_history) > history_limit:
+                    self._conversation_history = self._conversation_history[-history_limit:]
 
     def reset(self) -> None:
         self._vad.reset()
@@ -401,7 +408,8 @@ class StreamPipeline:
             transcript.eou_probability = None
             return transcript
 
-        history_with_current = self._conversation_history.copy()
+        with self._history_lock:
+            history_with_current = self._conversation_history.copy()
         history_with_current.append(ConversationTurn(role="user", content=self._pending_user_text))
 
         try:
@@ -409,6 +417,7 @@ class StreamPipeline:
                 history_with_current,
                 max_context_turns=self._history_limit(),
             )
+            self._eou_failure_streak = 0
             transcript.eou_probability = eou_probability
 
             if eou_probability >= self._config.eou_config.threshold:
@@ -423,8 +432,15 @@ class StreamPipeline:
                 ):
                     self._flush_pending_user_text()
         except Exception:
-            logger.exception("EOU inference failed; disabling EOU and continuing without turn scoring")
-            self._eou_disabled = True
+            self._eou_failure_streak += 1
+            if self._eou_failure_streak >= _EOU_FAILURE_LIMIT:
+                logger.exception(
+                    "EOU inference failed %d times in a row; disabling EOU for this session",
+                    self._eou_failure_streak,
+                )
+                self._eou_disabled = True
+            else:
+                logger.exception("EOU inference failed; continuing without turn scoring for this transcript")
             transcript.eou_probability = None
             self._flush_pending_user_text()
             return transcript
@@ -436,12 +452,13 @@ class StreamPipeline:
             self._low_eou_streak = 0
             return
 
-        self._conversation_history.append(
-            ConversationTurn(role="user", content=self._pending_user_text)
-        )
-        history_limit = self._history_limit() * 2
-        if len(self._conversation_history) > history_limit:
-            self._conversation_history = self._conversation_history[-history_limit:]
+        with self._history_lock:
+            self._conversation_history.append(
+                ConversationTurn(role="user", content=self._pending_user_text)
+            )
+            history_limit = self._history_limit() * 2
+            if len(self._conversation_history) > history_limit:
+                self._conversation_history = self._conversation_history[-history_limit:]
 
         self._pending_user_text = ""
         self._low_eou_streak = 0

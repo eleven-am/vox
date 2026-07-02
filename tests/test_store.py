@@ -2,22 +2,16 @@
 
 from __future__ import annotations
 
-import io
 import hashlib
-import json
+import io
 import logging
 import os
 import time
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
-from vox.core.store import BlobStore, Manifest, ManifestLayer, _manifest_to_dict
-
-
-
-
+from vox.core.store import BlobStore, Manifest, ManifestLayer
 
 
 def _make_store(tmp_path: Path) -> BlobStore:
@@ -32,7 +26,9 @@ def _sha256(data: bytes) -> str:
 def _save_minimal_manifest(store: BlobStore, name: str, tag: str, digest: str, size: int) -> Manifest:
     """Persist a one-layer manifest with the required config keys."""
     manifest = Manifest(
-        layers=[ManifestLayer(media_type="application/vox.model.onnx", digest=digest, size=size, filename="model.onnx")],
+        layers=[
+            ManifestLayer(media_type="application/vox.model.onnx", digest=digest, size=size, filename="model.onnx"),
+        ],
         config={"type": "stt", "format": "onnx", "adapter": "whisper", "architecture": "whisper"},
     )
     store.save_manifest(name, tag, manifest)
@@ -92,7 +88,9 @@ class TestManifestOperations:
         store = _make_store(tmp_path)
         original = Manifest(
             layers=[
-                ManifestLayer(media_type="application/vox.model.onnx", digest="sha256-aaa", size=100, filename="m.onnx"),
+                ManifestLayer(
+                    media_type="application/vox.model.onnx", digest="sha256-aaa", size=100, filename="m.onnx",
+                ),
                 ManifestLayer(media_type="application/vox.voices", digest="sha256-bbb", size=50, filename="voices.bin"),
             ],
             config={"type": "tts", "format": "onnx", "adapter": "kokoro"},

@@ -164,6 +164,6 @@ class PartialTranscriptService:
         return transcript
 
     def flush_remaining_audio(self, session: SpeechSession) -> NDArray[np.float32] | None:
-        if session.get_buffer_length() > 0:
+        if session.is_active() and session.get_buffer_length() > 0:
             return session.get_buffer_audio()
         return None

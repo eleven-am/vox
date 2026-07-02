@@ -25,6 +25,7 @@ from vox.conversation.session import (
     WIRE_SPEECH_STARTED,
     WIRE_SPEECH_STOPPED,
     WIRE_STATE_CHANGED,
+    WIRE_TRANSCRIPT_DELTA,
     WIRE_TRANSCRIPT_DONE,
     WIRE_TURN_EOU_PREDICTED,
     ConversationConfig,
@@ -51,6 +52,7 @@ class ConversationSessionConfig:
     vad_backend: str = "silero"
     turn_detector: str = "livekit"
     policy: TurnPolicy | None = None
+    include_word_timestamps: bool = False
 
 
 @dataclass(frozen=True)
@@ -66,6 +68,13 @@ class ConvSpeechStartedEvent:
 @dataclass(frozen=True)
 class ConvSpeechStoppedEvent:
     timestamp_ms: int
+
+
+@dataclass(frozen=True)
+class ConvTranscriptDeltaEvent:
+    delta: str
+    start_ms: int
+    end_ms: int
 
 
 @dataclass(frozen=True)
@@ -126,6 +135,7 @@ class ConvInterruptionFalsePositiveEvent:
     response_id: str
     vad_active_ms: int
     partial_transcript: str | None
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -160,6 +170,7 @@ ConvEvent = (
     ConvSessionCreatedEvent
     | ConvSpeechStartedEvent
     | ConvSpeechStoppedEvent
+    | ConvTranscriptDeltaEvent
     | ConvTranscriptDoneEvent
     | ConvResponseCreatedEvent
     | ConvAudioDeltaEvent
@@ -204,6 +215,7 @@ def parse_session_update(payload: dict) -> ConversationSessionConfig:
         "self_echo_min_overlap",
         "aec_warmup_ms",
         "backchannel_end_cooldown_ms",
+        "vad_min_silence_ms",
     ):
         if field_name in policy_in:
             policy_kwargs[field_name] = policy_in[field_name]
@@ -222,6 +234,7 @@ def parse_session_update(payload: dict) -> ConversationSessionConfig:
         vad_backend=str(sess.get("vad_backend") or sess.get("vad") or "silero"),
         turn_detector=str(sess.get("turn_detector") or sess.get("eou_model") or "livekit"),
         policy=policy,
+        include_word_timestamps=bool(sess.get("include_word_timestamps") or False),
     )
 
 
@@ -231,6 +244,12 @@ def _wire_event_to_session_event(event: dict) -> ConvEvent | None:
         return ConvSpeechStartedEvent(timestamp_ms=int(event.get("timestamp_ms") or 0))
     if t == WIRE_SPEECH_STOPPED:
         return ConvSpeechStoppedEvent(timestamp_ms=int(event.get("timestamp_ms") or 0))
+    if t == WIRE_TRANSCRIPT_DELTA:
+        return ConvTranscriptDeltaEvent(
+            delta=str(event.get("delta", "")),
+            start_ms=int(event.get("start_ms") or 0),
+            end_ms=int(event.get("end_ms") or 0),
+        )
     if t == WIRE_TRANSCRIPT_DONE:
         return ConvTranscriptDoneEvent(
             transcript=str(event.get("transcript", "")),
@@ -283,6 +302,7 @@ def _wire_event_to_session_event(event: dict) -> ConvEvent | None:
                 if event.get("partial_transcript") is not None
                 else None
             ),
+            reason=str(event["reason"]) if event.get("reason") else None,
         )
     if t == WIRE_TURN_EOU_PREDICTED:
         return ConvTurnEouPredictedEvent(
@@ -343,6 +363,7 @@ class ConversationOrchestrator:
             turn_detector=config.turn_detector,
             policy=policy,
             turn_profile=config.turn_profile,
+            include_word_timestamps=config.include_word_timestamps,
             pace_response_done_to_audio=self._pace_response_done_to_audio,
             wait_for_output_playout=self._wait_for_output_playout,
         )
@@ -432,6 +453,7 @@ def serialize_session_config(config: ConversationSessionConfig) -> dict:
         "turn_profile": config.turn_profile,
         "vad_backend": config.vad_backend,
         "turn_detector": config.turn_detector,
+        "include_word_timestamps": config.include_word_timestamps,
         "output_sample_rate": config.sample_rate,
         "output_audio_format": "pcm16",
         "turn_policy": {
@@ -450,5 +472,6 @@ def serialize_session_config(config: ConversationSessionConfig) -> dict:
             "self_echo_min_overlap": policy.self_echo_min_overlap,
             "aec_warmup_ms": policy.aec_warmup_ms,
             "backchannel_end_cooldown_ms": policy.backchannel_end_cooldown_ms,
+            "vad_min_silence_ms": policy.vad_min_silence_ms,
         },
     }

@@ -297,13 +297,12 @@ def _iter_ffmpeg_pcm16_chunks(
             yield chunk
         stderr = proc.stderr.read().decode("utf-8", errors="replace").strip() if proc.stderr else ""
         returncode = proc.wait()
+        if returncode != 0:
+            raise click.ClickException(stderr or f"ffmpeg exited with status {returncode}")
     finally:
         if proc.poll() is None:
             proc.kill()
             proc.wait()
-
-    if returncode != 0:
-        raise click.ClickException(stderr or f"ffmpeg exited with status {returncode}")
 
 
 def _iter_pcm16_audio_chunks(
@@ -312,10 +311,16 @@ def _iter_pcm16_audio_chunks(
     target_rate: int = TARGET_SAMPLE_RATE,
     chunk_ms: int = DEFAULT_STREAM_CHUNK_MS,
 ) -> Iterator[bytes]:
+    yielded = False
     try:
-        yield from _iter_soundfile_pcm16_chunks(input_path, target_rate=target_rate, chunk_ms=chunk_ms)
+        for chunk in _iter_soundfile_pcm16_chunks(input_path, target_rate=target_rate, chunk_ms=chunk_ms):
+            yielded = True
+            yield chunk
+        return
     except Exception:
-        yield from _iter_ffmpeg_pcm16_chunks(input_path, target_rate=target_rate, chunk_ms=chunk_ms)
+        if yielded:
+            raise
+    yield from _iter_ffmpeg_pcm16_chunks(input_path, target_rate=target_rate, chunk_ms=chunk_ms)
 
 
 def _chunk_text_for_stream(text: str, max_chars: int = DEFAULT_STREAM_TEXT_CHARS) -> list[str]:
@@ -741,7 +746,7 @@ def search(model_type: str | None):
     """Search available models from the registry."""
     from vox.core.registry import fetch_registry_index
 
-    index = fetch_registry_index()
+    index = fetch_registry_index(force_refresh=True)
     if not index:
         click.echo("Error: could not reach the model registry", err=True)
         sys.exit(1)

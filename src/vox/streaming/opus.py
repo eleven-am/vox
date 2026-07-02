@@ -63,7 +63,7 @@ class OpusStreamEncoder:
         if self.source_rate != self.target_rate:
             float_audio = samples.astype(np.float32) / 32768.0
             resampled = resample_audio(float_audio, self.source_rate, self.target_rate)
-            samples = (resampled * 32767).astype(np.int16)
+            samples = (np.clip(resampled, -1.0, 1.0) * 32767).astype(np.int16)
 
         self._buffer = np.concatenate([self._buffer, samples])
 

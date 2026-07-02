@@ -108,6 +108,7 @@ class TurnPolicy:
     self_echo_min_overlap: float = 0.7
     aec_warmup_ms: int = 750
     backchannel_end_cooldown_ms: int = 1500
+    vad_min_silence_ms: int = 1000
 
 
 

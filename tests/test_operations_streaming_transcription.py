@@ -207,6 +207,26 @@ async def test_end_of_stream_flushes_remaining_audio_through_transcribe():
 
 
 @pytest.mark.asyncio
+async def test_end_of_stream_does_not_retranscribe_completed_utterance():
+    adapter = FakeSTTAdapter(text="already emitted")
+    session = StreamingTranscriptionSession(
+        scheduler=FakeScheduler(adapter),
+        registry=_make_registry(default_stt="m:1"),
+        store=_make_store(),
+    )
+    await session.configure(StreamingTranscriptionConfig())
+    session._session.start_speech()
+    session._session.append_audio(np.zeros(16_000, dtype=np.float32))
+    session._session.stop_speech()
+    await session.end_of_stream()
+    events = await _collect_events(session)
+
+    transcripts = [e for e in events if isinstance(e, TranscriptEvent)]
+    assert transcripts == []
+    await session.close()
+
+
+@pytest.mark.asyncio
 async def test_speech_start_chunk_is_kept_in_active_buffer():
     session = StreamingTranscriptionSession(
         scheduler=FakeScheduler(FakeSTTAdapter()),

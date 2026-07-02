@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from vox.server.app import (
@@ -183,9 +181,8 @@ class TestLifespanIntegration:
         app.state.grpc_port = None
 
         fake_vad = MagicMock()
-        with patch("vox.streaming.vad.SileroVAD", return_value=fake_vad):
-            with TestClient(app) as _:
-                pass
+        with patch("vox.streaming.vad.SileroVAD", return_value=fake_vad), TestClient(app) as _:
+            pass
 
         fake_vad._ensure_model.assert_called_once()
 
