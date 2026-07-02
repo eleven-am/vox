@@ -6,13 +6,12 @@ import logging
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 
-from vox.operations.errors import OperationError
 from vox.operations.transcription import (
     TranscriptionRequest,
     openai_transcription_payload,
     transcribe,
 )
-from vox.server.operation_errors import operation_error_to_http
+from vox.server.operation_errors import map_operation_errors_to_http
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -56,11 +55,12 @@ async def _run_transcribe(
         annotate_text=annotate_text,
     )
     try:
-        bundle = await transcribe(
-            scheduler=scheduler, registry=registry, store=store, request=op_request,
-        )
-    except OperationError as exc:
-        raise operation_error_to_http(exc) from exc
+        with map_operation_errors_to_http():
+            bundle = await transcribe(
+                scheduler=scheduler, registry=registry, store=store, request=op_request,
+            )
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception(f"Transcription failed for model {model}")
         raise HTTPException(status_code=500, detail="Internal transcription error") from exc

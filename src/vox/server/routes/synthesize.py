@@ -6,12 +6,11 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from vox.operations.errors import OperationError
 from vox.operations.synthesis import (
     SynthesisRequest,
     synthesize_audio_response,
 )
-from vox.server.operation_errors import operation_error_to_http
+from vox.server.operation_errors import map_operation_errors_to_http
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -52,13 +51,14 @@ async def synthesize(req: SynthesizeRequest, request: Request):
     )
 
     try:
-        result = await synthesize_audio_response(
-            scheduler=scheduler,
-            registry=registry,
-            store=store,
-            request=op_req,
-            stream=req.stream,
-        )
+        with map_operation_errors_to_http():
+            result = await synthesize_audio_response(
+                scheduler=scheduler,
+                registry=registry,
+                store=store,
+                request=op_req,
+                stream=req.stream,
+            )
         return StreamingResponse(
             result.chunks,
             media_type=result.content_type,
@@ -66,8 +66,6 @@ async def synthesize(req: SynthesizeRequest, request: Request):
         )
     except HTTPException:
         raise
-    except OperationError as exc:
-        raise operation_error_to_http(exc) from exc
     except Exception as exc:
         logger.exception(f"Synthesis failed for model {req.model}")
         raise HTTPException(status_code=500, detail="Internal synthesis error") from exc
