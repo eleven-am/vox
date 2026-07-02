@@ -39,6 +39,25 @@ class SynthesisRequest:
     response_format: str = "wav"
 
 
+def synthesis_request_from_fields(
+    *,
+    input: str,
+    model: str = "",
+    voice: str | None = None,
+    speed: float = 1.0,
+    language: str | None = None,
+    response_format: str | None = "wav",
+) -> SynthesisRequest:
+    return SynthesisRequest(
+        input=input,
+        model=model,
+        voice=voice or None,
+        speed=speed if speed > 0 else 1.0,
+        language=language or None,
+        response_format=(response_format or "wav").lower(),
+    )
+
+
 @dataclass(frozen=True)
 class SynthesisFullResult:
     audio: bytes

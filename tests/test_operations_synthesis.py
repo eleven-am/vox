@@ -30,6 +30,7 @@ from vox.operations.errors import (
 )
 from vox.operations.synthesis import (
     SynthesisRequest,
+    synthesis_request_from_fields,
     synthesize_audio_response,
     synthesize_full,
     synthesize_incremental,
@@ -85,6 +86,36 @@ class MultiChunkTTS(FakeTTS):
                 is_final=False,
             )
         yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
+
+
+def test_synthesis_request_from_fields_normalizes_transport_input():
+    request = synthesis_request_from_fields(
+        input="hello",
+        model="fake-tts:latest",
+        voice="",
+        speed=0,
+        language="",
+        response_format="WAV",
+    )
+
+    assert request == SynthesisRequest(
+        input="hello",
+        model="fake-tts:latest",
+        voice=None,
+        speed=1.0,
+        language=None,
+        response_format="wav",
+    )
+
+
+def test_synthesis_request_from_fields_defaults_missing_response_format():
+    request = synthesis_request_from_fields(
+        input="hello",
+        model="fake-tts:latest",
+        response_format=None,
+    )
+
+    assert request.response_format == "wav"
 
 
 @pytest.mark.asyncio

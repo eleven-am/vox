@@ -15,7 +15,7 @@ from vox.grpc.voice_messages import (
     list_voices_response,
 )
 from vox.operations.errors import OperationError
-from vox.operations.synthesis import SynthesisRequest, synthesize_raw
+from vox.operations.synthesis import synthesis_request_from_fields, synthesize_raw
 from vox.operations.voices import (
     CreateVoiceRequest,
     create_voice,
@@ -34,11 +34,11 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
         self._scheduler = scheduler
 
     async def Synthesize(self, request, context):
-        op_req = SynthesisRequest(
+        op_req = synthesis_request_from_fields(
             input=request.input,
             model=request.model,
             voice=request.voice or None,
-            speed=request.speed if request.speed > 0 else 1.0,
+            speed=request.speed,
             language=request.language or None,
             response_format="wav",
         )

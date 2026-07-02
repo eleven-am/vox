@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from vox.operations.synthesis import (
-    SynthesisRequest,
+    synthesis_request_from_fields,
     synthesize_audio_response,
 )
 from vox.server.operation_errors import map_operation_errors_to_http
@@ -41,7 +41,7 @@ async def synthesize(req: SynthesizeRequest, request: Request):
     registry = request.app.state.registry
     store = request.app.state.store
 
-    op_req = SynthesisRequest(
+    op_req = synthesis_request_from_fields(
         input=req.input,
         model=req.model,
         voice=req.voice,
