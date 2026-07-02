@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
@@ -236,6 +237,92 @@ def parse_session_update(payload: dict) -> ConversationSessionConfig:
         policy=policy,
         include_word_timestamps=bool(sess.get("include_word_timestamps") or False),
     )
+
+
+def parse_allow_interruptions(message: dict) -> bool:
+    response = message.get("response")
+    if isinstance(response, dict) and "allow_interruptions" in response:
+        return bool(response["allow_interruptions"])
+    if "allow_interruptions" in message:
+        return bool(message["allow_interruptions"])
+    return True
+
+
+def parse_response_text(message: dict, preferred_key: str) -> str | None:
+    response = message.get("response")
+    if isinstance(response, dict):
+        value = response.get(preferred_key) or response.get("text") or response.get("delta")
+        if value is not None:
+            return str(value)
+    value = message.get(preferred_key) or message.get("text") or message.get("delta")
+    if value is None:
+        return None
+    return str(value)
+
+
+async def execute_conversation_command(
+    orchestrator: ConversationOrchestrator,
+    message: dict,
+    *,
+    require_config_message: str = "send session.update first",
+) -> None:
+    msg_type = message.get("type")
+    if not msg_type:
+        raise InvalidConfigError("missing 'type' field")
+
+    if msg_type == "session.update":
+        try:
+            config = parse_session_update(message)
+            await orchestrator.start_session(config)
+        except SessionAlreadyConfiguredError as exc:
+            raise InvalidConfigError("session already configured") from exc
+        return
+
+    if orchestrator.config is None:
+        raise InvalidConfigError(require_config_message)
+
+    if msg_type == "input_audio_buffer.append":
+        audio_b64 = message.get("audio")
+        if not audio_b64:
+            raise InvalidConfigError("audio field required")
+        try:
+            pcm = base64.b64decode(audio_b64)
+        except Exception as exc:  # noqa: BLE001
+            raise InvalidConfigError(f"invalid base64 audio: {exc}") from exc
+        sample_rate = int(message.get("sample_rate", 0)) or None
+        await orchestrator.ingest_pcm16(pcm, sample_rate=sample_rate)
+        return
+
+    if msg_type == "response.start":
+        allow_interruptions = parse_allow_interruptions(message)
+        await orchestrator.start_response(allow_interruptions=allow_interruptions)
+        return
+
+    if msg_type == "response.delta":
+        text = parse_response_text(message, "delta")
+        if not text:
+            raise InvalidConfigError("response.delta requires 'delta' text")
+        allow_interruptions = parse_allow_interruptions(message)
+        await orchestrator.append_response_text(text, allow_interruptions=allow_interruptions)
+        return
+
+    if msg_type == "response.commit":
+        await orchestrator.commit_response()
+        return
+
+    if msg_type == "response.cancel":
+        await orchestrator.cancel_response()
+        return
+
+    if msg_type == "response.replace_text":
+        text = parse_response_text(message, "text")
+        if not text:
+            raise InvalidConfigError("response.replace_text requires 'text'")
+        allow_interruptions = parse_allow_interruptions(message)
+        await orchestrator.replace_response_text(text, allow_interruptions=allow_interruptions)
+        return
+
+    raise InvalidConfigError(f"unknown message type: {msg_type!r}")
 
 
 def _wire_event_to_session_event(event: dict) -> ConvEvent | None:

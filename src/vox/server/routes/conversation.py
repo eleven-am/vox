@@ -11,7 +11,6 @@ the user. That keeps Vox's scope limited to speech inference + turn orchestratio
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 from contextlib import suppress
@@ -40,17 +39,23 @@ from vox.operations.conversation import (
     ConvTranscriptDeltaEvent,
     ConvTranscriptDoneEvent,
     ConvTurnEouPredictedEvent,
-    parse_session_update,
+    execute_conversation_command,
+    parse_allow_interruptions,
+    parse_response_text,
     serialize_session_config,
 )
-from vox.operations.errors import (
-    OperationError,
-    SessionAlreadyConfiguredError,
+from vox.operations.conversation import (
+    parse_session_update as _operation_parse_session_update,
 )
+from vox.operations.errors import OperationError
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 legacy_router = APIRouter()
+
+# Backward-compatible import surface for adjacent transports while command
+# dispatch moves into vox.operations.conversation.
+parse_session_update = _operation_parse_session_update
 
 
 WIRE_SESSION_CREATED = "session.created"
@@ -202,66 +207,10 @@ async def conversation_ws(websocket: WebSocket) -> None:
                 await _send_error(websocket, f"invalid JSON: {exc}")
                 continue
 
-            msg_type = msg.get("type")
-            if not msg_type:
-                await _send_error(websocket, "missing 'type' field")
-                continue
-
-            if msg_type == "session.update":
-                try:
-                    config = parse_session_update(msg)
-                    await orchestrator.start_session(config)
-                except SessionAlreadyConfiguredError:
-                    await _send_error(websocket, "session already configured")
-                except OperationError as exc:
-                    await _send_error(websocket, str(exc))
-                continue
-
-            if orchestrator.config is None:
-                await _send_error(websocket, "send session.update first")
-                continue
-
-            if msg_type == "input_audio_buffer.append":
-                audio_b64 = msg.get("audio")
-                if not audio_b64:
-                    await _send_error(websocket, "audio field required")
-                    continue
-                try:
-                    pcm = base64.b64decode(audio_b64)
-                except Exception as exc:  # noqa: BLE001
-                    await _send_error(websocket, f"invalid base64 audio: {exc}")
-                    continue
-                sample_rate = int(msg.get("sample_rate", 0)) or None
-                await orchestrator.ingest_pcm16(pcm, sample_rate=sample_rate)
-
-            elif msg_type == "response.start":
-                allow_interruptions = _parse_allow_interruptions(msg)
-                await orchestrator.start_response(allow_interruptions=allow_interruptions)
-
-            elif msg_type == "response.delta":
-                text = _parse_response_text(msg, "delta")
-                if not text:
-                    await _send_error(websocket, "response.delta requires 'delta' text")
-                    continue
-                allow_interruptions = _parse_allow_interruptions(msg)
-                await orchestrator.append_response_text(text, allow_interruptions=allow_interruptions)
-
-            elif msg_type == "response.commit":
-                await orchestrator.commit_response()
-
-            elif msg_type == "response.cancel":
-                await orchestrator.cancel_response()
-
-            elif msg_type == "response.replace_text":
-                text = _parse_response_text(msg, "text")
-                if not text:
-                    await _send_error(websocket, "response.replace_text requires 'text'")
-                    continue
-                allow_interruptions = _parse_allow_interruptions(msg)
-                await orchestrator.replace_response_text(text, allow_interruptions=allow_interruptions)
-
-            else:
-                await _send_error(websocket, f"unknown message type: {msg_type!r}")
+            try:
+                await execute_conversation_command(orchestrator, msg)
+            except OperationError as exc:
+                await _send_error(websocket, str(exc))
 
     except WebSocketDisconnect:
         pass
@@ -285,21 +234,8 @@ async def _send_error(websocket: WebSocket, message: str) -> None:
 
 
 def _parse_allow_interruptions(msg: dict) -> bool:
-    response = msg.get("response")
-    if isinstance(response, dict) and "allow_interruptions" in response:
-        return bool(response["allow_interruptions"])
-    if "allow_interruptions" in msg:
-        return bool(msg["allow_interruptions"])
-    return True
+    return parse_allow_interruptions(msg)
 
 
 def _parse_response_text(msg: dict, preferred_key: str) -> str | None:
-    response = msg.get("response")
-    if isinstance(response, dict):
-        value = response.get(preferred_key) or response.get("text") or response.get("delta")
-        if value is not None:
-            return str(value)
-    value = msg.get(preferred_key) or msg.get("text") or msg.get("delta")
-    if value is None:
-        return None
-    return str(value)
+    return parse_response_text(msg, preferred_key)

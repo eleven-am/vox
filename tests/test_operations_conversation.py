@@ -27,6 +27,7 @@ from vox.operations.conversation import (
     ConvTranscriptDeltaEvent,
     ConvTurnEouPredictedEvent,
     _wire_event_to_session_event,
+    execute_conversation_command,
     parse_session_update,
     serialize_session_config,
 )
@@ -78,6 +79,34 @@ class DummyScheduler:
         yield self._a
 
 
+class CommandSpy:
+    def __init__(self, *, configured: bool = True) -> None:
+        self.config = object() if configured else None
+        self.calls: list[tuple[str, tuple, dict]] = []
+
+    async def start_session(self, config) -> None:
+        self.config = config
+        self.calls.append(("start_session", (config,), {}))
+
+    async def ingest_pcm16(self, pcm16: bytes, sample_rate: int | None = None) -> None:
+        self.calls.append(("ingest_pcm16", (pcm16,), {"sample_rate": sample_rate}))
+
+    async def start_response(self, *, allow_interruptions: bool = True) -> None:
+        self.calls.append(("start_response", (), {"allow_interruptions": allow_interruptions}))
+
+    async def append_response_text(self, text: str, *, allow_interruptions: bool = True) -> None:
+        self.calls.append(("append_response_text", (text,), {"allow_interruptions": allow_interruptions}))
+
+    async def replace_response_text(self, text: str, *, allow_interruptions: bool = True) -> None:
+        self.calls.append(("replace_response_text", (text,), {"allow_interruptions": allow_interruptions}))
+
+    async def commit_response(self) -> None:
+        self.calls.append(("commit_response", (), {}))
+
+    async def cancel_response(self) -> None:
+        self.calls.append(("cancel_response", (), {}))
+
+
 def test_parse_session_update_requires_stt_model():
     with pytest.raises(InvalidConfigError):
         parse_session_update({"session": {"tts_model": "y:1"}})
@@ -86,6 +115,88 @@ def test_parse_session_update_requires_stt_model():
 def test_parse_session_update_requires_tts_model():
     with pytest.raises(InvalidConfigError):
         parse_session_update({"session": {"stt_model": "x:1"}})
+
+
+@pytest.mark.asyncio
+async def test_execute_conversation_command_requires_message_type():
+    spy = CommandSpy()
+
+    with pytest.raises(InvalidConfigError, match="missing 'type' field"):
+        await execute_conversation_command(spy, {})
+
+
+@pytest.mark.asyncio
+async def test_execute_conversation_command_requires_session_update_first():
+    spy = CommandSpy(configured=False)
+
+    with pytest.raises(InvalidConfigError, match="send session.update first"):
+        await execute_conversation_command(spy, {"type": "response.start"})
+
+
+@pytest.mark.asyncio
+async def test_execute_conversation_command_starts_session_from_session_update():
+    spy = CommandSpy(configured=False)
+
+    await execute_conversation_command(
+        spy,
+        {"type": "session.update", "session": {"stt_model": "x:1", "tts_model": "y:1"}},
+    )
+
+    assert spy.calls[0][0] == "start_session"
+    assert spy.config.stt_model == "x:1"
+    assert spy.config.tts_model == "y:1"
+
+
+@pytest.mark.asyncio
+async def test_execute_conversation_command_appends_audio_and_response_text():
+    spy = CommandSpy()
+
+    await execute_conversation_command(
+        spy,
+        {
+            "type": "input_audio_buffer.append",
+            "audio": "AQIDBA==",
+            "sample_rate": 16_000,
+        },
+    )
+    await execute_conversation_command(
+        spy,
+        {
+            "type": "response.delta",
+            "response": {"delta": "hello", "allow_interruptions": False},
+        },
+    )
+
+    assert spy.calls[0] == ("ingest_pcm16", (b"\x01\x02\x03\x04",), {"sample_rate": 16_000})
+    assert spy.calls[1] == ("append_response_text", ("hello",), {"allow_interruptions": False})
+
+
+@pytest.mark.asyncio
+async def test_execute_conversation_command_rejects_empty_response_delta():
+    spy = CommandSpy()
+
+    with pytest.raises(InvalidConfigError, match="response.delta requires 'delta' text"):
+        await execute_conversation_command(spy, {"type": "response.delta"})
+
+
+@pytest.mark.asyncio
+async def test_execute_conversation_command_replaces_response_text():
+    spy = CommandSpy()
+
+    await execute_conversation_command(
+        spy,
+        {"type": "response.replace_text", "text": "new text", "allow_interruptions": False},
+    )
+
+    assert spy.calls == [("replace_response_text", ("new text",), {"allow_interruptions": False})]
+
+
+@pytest.mark.asyncio
+async def test_execute_conversation_command_rejects_unknown_type():
+    spy = CommandSpy()
+
+    with pytest.raises(InvalidConfigError, match="unknown message type: 'bogus'"):
+        await execute_conversation_command(spy, {"type": "bogus"})
 
 
 def test_parse_session_update_accepts_turn_policy_overrides():
