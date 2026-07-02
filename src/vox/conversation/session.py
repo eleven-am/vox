@@ -33,6 +33,7 @@ import numpy as np
 
 from vox.conversation import response_stream as response_streams
 from vox.conversation import transcripts as transcript_finalization
+from vox.conversation.audio_history import ConversationAudioHistory
 from vox.conversation.audio_output import ResponseAudioOutput
 from vox.conversation.interrupt import (
     HeuristicInterruptClassifier,
@@ -126,48 +127,6 @@ class ConversationConfig:
 
 TRANSCRIPT_CONTINUATION_COMMIT_MS = 1200
 TRANSCRIPT_PENDING_STT_RECHECK_MS = 100
-SPEAKING_ECHO_MIN_WINDOW_MS = 120
-SPEAKING_ECHO_COMPARE_WINDOW_MS = 320
-SPEAKING_ECHO_MAX_DELAY_MS = 900
-SPEAKING_ECHO_SEARCH_STEP_MS = 20
-SPEAKING_ECHO_CORRELATION_THRESHOLD = 0.68
-SPEAKING_ECHO_MIN_RMS = 0.002
-
-def _normalise_for_correlation(audio: np.ndarray) -> np.ndarray | None:
-    if audio.size == 0:
-        return None
-    centred = audio.astype(np.float32, copy=False) - float(np.mean(audio))
-    norm = float(np.linalg.norm(centred))
-    if norm <= 1e-6:
-        return None
-    return centred / norm
-
-
-def _best_recent_correlation(
-    mic_audio: np.ndarray,
-    output_audio: np.ndarray,
-    *,
-    max_delay_ms: int,
-    step_ms: int,
-) -> float:
-    mic = _normalise_for_correlation(mic_audio)
-    if mic is None:
-        return 0.0
-
-    window_samples = mic.size
-    max_delay_samples = max(0, max_delay_ms * TARGET_SAMPLE_RATE // 1000)
-    step_samples = max(1, step_ms * TARGET_SAMPLE_RATE // 1000)
-    best = 0.0
-    for delay in range(0, max_delay_samples + 1, step_samples):
-        end = output_audio.size - delay
-        start = end - window_samples
-        if start < 0:
-            continue
-        segment = _normalise_for_correlation(output_audio[start:end])
-        if segment is None:
-            continue
-        best = max(best, abs(float(np.dot(mic, segment))))
-    return best
 
 
 class ConversationSession:
@@ -243,10 +202,7 @@ class ConversationSession:
         self._recent_endpoint_pauses_ms: list[int] = []
         self._transcript_finalizer = transcript_finalization.PendingTranscriptFinalizer(language=config.language)
 
-        self._audio_ring: np.ndarray = np.empty(0, dtype=np.float32)
-        self._audio_ring_max_samples: int = TARGET_SAMPLE_RATE * 2
-        self._output_audio_ring: np.ndarray = np.empty(0, dtype=np.float32)
-        self._output_audio_ring_max_samples: int = TARGET_SAMPLE_RATE * 3
+        self._audio_history = ConversationAudioHistory()
 
     async def start(self) -> None:
         if self._runner is None:
@@ -318,9 +274,7 @@ class ConversationSession:
             return
 
         if audio.size:
-            self._audio_ring = np.concatenate([self._audio_ring, audio])
-            if self._audio_ring.size > self._audio_ring_max_samples:
-                self._audio_ring = self._audio_ring[-self._audio_ring_max_samples :]
+            self._audio_history.append_mic(audio)
 
         if self._aec_warmup_active():
             return
@@ -832,7 +786,7 @@ class ConversationSession:
                 "sequence": sequence,
             }
         )
-        self._remember_output_audio(encoded_audio, sample_rate)
+        self._audio_history.remember_output_pcm16(encoded_audio, sample_rate)
         self._mark_estimated_playout(encoded_audio, sample_rate)
 
     def _arm_aec_warmup(self) -> None:
@@ -870,43 +824,8 @@ class ConversationSession:
             return False
         return time.monotonic() < self._agent_speech_end_monotonic + cooldown_s
 
-    def _remember_output_audio(self, encoded_audio: bytes, sample_rate: int) -> None:
-        if sample_rate <= 0 or not encoded_audio:
-            return
-        audio = pcm16_to_float32(encoded_audio)
-        if audio.size == 0:
-            return
-        if sample_rate != TARGET_SAMPLE_RATE:
-            audio = resample_audio(audio, sample_rate, TARGET_SAMPLE_RATE)
-        self._output_audio_ring = np.concatenate([self._output_audio_ring, audio])
-        if self._output_audio_ring.size > self._output_audio_ring_max_samples:
-            self._output_audio_ring = self._output_audio_ring[-self._output_audio_ring_max_samples :]
-
     def _looks_like_current_output_echo(self) -> bool:
-        min_samples = SPEAKING_ECHO_MIN_WINDOW_MS * TARGET_SAMPLE_RATE // 1000
-        if self._audio_ring.size < min_samples or self._output_audio_ring.size < min_samples:
-            return False
-
-        window_samples = min(
-            self._audio_ring.size,
-            self._output_audio_ring.size,
-            SPEAKING_ECHO_COMPARE_WINDOW_MS * TARGET_SAMPLE_RATE // 1000,
-        )
-        if window_samples < min_samples:
-            return False
-
-        mic = self._audio_ring[-window_samples:]
-        mic_rms = float(np.sqrt(np.mean(mic * mic))) if mic.size else 0.0
-        if mic_rms < SPEAKING_ECHO_MIN_RMS:
-            return False
-
-        best = _best_recent_correlation(
-            mic,
-            self._output_audio_ring,
-            max_delay_ms=SPEAKING_ECHO_MAX_DELAY_MS,
-            step_ms=SPEAKING_ECHO_SEARCH_STEP_MS,
-        )
-        return best >= SPEAKING_ECHO_CORRELATION_THRESHOLD
+        return self._audio_history.looks_like_current_output_echo()
 
     async def _execute(self, action: TurnAction) -> None:
         if action.type == TurnActionType.PAUSE_OUTPUT:
@@ -934,8 +853,7 @@ class ConversationSession:
             self._audio_output.clear_pending()
             self._paused = False
             self._audio_output.reset_playout()
-            self._output_audio_ring = np.empty(0, dtype=np.float32)
-            self._audio_ring = np.empty(0, dtype=np.float32)
+            self._audio_history.clear()
             await self._emit(
                 {
                     "type": WIRE_AUDIO_CLEAR,
@@ -1154,13 +1072,7 @@ class ConversationSession:
         if self._vad_started_at is not None:
             vad_active_ms = max(0, int((time.monotonic() - self._vad_started_at) * 1000))
 
-        audio_tail: np.ndarray | None = None
-        if vad_active_ms > 0 and self._audio_ring.size > 0:
-            tail_samples = min(
-                self._audio_ring.size,
-                max(1, vad_active_ms * TARGET_SAMPLE_RATE // 1000),
-            )
-            audio_tail = self._audio_ring[-tail_samples:]
+        audio_tail = self._audio_history.mic_tail_for_duration_ms(vad_active_ms)
 
         partial = self._latest_partial
         partial_transcript = partial.text if partial is not None else None

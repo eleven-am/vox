@@ -190,11 +190,11 @@ class TestAECWarmupDiscard:
         assert session.state == TurnState.SPEAKING
         assert session._aec_warmup_active()
 
-        ring_size_before = session._audio_ring.size
+        ring_size_before = session._audio_history.mic_size
         audio = np.full(int(0.04 * 16_000), 0.1, dtype=np.float32).astype(np.float32).tobytes()
         await session.ingest_audio(audio, sample_rate=16_000)
 
-        assert session._audio_ring.size > ring_size_before
+        assert session._audio_history.mic_size > ring_size_before
 
         await session.close()
 
@@ -386,12 +386,12 @@ class TestUninterruptibleResponse:
         assert session.state == TurnState.SPEAKING
 
         baseline = len(call_log)
-        ring_before = session._audio_ring.size
+        ring_before = session._audio_history.mic_size
         audio = np.full(int(0.04 * 16_000), 0.1, dtype=np.float32).astype(np.float32).tobytes()
         await session.ingest_audio(audio, sample_rate=16_000)
 
         assert len(call_log) == baseline
-        assert session._audio_ring.size == ring_before
+        assert session._audio_history.mic_size == ring_before
 
         await session.close()
 

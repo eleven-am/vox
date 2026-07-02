@@ -117,6 +117,14 @@ def _voice_signal(duration_s: float, amp: float = 0.1, sr: int = 16_000, freq: f
     return (amp * np.sin(2 * np.pi * freq * t)).astype(np.float32)
 
 
+def _replace_mic_audio(session: ConversationSession, audio: np.ndarray) -> None:
+    session._audio_history.replace_mic(audio)
+
+
+def _replace_output_audio(session: ConversationSession, audio: np.ndarray) -> None:
+    session._audio_history.replace_output(audio)
+
+
 class TestBackchannelRejection:
     @pytest.mark.asyncio
     async def test_mhmm_does_not_interrupt(self):
@@ -135,7 +143,7 @@ class TestBackchannelRejection:
 
         voice = _voice_signal(0.25)
         silence = np.zeros(int(0.30 * 16_000), dtype=np.float32)
-        session._audio_ring = np.concatenate([voice, silence])
+        _replace_mic_audio(session, np.concatenate([voice, silence]))
         session._vad_started_at = time.monotonic() - 0.55
 
         await session._event_queue.put(TurnEvent(
@@ -170,7 +178,7 @@ class TestBackchannelRejection:
             text="the appointment is tomorrow",
             is_partial=True,
         )
-        session._audio_ring = _voice_signal(0.60, amp=0.15)
+        _replace_mic_audio(session, _voice_signal(0.60, amp=0.15))
         session._vad_started_at = time.monotonic() - 0.60
         await session._event_queue.put(TurnEvent(
             type=TurnEventType.SPEECH_STARTED,
@@ -198,8 +206,8 @@ class TestBackchannelRejection:
         assert session.state == TurnState.SPEAKING
 
         echo = _voice_signal(0.50, amp=0.08, freq=330)
-        session._output_audio_ring = echo.copy()
-        session._audio_ring = echo.copy()
+        _replace_output_audio(session, echo.copy())
+        _replace_mic_audio(session, echo.copy())
 
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000))
         await asyncio.sleep(0.14)
@@ -220,8 +228,8 @@ class TestBackchannelRejection:
         await asyncio.sleep(0.15)
         assert session.state == TurnState.SPEAKING
 
-        session._output_audio_ring = _voice_signal(0.50, amp=0.08, freq=330)
-        session._audio_ring = _voice_signal(0.50, amp=0.15, freq=660)
+        _replace_output_audio(session, _voice_signal(0.50, amp=0.08, freq=330))
+        _replace_mic_audio(session, _voice_signal(0.50, amp=0.15, freq=660))
 
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000))
         await asyncio.sleep(0.02)
@@ -247,8 +255,8 @@ class TestBackchannelRejection:
 
         voice = _voice_signal(0.10, amp=0.08, freq=330)
         silence = np.zeros(int(0.30 * 16_000), dtype=np.float32)
-        session._output_audio_ring = _voice_signal(0.50, amp=0.08, freq=440)
-        session._audio_ring = np.concatenate([voice, silence])
+        _replace_output_audio(session, _voice_signal(0.50, amp=0.08, freq=440))
+        _replace_mic_audio(session, np.concatenate([voice, silence]))
 
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000))
         await asyncio.sleep(0.20)
@@ -326,13 +334,13 @@ class TestBackchannelRejection:
     async def test_flush_output_clears_echo_rings(self):
         session, _, _ = _build()
 
-        session._output_audio_ring = _voice_signal(0.50, amp=0.05, freq=330)
-        session._audio_ring = _voice_signal(0.50, amp=0.05, freq=440)
+        _replace_output_audio(session, _voice_signal(0.50, amp=0.05, freq=330))
+        _replace_mic_audio(session, _voice_signal(0.50, amp=0.05, freq=440))
 
         await session._execute(TurnAction(TurnActionType.FLUSH_OUTPUT))
 
-        assert session._output_audio_ring.size == 0
-        assert session._audio_ring.size == 0
+        assert session._audio_history.output_size == 0
+        assert session._audio_history.mic_size == 0
 
         await session.close()
 
@@ -346,7 +354,7 @@ class TestBackchannelRejection:
         assert session.state == TurnState.SPEAKING
 
         session._latest_partial = StreamTranscript(text="actually", is_partial=True)
-        session._audio_ring = _voice_signal(0.60, amp=0.15)
+        _replace_mic_audio(session, _voice_signal(0.60, amp=0.15))
         session._vad_started_at = time.monotonic() - 0.60
         await session._event_queue.put(TurnEvent(
             type=TurnEventType.SPEECH_STARTED,
@@ -371,7 +379,7 @@ class TestBackchannelRejection:
         assert session.state == TurnState.SPEAKING
 
         session._latest_partial = StreamTranscript(text="stop", is_partial=True)
-        session._audio_ring = _voice_signal(0.60, amp=0.15)
+        _replace_mic_audio(session, _voice_signal(0.60, amp=0.15))
         session._vad_started_at = time.monotonic() - 0.60
         await session._event_queue.put(TurnEvent(
             type=TurnEventType.SPEECH_STARTED,
@@ -399,7 +407,7 @@ class TestBackchannelRejection:
 
 
         voice = _voice_signal(0.60, amp=0.15)
-        session._audio_ring = voice
+        _replace_mic_audio(session, voice)
         session._latest_partial = StreamTranscript(text="I need", is_partial=True)
         session._vad_started_at = time.monotonic() - 0.60
         await session._event_queue.put(TurnEvent(
@@ -426,7 +434,7 @@ class TestBackchannelRejection:
 
         voice = _voice_signal(0.22, amp=0.12, freq=300)
         silence = np.zeros(int(0.30 * 16_000), dtype=np.float32)
-        session._audio_ring = np.concatenate([voice, silence])
+        _replace_mic_audio(session, np.concatenate([voice, silence]))
         session._latest_partial = StreamTranscript(
             text="Can you hear me?",
             is_partial=True,
@@ -460,7 +468,7 @@ class TestBackchannelRejection:
 
         voice = _voice_signal(0.10, amp=0.08, freq=330)
         silence = np.zeros(int(0.30 * 16_000), dtype=np.float32)
-        session._audio_ring = np.concatenate([voice, silence])
+        _replace_mic_audio(session, np.concatenate([voice, silence]))
 
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000))
         await asyncio.sleep(0.20)
@@ -509,7 +517,7 @@ class TestBackchannelRejection:
                 break
         assert session.state == TurnState.SPEAKING
 
-        session._audio_ring = _voice_signal(0.60, amp=0.15)
+        _replace_mic_audio(session, _voice_signal(0.60, amp=0.15))
         session._latest_partial = StreamTranscript(text="I am interrupting you", is_partial=True)
         session._vad_started_at = time.monotonic() - 0.60
         await session._event_queue.put(TurnEvent(
@@ -560,7 +568,7 @@ class TestMhmmAtRealisticWindow:
 
         voice = _voice_signal(0.25)
         silence = np.zeros(int(0.15 * 16_000), dtype=np.float32)
-        session._audio_ring = np.concatenate([voice, silence])
+        _replace_mic_audio(session, np.concatenate([voice, silence]))
 
 
         session._vad_started_at = time.monotonic() - 0.40
@@ -601,7 +609,7 @@ class TestMhmmAtRealisticWindow:
 
 
         voice = _voice_signal(0.40, amp=0.15)
-        session._audio_ring = voice
+        _replace_mic_audio(session, voice)
         session._latest_partial = StreamTranscript(text="stop", is_partial=True)
         session._vad_started_at = time.monotonic() - 0.40
         await session._event_queue.put(TurnEvent(
@@ -629,7 +637,7 @@ class TestAudioRingBuffer:
         await session.ingest_audio(five_seconds_pcm, sample_rate=16_000)
 
 
-        assert session._audio_ring.size <= session._audio_ring_max_samples
+        assert session._audio_history.mic_size <= session._audio_history.mic_max_samples
 
         await session.close()
 
