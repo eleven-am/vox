@@ -33,19 +33,10 @@ from vox.server.rtc_conversation import (
     create_rtc_orchestrator_with,
     forward_wire_event_to_browser,
 )
+from vox.server.rtc_media import cancel_and_drain_media_tasks
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 
 logger = logging.getLogger(__name__)
-
-
-async def _cancel_media_tasks(record: RtcSessionRecord) -> None:
-    tasks = list(record.media_tasks)
-    if not tasks:
-        return
-    for task in tasks:
-        task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
-    record.media_tasks.clear()
 
 
 class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
@@ -221,7 +212,7 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                     await record.audio_output.put(None)
                 if record.media_events is not None:
                     await record.media_events.put(None)
-                await _cancel_media_tasks(record)
+                await cancel_and_drain_media_tasks(record)
                 if record.rtc_peer is not None:
                     with suppress(Exception):
                         await record.rtc_peer.close()
