@@ -8,6 +8,8 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
+from vox.server.rtc_media import cancel_media_tasks
+
 
 @dataclass
 class RtcSessionRecord:
@@ -127,9 +129,7 @@ class RtcSessionRegistry:
         self._release_resources(record)
 
     def _release_resources(self, record: RtcSessionRecord) -> None:
-        for task in list(record.media_tasks):
-            task.cancel()
-        record.media_tasks.clear()
+        cancel_media_tasks(record)
         peer = record.rtc_peer
         record.rtc_peer = None
         if peer is None:

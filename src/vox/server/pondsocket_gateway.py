@@ -19,13 +19,13 @@ from vox.server.auth import configured_api_key, extract_api_key_from_connection,
 from vox.server.routes.conversation import (
     _event_to_wire,
 )
-from vox.server.routes.rtc import _cancel_media_tasks
 from vox.server.rtc_client_events import send_client_event_to_browser
 from vox.server.rtc_conversation import (
     clear_rtc_audio_if_needed,
     create_rtc_orchestrator,
     forward_wire_event_to_browser,
 )
+from vox.server.rtc_media import cancel_and_drain_media_tasks
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 
 if TYPE_CHECKING:
@@ -174,7 +174,7 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
             await record.audio_output.put(None)
         if record.media_events is not None:
             await record.media_events.put(None)
-        await _cancel_media_tasks(record)
+        await cancel_and_drain_media_tasks(record)
         if record.rtc_peer is not None:
             with suppress(Exception):
                 await record.rtc_peer.close()

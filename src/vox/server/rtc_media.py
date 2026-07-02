@@ -170,6 +170,22 @@ def _pcm16_duration_ms(pcm16: bytes, sample_rate: int) -> float:
     return (len(pcm16) // np.dtype(np.int16).itemsize) / max(1, rate) * 1000.0
 
 
+def cancel_media_tasks(record: Any) -> list[asyncio.Task]:
+    tasks = list(getattr(record, "media_tasks", ()))
+    for task in tasks:
+        task.cancel()
+    media_tasks = getattr(record, "media_tasks", None)
+    if media_tasks is not None:
+        media_tasks.clear()
+    return tasks
+
+
+async def cancel_and_drain_media_tasks(record: Any) -> None:
+    tasks = cancel_media_tasks(record)
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
 async def pump_input_audio(
     track: MediaStreamTrack,
     ingest_pcm16: Callable[[bytes, int | None], Awaitable[None]],

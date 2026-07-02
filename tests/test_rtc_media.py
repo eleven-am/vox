@@ -5,7 +5,13 @@ import numpy as np
 import pytest
 from aiortc.mediastreams import MediaStreamError
 
-from vox.server.rtc_media import RtcAudioOutputTrack, audio_frame_to_pcm16, pump_input_audio
+from vox.server.rtc_media import (
+    RtcAudioOutputTrack,
+    audio_frame_to_pcm16,
+    cancel_and_drain_media_tasks,
+    cancel_media_tasks,
+    pump_input_audio,
+)
 
 
 @pytest.mark.asyncio
@@ -176,3 +182,35 @@ async def test_pump_input_audio_ingests_real_audio_frame():
     await pump_input_audio(OneFrameTrack(), ingest)
 
     assert calls == [(samples.reshape(-1).tobytes(), 16_000)]
+
+
+async def _wait_forever() -> None:
+    await asyncio.Event().wait()
+
+
+@pytest.mark.asyncio
+async def test_cancel_media_tasks_cancels_and_clears_tracked_tasks():
+    task = asyncio.create_task(_wait_forever())
+
+    class Record:
+        media_tasks = {task}
+
+    cancelled = cancel_media_tasks(Record())
+    await asyncio.gather(*cancelled, return_exceptions=True)
+
+    assert cancelled == [task]
+    assert task.cancelled()
+    assert Record.media_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_cancel_and_drain_media_tasks_awaits_cancelled_tasks():
+    task = asyncio.create_task(_wait_forever())
+
+    class Record:
+        media_tasks = {task}
+
+    await cancel_and_drain_media_tasks(Record())
+
+    assert task.cancelled()
+    assert Record.media_tasks == set()

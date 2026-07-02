@@ -42,7 +42,7 @@ from vox.server.rtc_ice import (
     rewrite_private_relay_candidates,
     server_ice_servers_from_env,
 )
-from vox.server.rtc_media import RtcAudioOutputTrack, pump_input_audio
+from vox.server.rtc_media import RtcAudioOutputTrack, cancel_and_drain_media_tasks, pump_input_audio
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 from vox.server.rtc_timeline import RtcTurnTimeline, rtc_audio_stats
 
@@ -356,7 +356,7 @@ async def rtc_control_ws(websocket: WebSocket, session_id: str) -> None:
             await record.audio_output.put(None)
         if record.media_events is not None:
             await record.media_events.put(None)
-        await _cancel_media_tasks(record)
+        await cancel_and_drain_media_tasks(record)
         if record.rtc_peer is not None:
             with suppress(Exception):
                 await record.rtc_peer.close()
@@ -389,16 +389,6 @@ def _rtc_configuration(ice_servers: list[dict]) -> RTCConfiguration:
 async def _emit_media_event(record: RtcSessionRecord, event: dict) -> None:
     if record.media_events is not None:
         await record.media_events.put(event)
-
-
-async def _cancel_media_tasks(record: RtcSessionRecord) -> None:
-    tasks = list(record.media_tasks)
-    if not tasks:
-        return
-    for task in tasks:
-        task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
-    record.media_tasks.clear()
 
 
 async def _ingest_media_audio(record: RtcSessionRecord, pcm16: bytes, sample_rate: int | None) -> None:
