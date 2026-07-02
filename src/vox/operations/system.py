@@ -86,6 +86,35 @@ def memory_snapshot_payload(snapshot: VramSnapshot) -> dict[str, Any]:
     }
 
 
+def memory_status_payload(result: MemoryStatus) -> dict[str, Any]:
+    return memory_snapshot_payload(result.snapshot)
+
+
+def trim_idle_payload(result: TrimIdleResult) -> dict[str, Any]:
+    return {
+        "trimmed": result.trimmed,
+        "memory": memory_snapshot_payload(result.snapshot),
+    }
+
+
+def enforce_memory_budget_payload(result: EnforceMemoryBudgetResult) -> dict[str, Any]:
+    return {
+        "status": "ok",
+        "memory": memory_snapshot_payload(result.snapshot),
+    }
+
+
+def trim_model_payload(result: TrimModelResult) -> dict[str, Any]:
+    return {"status": result.status}
+
+
+def unload_idle_payload(result: UnloadIdleResult) -> dict[str, Any]:
+    return {
+        "unloaded": result.unloaded,
+        "memory": memory_snapshot_payload(result.snapshot),
+    }
+
+
 def get_memory_status(*, scheduler: SystemScheduler) -> MemoryStatus:
     return MemoryStatus(snapshot=scheduler.memory_snapshot())
 

@@ -12,13 +12,22 @@ from vox.core.types import (
 )
 from vox.operations.errors import ModelInUseError
 from vox.operations.system import (
+    EnforceMemoryBudgetResult,
     MemoryBudgetExceededError,
+    TrimIdleResult,
+    TrimModelResult,
+    UnloadIdleResult,
     enforce_memory_budget,
+    enforce_memory_budget_payload,
     get_memory_status,
     memory_snapshot_payload,
+    memory_status_payload,
     trim_idle_memory,
+    trim_idle_payload,
     trim_model,
+    trim_model_payload,
     unload_idle_models,
+    unload_idle_payload,
 )
 
 
@@ -97,7 +106,7 @@ def test_memory_status_payload_preserves_http_contract_shape():
     scheduler = FakeSystemScheduler()
 
     result = get_memory_status(scheduler=scheduler)
-    payload = memory_snapshot_payload(result.snapshot)
+    payload = memory_status_payload(result)
 
     assert payload["policy"] == {
         "max_vram_bytes": 10_000,
@@ -109,6 +118,29 @@ def test_memory_status_payload_preserves_http_contract_shape():
     assert payload["estimated_loaded_vram_bytes"] == 3_072
     assert payload["active_model_count"] == 1
     assert payload["models"][0]["backend_memory"] == {"workspace_bytes": 128}
+
+
+def test_system_action_payloads_preserve_http_contract_shapes():
+    scheduler = FakeSystemScheduler()
+    snapshot = scheduler.memory_snapshot()
+
+    assert trim_idle_payload(
+        TrimIdleResult(trimmed=["parakeet-stt-onnx:tdt-0.6b-v3"], snapshot=snapshot)
+    ) == {
+        "trimmed": ["parakeet-stt-onnx:tdt-0.6b-v3"],
+        "memory": memory_snapshot_payload(snapshot),
+    }
+    assert enforce_memory_budget_payload(EnforceMemoryBudgetResult(snapshot=snapshot)) == {
+        "status": "ok",
+        "memory": memory_snapshot_payload(snapshot),
+    }
+    assert trim_model_payload(TrimModelResult()) == {"status": "success"}
+    assert unload_idle_payload(
+        UnloadIdleResult(unloaded=["parakeet-stt-onnx:tdt-0.6b-v3"], snapshot=snapshot)
+    ) == {
+        "unloaded": ["parakeet-stt-onnx:tdt-0.6b-v3"],
+        "memory": memory_snapshot_payload(snapshot),
+    }
 
 
 @pytest.mark.asyncio
