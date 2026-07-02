@@ -38,7 +38,10 @@ from vox.conversation.audio_output import ResponseAudioOutput
 from vox.conversation.interrupt import (
     HeuristicInterruptClassifier,
     InterruptClassifier,
+    PartialInterruptEvidence,
     looks_like_self_echo,
+    transcript_duration_ms,
+    transcript_word_count,
 )
 from vox.conversation.profiles import DEFAULT_TURN_PROFILE, resolve_turn_profile
 from vox.conversation.response_synthesis import synthesize_response_stream
@@ -198,6 +201,7 @@ class ConversationSession:
         self._awaiting_final_transcript_started_at: float = 0.0
         self._recent_endpoint_pauses_ms: list[int] = []
         self._transcript_finalizer = transcript_finalization.PendingTranscriptFinalizer(language=config.language)
+        self._partial_interrupt_evidence = PartialInterruptEvidence.from_turn_policy(config.policy)
 
         self._audio_history = ConversationAudioHistory()
 
@@ -872,28 +876,12 @@ class ConversationSession:
             return ""
         return self._response_stream.assistant_context_text(separator=" ")
 
-    @staticmethod
-    def _word_count(text: str | None) -> int:
-        if not text:
-            return 0
-        return len([word for word in text.strip().split() if word])
-
-    @staticmethod
-    def _transcript_duration_ms(transcript: StreamTranscript | None) -> int:
-        if transcript is None:
-            return 0
-        if transcript.audio_duration_ms > 0:
-            return int(transcript.audio_duration_ms)
-        if transcript.end_ms > transcript.start_ms:
-            return int(transcript.end_ms - transcript.start_ms)
-        return 0
-
     def _current_interrupt_vad_ms(self) -> int:
         vad_active_ms = 0
         if self._vad_started_at is not None:
             vad_active_ms = max(0, int((time.monotonic() - self._vad_started_at) * 1000))
         if self._latest_partial is not None:
-            vad_active_ms = max(vad_active_ms, self._transcript_duration_ms(self._latest_partial))
+            vad_active_ms = max(vad_active_ms, transcript_duration_ms(self._latest_partial))
         return vad_active_ms
 
     def _has_recent_interrupt_context(self) -> bool:
@@ -912,29 +900,17 @@ class ConversationSession:
         *,
         assistant_text: str | None = None,
     ) -> bool:
-        if transcript is None:
-            return False
-        text = transcript.text.strip()
-        if not text:
-            return False
         if assistant_text is None:
             assistant_text = self._active_assistant_text()
-        if assistant_text and looks_like_self_echo(
-            text,
-            assistant_text,
-            min_words=self._config.policy.self_echo_min_words,
-            min_overlap=self._config.policy.self_echo_min_overlap,
-        ):
-            return False
-        if self._word_count(text) < self._config.policy.speaking_interrupt_min_words:
-            return False
-        duration_ms = self._transcript_duration_ms(transcript)
-        return not (duration_ms > 0 and duration_ms < self._config.policy.min_interrupt_duration_ms)
+        return self._partial_interrupt_evidence.is_strong(
+            transcript,
+            assistant_text=assistant_text,
+        )
 
     async def _confirm_interrupt_from_partial(self, transcript: StreamTranscript) -> None:
         vad_active_ms = max(
             self._current_interrupt_vad_ms(),
-            self._transcript_duration_ms(transcript),
+            transcript_duration_ms(transcript),
         )
         await self._emit(
             {
@@ -1072,21 +1048,21 @@ class ConversationSession:
             logger.debug(
                 "classifier confirmed barge-in from partial transcript evidence "
                 "(words=%d, duration=%dms, vad_active=%dms)",
-                self._word_count(partial_transcript),
-                self._transcript_duration_ms(partial),
+                transcript_word_count(partial_transcript),
+                transcript_duration_ms(partial),
                 vad_active_ms,
             )
             await self._confirm_interrupt_from_partial(partial)
             return
         if active_assistant_text and not is_interrupt_keyword and partial_transcript is not None:
-            words = [word for word in (partial_transcript or "").strip().split() if word]
+            word_count = transcript_word_count(partial_transcript)
             if (
-                len(words) < self._config.policy.speaking_interrupt_min_words
+                word_count < self._config.policy.speaking_interrupt_min_words
                 and vad_active_ms < self._config.policy.false_interruption_timeout_ms
             ):
                 logger.debug(
                     "classifier rejected barge-in without enough non-echo words (words=%d, vad_active=%dms)",
-                    len(words),
+                    word_count,
                     vad_active_ms,
                 )
                 self._vad_started_at = None

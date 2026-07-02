@@ -23,6 +23,9 @@ from typing import Protocol, runtime_checkable
 import numpy as np
 from numpy.typing import NDArray
 
+from vox.conversation.types import TurnPolicy
+from vox.streaming.types import StreamTranscript
+
 DEFAULT_INTERRUPT_KEYWORDS_BY_LANG: dict[str, frozenset[str]] = {
     "en": frozenset({"stop", "wait", "hold on", "pause", "cancel", "nevermind", "never mind"}),
     "fr": frozenset({"arrête", "arretez", "arrêtez", "attends", "attendez", "pause", "annule", "annulez"}),
@@ -66,6 +69,64 @@ def looks_like_self_echo(
     spoken_set = set(spoken)
     overlap = sum(1 for word in heard if word in spoken_set) / len(heard)
     return overlap >= min_overlap
+
+
+def transcript_word_count(text: str | None) -> int:
+    if not text:
+        return 0
+    return len([word for word in text.strip().split() if word])
+
+
+def transcript_duration_ms(transcript: StreamTranscript | None) -> int:
+    if transcript is None:
+        return 0
+    if transcript.audio_duration_ms > 0:
+        return int(transcript.audio_duration_ms)
+    if transcript.end_ms > transcript.start_ms:
+        return int(transcript.end_ms - transcript.start_ms)
+    return 0
+
+
+@dataclass(frozen=True)
+class PartialInterruptEvidence:
+    """Policy for deciding whether partial STT is enough to confirm barge-in."""
+
+    min_interrupt_duration_ms: int
+    speaking_interrupt_min_words: int
+    self_echo_min_words: int
+    self_echo_min_overlap: float
+
+    @classmethod
+    def from_turn_policy(cls, policy: TurnPolicy) -> PartialInterruptEvidence:
+        return cls(
+            min_interrupt_duration_ms=policy.min_interrupt_duration_ms,
+            speaking_interrupt_min_words=policy.speaking_interrupt_min_words,
+            self_echo_min_words=policy.self_echo_min_words,
+            self_echo_min_overlap=policy.self_echo_min_overlap,
+        )
+
+    def is_strong(
+        self,
+        transcript: StreamTranscript | None,
+        *,
+        assistant_text: str | None,
+    ) -> bool:
+        if transcript is None:
+            return False
+        text = transcript.text.strip()
+        if not text:
+            return False
+        if assistant_text and looks_like_self_echo(
+            text,
+            assistant_text,
+            min_words=self.self_echo_min_words,
+            min_overlap=self.self_echo_min_overlap,
+        ):
+            return False
+        if transcript_word_count(text) < self.speaking_interrupt_min_words:
+            return False
+        duration_ms = transcript_duration_ms(transcript)
+        return not (duration_ms > 0 and duration_ms < self.min_interrupt_duration_ms)
 
 
 @runtime_checkable
