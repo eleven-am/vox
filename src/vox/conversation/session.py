@@ -27,10 +27,11 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
 
+from vox.conversation import response_stream as response_streams
 from vox.conversation import transcripts as transcript_finalization
 from vox.conversation.interrupt import (
     HeuristicInterruptClassifier,
@@ -68,6 +69,7 @@ from vox.streaming.types import (
 from vox.streaming.vad import VADConfig
 
 logger = logging.getLogger(__name__)
+ResponseStream = response_streams.ResponseStream
 
 
 WIRE_SPEECH_STARTED = "input_audio_buffer.speech_started"
@@ -85,6 +87,7 @@ WIRE_INTERRUPTION_FALSE_POSITIVE = "interruption.false_positive"
 WIRE_TURN_EOU_PREDICTED = "turn.eou.predicted"
 WIRE_STATE_CHANGED = "turn.state_changed"
 WIRE_ERROR = "error"
+RESPONSE_STREAM_QUEUE_MAX = response_streams.RESPONSE_STREAM_QUEUE_MAX
 
 
 EventEmitter = Callable[[dict], Awaitable[None]]
@@ -120,10 +123,6 @@ class ConversationConfig:
             )
 
 
-_RESPONSE_STREAM_END = object()
-
-
-RESPONSE_STREAM_QUEUE_MAX = 1024
 TRANSCRIPT_CONTINUATION_COMMIT_MS = 1200
 TRANSCRIPT_PENDING_STT_RECHECK_MS = 100
 SPEAKING_ECHO_MIN_WINDOW_MS = 120
@@ -132,18 +131,6 @@ SPEAKING_ECHO_MAX_DELAY_MS = 900
 SPEAKING_ECHO_SEARCH_STEP_MS = 20
 SPEAKING_ECHO_CORRELATION_THRESHOLD = 0.68
 SPEAKING_ECHO_MIN_RMS = 0.002
-
-@dataclass
-class _ResponseStream:
-    queue: asyncio.Queue[str | object]
-    response_id: str
-    committed: bool = False
-    pending_done: bool = False
-    allow_interruptions: bool = True
-    audio_started: bool = False
-    text_parts: list[str] = field(default_factory=list)
-    heard_parts: list[str] = field(default_factory=list)
-
 
 def _normalise_for_correlation(audio: np.ndarray) -> np.ndarray | None:
     if audio.size == 0:
@@ -234,7 +221,7 @@ class ConversationSession:
         self._runner: asyncio.Task | None = None
         self._paused: bool = False
         self._pending_audio: list[tuple[bytes, int, int]] = []
-        self._response_stream: _ResponseStream | None = None
+        self._response_stream: ResponseStream | None = None
         self._closed: bool = False
         self._client_sample_rate: int = config.sample_rate
         self._response_counter: int = 0
@@ -399,13 +386,12 @@ class ConversationSession:
         stream = await self._ensure_response_stream(allow_interruptions=allow_interruptions)
         if stream is None:
             return
-        await stream.queue.put(text)
+        await stream.append_text(text)
 
     async def commit_response_stream(self) -> None:
         stream = self._response_stream
-        if stream is None or stream.committed:
+        if stream is None or not stream.mark_committed():
             return
-        stream.committed = True
 
         await self._emit(
             {
@@ -413,7 +399,7 @@ class ConversationSession:
                 "response_id": stream.response_id,
             }
         )
-        await stream.queue.put(_RESPONSE_STREAM_END)
+        await stream.enqueue_end()
 
     async def cancel_response(self) -> None:
         """Explicit client cancel — orthogonal to barge-in."""
@@ -673,7 +659,7 @@ class ConversationSession:
         self,
         *,
         allow_interruptions: bool = True,
-    ) -> _ResponseStream | None:
+    ) -> ResponseStream | None:
         if self._response_stream is not None and not self._response_stream.committed:
             return self._response_stream
         if self._tts_task and not self._tts_task.done():
@@ -688,8 +674,7 @@ class ConversationSession:
 
         self._response_counter += 1
         response_id = f"resp_{self._response_counter}"
-        stream = _ResponseStream(
-            queue=asyncio.Queue(maxsize=RESPONSE_STREAM_QUEUE_MAX),
+        stream = ResponseStream.create(
             response_id=response_id,
             allow_interruptions=allow_interruptions,
         )
@@ -703,7 +688,7 @@ class ConversationSession:
         self._tts_task = asyncio.create_task(self._run_response_stream(stream))
         return stream
 
-    async def _run_response_stream(self, stream: _ResponseStream) -> None:
+    async def _run_response_stream(self, stream: ResponseStream) -> None:
         audio_started = False
         text_buffer = StreamingTextBuffer()
         try:
@@ -714,11 +699,9 @@ class ConversationSession:
 
                 adapter_cap = int(getattr(adapter.info(), "max_input_chars", 0) or 0)
                 while True:
-                    item = await stream.queue.get()
-                    if item is _RESPONSE_STREAM_END:
+                    item_text = await stream.next_text()
+                    if item_text is None:
                         break
-                    item_text = str(item)
-                    stream.text_parts.append(item_text)
                     for text in text_buffer.push(item_text):
                         audio_started = await self._synthesize_text(
                             adapter,
@@ -737,12 +720,9 @@ class ConversationSession:
                         max_input_chars=adapter_cap,
                     )
 
-                heard_text = "".join(stream.heard_parts).strip()
-                full_text = "".join(stream.text_parts).strip()
-                if heard_text:
-                    self._pipeline.add_assistant_turn(heard_text)
-                elif full_text:
-                    self._pipeline.add_assistant_turn(full_text)
+                assistant_text = stream.assistant_context_text()
+                if assistant_text:
+                    self._pipeline.add_assistant_turn(assistant_text)
 
                 await self._wait_for_estimated_playout()
                 if self._paused and self._response_stream is stream:
@@ -760,7 +740,7 @@ class ConversationSession:
             if self._active_response_id == stream.response_id and not stream.pending_done:
                 self._active_response_id = None
 
-    async def _complete_response_stream(self, stream: _ResponseStream) -> None:
+    async def _complete_response_stream(self, stream: ResponseStream) -> None:
         stream.pending_done = False
         self._mark_agent_speech_ended()
         await self._event_queue.put(TurnEvent(type=TurnEventType.TTS_COMPLETED))
@@ -780,7 +760,7 @@ class ConversationSession:
         adapter: TTSAdapter,
         text: str,
         *,
-        stream: _ResponseStream,
+        stream: ResponseStream,
         audio_started: bool,
         max_input_chars: int,
     ) -> bool:
@@ -803,7 +783,7 @@ class ConversationSession:
                 chunk_started = True
                 await self._handle_tts_chunk(chunk.audio, chunk.sample_rate)
             if chunk_started:
-                stream.heard_parts.append(chunk_text)
+                stream.add_heard_text(chunk_text)
 
         return audio_started
 
@@ -981,10 +961,10 @@ class ConversationSession:
             stream = self._response_stream
             response_id = stream.response_id if stream is not None else self._active_response_id
             self._last_cancelled_response_id = response_id
-            if stream is not None and stream.heard_parts:
-                heard_text = "".join(stream.heard_parts).strip()
-                if heard_text:
-                    self._pipeline.add_assistant_turn(heard_text)
+            if stream is not None:
+                assistant_text = stream.assistant_context_text()
+                if assistant_text:
+                    self._pipeline.add_assistant_turn(assistant_text)
             if self._tts_task and not self._tts_task.done():
                 self._tts_task.cancel()
                 with suppress(asyncio.CancelledError, Exception):
@@ -1048,11 +1028,7 @@ class ConversationSession:
     def _active_assistant_text(self) -> str:
         if self._response_stream is None:
             return ""
-        return " ".join(
-            part.strip()
-            for part in (self._response_stream.heard_parts or self._response_stream.text_parts)
-            if part.strip()
-        )
+        return self._response_stream.assistant_context_text(separator=" ")
 
     @staticmethod
     def _word_count(text: str | None) -> int:
