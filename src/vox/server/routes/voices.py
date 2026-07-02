@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-from typing import Any
-
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 
 from vox.core.errors import ModelNotFoundError, ReferenceAudioInvalidError, VoxError
-from vox.core.types import VoiceInfo
 from vox.operations.errors import (
     OperationError,
     VoiceAudioRequiredError,
@@ -19,9 +16,12 @@ from vox.operations.errors import (
 from vox.operations.voices import (
     CreateVoiceRequest,
     create_voice,
+    created_voice_payload,
     delete_voice,
+    deleted_voice_payload,
     get_voice_reference,
     list_voices,
+    list_voices_payload,
 )
 
 router = APIRouter()
@@ -49,14 +49,7 @@ async def list_voices_route(request: Request, model: str = ""):
     except VoxError as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    if not model:
-        return {
-            "voices": [
-                {"model": v.model, **_voice_dict(v.voice)}
-                for v in listed
-            ]
-        }
-    return {"voices": [_voice_dict(v.voice) for v in listed]}
+    return list_voices_payload(listed, include_model=not model)
 
 
 @router.post("/v1/audio/voices")
@@ -87,13 +80,7 @@ async def create_voice_route(
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return {
-        "id": voice.id,
-        "name": voice.name,
-        "language": voice.language,
-        "gender": voice.gender,
-        "created_at": voice.created_at,
-    }
+    return created_voice_payload(voice)
 
 
 @router.get("/v1/audio/voices/{voice_id}/reference")
@@ -117,15 +104,4 @@ async def delete_voice_route(request: Request, voice_id: str):
         delete_voice(store=store, voice_id=voice_id)
     except OperationError as exc:
         raise _voice_op_error_to_http(exc) from exc
-    return {"id": voice_id, "deleted": True}
-
-
-def _voice_dict(v: VoiceInfo) -> dict[str, Any]:
-    return {
-        "id": v.id,
-        "name": v.name,
-        "language": v.language,
-        "gender": v.gender,
-        "description": v.description,
-        "is_cloned": v.is_cloned,
-    }
+    return deleted_voice_payload(voice_id)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -27,10 +28,15 @@ from vox.operations.errors import (
 )
 from vox.operations.voices import (
     CreateVoiceRequest,
+    ListedVoice,
     create_voice,
+    created_voice_payload,
     delete_voice,
+    deleted_voice_payload,
     get_voice_reference,
     list_voices,
+    list_voices_payload,
+    voice_payload,
 )
 
 
@@ -161,3 +167,87 @@ def test_get_voice_reference_unknown_raises(tmp_path: Path):
     store = BlobStore(root=tmp_path)
     with pytest.raises(VoiceNotFoundOperationError):
         get_voice_reference(store=store, voice_id="missing")
+
+
+def test_voice_payload_preserves_http_contract_shape():
+    voice = VoiceInfo(
+        id="af_heart",
+        name="Heart",
+        language="en",
+        gender="female",
+        description="Default voice",
+        is_cloned=False,
+    )
+
+    assert voice_payload(voice) == {
+        "id": "af_heart",
+        "name": "Heart",
+        "language": "en",
+        "gender": "female",
+        "description": "Default voice",
+        "is_cloned": False,
+    }
+
+
+def test_list_voices_payload_can_include_model_for_unfiltered_route():
+    listed = [
+        ListedVoice(
+            voice=VoiceInfo(id="default", name="Default", language="en"),
+            model="kokoro-tts-onnx:v1.0",
+        )
+    ]
+
+    assert list_voices_payload(listed, include_model=True) == {
+        "voices": [
+            {
+                "model": "kokoro-tts-onnx:v1.0",
+                "id": "default",
+                "name": "Default",
+                "language": "en",
+                "gender": None,
+                "description": None,
+                "is_cloned": False,
+            }
+        ]
+    }
+
+
+def test_list_voices_payload_omits_model_for_model_filtered_route():
+    listed = [
+        ListedVoice(
+            voice=VoiceInfo(id="default", name="Default", language="en"),
+            model=None,
+        )
+    ]
+
+    assert list_voices_payload(listed, include_model=False) == {
+        "voices": [
+            {
+                "id": "default",
+                "name": "Default",
+                "language": "en",
+                "gender": None,
+                "description": None,
+                "is_cloned": False,
+            }
+        ]
+    }
+
+
+def test_created_and_deleted_voice_payloads_preserve_http_contract_shape():
+    voice = SimpleNamespace(
+        id="voice1234",
+        name="Roy",
+        language="en",
+        gender="male",
+        created_at="2026-07-02T10:00:00Z",
+    )
+
+    assert created_voice_payload(voice) == {
+        "id": "voice1234",
+        "name": "Roy",
+        "language": "en",
+        "gender": "male",
+        "created_at": "2026-07-02T10:00:00Z",
+    }
+    assert deleted_voice_payload("voice1234") == {"id": "voice1234", "deleted": True}

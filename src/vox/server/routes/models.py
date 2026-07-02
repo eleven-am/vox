@@ -16,8 +16,11 @@ from vox.operations.errors import (
 from vox.operations.models import (
     delete_model,
     list_models,
+    list_models_payload,
+    pull_event_payload,
     pull_model,
     show_model,
+    show_model_payload,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,13 +52,7 @@ async def pull_model_route(req: PullRequest, request: Request):
 
     async def stream():
         async for event in events:
-            payload = {"status": event.status}
-            if event.total > 0:
-                payload["completed"] = event.completed
-                payload["total"] = event.total
-            if event.error:
-                payload["error"] = event.error
-            yield json.dumps(payload) + "\n"
+            yield json.dumps(pull_event_payload(event)) + "\n"
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
 
@@ -64,19 +61,7 @@ async def pull_model_route(req: PullRequest, request: Request):
 async def list_models_route(request: Request):
     store = request.app.state.store
     models = list_models(store=store)
-    return {
-        "models": [
-            {
-                "name": m.full_name,
-                "type": m.type.value,
-                "format": m.format.value,
-                "architecture": m.architecture,
-                "size_bytes": m.size_bytes,
-                "description": m.description,
-            }
-            for m in models
-        ]
-    }
+    return list_models_payload(models)
 
 
 @router.get("/v1/models/{name:path}")
@@ -87,19 +72,7 @@ async def show_model_route(name: str, request: Request):
         result = show_model(store=store, registry=registry, name=name)
     except OperationError as exc:
         raise _model_op_error_to_http(exc) from exc
-    return {
-        "name": result.name,
-        "config": result.config,
-        "layers": [
-            {
-                "media_type": layer.media_type,
-                "digest": layer.digest,
-                "size": layer.size,
-                "filename": layer.filename,
-            }
-            for layer in result.layers
-        ],
-    }
+    return show_model_payload(result)
 
 
 @router.delete("/v1/models/{name:path}")

@@ -29,6 +29,47 @@ class ListedVoice:
     model: str | None = None
 
 
+def voice_payload(voice: VoiceInfo) -> dict[str, Any]:
+    return {
+        "id": voice.id,
+        "name": voice.name,
+        "language": voice.language,
+        "gender": voice.gender,
+        "description": voice.description,
+        "is_cloned": voice.is_cloned,
+    }
+
+
+def listed_voice_payload(listed: ListedVoice, *, include_model: bool) -> dict[str, Any]:
+    payload = voice_payload(listed.voice)
+    if include_model:
+        payload = {"model": listed.model, **payload}
+    return payload
+
+
+def list_voices_payload(listed: list[ListedVoice], *, include_model: bool) -> dict[str, Any]:
+    return {
+        "voices": [
+            listed_voice_payload(voice, include_model=include_model)
+            for voice in listed
+        ]
+    }
+
+
+def created_voice_payload(voice: Any) -> dict[str, Any]:
+    return {
+        "id": voice.id,
+        "name": voice.name,
+        "language": voice.language,
+        "gender": voice.gender,
+        "created_at": voice.created_at,
+    }
+
+
+def deleted_voice_payload(voice_id: str) -> dict[str, Any]:
+    return {"id": voice_id, "deleted": True}
+
+
 def _voices_for_adapter(adapter: TTSAdapter, store: Any) -> list[VoiceInfo]:
     voices = list(adapter.list_voices())
     if adapter.info().supports_voice_cloning:

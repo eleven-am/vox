@@ -6,17 +6,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from vox.core.store import BlobStore
+from vox.core.types import ModelFormat, ModelInfo, ModelType
 from vox.operations.errors import (
     CatalogEntryNotFoundError,
     ModelInUseError,
     StoredModelNotFoundError,
 )
 from vox.operations.models import (
+    ModelLayer,
     PullEvent,
+    ShowResult,
     delete_model,
     list_models,
+    list_models_payload,
+    pull_event_payload,
     pull_model,
     show_model,
+    show_model_payload,
 )
 
 
@@ -184,3 +190,70 @@ def test_pull_event_default_fields():
     assert event.completed == 0
     assert event.total == 0
     assert event.error == ""
+
+
+def test_list_models_payload_preserves_http_contract_shape():
+    model = ModelInfo(
+        name="parakeet-stt-onnx",
+        tag="tdt-0.6b-v3",
+        type=ModelType.STT,
+        format=ModelFormat.ONNX,
+        architecture="parakeet",
+        adapter="parakeet",
+        size_bytes=123,
+        description="fast stt",
+    )
+
+    assert list_models_payload([model]) == {
+        "models": [
+            {
+                "name": "parakeet-stt-onnx:tdt-0.6b-v3",
+                "type": "stt",
+                "format": "onnx",
+                "architecture": "parakeet",
+                "size_bytes": 123,
+                "description": "fast stt",
+            }
+        ]
+    }
+
+
+def test_show_model_payload_preserves_layers_and_config_shape():
+    result = ShowResult(
+        name="foo:latest",
+        config={"architecture": "fake"},
+        layers=(
+            ModelLayer(
+                media_type="application/vox.model.bin",
+                digest="sha256-x",
+                size=12,
+                filename="model.bin",
+            ),
+        ),
+    )
+
+    assert show_model_payload(result) == {
+        "name": "foo:latest",
+        "config": {"architecture": "fake"},
+        "layers": [
+            {
+                "media_type": "application/vox.model.bin",
+                "digest": "sha256-x",
+                "size": 12,
+                "filename": "model.bin",
+            }
+        ],
+    }
+
+
+def test_pull_event_payload_omits_zero_progress_and_empty_error():
+    assert pull_event_payload(PullEvent(status="checking")) == {"status": "checking"}
+
+
+def test_pull_event_payload_includes_progress_and_error_when_present():
+    assert pull_event_payload(PullEvent(status="error", completed=2, total=5, error="boom")) == {
+        "status": "error",
+        "completed": 2,
+        "total": 5,
+        "error": "boom",
+    }

@@ -42,6 +42,48 @@ class PullEvent:
     error: str = ""
 
 
+def model_info_payload(model: ModelInfo) -> dict[str, Any]:
+    return {
+        "name": model.full_name,
+        "type": model.type.value,
+        "format": model.format.value,
+        "architecture": model.architecture,
+        "size_bytes": model.size_bytes,
+        "description": model.description,
+    }
+
+
+def list_models_payload(models: list[ModelInfo]) -> dict[str, Any]:
+    return {"models": [model_info_payload(model) for model in models]}
+
+
+def model_layer_payload(layer: ModelLayer) -> dict[str, Any]:
+    return {
+        "media_type": layer.media_type,
+        "digest": layer.digest,
+        "size": layer.size,
+        "filename": layer.filename,
+    }
+
+
+def show_model_payload(result: ShowResult) -> dict[str, Any]:
+    return {
+        "name": result.name,
+        "config": result.config,
+        "layers": [model_layer_payload(layer) for layer in result.layers],
+    }
+
+
+def pull_event_payload(event: PullEvent) -> dict[str, Any]:
+    payload: dict[str, Any] = {"status": event.status}
+    if event.total > 0:
+        payload["completed"] = event.completed
+        payload["total"] = event.total
+    if event.error:
+        payload["error"] = event.error
+    return payload
+
+
 def list_models(*, store: Any) -> list[ModelInfo]:
     return list(store.list_models())
 
