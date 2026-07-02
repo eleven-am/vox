@@ -282,9 +282,16 @@ VAD runs on onnxruntime, so the streaming/conversation path works without torch:
 docker build --build-arg VOX_ACCELERATOR=cpu --build-arg VOX_INCLUDE_TORCH=0 -t vox:lean .
 ```
 
-Torch-based models will fail to load in a lean image; pull one of the CT2/ONNX
-families instead. The full image (default `VOX_INCLUDE_TORCH=1`) supports every
-model.
+In a lean image, `vox pull` refuses torch-based models up front with a clear
+message ("requires PyTorch … not installed in this environment") rather than
+downloading them and failing at load time. It checks the environment's actual
+capabilities (torch, onnxruntime, CUDA) against what each model needs:
+
+- `whisper-stt-ct2`, `kokoro-tts-onnx`, `parakeet-stt-onnx`, `piper-tts-onnx` — pull fine.
+- torch models (Qwen, Voxtral, Sesame, Dia, …) — blocked; vLLM models also need a CUDA GPU.
+
+Set `VOX_ALLOW_INCOMPATIBLE=1` to bypass the check and pull anyway. The full
+image (default `VOX_INCLUDE_TORCH=1`) supports every model.
 
 ### Spark ONNX GPU build
 

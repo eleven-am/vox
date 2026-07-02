@@ -7,11 +7,13 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
+from vox.core.capabilities import incompatible_pull_allowed, missing_capabilities_for
 from vox.core.hf_runtime import configure_hf_runtime
 from vox.core.store import Manifest, ManifestLayer
 from vox.core.types import ModelInfo, parse_model_name
 from vox.operations.errors import (
     CatalogEntryNotFoundError,
+    ModelIncompatibleError,
     ModelInUseError,
     StoredModelNotFoundError,
 )
@@ -169,6 +171,11 @@ def pull_model(
 
     if not catalog_entry:
         raise CatalogEntryNotFoundError(request.name)
+
+    if not incompatible_pull_allowed():
+        missing = missing_capabilities_for(catalog_entry)
+        if missing:
+            raise ModelIncompatibleError(request.name, missing)
 
     logger.info(
         "pull requested: %s -> %s:%s (adapter=%s, source=%s)",

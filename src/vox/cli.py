@@ -442,6 +442,14 @@ def pull(ctx, model: str):
     had_error = False
     try:
         with httpx.stream("POST", f"{host}/v1/models/pull", json={"name": model}, timeout=None) as resp:
+            if resp.status_code >= 400:
+                resp.read()
+                try:
+                    detail = resp.json().get("detail", resp.text)
+                except (json.JSONDecodeError, ValueError):
+                    detail = resp.text
+                click.echo(f"  Error: {detail}", err=True)
+                sys.exit(1)
             for line in resp.iter_lines():
                 if line:
                     data = json.loads(line)

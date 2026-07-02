@@ -9,6 +9,7 @@ from vox.core.store import BlobStore
 from vox.core.types import ModelFormat, ModelInfo, ModelType
 from vox.operations.errors import (
     CatalogEntryNotFoundError,
+    ModelIncompatibleError,
     ModelInUseError,
     StoredModelNotFoundError,
 )
@@ -170,6 +171,43 @@ def test_pull_model_unknown_catalog_raises(tmp_path: Path):
         )
 
 
+def test_pull_model_blocks_incompatible_model(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("VOX_HAS_TORCH", "0")
+    monkeypatch.delenv("VOX_ALLOW_INCOMPATIBLE", raising=False)
+    store = BlobStore(root=tmp_path)
+    registry = _registry_mock()
+    registry.lookup.return_value = {
+        "architecture": "fake", "type": "tts", "adapter": "qwen3-tts-torch",
+        "format": "pytorch", "source": "owner/repo", "parameters": {}, "adapter_package": "vox-qwen",
+    }
+    with pytest.raises(ModelIncompatibleError, match="PyTorch"):
+        pull_model(
+            store=store,
+            scheduler=MagicMock(),
+            registry=registry,
+            request=model_reference_request_from_fields(name="qwen3-tts-torch:0.6b"),
+        )
+
+
+def test_pull_model_override_allows_incompatible_model(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("VOX_HAS_TORCH", "0")
+    monkeypatch.setenv("VOX_ALLOW_INCOMPATIBLE", "1")
+    store = BlobStore(root=tmp_path)
+    registry = _registry_mock()
+    registry.lookup.return_value = {
+        "architecture": "fake", "type": "tts", "adapter": "qwen3-tts-torch",
+        "format": "pytorch", "source": "owner/repo", "parameters": {}, "adapter_package": "vox-qwen",
+    }
+    # gate is bypassed -> pull_model returns the async generator without raising
+    events = pull_model(
+        store=store,
+        scheduler=MagicMock(),
+        registry=registry,
+        request=model_reference_request_from_fields(name="qwen3-tts-torch:0.6b"),
+    )
+    assert events is not None
+
+
 @pytest.mark.asyncio
 async def test_pull_model_yields_progress_and_success(tmp_path: Path):
     store = BlobStore(root=tmp_path)
@@ -208,7 +246,8 @@ async def test_pull_model_yields_progress_and_success(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_pull_model_voxtral_emits_preload_events(tmp_path: Path):
+async def test_pull_model_voxtral_emits_preload_events(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("VOX_ALLOW_INCOMPATIBLE", "1")
     store = BlobStore(root=tmp_path)
     registry = _registry_mock()
     registry.lookup.return_value = {

@@ -178,6 +178,7 @@ class TestPull:
             json.dumps({"status": "done"}),
         ]
         ctx = MagicMock()
+        ctx.status_code = 200
         ctx.__enter__ = Mock(return_value=ctx)
         ctx.__exit__ = Mock(return_value=False)
         ctx.iter_lines.return_value = iter(lines)
@@ -194,6 +195,7 @@ class TestPull:
             json.dumps({"status": "error", "error": "model not found"}),
         ]
         ctx = MagicMock()
+        ctx.status_code = 200
         ctx.__enter__ = Mock(return_value=ctx)
         ctx.__exit__ = Mock(return_value=False)
         ctx.iter_lines.return_value = iter(lines)
@@ -201,6 +203,19 @@ class TestPull:
 
         result = runner.invoke(cli, ["pull", "bad-model"])
         assert result.exit_code != 0
+
+    @patch("httpx.stream")
+    def test_pull_incompatible_shows_detail(self, mock_stream, runner):
+        ctx = MagicMock()
+        ctx.status_code = 409
+        ctx.__enter__ = Mock(return_value=ctx)
+        ctx.__exit__ = Mock(return_value=False)
+        ctx.json.return_value = {"detail": "Model 'qwen:0.6b' cannot run in this environment: requires PyTorch"}
+        mock_stream.return_value = ctx
+
+        result = runner.invoke(cli, ["pull", "qwen:0.6b"])
+        assert result.exit_code != 0
+        assert "requires PyTorch" in result.output
 
     @patch("httpx.stream")
     def test_pull_connect_error(self, mock_stream, runner):

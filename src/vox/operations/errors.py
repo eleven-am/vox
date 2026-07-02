@@ -72,6 +72,17 @@ class AdapterInstallError(OperationError):
         super().__init__(f"Failed to install adapter package: {package}")
 
 
+class ModelIncompatibleError(OperationError):
+    def __init__(self, model: str, reasons: list[str]) -> None:
+        self.model = model
+        self.reasons = reasons
+        detail = "; ".join(reasons)
+        super().__init__(
+            f"Model '{model}' cannot run in this environment: {detail}. "
+            f"Set VOX_ALLOW_INCOMPATIBLE=1 to pull anyway."
+        )
+
+
 class StoredModelNotFoundError(OperationError):
     def __init__(self, model: str) -> None:
         self.model = model
@@ -171,7 +182,7 @@ def classify_operation_error(exc: OperationError) -> OperationErrorKind:
         VoiceReferenceNotFoundError,
     )):
         return OperationErrorKind.NOT_FOUND
-    if isinstance(exc, ModelInUseError):
+    if isinstance(exc, (ModelInUseError, ModelIncompatibleError)):
         return OperationErrorKind.CONFLICT
     if isinstance(exc, MemoryBudgetExceededError):
         return OperationErrorKind.RESOURCE_EXHAUSTED
