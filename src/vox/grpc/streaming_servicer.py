@@ -9,6 +9,7 @@ from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.core.tasks import reap_task
 from vox.grpc import vox_pb2, vox_pb2_grpc
+from vox.grpc.transcript_messages import stream_transcript_result
 from vox.operations.errors import (
     OperationError,
     SessionNotConfiguredError,
@@ -25,72 +26,8 @@ from vox.operations.streaming_transcription import (
 )
 from vox.streaming.opus import OPUS_SAMPLE_RATE
 from vox.streaming.pipeline import StreamPipelineConfig
-from vox.streaming.types import StreamTranscript
 
 logger = logging.getLogger(__name__)
-
-
-def _to_pb_entities(entities) -> list[vox_pb2.Entity]:
-    return [
-        vox_pb2.Entity(
-            type=str(e.get("type", "")),
-            text=str(e.get("text", "")),
-            start_char=int(e.get("start_char", 0)),
-            end_char=int(e.get("end_char", 0)),
-        )
-        for e in entities
-    ]
-
-
-def _to_pb_words(words) -> list[vox_pb2.WordTimestamp]:
-    pb_words: list[vox_pb2.WordTimestamp] = []
-    for w in words:
-        kwargs = {
-            "word": str(w.get("word", "")),
-            "start_ms": int(w.get("start_ms", 0)),
-            "end_ms": int(w.get("end_ms", 0)),
-        }
-        conf = w.get("confidence")
-        if conf is not None:
-            kwargs["confidence"] = float(conf)
-        pb_words.append(vox_pb2.WordTimestamp(**kwargs))
-    return pb_words
-
-
-def _to_pb_segments(segments) -> list[vox_pb2.TranscriptSegment]:
-    return [
-        vox_pb2.TranscriptSegment(
-            text=str(s.get("text", "")),
-            start_ms=int(s.get("start_ms", 0)),
-            end_ms=int(s.get("end_ms", 0)),
-            words=_to_pb_words(s.get("words") or []),
-        )
-        for s in segments
-    ]
-
-
-def _transcript_to_pb(transcript: StreamTranscript) -> vox_pb2.StreamTranscriptResult:
-    kwargs = {
-        "text": transcript.text,
-        "is_partial": transcript.is_partial,
-        "start_ms": transcript.start_ms,
-        "end_ms": transcript.end_ms,
-        "audio_duration_ms": transcript.audio_duration_ms,
-        "processing_duration_ms": transcript.processing_duration_ms,
-        "model": transcript.model or "",
-    }
-    if transcript.eou_probability is not None:
-        kwargs["eou_probability"] = transcript.eou_probability
-    pb = vox_pb2.StreamTranscriptResult(**kwargs)
-    if transcript.entities:
-        pb.entities.extend(_to_pb_entities(transcript.entities))
-    if transcript.topics:
-        pb.topics.extend(transcript.topics)
-    if transcript.words:
-        pb.words.extend(_to_pb_words(transcript.words))
-    if transcript.segments:
-        pb.segments.extend(_to_pb_segments(transcript.segments))
-    return pb
 
 
 def _event_to_pb(event) -> vox_pb2.StreamOutput | None:
@@ -105,7 +42,7 @@ def _event_to_pb(event) -> vox_pb2.StreamOutput | None:
             speech_stopped=vox_pb2.StreamSpeechStopped(timestamp_ms=event.timestamp_ms),
         )
     if isinstance(event, TranscriptEvent):
-        return vox_pb2.StreamOutput(transcript=_transcript_to_pb(event.transcript))
+        return vox_pb2.StreamOutput(transcript=stream_transcript_result(event.transcript))
     if isinstance(event, ErrorEvent):
         return vox_pb2.StreamOutput(error=vox_pb2.StreamErrorMessage(message=event.message))
     return None

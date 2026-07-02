@@ -8,8 +8,9 @@ from vox.core.errors import ModelNotFoundError, VoxError
 from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
-from vox.grpc import vox_pb2, vox_pb2_grpc
+from vox.grpc import vox_pb2_grpc
 from vox.grpc.operation_errors import operation_error_status
+from vox.grpc.transcript_messages import annotate_response, transcribe_response
 from vox.operations.errors import OperationError
 from vox.operations.transcription import (
     AnnotateRequest,
@@ -60,45 +61,8 @@ class TranscriptionServicer(vox_pb2_grpc.TranscriptionServiceServicer):
             await context.abort(grpc.StatusCode.INTERNAL, "Internal transcription error")
             return
 
-        result = bundle.result
-        segments = []
-        for s in result.segments:
-            words = [
-                vox_pb2.WordTimestamp(
-                    word=w.word,
-                    start_ms=w.start_ms,
-                    end_ms=w.end_ms,
-                    confidence=w.confidence,
-                )
-                for w in s.words
-            ] if s.words else []
-            segments.append(vox_pb2.TranscriptSegment(
-                text=s.text,
-                start_ms=s.start_ms,
-                end_ms=s.end_ms,
-                words=words,
-            ))
-
-        return vox_pb2.TranscribeResponse(
-            model=result.model,
-            text=result.text,
-            language=result.language or "",
-            duration_ms=result.duration_ms,
-            processing_ms=bundle.processing_ms,
-            segments=segments,
-            entities=[
-                vox_pb2.Entity(type=e.type, text=e.text, start_char=e.start_char, end_char=e.end_char)
-                for e in bundle.entities
-            ],
-            topics=list(bundle.topics),
-        )
+        return transcribe_response(bundle)
 
     async def Annotate(self, request, context):
         result = annotate_text(AnnotateRequest(text=request.text or "", language=request.language or "en"))
-        return vox_pb2.AnnotateResponse(
-            entities=[
-                vox_pb2.Entity(type=e.type, text=e.text, start_char=e.start_char, end_char=e.end_char)
-                for e in result.entities
-            ],
-            topics=list(result.topics),
-        )
+        return annotate_response(result)

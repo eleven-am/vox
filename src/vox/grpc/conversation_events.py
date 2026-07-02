@@ -6,6 +6,7 @@ import base64
 
 from vox.conversation import TurnPolicy
 from vox.grpc import vox_pb2
+from vox.grpc.transcript_messages import entity_message, word_timestamp_message
 from vox.operations.conversation import (
     ConvAudioClearEvent,
     ConvAudioDeltaEvent,
@@ -25,10 +26,6 @@ from vox.operations.conversation import (
     ConvTranscriptDoneEvent,
     ConvTurnEouPredictedEvent,
 )
-
-
-def _int_or_zero(value) -> int:
-    return int(value) if value is not None else 0
 
 
 def conversation_error_pb(message: str) -> vox_pb2.ConverseServerMessage:
@@ -84,23 +81,11 @@ def conversation_event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage 
         if event.eou_probability is not None:
             msg.eou_probability = event.eou_probability
         for ent in event.entities:
-            msg.entities.append(vox_pb2.Entity(
-                type=ent.get("type", ""),
-                text=ent.get("text", ""),
-                start_char=_int_or_zero(ent.get("start_char")),
-                end_char=_int_or_zero(ent.get("end_char")),
-            ))
+            msg.entities.append(entity_message(ent))
         for topic in event.topics:
             msg.topics.append(str(topic))
         for word in event.words:
-            pb_word = vox_pb2.WordTimestamp(
-                word=str(word.get("word", "")),
-                start_ms=_int_or_zero(word.get("start_ms")),
-                end_ms=_int_or_zero(word.get("end_ms")),
-            )
-            if word.get("confidence") is not None:
-                pb_word.confidence = float(word["confidence"])
-            msg.words.append(pb_word)
+            msg.words.append(word_timestamp_message(word))
         return vox_pb2.ConverseServerMessage(transcript_done=msg)
     if isinstance(event, ConvResponseCreatedEvent):
         return vox_pb2.ConverseServerMessage(

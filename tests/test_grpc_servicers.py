@@ -22,6 +22,7 @@ from vox.core.types import (
     TranscribeResult,
     TranscriptSegment,
     VoiceInfo,
+    WordTimestamp,
 )
 from vox.grpc import vox_pb2
 from vox.operations.models import (
@@ -32,7 +33,13 @@ from vox.operations.models import (
     pull_event_payload,
     show_model_payload,
 )
+from vox.operations.transcription import (
+    AnnotateResult,
+    Entity,
+    TranscriptionResultBundle,
+)
 from vox.operations.voices import ListedVoice, list_voices_payload
+from vox.streaming.types import StreamTranscript
 
 
 def _make_store(tmp_path: Path) -> BlobStore:
@@ -279,6 +286,95 @@ class TestTranscriptionServicerMapping:
                 vox_pb2.TranscribeRequest(audio=b"\x00\x00"),
                 FakeContext(),
             )
+
+
+class TestGrpcTranscriptMessages:
+    def test_transcribe_response_encodes_segments_words_entities_and_topics(self):
+        from vox.grpc.transcript_messages import transcribe_response
+
+        bundle = TranscriptionResultBundle(
+            result=TranscribeResult(
+                text="Alice visited Paris",
+                language="en",
+                duration_ms=1200,
+                model="fake-stt:latest",
+                segments=(
+                    TranscriptSegment(
+                        text="Alice visited Paris",
+                        start_ms=0,
+                        end_ms=1200,
+                        words=(
+                            WordTimestamp(word="Alice", start_ms=0, end_ms=500, confidence=0.9),
+                            WordTimestamp(word="Paris", start_ms=800, end_ms=1200),
+                        ),
+                    ),
+                ),
+            ),
+            processing_ms=25,
+            entities=(Entity(type="PERSON", text="Alice", start_char=0, end_char=5),),
+            topics=("travel",),
+        )
+
+        message = transcribe_response(bundle)
+
+        assert message.model == "fake-stt:latest"
+        assert message.text == "Alice visited Paris"
+        assert message.language == "en"
+        assert message.duration_ms == 1200
+        assert message.processing_ms == 25
+        assert message.segments[0].words[0].word == "Alice"
+        assert message.segments[0].words[0].confidence == pytest.approx(0.9)
+        assert not message.segments[0].words[1].HasField("confidence")
+        assert message.entities[0].type == "PERSON"
+        assert list(message.topics) == ["travel"]
+
+    def test_stream_transcript_result_encodes_dict_shapes(self):
+        from vox.grpc.transcript_messages import stream_transcript_result
+
+        transcript = StreamTranscript(
+            text="hello",
+            is_partial=True,
+            start_ms=10,
+            end_ms=210,
+            audio_duration_ms=200,
+            processing_duration_ms=15,
+            model="fake-stt:latest",
+            eou_probability=0.7,
+            entities=[{"type": "PLACE", "text": "Paris", "start_char": 0, "end_char": 5}],
+            topics=["travel"],
+            words=[{"word": "Paris", "start_ms": 10, "end_ms": 210, "confidence": 0.8}],
+            segments=[
+                {
+                    "text": "Paris",
+                    "start_ms": 10,
+                    "end_ms": 210,
+                    "words": [{"word": "Paris", "start_ms": 10, "end_ms": 210}],
+                }
+            ],
+        )
+
+        message = stream_transcript_result(transcript)
+
+        assert message.text == "hello"
+        assert message.is_partial is True
+        assert message.eou_probability == pytest.approx(0.7)
+        assert message.entities[0].text == "Paris"
+        assert list(message.topics) == ["travel"]
+        assert message.words[0].confidence == pytest.approx(0.8)
+        assert message.segments[0].words[0].word == "Paris"
+
+    def test_annotate_response_encodes_entities_and_topics(self):
+        from vox.grpc.transcript_messages import annotate_response
+
+        message = annotate_response(
+            AnnotateResult(
+                entities=(Entity(type="PERSON", text="Roy", start_char=0, end_char=3),),
+                topics=("voice",),
+            )
+        )
+
+        assert message.entities[0].text == "Roy"
+        assert list(message.topics) == ["voice"]
 
 
 class TestSynthesisServicerMapping:
