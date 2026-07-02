@@ -88,6 +88,38 @@ def transcript_duration_ms(transcript: StreamTranscript | None) -> int:
     return 0
 
 
+def interrupt_vad_active_ms(
+    *,
+    vad_started_at: float | None,
+    latest_partial: StreamTranscript | None,
+    now: float,
+) -> int:
+    vad_active_ms = 0
+    if vad_started_at is not None:
+        vad_active_ms = max(0, int((now - vad_started_at) * 1000))
+    if latest_partial is not None:
+        vad_active_ms = max(vad_active_ms, transcript_duration_ms(latest_partial))
+    return vad_active_ms
+
+
+def has_recent_interrupt_context(
+    *,
+    confirm_timer_active: bool,
+    vad_started_at: float | None,
+    last_speech_stopped_at: float | None,
+    false_interruption_timeout_ms: int,
+    now: float,
+) -> bool:
+    if confirm_timer_active:
+        return True
+    if vad_started_at is not None:
+        return True
+    if last_speech_stopped_at is None:
+        return False
+    age_ms = max(0, int((now - last_speech_stopped_at) * 1000))
+    return age_ms <= false_interruption_timeout_ms
+
+
 @dataclass(frozen=True)
 class PartialInterruptEvidence:
     """Policy for deciding whether partial STT is enough to confirm barge-in."""

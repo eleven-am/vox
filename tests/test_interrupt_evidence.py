@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from vox.conversation.interrupt import (
     PartialInterruptEvidence,
+    has_recent_interrupt_context,
+    interrupt_vad_active_ms,
     transcript_duration_ms,
     transcript_word_count,
 )
@@ -38,6 +40,57 @@ def test_transcript_word_count_ignores_blank_words() -> None:
     assert transcript_word_count("  hello   there ") == 2
     assert transcript_word_count(None) == 0
     assert transcript_word_count("   ") == 0
+
+
+def test_interrupt_vad_active_ms_uses_latest_partial_when_longer() -> None:
+    partial = StreamTranscript(start_ms=0, end_ms=900)
+
+    assert interrupt_vad_active_ms(vad_started_at=10.0, latest_partial=partial, now=10.2) == 900
+
+
+def test_interrupt_vad_active_ms_clamps_negative_vad_age() -> None:
+    assert interrupt_vad_active_ms(vad_started_at=12.0, latest_partial=None, now=10.0) == 0
+
+
+def test_recent_interrupt_context_accepts_timer_or_active_vad() -> None:
+    assert has_recent_interrupt_context(
+        confirm_timer_active=True,
+        vad_started_at=None,
+        last_speech_stopped_at=None,
+        false_interruption_timeout_ms=2000,
+        now=10.0,
+    )
+    assert has_recent_interrupt_context(
+        confirm_timer_active=False,
+        vad_started_at=9.0,
+        last_speech_stopped_at=None,
+        false_interruption_timeout_ms=2000,
+        now=10.0,
+    )
+
+
+def test_recent_interrupt_context_uses_speech_stop_timeout() -> None:
+    assert has_recent_interrupt_context(
+        confirm_timer_active=False,
+        vad_started_at=None,
+        last_speech_stopped_at=8.1,
+        false_interruption_timeout_ms=2000,
+        now=10.0,
+    )
+    assert not has_recent_interrupt_context(
+        confirm_timer_active=False,
+        vad_started_at=None,
+        last_speech_stopped_at=7.9,
+        false_interruption_timeout_ms=2000,
+        now=10.0,
+    )
+    assert not has_recent_interrupt_context(
+        confirm_timer_active=False,
+        vad_started_at=None,
+        last_speech_stopped_at=None,
+        false_interruption_timeout_ms=2000,
+        now=10.0,
+    )
 
 
 def test_strong_partial_requires_configured_word_count() -> None:

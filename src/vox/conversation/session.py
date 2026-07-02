@@ -41,6 +41,8 @@ from vox.conversation.interrupt import (
     InterruptClassifier,
     PartialInterruptEvidence,
     evaluate_interrupt_candidate_gate,
+    has_recent_interrupt_context,
+    interrupt_vad_active_ms,
     transcript_duration_ms,
     transcript_word_count,
 )
@@ -836,22 +838,20 @@ class ConversationSession:
         return self._response_lifecycle.assistant_context_text(separator=" ")
 
     def _current_interrupt_vad_ms(self) -> int:
-        vad_active_ms = 0
-        if self._vad_started_at is not None:
-            vad_active_ms = max(0, int((time.monotonic() - self._vad_started_at) * 1000))
-        if self._latest_partial is not None:
-            vad_active_ms = max(vad_active_ms, transcript_duration_ms(self._latest_partial))
-        return vad_active_ms
+        return interrupt_vad_active_ms(
+            vad_started_at=self._vad_started_at,
+            latest_partial=self._latest_partial,
+            now=time.monotonic(),
+        )
 
     def _has_recent_interrupt_context(self) -> bool:
-        if self._has_active_timer(TimerKey.CONFIRM_INTERRUPT.value):
-            return True
-        if self._vad_started_at is not None:
-            return True
-        if self._last_speech_stopped_at is None:
-            return False
-        age_ms = max(0, int((time.monotonic() - self._last_speech_stopped_at) * 1000))
-        return age_ms <= self._config.policy.false_interruption_timeout_ms
+        return has_recent_interrupt_context(
+            confirm_timer_active=self._has_active_timer(TimerKey.CONFIRM_INTERRUPT.value),
+            vad_started_at=self._vad_started_at,
+            last_speech_stopped_at=self._last_speech_stopped_at,
+            false_interruption_timeout_ms=self._config.policy.false_interruption_timeout_ms,
+            now=time.monotonic(),
+        )
 
     def _has_strong_partial_interrupt_evidence(
         self,
