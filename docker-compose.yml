@@ -23,11 +23,15 @@ services:
               count: all
               capabilities: [gpu]
 
+  # Lean CPU image: onnxruntime + CT2/ONNX models, no torch. Runs on Linux
+  # amd64/arm64 and Apple-Silicon Docker. `docker compose --profile cpu up`.
   vox-cpu:
     build:
       context: .
       args:
         BASE_IMAGE: python:3.12-slim
+        VOX_ACCELERATOR: cpu
+        VOX_INCLUDE_TORCH: "0"
     ports:
       - "11435:11435"
     volumes:
@@ -36,6 +40,24 @@ services:
       - VOX_DEVICE=cpu
     profiles:
       - cpu
+
+  # CPU image with the torch stack: runs torch models on CPU (slow).
+  # `docker compose --profile cpu-torch up`.
+  vox-cpu-torch:
+    build:
+      context: .
+      args:
+        BASE_IMAGE: python:3.12-slim
+        VOX_ACCELERATOR: cpu
+        VOX_INCLUDE_TORCH: "1"
+    ports:
+      - "11435:11435"
+    volumes:
+      - vox-data:/home/vox/.vox
+    environment:
+      - VOX_DEVICE=cpu
+    profiles:
+      - cpu-torch
 
 volumes:
   vox-data:

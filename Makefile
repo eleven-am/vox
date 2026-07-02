@@ -17,7 +17,7 @@ SPARK_TORCHAUDIO_WHEEL ?=
 SPARK_TORCH_INDEX_URL ?= https://download.pytorch.org/whl/cu129
 SPARK_TORCH_EXTRA_INDEX_URL ?=
 
-.PHONY: build build-cpu build-spark build-local build-local-cpu build-local-spark push tag clean setup-buildx current-version bump-patch bump-minor bump-major test proto
+.PHONY: build build-lean build-cpu build-spark build-local build-local-lean build-local-cpu build-local-spark push tag clean setup-buildx current-version bump-patch bump-minor bump-major test proto
 
 build:
 	@test "$(patsubst v%,%,$(VERSION))" = "$(APP_VERSION)" || \
@@ -32,6 +32,25 @@ build:
 		--push \
 		.
 
+# Lean CPU image (multi-arch): onnxruntime + CT2/ONNX models, no torch stack.
+# Runs on Linux amd64/arm64 and Apple-Silicon Docker. Streaming/VAD works;
+# torch-based models are refused at pull time.
+build-lean:
+	@test "$(patsubst v%,%,$(VERSION))" = "$(APP_VERSION)" || \
+		(echo "pyproject.toml version $(APP_VERSION) does not match release tag $(VERSION)"; exit 1)
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--build-arg BASE_IMAGE=$(CPU_BASE) \
+		--build-arg VOX_ACCELERATOR=cpu \
+		--build-arg VOX_INCLUDE_TORCH=0 \
+		--build-arg VOX_DEFAULT_DEVICE=cpu \
+		--tag $(IMAGE):$(VERSION)-lean \
+		--tag $(IMAGE):lean \
+		--push \
+		.
+
+# CPU image with the torch stack (multi-arch): runs every model, but torch
+# models run on CPU only (slow). Use build-lean unless you need torch on CPU.
 build-cpu:
 	@test "$(patsubst v%,%,$(VERSION))" = "$(APP_VERSION)" || \
 		(echo "pyproject.toml version $(APP_VERSION) does not match release tag $(VERSION)"; exit 1)
@@ -39,6 +58,7 @@ build-cpu:
 		--platform $(PLATFORMS) \
 		--build-arg BASE_IMAGE=$(CPU_BASE) \
 		--build-arg VOX_ACCELERATOR=cpu \
+		--build-arg VOX_INCLUDE_TORCH=1 \
 		--build-arg VOX_DEFAULT_DEVICE=cpu \
 		--tag $(IMAGE):$(VERSION)-cpu \
 		--tag $(IMAGE):cpu \
@@ -68,8 +88,11 @@ build-spark:
 build-local:
 	docker build --build-arg BASE_IMAGE=$(GPU_BASE) --build-arg VOX_ACCELERATOR=gpu --build-arg VOX_DEFAULT_DEVICE=auto -t vox:local .
 
+build-local-lean:
+	docker build --build-arg BASE_IMAGE=$(CPU_BASE) --build-arg VOX_ACCELERATOR=cpu --build-arg VOX_INCLUDE_TORCH=0 --build-arg VOX_DEFAULT_DEVICE=cpu -t vox:local-lean .
+
 build-local-cpu:
-	docker build --build-arg BASE_IMAGE=$(CPU_BASE) --build-arg VOX_ACCELERATOR=cpu --build-arg VOX_DEFAULT_DEVICE=cpu -t vox:local-cpu .
+	docker build --build-arg BASE_IMAGE=$(CPU_BASE) --build-arg VOX_ACCELERATOR=cpu --build-arg VOX_INCLUDE_TORCH=1 --build-arg VOX_DEFAULT_DEVICE=cpu -t vox:local-cpu .
 
 build-local-spark:
 	docker build \
@@ -99,11 +122,14 @@ clean:
 	docker rmi -f \
 		$(IMAGE):latest \
 		$(IMAGE):$(VERSION) \
+		$(IMAGE):lean \
+		$(IMAGE):$(VERSION)-lean \
 		$(IMAGE):cpu \
 		$(IMAGE):$(VERSION)-cpu \
 		$(IMAGE):spark \
 		$(IMAGE):$(VERSION)-spark \
 		vox:local \
+		vox:local-lean \
 		vox:local-cpu \
 		vox:spark-local 2>/dev/null || true
 

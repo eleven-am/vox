@@ -270,13 +270,23 @@ docker compose --profile cpu up -d
 
 Models and dynamically installed adapters persist in a Docker volume across container restarts. No image rebuild needed to add new models.
 
-### Lean (torch-free) build
+### Image variants
 
-The default image bakes in PyTorch so torch-based model adapters (Voxtral, Qwen,
-Sesame, Dia, …) can share it. If you only serve CTranslate2 and ONNX model
-families — e.g. `whisper-stt-ct2`, `kokoro-tts-onnx`, `parakeet-stt-onnx`,
-`piper-tts-onnx` — build with `VOX_INCLUDE_TORCH=0` for a much smaller image.
-VAD runs on onnxruntime, so the streaming/conversation path works without torch:
+Published tags (all multi-arch `linux/amd64` + `linux/arm64` unless noted):
+
+| Tag | Compute | Torch | Build | Use |
+|---|---|---|---|---|
+| `:latest` / `:vX.Y.Z` | CUDA | ✅ | `make build` | NVIDIA GPU, all models |
+| `:lean` | CPU | ❌ | `make build-lean` | Linux CPU + Apple-Silicon Docker; CT2/ONNX models + streaming |
+| `:cpu` | CPU | ✅ | `make build-cpu` | torch models on CPU (slow) |
+| `:spark` (arm64) | CUDA | ✅ | `make build-spark` | NVIDIA arm (Jetson/SBSA) |
+
+The `:lean` image drops the ~2GB torch stack: VAD runs on onnxruntime, so the
+streaming/conversation path works, and `vox pull` refuses torch-based models up
+front. If you only serve CTranslate2/ONNX families (`whisper-stt-ct2`,
+`kokoro-tts-onnx`, `parakeet-stt-onnx`, `piper-tts-onnx`), use `:lean`.
+
+Build one directly:
 
 ```bash
 docker build --build-arg VOX_ACCELERATOR=cpu --build-arg VOX_INCLUDE_TORCH=0 -t vox:lean .

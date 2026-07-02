@@ -18,12 +18,36 @@ permissions:
 env:
   IMAGE: ghcr.io/eleven-am/vox
   PLATFORMS: linux/amd64,linux/arm64
-  GPU_BASE: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
 jobs:
   publish:
-    name: Build and push
+    name: Build and push (${{ matrix.name }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: gpu
+            base_image: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+            accelerator: gpu
+            default_device: auto
+            include_torch: "1"
+            tag_suffix: ""
+            moving_tag: latest
+          - name: lean
+            base_image: python:3.12-slim
+            accelerator: cpu
+            default_device: cpu
+            include_torch: "0"
+            tag_suffix: "-lean"
+            moving_tag: lean
+          - name: cpu
+            base_image: python:3.12-slim
+            accelerator: cpu
+            default_device: cpu
+            include_torch: "1"
+            tag_suffix: "-cpu"
+            moving_tag: cpu
     steps:
       - name: Resolve tag
         id: version
@@ -76,14 +100,15 @@ jobs:
           platforms: ${{ env.PLATFORMS }}
           push: true
           build-args: |
-            BASE_IMAGE=${{ env.GPU_BASE }}
-            VOX_ACCELERATOR=gpu
-            VOX_DEFAULT_DEVICE=auto
+            BASE_IMAGE=${{ matrix.base_image }}
+            VOX_ACCELERATOR=${{ matrix.accelerator }}
+            VOX_INCLUDE_TORCH=${{ matrix.include_torch }}
+            VOX_DEFAULT_DEVICE=${{ matrix.default_device }}
           tags: |
-            ${{ env.IMAGE }}:${{ steps.version.outputs.tag }}
-            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ steps.version.outputs.tag }}${{ matrix.tag_suffix }}
+            ${{ env.IMAGE }}:${{ matrix.moving_tag }}
           labels: |
             org.opencontainers.image.source=https://github.com/eleven-am/vox
             org.opencontainers.image.version=${{ steps.version.outputs.tag }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
