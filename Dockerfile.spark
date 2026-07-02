@@ -127,7 +127,10 @@ if not torch.backends.cuda.is_built():
     sys.exit(1)
 PY
 
+# Replace the base CPU onnxruntime with the Spark-provided runtime; onnxruntime
+# and onnxruntime-gpu provide the same module and must not coexist.
 RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip uninstall --python .venv/bin/python onnxruntime; \
     if [ -n "$SPARK_ORT_WHEEL" ]; then \
         uv pip install --python .venv/bin/python "$SPARK_ORT_WHEEL" huggingface-hub; \
     elif [ -n "$SPARK_ORT_INDEX_URL" ] || [ -n "$SPARK_ORT_EXTRA_INDEX_URL" ]; then \

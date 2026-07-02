@@ -77,17 +77,19 @@ RUN --mount=type=cache,target=/root/.cache/uv \
             "torchaudio==${TORCHAUDIO_VERSION}"; \
     fi
 
-# Inference runtimes always available: onnxruntime (ONNX models + VAD) and
-# huggingface-hub (model pull). colorlog is a small logging helper.
+# onnxruntime (ONNX models + VAD) and huggingface-hub (model pull) ship as base
+# dependencies. On an NVIDIA amd64 build, swap the CPU onnxruntime for the GPU
+# build so it can use CUDA execution providers; onnxruntime and onnxruntime-gpu
+# provide the same module and must not be installed together.
 RUN --mount=type=cache,target=/root/.cache/uv \
     if [ "$VOX_ACCELERATOR" != "cpu" ] && [ "$TARGETARCH" = "amd64" ]; then \
+        uv pip uninstall --python .venv/bin/python onnxruntime; \
         uv pip install --python .venv/bin/python \
-            onnxruntime-gpu==1.23.2 \
+            onnxruntime-gpu==1.27.0 \
             "huggingface-hub==${HUGGINGFACE_HUB_VERSION}" \
             colorlog; \
     else \
         uv pip install --python .venv/bin/python \
-            onnxruntime \
             "huggingface-hub==${HUGGINGFACE_HUB_VERSION}" \
             colorlog; \
     fi

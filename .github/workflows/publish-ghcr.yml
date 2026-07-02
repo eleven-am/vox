@@ -17,50 +17,30 @@ permissions:
 
 env:
   IMAGE: ghcr.io/eleven-am/vox
-  PLATFORMS: linux/amd64,linux/arm64
 
 jobs:
-  publish:
-    name: Build and push (${{ matrix.name }})
+  version:
+    name: Resolve tag
     runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: gpu
-            base_image: nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
-            accelerator: gpu
-            default_device: auto
-            include_torch: "1"
-            tag_suffix: ""
-            moving_tag: latest
-          - name: lean
-            base_image: python:3.12-slim
-            accelerator: cpu
-            default_device: cpu
-            include_torch: "0"
-            tag_suffix: "-lean"
-            moving_tag: lean
-          - name: cpu
-            base_image: python:3.12-slim
-            accelerator: cpu
-            default_device: cpu
-            include_torch: "1"
-            tag_suffix: "-cpu"
-            moving_tag: cpu
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - name: Resolve tag
         id: version
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            version="${{ inputs.tag }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            version="$INPUT_TAG"
           else
-            version="${GITHUB_REF_NAME}"
+            version="$REF_NAME"
           fi
           case "$version" in
-            v*) ;;
-            *) echo "tag must start with v: $version" >&2; exit 1 ;;
+            v[0-9]*) ;;
+            *) echo "tag must look like vX.Y.Z: $version" >&2; exit 1 ;;
           esac
           echo "tag=$version" >> "$GITHUB_OUTPUT"
 
@@ -71,17 +51,99 @@ jobs:
 
       - name: Verify package version matches tag
         shell: bash
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
           app_version="$(sed -nE 's/^version = "([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' pyproject.toml | head -n1)"
-          tag_version="${{ steps.version.outputs.tag }}"
-          tag_version="${tag_version#v}"
-          if [ "$app_version" != "$tag_version" ]; then
-            echo "pyproject.toml version $app_version does not match tag ${{ steps.version.outputs.tag }}" >&2
+          if [ "$app_version" != "${TAG#v}" ]; then
+            echo "pyproject.toml version $app_version does not match tag $TAG" >&2
             exit 1
           fi
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+  build:
+    name: Build ${{ matrix.image }} (${{ matrix.arch }})
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    continue-on-error: ${{ matrix.experimental || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: gpu
+            arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+            file: Dockerfile
+            build_args: |
+              BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+              VOX_ACCELERATOR=gpu
+              VOX_INCLUDE_TORCH=1
+              VOX_DEFAULT_DEVICE=auto
+          - image: gpu
+            arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            file: Dockerfile
+            build_args: |
+              BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+              VOX_ACCELERATOR=gpu
+              VOX_INCLUDE_TORCH=1
+              VOX_DEFAULT_DEVICE=auto
+          - image: lean
+            arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+            file: Dockerfile
+            build_args: |
+              BASE_IMAGE=python:3.12-slim
+              VOX_ACCELERATOR=cpu
+              VOX_INCLUDE_TORCH=0
+              VOX_DEFAULT_DEVICE=cpu
+          - image: lean
+            arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            file: Dockerfile
+            build_args: |
+              BASE_IMAGE=python:3.12-slim
+              VOX_ACCELERATOR=cpu
+              VOX_INCLUDE_TORCH=0
+              VOX_DEFAULT_DEVICE=cpu
+          - image: cpu
+            arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-24.04
+            file: Dockerfile
+            build_args: |
+              BASE_IMAGE=python:3.12-slim
+              VOX_ACCELERATOR=cpu
+              VOX_INCLUDE_TORCH=1
+              VOX_DEFAULT_DEVICE=cpu
+          - image: cpu
+            arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            file: Dockerfile
+            build_args: |
+              BASE_IMAGE=python:3.12-slim
+              VOX_ACCELERATOR=cpu
+              VOX_INCLUDE_TORCH=1
+              VOX_DEFAULT_DEVICE=cpu
+          - image: spark
+            arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            file: Dockerfile.spark
+            experimental: true
+            build_args: |
+              BASE_IMAGE=nvidia/cuda:12.9.1-cudnn-runtime-ubuntu24.04
+              VOX_DEFAULT_DEVICE=auto
+              SPARK_TORCH_INDEX_URL=https://download.pytorch.org/whl/cu129
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.tag }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -93,22 +155,86 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push image
+      - name: Build and push by digest
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: ${{ env.PLATFORMS }}
-          push: true
-          build-args: |
-            BASE_IMAGE=${{ matrix.base_image }}
-            VOX_ACCELERATOR=${{ matrix.accelerator }}
-            VOX_INCLUDE_TORCH=${{ matrix.include_torch }}
-            VOX_DEFAULT_DEVICE=${{ matrix.default_device }}
-          tags: |
-            ${{ env.IMAGE }}:${{ steps.version.outputs.tag }}${{ matrix.tag_suffix }}
-            ${{ env.IMAGE }}:${{ matrix.moving_tag }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/eleven-am/vox
-            org.opencontainers.image.version=${{ steps.version.outputs.tag }}
-          cache-from: type=gha,scope=${{ matrix.name }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+          file: ${{ matrix.file }}
+          platforms: ${{ matrix.platform }}
+          build-args: ${{ matrix.build_args }}
+          outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
+
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.image }}-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    name: Publish ${{ matrix.image }} manifest
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    continue-on-error: ${{ matrix.experimental || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: gpu
+            tag_suffix: ""
+            moving_tag: latest
+          - image: lean
+            tag_suffix: "-lean"
+            moving_tag: lean
+          - image: cpu
+            tag_suffix: "-cpu"
+            moving_tag: cpu
+          - image: spark
+            tag_suffix: "-spark"
+            moving_tag: spark
+            experimental: true
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digests-${{ matrix.image }}-*
+          path: /tmp/digests
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create and push manifest
+        working-directory: /tmp/digests
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
+          SUFFIX: ${{ matrix.tag_suffix }}
+          MOVING: ${{ matrix.moving_tag }}
+        run: |
+          docker buildx imagetools create \
+            --tag "${IMAGE}:${TAG}${SUFFIX}" \
+            --tag "${IMAGE}:${MOVING}" \
+            $(printf "${IMAGE}@sha256:%s " *)
+
+      - name: Inspect manifest
+        env:
+          MOVING: ${{ matrix.moving_tag }}
+        run: docker buildx imagetools inspect "${IMAGE}:${MOVING}"
