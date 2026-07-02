@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import asdict, dataclass, field, replace
@@ -68,6 +69,49 @@ def transcription_request_from_fields(
         temperature=temperature if temperature > 0 else 0.0,
         annotate_text=annotate_text,
     )
+
+
+def format_hint_from_content_type(content_type: str | None) -> str | None:
+    if not content_type:
+        return None
+    media_type = content_type.split(";", 1)[0].strip().lower()
+    if media_type in {"application/octet-stream", "binary/octet-stream"}:
+        return None
+    if "/" not in media_type:
+        return media_type or None
+    fmt = media_type.split("/")[-1].lower()
+    replacements = {
+        "mpeg": "mp3",
+        "x-wav": "wav",
+        "x-flac": "flac",
+        "ogg": "ogg",
+        "webm": "webm",
+    }
+    return replacements.get(fmt, fmt)
+
+
+def parse_timestamp_granularities(values: list[Any]) -> set[str]:
+    parsed_values: list[str] = []
+    for value in values:
+        raw = str(value).strip()
+        if not raw:
+            continue
+        if raw.startswith("["):
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, list):
+                parsed_values.extend(
+                    str(item).strip().lower()
+                    for item in parsed
+                    if str(item).strip()
+                )
+                continue
+        parsed_values.extend(part.strip().lower() for part in raw.split(",") if part.strip())
+    if not parsed_values:
+        return {"segment"}
+    return set(parsed_values)
 
 
 @dataclass(frozen=True)

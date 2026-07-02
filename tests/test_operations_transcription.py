@@ -24,7 +24,9 @@ from vox.operations.transcription import (
     _choose_onset_result,
     _transcribe_chunk,
     annotate_text,
+    format_hint_from_content_type,
     openai_transcription_payload,
+    parse_timestamp_granularities,
     transcribe,
     transcription_request_from_fields,
 )
@@ -109,6 +111,27 @@ def test_transcription_request_from_fields_preserves_positive_temperature():
     )
 
     assert request.temperature == 0.25
+
+
+def test_format_hint_from_content_type_normalizes_audio_mime_types():
+    assert format_hint_from_content_type("audio/wav") == "wav"
+    assert format_hint_from_content_type("audio/mpeg") == "mp3"
+    assert format_hint_from_content_type("audio/x-wav") == "wav"
+    assert format_hint_from_content_type("audio/x-flac") == "flac"
+    assert format_hint_from_content_type("audio/ogg") == "ogg"
+    assert format_hint_from_content_type("audio/webm") == "webm"
+    assert format_hint_from_content_type("audio/flac") == "flac"
+    assert format_hint_from_content_type("application/octet-stream") is None
+    assert format_hint_from_content_type(None) is None
+    assert format_hint_from_content_type("") is None
+
+
+def test_parse_timestamp_granularities_accepts_openai_form_variants():
+    assert parse_timestamp_granularities([]) == {"segment"}
+    assert parse_timestamp_granularities(["word"]) == {"word"}
+    assert parse_timestamp_granularities(['["word","segment"]']) == {"word", "segment"}
+    assert parse_timestamp_granularities(["word,segment"]) == {"word", "segment"}
+    assert parse_timestamp_granularities([" ", "word"]) == {"word"}
 
 
 class LeadingContextHurtsSTT(FakeSTT):

@@ -29,8 +29,8 @@ from vox.core.types import (
     VramSnapshot,
     WordTimestamp,
 )
+from vox.operations.transcription import format_hint_from_content_type
 from vox.server.routes import get_default_model
-from vox.server.routes.transcribe import _mime_to_format
 
 
 def _wav_bytes(dur_s: float = 1.0, sr: int = 16_000) -> bytes:
@@ -373,7 +373,7 @@ class TestTranscribeMapping:
         assert body["words"][1] == {"word": "world", "start": 0.5, "end": 1.0}
 
     def test_octet_stream_upload_allows_decoder_autodetection(self):
-        assert _mime_to_format("application/octet-stream") is None
+        assert format_hint_from_content_type("application/octet-stream") is None
 
     def test_model_not_found_maps_to_404(self):
         client = self._client()
@@ -533,17 +533,17 @@ class TestGetDefaultModel:
         assert exc.value.status_code == 400
 
 
-class TestMimeToFormat:
-    def test_mime_to_format_conversions(self):
-        assert _mime_to_format("audio/wav") == "wav"
-        assert _mime_to_format("audio/mpeg") == "mp3"
-        assert _mime_to_format("audio/x-wav") == "wav"
-        assert _mime_to_format("audio/x-flac") == "flac"
-        assert _mime_to_format("audio/ogg") == "ogg"
-        assert _mime_to_format("audio/webm") == "webm"
-        assert _mime_to_format("audio/flac") == "flac"
-        assert _mime_to_format(None) is None
-        assert _mime_to_format("") is None
+class TestFormatHintFromContentType:
+    def test_format_hint_from_content_type_conversions(self):
+        assert format_hint_from_content_type("audio/wav") == "wav"
+        assert format_hint_from_content_type("audio/mpeg") == "mp3"
+        assert format_hint_from_content_type("audio/x-wav") == "wav"
+        assert format_hint_from_content_type("audio/x-flac") == "flac"
+        assert format_hint_from_content_type("audio/ogg") == "ogg"
+        assert format_hint_from_content_type("audio/webm") == "webm"
+        assert format_hint_from_content_type("audio/flac") == "flac"
+        assert format_hint_from_content_type(None) is None
+        assert format_hint_from_content_type("") is None
 
 
 def _make_manifest():
