@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import asdict
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
@@ -14,7 +13,11 @@ from vox.operations.errors import (
     OperationError,
     WrongModelTypeError,
 )
-from vox.operations.transcription import TranscriptionRequest, transcribe
+from vox.operations.transcription import (
+    TranscriptionRequest,
+    openai_transcription_payload,
+    transcribe,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -81,64 +84,7 @@ async def _run_transcribe(
         logger.exception(f"Transcription failed for model {model}")
         raise HTTPException(status_code=500, detail="Internal transcription error") from exc
 
-    return bundle.result, bundle.processing_ms, bundle.entities, bundle.topics
-
-
-def _ms_to_seconds(value: int | None) -> float:
-    if value is None:
-        return 0.0
-    return value / 1000.0
-
-
-def _rich_payload(result, processing_ms: int, entities, topics) -> dict:
-    response = {
-        "model": result.model,
-        "text": result.text,
-        "language": result.language,
-        "duration": _ms_to_seconds(result.duration_ms),
-        "processing_ms": processing_ms,
-    }
-    if entities:
-        response["entities"] = [asdict(e) for e in entities]
-    if topics:
-        response["topics"] = list(topics)
-    return response
-
-
-def _word_payload(word) -> dict:
-    return {
-        "word": word.word,
-        "start": _ms_to_seconds(word.start_ms),
-        "end": _ms_to_seconds(word.end_ms),
-    }
-
-
-def _segments_payload(result) -> list[dict]:
-    segments: list[dict] = []
-    for idx, segment in enumerate(result.segments):
-        segments.append(
-            {
-                "id": idx,
-                "seek": segment.start_ms or 0,
-                "start": _ms_to_seconds(segment.start_ms),
-                "end": _ms_to_seconds(segment.end_ms),
-                "text": segment.text,
-                "tokens": [],
-                "temperature": 0.0,
-                "avg_logprob": 0.0,
-                "compression_ratio": 0.0,
-                "no_speech_prob": 0.0,
-            }
-        )
-    return segments
-
-
-def _words_payload(result) -> list[dict]:
-    return [
-        _word_payload(word)
-        for segment in result.segments
-        for word in segment.words
-    ]
+    return bundle
 
 
 async def _timestamp_granularities(request: Request) -> set[str]:
@@ -174,20 +120,19 @@ async def openai_transcribe(
 ):
     verbose = response_format == "verbose_json"
     granularities = await _timestamp_granularities(request) if verbose else set()
-    result, processing_ms, entities, topics = await _run_transcribe(
+    bundle = await _run_transcribe(
         request=request, file=file, model=model, language=language,
         word_timestamps="word" in granularities, temperature=temperature, annotate_text=verbose,
     )
 
     if response_format == "text":
-        return PlainTextResponse(result.text)
+        return PlainTextResponse(bundle.result.text)
 
     if verbose:
-        response = _rich_payload(result, processing_ms, entities, topics)
-        if "segment" in granularities:
-            response["segments"] = _segments_payload(result)
-        if "word" in granularities:
-            response["words"] = _words_payload(result)
-        return response
+        return openai_transcription_payload(
+            bundle,
+            include_segments="segment" in granularities,
+            include_words="word" in granularities,
+        )
 
-    return {"text": result.text}
+    return {"text": bundle.result.text}

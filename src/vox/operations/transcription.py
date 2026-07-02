@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -54,6 +54,69 @@ class TranscriptionResultBundle:
     processing_ms: int
     entities: tuple[Entity, ...] = ()
     topics: tuple[str, ...] = ()
+
+
+def milliseconds_to_seconds(value: int | None) -> float:
+    if value is None:
+        return 0.0
+    return value / 1000.0
+
+
+def openai_transcription_payload(
+    bundle: TranscriptionResultBundle,
+    *,
+    include_segments: bool = False,
+    include_words: bool = False,
+) -> dict[str, Any]:
+    result = bundle.result
+    response: dict[str, Any] = {
+        "model": result.model,
+        "text": result.text,
+        "language": result.language,
+        "duration": milliseconds_to_seconds(result.duration_ms),
+        "processing_ms": bundle.processing_ms,
+    }
+    if bundle.entities:
+        response["entities"] = [asdict(entity) for entity in bundle.entities]
+    if bundle.topics:
+        response["topics"] = list(bundle.topics)
+    if include_segments:
+        response["segments"] = openai_segments_payload(result)
+    if include_words:
+        response["words"] = openai_words_payload(result)
+    return response
+
+
+def openai_segments_payload(result: TranscribeResult) -> list[dict[str, Any]]:
+    segments: list[dict[str, Any]] = []
+    for idx, segment in enumerate(result.segments):
+        segments.append(
+            {
+                "id": idx,
+                "seek": segment.start_ms or 0,
+                "start": milliseconds_to_seconds(segment.start_ms),
+                "end": milliseconds_to_seconds(segment.end_ms),
+                "text": segment.text,
+                "tokens": [],
+                "temperature": 0.0,
+                "avg_logprob": 0.0,
+                "compression_ratio": 0.0,
+                "no_speech_prob": 0.0,
+            }
+        )
+    return segments
+
+
+def openai_words_payload(result: TranscribeResult) -> list[dict[str, Any]]:
+    return [
+        {
+            "word": word.word,
+            "start": milliseconds_to_seconds(word.start_ms),
+            "end": milliseconds_to_seconds(word.end_ms),
+        }
+        for segment in result.segments
+        for word in segment.words
+    ]
 
 
 async def transcribe(

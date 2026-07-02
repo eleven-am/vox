@@ -17,10 +17,13 @@ from vox.operations.errors import (
 )
 from vox.operations.transcription import (
     AnnotateRequest,
+    Entity,
     TranscriptionRequest,
+    TranscriptionResultBundle,
     _choose_onset_result,
     _transcribe_chunk,
     annotate_text,
+    openai_transcription_payload,
     transcribe,
 )
 
@@ -226,6 +229,79 @@ def test_choose_onset_result_prefers_padded_within_ratio():
     direct = TranscribeResult(text="trying my speech to text mode that i can", language="en", duration_ms=1000)
     padded = TranscribeResult(text="trying my speech to text model again", language="en", duration_ms=6000)
     assert _choose_onset_result(direct, padded) is padded
+
+
+def test_openai_transcription_payload_uses_seconds_and_top_level_words():
+    bundle = TranscriptionResultBundle(
+        result=TranscribeResult(
+            text="Alice visited Paris",
+            language="en",
+            duration_ms=1200,
+            model="fake-stt:latest",
+            segments=(
+                TranscriptSegment(
+                    text="Alice visited Paris",
+                    start_ms=0,
+                    end_ms=1200,
+                    words=(
+                        WordTimestamp(word="Alice", start_ms=0, end_ms=500, confidence=0.9),
+                        WordTimestamp(word="Paris", start_ms=800, end_ms=1200, confidence=0.8),
+                    ),
+                ),
+            ),
+        ),
+        processing_ms=25,
+        entities=(Entity(type="PERSON", text="Alice", start_char=0, end_char=5),),
+        topics=("travel",),
+    )
+
+    payload = openai_transcription_payload(
+        bundle,
+        include_segments=True,
+        include_words=True,
+    )
+
+    assert payload["duration"] == 1.2
+    assert payload["processing_ms"] == 25
+    assert payload["entities"] == [
+        {"type": "PERSON", "text": "Alice", "start_char": 0, "end_char": 5},
+    ]
+    assert payload["topics"] == ["travel"]
+    assert payload["segments"][0] == {
+        "id": 0,
+        "seek": 0,
+        "start": 0.0,
+        "end": 1.2,
+        "text": "Alice visited Paris",
+        "tokens": [],
+        "temperature": 0.0,
+        "avg_logprob": 0.0,
+        "compression_ratio": 0.0,
+        "no_speech_prob": 0.0,
+    }
+    assert payload["words"] == [
+        {"word": "Alice", "start": 0.0, "end": 0.5},
+        {"word": "Paris", "start": 0.8, "end": 1.2},
+    ]
+
+
+def test_openai_transcription_payload_respects_granularity_flags():
+    bundle = TranscriptionResultBundle(
+        result=TranscribeResult(
+            text="hello",
+            language="en",
+            duration_ms=100,
+            model="fake-stt:latest",
+            segments=(TranscriptSegment(text="hello", start_ms=0, end_ms=100),),
+        ),
+        processing_ms=1,
+    )
+
+    payload = openai_transcription_payload(bundle)
+
+    assert payload["text"] == "hello"
+    assert "segments" not in payload
+    assert "words" not in payload
 
 
 @pytest.mark.asyncio
