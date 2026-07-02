@@ -7,6 +7,7 @@ import hmac
 from aioice import stun
 
 from vox.server.rtc_ice import (
+    candidate_events_from_sdp,
     ice_servers_from_env,
     patch_aioice_turn_error_code_parser,
     rewrite_private_relay_candidates,
@@ -162,3 +163,47 @@ def test_private_relay_candidates_are_duplicated_for_all_browser_turn_addrs(monk
     assert "176.149.222.82 49159 typ relay" in rewritten
     assert "172.198.1.55 49159 typ relay" in rewritten
     assert rewritten.count("49159 typ relay") == 2
+
+
+def test_candidate_events_from_sdp_preserves_mid_and_mline():
+    sdp = "\r\n".join([
+        "v=0",
+        "m=audio 9 UDP/TLS/RTP/SAVPF 111",
+        "a=mid:audio",
+        "a=candidate:audio-host 1 udp 2130706431 10.0.0.1 40000 typ host",
+        "m=application 9 UDP/DTLS/SCTP webrtc-datachannel",
+        "a=mid:data",
+        "a=candidate:data-host 1 udp 2130706431 10.0.0.1 40001 typ host",
+    ])
+
+    assert candidate_events_from_sdp(sdp) == [
+        {
+            "type": "rtc.ice_candidate",
+            "candidate": {
+                "candidate": "candidate:audio-host 1 udp 2130706431 10.0.0.1 40000 typ host",
+                "sdpMid": "audio",
+                "sdpMLineIndex": 0,
+            },
+        },
+        {
+            "type": "rtc.ice_candidate",
+            "candidate": {
+                "candidate": "candidate:data-host 1 udp 2130706431 10.0.0.1 40001 typ host",
+                "sdpMid": "data",
+                "sdpMLineIndex": 1,
+            },
+        },
+    ]
+
+
+def test_candidate_events_from_sdp_handles_candidate_before_media_section():
+    assert candidate_events_from_sdp("a=candidate:orphan 1 udp 1 10.0.0.1 1 typ host") == [
+        {
+            "type": "rtc.ice_candidate",
+            "candidate": {
+                "candidate": "candidate:orphan 1 udp 1 10.0.0.1 1 typ host",
+                "sdpMid": None,
+                "sdpMLineIndex": None,
+            },
+        }
+    ]

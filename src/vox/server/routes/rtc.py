@@ -36,6 +36,7 @@ from vox.server.rtc_conversation import (
     forward_wire_event_to_browser,
 )
 from vox.server.rtc_ice import (
+    candidate_events_from_sdp,
     ice_servers_from_env,
     patch_aioice_turn_error_code_parser,
     rewrite_private_relay_candidates,
@@ -197,7 +198,7 @@ async def create_rtc_answer(request: Request, session_id: str) -> dict:
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
     answer_sdp = rewrite_private_relay_candidates(pc.localDescription.sdp)
-    for event in _candidate_events_from_sdp(answer_sdp):
+    for event in candidate_events_from_sdp(answer_sdp):
         await _emit_media_event(record, event)
     await _emit_media_event(record, {"type": "rtc.ice_candidate", "candidate": None})
 
@@ -404,26 +405,3 @@ async def _ingest_media_audio(record: RtcSessionRecord, pcm16: bytes, sample_rat
     orchestrator = record.orchestrator
     if orchestrator is not None and orchestrator.config is not None:
         await orchestrator.ingest_pcm16(pcm16, sample_rate=sample_rate)
-
-
-def _candidate_events_from_sdp(sdp: str) -> list[dict]:
-    events: list[dict] = []
-    current_mid: str | None = None
-    current_mline = -1
-    for line in sdp.splitlines():
-        if line.startswith("m="):
-            current_mline += 1
-        elif line.startswith("a=mid:"):
-            current_mid = line.removeprefix("a=mid:")
-        elif line.startswith("a=candidate:"):
-            events.append(
-                {
-                    "type": "rtc.ice_candidate",
-                    "candidate": {
-                        "candidate": line.removeprefix("a="),
-                        "sdpMid": current_mid,
-                        "sdpMLineIndex": current_mline if current_mline >= 0 else None,
-                    },
-                }
-            )
-    return events

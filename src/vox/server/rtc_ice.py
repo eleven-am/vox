@@ -67,6 +67,29 @@ def rewrite_private_relay_candidates(sdp: str) -> str:
     return "\r\n".join(lines) + ("\r\n" if sdp.endswith(("\r\n", "\n")) else "")
 
 
+def candidate_events_from_sdp(sdp: str) -> list[dict]:
+    events: list[dict] = []
+    current_mid: str | None = None
+    current_mline = -1
+    for line in sdp.splitlines():
+        if line.startswith("m="):
+            current_mline += 1
+        elif line.startswith("a=mid:"):
+            current_mid = line.removeprefix("a=mid:")
+        elif line.startswith("a=candidate:"):
+            events.append(
+                {
+                    "type": "rtc.ice_candidate",
+                    "candidate": {
+                        "candidate": line.removeprefix("a="),
+                        "sdpMid": current_mid,
+                        "sdpMLineIndex": current_mline if current_mline >= 0 else None,
+                    },
+                }
+            )
+    return events
+
+
 def _ice_servers_from_env(*, now: float | None, stun_env: str, turn_env: str) -> list[dict]:
     now = time.time() if now is None else now
     servers: list[dict] = []
