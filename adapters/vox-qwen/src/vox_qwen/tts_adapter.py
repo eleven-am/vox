@@ -369,7 +369,11 @@ class Qwen3TTSAdapter(TTSAdapter):
                 elapsed = time.perf_counter() - start
                 logger.info("Faster Qwen3-TTS backend loaded in %.2fs", elapsed)
                 self._tokenizer = None
-                self._supported_speakers = [self._default_voice] if self._default_voice else []
+                get_supported_speakers = getattr(self._model, "get_supported_speakers", None)
+                if callable(get_supported_speakers):
+                    self._supported_speakers = _normalize_supported_speakers(get_supported_speakers())
+                else:
+                    self._supported_speakers = []
                 self._backend = "faster-qwen3-tts"
                 self._subprocess_only = False
                 self._loaded = True

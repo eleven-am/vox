@@ -47,6 +47,7 @@ def _mock_qwen_tts_module():
 
 def _mock_faster_qwen_model():
     model = MagicMock()
+    model.get_supported_speakers.return_value = ["Ryan", "Aiden", "Sohee"]
     model.generate_custom_voice_streaming.return_value = iter(
         [
             (np.array([0.0, 0.25], dtype=np.float32), 24_000, {"ttfa_ms": 150}),
@@ -426,6 +427,9 @@ class TestQwen3TTSAdapterInfo:
             assert kwargs["backend"] == "torch"
             assert adapter._backend == "faster-qwen3-tts"
             assert adapter._model is faster_model
+            # The fast path must reflect the model's real speaker list, not just
+            # the catalog default, so built-in speakers stay usable.
+            assert adapter._supported_speakers == ["Ryan", "Aiden", "Sohee"]
 
     def test_load_falls_back_to_official_backend_when_faster_backend_fails(self):
         torch_mock = _mock_torch()
