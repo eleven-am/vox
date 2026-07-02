@@ -13,19 +13,18 @@ import logging
 from collections.abc import AsyncIterator
 
 from vox.conversation import TurnPolicy
-from vox.conversation.profiles import DEFAULT_TURN_PROFILE, resolve_turn_policy
 from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.core.tasks import reap_task
 from vox.grpc import vox_pb2, vox_pb2_grpc
+from vox.grpc.conversation_commands import converse_client_message_to_command
 from vox.operations.conversation import (
     ConvAudioClearEvent,
     ConvAudioDeltaEvent,
     ConvDoneEvent,
     ConvErrorEvent,
     ConversationOrchestrator,
-    ConversationSessionConfig,
     ConvEvent,
     ConvInterruptionDetectedEvent,
     ConvInterruptionFalsePositiveEvent,
@@ -43,69 +42,13 @@ from vox.operations.conversation import (
     execute_conversation_command,
     execute_conversation_session_update,
 )
-from vox.operations.errors import (
-    InvalidConfigError,
-    OperationError,
-)
-from vox.streaming.types import TARGET_SAMPLE_RATE
+from vox.operations.errors import OperationError
 
 logger = logging.getLogger(__name__)
 
 
 def _int_or_zero(value) -> int:
     return int(value) if value is not None else 0
-
-
-def _pb_to_config(update: vox_pb2.ConversationSessionUpdate) -> ConversationSessionConfig:
-    if not update.stt_model:
-        raise InvalidConfigError("session_update requires stt_model")
-    if not update.tts_model:
-        raise InvalidConfigError("session_update requires tts_model")
-
-    has_policy = update.HasField("policy")
-    policy_pb = update.policy
-    policy_overrides: dict[str, int | float | bool] = {}
-    if has_policy:
-        for field_name in (
-            "allow_interrupt_while_speaking",
-            "min_interrupt_duration_ms",
-            "max_endpointing_delay_ms",
-            "stable_speaking_min_ms",
-            "false_interruption_timeout_ms",
-            "min_interrupt_words",
-            "partial_interrupts",
-            "dynamic_endpointing",
-            "min_endpointing_delay_ms",
-            "speaking_interrupt_min_duration_ms",
-            "speaking_interrupt_min_words",
-            "self_echo_min_words",
-            "self_echo_min_overlap",
-            "aec_warmup_ms",
-            "backchannel_end_cooldown_ms",
-            "vad_min_silence_ms",
-        ):
-            if policy_pb.HasField(field_name):
-                policy_overrides[field_name] = getattr(policy_pb, field_name)
-    try:
-        turn_profile, policy = resolve_turn_policy(
-            update.turn_profile or DEFAULT_TURN_PROFILE,
-            policy_overrides,
-        )
-    except ValueError as exc:
-        raise InvalidConfigError(str(exc)) from exc
-
-    return ConversationSessionConfig(
-        stt_model=update.stt_model,
-        tts_model=update.tts_model,
-        voice=update.voice or None,
-        language=update.language or "en",
-        sample_rate=update.sample_rate or TARGET_SAMPLE_RATE,
-        turn_profile=turn_profile,
-        vad_backend=update.vad_backend or "silero",
-        turn_detector=update.turn_detector or "livekit",
-        policy=policy,
-        include_word_timestamps=bool(update.include_word_timestamps),
-    )
 
 
 def _error_pb(message: str) -> vox_pb2.ConverseServerMessage:
@@ -291,44 +234,20 @@ class ConversationServicer(vox_pb2_grpc.ConversationServiceServicer):
                 async for client_msg in request_iterator:
                     if context.cancelled():
                         break
-                    kind = client_msg.WhichOneof("msg")
-
-                    if kind == "session_update":
-                        try:
-                            config = _pb_to_config(client_msg.session_update)
-                            await execute_conversation_session_update(orchestrator, config)
-                        except OperationError as exc:
-                            await out_queue.put(_error_pb(str(exc)))
-                        continue
-
-                    if kind == "audio_append":
-                        message = {
-                            "type": "input_audio_buffer.append",
-                            "audio_pcm16": client_msg.audio_append.pcm16,
-                            "sample_rate": client_msg.audio_append.sample_rate,
-                        }
-                    elif kind == "response_start":
-                        message = {"type": "response.start"}
-                    elif kind == "response_delta":
-                        message = {
-                            "type": "response.delta",
-                            "delta": client_msg.response_delta.delta,
-                        }
-                    elif kind == "response_commit":
-                        message = {"type": "response.commit"}
-                    elif kind == "response_cancel":
-                        message = {"type": "response.cancel"}
-                    else:
-                        await out_queue.put(_error_pb(f"unknown message kind: {kind!r}"))
-                        continue
 
                     try:
-                        await execute_conversation_command(
-                            orchestrator,
-                            message,
-                            require_config_message="send session_update first",
-                            unknown_message_label="unknown message kind",
-                        )
+                        command = converse_client_message_to_command(client_msg)
+                        if command.kind == "session_update":
+                            assert command.config is not None
+                            await execute_conversation_session_update(orchestrator, command.config)
+                        else:
+                            assert command.message is not None
+                            await execute_conversation_command(
+                                orchestrator,
+                                command.message,
+                                require_config_message="send session_update first",
+                                unknown_message_label="unknown message kind",
+                            )
                     except OperationError as exc:
                         await out_queue.put(_error_pb(str(exc)))
             finally:

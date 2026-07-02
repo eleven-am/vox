@@ -15,7 +15,8 @@ from tests.fakes import FakeScheduler
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
 from vox.grpc import vox_pb2
-from vox.grpc.conversation_servicer import ConversationServicer, _pb_to_config, _wire_event_to_pb
+from vox.grpc.conversation_commands import conversation_session_update_to_config
+from vox.grpc.conversation_servicer import ConversationServicer, _wire_event_to_pb
 from vox.operations.conversation import ConvAudioClearEvent
 
 
@@ -106,7 +107,7 @@ async def test_session_update_proto_maps_to_session_created_pb():
 
 
 def test_session_update_proto_preserves_backend_selection():
-    config = _pb_to_config(vox_pb2.ConversationSessionUpdate(
+    config = conversation_session_update_to_config(vox_pb2.ConversationSessionUpdate(
         stt_model="x:1",
         tts_model="y:1",
         vad_backend="ten-vad",
@@ -118,7 +119,7 @@ def test_session_update_proto_preserves_backend_selection():
 
 
 def test_session_update_proto_applies_turn_profile_defaults():
-    config = _pb_to_config(vox_pb2.ConversationSessionUpdate(
+    config = conversation_session_update_to_config(vox_pb2.ConversationSessionUpdate(
         stt_model="x:1",
         tts_model="y:1",
         turn_profile="speakerphone",
@@ -131,7 +132,7 @@ def test_session_update_proto_applies_turn_profile_defaults():
 
 
 def test_session_update_proto_preserves_speaking_interrupt_policy():
-    config = _pb_to_config(vox_pb2.ConversationSessionUpdate(
+    config = conversation_session_update_to_config(vox_pb2.ConversationSessionUpdate(
         stt_model="x:1",
         tts_model="y:1",
         policy=vox_pb2.ConversationTurnPolicy(
@@ -150,7 +151,7 @@ def test_session_update_proto_preserves_speaking_interrupt_policy():
 
 
 def test_session_update_proto_preserves_profile_defaults_when_overriding_one_field():
-    config = _pb_to_config(vox_pb2.ConversationSessionUpdate(
+    config = conversation_session_update_to_config(vox_pb2.ConversationSessionUpdate(
         stt_model="x:1",
         tts_model="y:1",
         turn_profile="headset",

@@ -1,0 +1,103 @@
+from __future__ import annotations
+
+import pytest
+
+from vox.grpc import vox_pb2
+from vox.grpc.conversation_commands import (
+    conversation_session_update_to_config,
+    converse_client_message_to_command,
+    rtc_control_message_to_command,
+)
+from vox.operations.errors import InvalidConfigError
+
+
+def test_grpc_session_update_decodes_to_operation_config():
+    config = conversation_session_update_to_config(
+        vox_pb2.ConversationSessionUpdate(
+            stt_model="parakeet-stt-onnx:tdt-0.6b-v3",
+            tts_model="kokoro-tts-onnx:v1.0",
+            voice="af_heart",
+            turn_profile="headset",
+            policy=vox_pb2.ConversationTurnPolicy(
+                speaking_interrupt_min_duration_ms=300,
+            ),
+        )
+    )
+
+    assert config.stt_model == "parakeet-stt-onnx:tdt-0.6b-v3"
+    assert config.tts_model == "kokoro-tts-onnx:v1.0"
+    assert config.voice == "af_heart"
+    assert config.turn_profile == "headset"
+    assert config.policy is not None
+    assert config.policy.speaking_interrupt_min_duration_ms == 300
+    assert config.policy.aec_warmup_ms == 250
+
+
+def test_converse_audio_append_decodes_to_shared_command_shape():
+    command = converse_client_message_to_command(
+        vox_pb2.ConverseClientMessage(
+            audio_append=vox_pb2.ConversationAudioAppend(pcm16=b"abc", sample_rate=16_000),
+        )
+    )
+
+    assert command.kind == "command"
+    assert command.message == {
+        "type": "input_audio_buffer.append",
+        "audio_pcm16": b"abc",
+        "sample_rate": 16_000,
+    }
+
+
+def test_converse_and_rtc_response_delta_decode_to_same_command_shape():
+    converse = converse_client_message_to_command(
+        vox_pb2.ConverseClientMessage(
+            response_delta=vox_pb2.ConversationResponseDelta(delta="hello"),
+        )
+    )
+    rtc = rtc_control_message_to_command(
+        vox_pb2.RtcControlClientMessage(
+            response_delta=vox_pb2.ConversationResponseDelta(delta="hello"),
+        )
+    )
+
+    assert converse.message == {"type": "response.delta", "delta": "hello"}
+    assert rtc.message == converse.message
+
+
+def test_rtc_client_event_decodes_json_payload():
+    command = rtc_control_message_to_command(
+        vox_pb2.RtcControlClientMessage(
+            client_event=vox_pb2.RtcClientEvent(
+                event="app.marker",
+                payload_json='{"n": 1}',
+            ),
+        )
+    )
+
+    assert command.kind == "command"
+    assert command.message == {
+        "type": "client.event",
+        "event": "app.marker",
+        "payload": {"n": 1},
+    }
+
+
+def test_rtc_client_event_rejects_invalid_json_payload():
+    with pytest.raises(InvalidConfigError, match="valid payload JSON"):
+        rtc_control_message_to_command(
+            vox_pb2.RtcControlClientMessage(
+                client_event=vox_pb2.RtcClientEvent(
+                    event="app.marker",
+                    payload_json="{",
+                ),
+            )
+        )
+
+
+def test_rtc_attach_is_not_a_conversation_command_after_attach_phase():
+    with pytest.raises(InvalidConfigError, match="unknown control message kind: 'attach'"):
+        rtc_control_message_to_command(
+            vox_pb2.RtcControlClientMessage(
+                attach=vox_pb2.RtcControlAttach(session_id="rtc_123"),
+            )
+        )

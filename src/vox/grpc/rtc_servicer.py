@@ -17,7 +17,8 @@ from functools import partial
 from vox.core.scheduler import Scheduler
 from vox.core.tasks import drain_task, reap_task
 from vox.grpc import vox_pb2, vox_pb2_grpc
-from vox.grpc.conversation_servicer import _error_pb, _event_to_pb, _pb_to_config
+from vox.grpc.conversation_commands import rtc_control_message_to_command
+from vox.grpc.conversation_servicer import _error_pb, _event_to_pb
 from vox.operations.conversation import (
     ConvAudioDeltaEvent,
     ConvDoneEvent,
@@ -134,53 +135,21 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
 
                     assert orchestrator is not None
 
-                    if kind == "session_update":
-                        try:
-                            config = _pb_to_config(client_msg.session_update)
-                            await execute_conversation_session_update(orchestrator, config)
-                        except OperationError as exc:
-                            await out_queue.put(_error_pb(str(exc)))
-                        continue
-
-                    if kind == "client_event":
-                        event_name = client_msg.client_event.event.strip()
-                        if not event_name:
-                            await out_queue.put(_error_pb("client_event requires a non-empty event"))
-                            continue
-                        try:
-                            payload = json.loads(client_msg.client_event.payload_json or "null")
-                        except json.JSONDecodeError as exc:
-                            await out_queue.put(_error_pb(f"client_event requires valid payload JSON: {exc}"))
-                            continue
-                        message = {
-                            "type": "client.event",
-                            "event": event_name,
-                            "payload": payload,
-                        }
-                    elif kind == "response_start":
-                        message = {"type": "response.start"}
-                    elif kind == "response_delta":
-                        message = {
-                            "type": "response.delta",
-                            "delta": client_msg.response_delta.delta,
-                        }
-                    elif kind == "response_commit":
-                        message = {"type": "response.commit"}
-                    elif kind == "response_cancel":
-                        message = {"type": "response.cancel"}
-                    else:
-                        await out_queue.put(_error_pb(f"unknown control message kind: {kind!r}"))
-                        continue
-
                     try:
-                        await execute_conversation_command(
-                            orchestrator,
-                            message,
-                            allow_input_audio=False,
-                            client_event_handler=partial(send_client_event_to_browser, record),
-                            require_config_message="send session_update first",
-                            unknown_message_label="unknown control message kind",
-                        )
+                        command = rtc_control_message_to_command(client_msg)
+                        if command.kind == "session_update":
+                            assert command.config is not None
+                            await execute_conversation_session_update(orchestrator, command.config)
+                        else:
+                            assert command.message is not None
+                            await execute_conversation_command(
+                                orchestrator,
+                                command.message,
+                                allow_input_audio=False,
+                                client_event_handler=partial(send_client_event_to_browser, record),
+                                require_config_message="send session_update first",
+                                unknown_message_label="unknown control message kind",
+                            )
                     except OperationError as exc:
                         await out_queue.put(_error_pb(str(exc)))
             finally:
