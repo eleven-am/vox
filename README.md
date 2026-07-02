@@ -1,18 +1,16 @@
 # Vox
 
-Vox is a local runtime for speech models.
-
-It gives speech-to-text and text-to-speech models one operational surface: pull a model, serve one API, and run local speech workloads without hand-wiring each model family yourself. Vox is built around speech-native concerns like streaming audio, voice selection, backend-specific adapters, and one consistent interface across STT and TTS models.
+**The local voice layer for realtime speech agents.** Vox is a self-hosted runtime that gives speech-to-text and text-to-speech models one operational surface — pull a model like Ollama, serve one OpenAI-compatible API — and adds a full realtime conversation stack: VAD, streaming STT, end-of-utterance turn detection, TTS, and true barge-in over WebRTC. **You bring the LLM; Vox is the ears and the mouth.**
 
 ## Why Vox
 
-- One runtime for both speech-to-text and text-to-speech
-- One CLI and one API surface across many model families
-- Pull-on-demand model and adapter installation
-- Multiple backends behind the same runtime: ONNX, Torch, NeMo, CTranslate2, and vLLM
-- Stored custom voices for clone-capable TTS models
-- REST, WebSocket, gRPC, and OpenAI-compatible endpoints
-- Local-first deployment with Docker images that start empty and install only what you use
+- **Realtime voice, self-hosted.** A local, OpenAI-Realtime-style conversation API over WebRTC, WebSocket, or gRPC — VAD, streaming transcription, semantic turn-taking, and real barge-in — with any LLM in the middle. Vox owns the audio; you own the text generation.
+- **One runtime for STT and TTS.** `pull` a model, `serve` one API, no per-model Python wiring.
+- **Many backends, one interface.** ONNX, CTranslate2, Torch, NeMo, and vLLM model families behind the same API.
+- **OpenAI-compatible.** Drop-in `/v1/audio/speech` and `/v1/audio/transcriptions`, plus REST, WebSocket, and gRPC.
+- **Pull-on-demand.** Models and their adapters install on first pull, from a community registry.
+- **Custom voices.** Store cloned voices for clone-capable TTS models, shared across HTTP and gRPC.
+- **Local-first and lean.** Docker images start empty and install only what you use; a torch-free lean image runs the CT2/ONNX and streaming paths without the ~2GB torch stack.
 
 ## Quickstart
 
@@ -35,17 +33,43 @@ curl -X POST http://localhost:11435/v1/audio/speech \
 
 gRPC starts with `vox serve` too and listens on `:9090` by default.
 
+## Realtime voice conversations
+
+Vox ships a self-hosted realtime voice stack — the local answer to the OpenAI
+Realtime API. **Vox owns VAD, streaming STT, end-of-utterance (EOU) turn
+detection, TTS, and interruption handling; you own the LLM.** User speech comes
+in, transcripts come out, you generate a reply with any LLM, stream the text
+back, and Vox speaks it — with real barge-in.
+
+Three transports carry a conversation session:
+
+- **WebRTC** — Vox hosts the browser media connection (mic in, assistant audio
+  out) while your backend drives a control stream. A dependency-free client is in
+  [`examples/rtc-browser-client.html`](examples/rtc-browser-client.html).
+- **WebSocket** (PondSocket) and **gRPC** — you own microphone capture and
+  playback; audio is PCM16 over the stream.
+
+What Vox handles for you:
+
+- **VAD** — Silero on onnxruntime (no torch, no runtime model download).
+- **Turn-taking** — a semantic EOU detector shortens the endpointing delay when
+  the user clearly finished and waits when they didn't.
+- **Barge-in** — two-stage interruption with self-echo and backchannel
+  rejection, so the assistant doesn't cancel itself on its own audio or a stray
+  "mhm".
+- **Turn profiles** — `headset`, `browser_default`, `speakerphone`, and
+  `noisy_room` acoustic presets.
+- **Browser-native events** — captions, turn state, and barge-in signals
+  forwarded straight to a WebRTC data channel, no backend relay required.
+
+Full protocol and event reference: [docs/conversation-events.md](docs/conversation-events.md).
+
 ## What it does
 
-Vox manages STT and TTS models through a consistent runtime API. Models are downloaded from Hugging Face, and each model family is handled by an adapter that is installed automatically on first pull.
-
-The Docker images intentionally start without any models or adapter packages installed. Pulling a model installs the matching adapter on demand.
-
-```bash
-vox pull kokoro-tts-onnx:v1.0
-vox pull whisper-stt-ct2:large-v3
-vox serve
-```
+Vox manages STT and TTS models through a consistent runtime API. Models are
+downloaded from Hugging Face, and each model family is handled by an adapter that
+installs automatically on first pull. Docker images start without any models or
+adapters; pulling a model installs the matching adapter on demand.
 
 ## Install
 
@@ -264,93 +288,24 @@ vox stream-synthesize kokoro-tts-onnx:v1.0 script.txt -o script.wav
 docker compose up -d
 vox pull kokoro-tts-onnx:v1.0  # auto-installs adapter inside container
 
-# CPU
+# CPU (lean, torch-free)
 docker compose --profile cpu up -d
 ```
 
-Models and dynamically installed adapters persist in a Docker volume across container restarts. No image rebuild needed to add new models.
+Models and dynamically installed adapters persist in a Docker volume across
+restarts — no image rebuild needed to add new models.
 
-### Image variants
-
-Published tags:
-
-| Tag | Arch | Compute | Torch | Build | Use |
-|---|---|---|---|---|---|
-| `:latest` / `:vX.Y.Z` | amd64 | CUDA | ✅ | `make build` | NVIDIA GPU (x86), all models |
-| `:lean` | amd64 + arm64 | CPU | ❌ | `make build-lean` | Linux CPU + Apple-Silicon Docker; CT2/ONNX models + streaming |
-| `:cpu` | amd64 + arm64 | CPU | ✅ | `make build-cpu` | torch models on CPU (slow) |
-| `:spark` | arm64 | CUDA | ✅ | `make build-spark` | NVIDIA arm (Jetson/SBSA) |
-
-`:latest` is amd64/CUDA only — CUDA torch wheels are x86-only, so a generic
-arm64 CUDA image isn't possible (that's what `:spark` is for). On arm64 hosts
-(including Apple-Silicon Docker) use `:lean` or `:cpu`; for arm NVIDIA use
-`:spark`.
-
-The `:lean` image drops the ~2GB torch stack: VAD runs on onnxruntime, so the
-streaming/conversation path works, and `vox pull` refuses torch-based models up
-front. If you only serve CTranslate2/ONNX families (`whisper-stt-ct2`,
-`kokoro-tts-onnx`, `parakeet-stt-onnx`, `piper-tts-onnx`), use `:lean`.
-
-Build one directly:
-
-```bash
-docker build --build-arg VOX_ACCELERATOR=cpu --build-arg VOX_INCLUDE_TORCH=0 -t vox:lean .
-```
-
-In a lean image, `vox pull` refuses torch-based models up front with a clear
-message ("requires PyTorch … not installed in this environment") rather than
-downloading them and failing at load time. It checks the environment's actual
-capabilities (torch, onnxruntime, CUDA) against what each model needs:
-
-- `whisper-stt-ct2`, `kokoro-tts-onnx`, `parakeet-stt-onnx`, `piper-tts-onnx` — pull fine.
-- torch models (Qwen, Voxtral, Sesame, Dia, …) — blocked; vLLM models also need a CUDA GPU.
-
-Set `VOX_ALLOW_INCOMPATIBLE=1` to bypass the check and pull anyway. The full
-image (default `VOX_INCLUDE_TORCH=1`) supports every model.
-
-### Spark ONNX GPU build
-
-The default GPU multi-arch image is generic:
-- `amd64` uses `onnxruntime-gpu`
-- `arm64` uses CPU `onnxruntime`
-
-```bash
-# Local image
-make build-local
-
-# Multi-arch publish build
-make build
-```
-
-### Spark image
-
-The default image stays generic. If you want a Spark-specific arm64 image with a NVIDIA-provided ONNX Runtime source, use the dedicated Spark build:
-
-```bash
-# Local Spark build
-make build-local-spark
-
-# Published Spark build
-make build-spark
-```
-
-Notes:
-- `build-spark` is `linux/arm64` only.
-- By default, `Dockerfile.spark` uses:
-  - `nvidia/cuda:13.0.0-cudnn-runtime-ubuntu24.04`
-  - `torch==2.9.0` / `torchaudio==2.9.0` from the NVIDIA Jetson AI Lab SBSA CUDA 13.0 index (`https://pypi.jetson-ai-lab.io/sbsa/cu130/+simple`)
-  - the tested `cp312 linux_aarch64` NVIDIA Jetson AI Lab ONNX Runtime wheel:
-    - `onnxruntime_gpu-1.23.0-cp312-cp312-linux_aarch64.whl`
-- `Dockerfile.spark` now refuses to publish if it would install a CPU-only `torch` build.
-  - Provide a CUDA-capable Torch source with either:
-    - `SPARK_TORCH_WHEEL` and `SPARK_TORCHAUDIO_WHEEL`
-    - or `SPARK_TORCH_INDEX_URL` / `SPARK_TORCH_EXTRA_INDEX_URL`
-- You can still override it with:
-  - `SPARK_ORT_WHEEL=/path/or/url/to/wheel`
-  - or `SPARK_ORT_INDEX_URL` / `SPARK_ORT_EXTRA_INDEX_URL`
-- The generic `make build` path is unchanged and still produces the normal multi-arch image.
+Four image variants are published: `:latest` (amd64 CUDA), `:lean` and `:cpu`
+(multi-arch CPU), and `:spark` (arm64 NVIDIA). The `:lean` image drops the ~2GB
+torch stack and still runs the CT2/ONNX and streaming paths; `vox pull` then
+refuses torch-based models up front instead of failing at load time. See
+[docs/docker.md](docs/docker.md) for the full matrix and build options.
 
 ## Representative models
+
+Vox ships a bundled catalog of 25 model entries (39 tags) spanning ~18 model
+families across 5 backends — ONNX, CTranslate2, Torch, NeMo, and vLLM — with more
+available from the community registry. A representative slice:
 
 | Model | Type | Description |
 |-------|------|-------------|
@@ -408,6 +363,14 @@ All HTTP endpoints live under `/v1/`. STT/TTS endpoints are OpenAI-compatible by
 | `/v1/audio/voices/{id}/reference` | GET | Download the stored reference audio |
 | `/v1/audio/transcriptions/stream` | WS | Long-form streaming STT |
 | `/v1/audio/speech/stream` | WS | Long-form streaming TTS |
+| `/v1/rtc/sessions` | POST | Create a realtime WebRTC voice session |
+| `/v1/rtc/sessions/{id}/offer` | POST | Submit the browser SDP offer, get the answer |
+| `/v1/rtc/sessions/{id}/candidates` | POST | Trickle browser ICE candidates |
+| `/v1/rtc/sessions/{id}/events` | GET (SSE) | Vox-side ICE / connection-state events |
+
+The realtime conversation control stream runs over PondSocket
+(`/v1/socket` channel `/conversation/{id}` or `/rtc/{id}`) or gRPC; see
+[docs/conversation-events.md](docs/conversation-events.md).
 
 ## gRPC
 
@@ -428,6 +391,9 @@ All HTTP endpoints live under `/v1/`. STT/TTS endpoints are OpenAI-compatible by
   - `SynthesisService.CreateVoice`
   - `SynthesisService.DeleteVoice`
   - `StreamingService.StreamTranscribe`
+- realtime conversation (bidi streams):
+  - `ConversationService.Converse`
+  - `RtcService.Control`
 
 The gRPC voice APIs use the same stored voice data as HTTP. Creating or deleting a cloned voice over one transport is immediately visible through the other.
 
