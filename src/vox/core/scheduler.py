@@ -381,6 +381,8 @@ class Scheduler:
 
 
         load_kwargs = {**info.parameters}
+        if info.backend:
+            load_kwargs["backend"] = info.backend
         if placement.tier is not None:
             load_kwargs["_placement_tier"] = placement.tier
         if placement.notes:

@@ -47,12 +47,14 @@ class LoadedModel(_message.Message):
     def __init__(self, name: _Optional[str] = ..., tag: _Optional[str] = ..., type: _Optional[str] = ..., device: _Optional[str] = ..., vram_bytes: _Optional[int] = ..., loaded_at: _Optional[float] = ..., last_used: _Optional[float] = ..., ref_count: _Optional[int] = ...) -> None: ...
 
 class PullRequest(_message.Message):
-    __slots__ = ("name", "variant")
+    __slots__ = ("name", "variant", "backend")
     NAME_FIELD_NUMBER: _ClassVar[int]
     VARIANT_FIELD_NUMBER: _ClassVar[int]
+    BACKEND_FIELD_NUMBER: _ClassVar[int]
     name: str
     variant: str
-    def __init__(self, name: _Optional[str] = ..., variant: _Optional[str] = ...) -> None: ...
+    backend: str
+    def __init__(self, name: _Optional[str] = ..., variant: _Optional[str] = ..., backend: _Optional[str] = ...) -> None: ...
 
 class PullProgress(_message.Message):
     __slots__ = ("status", "error", "completed", "total")

@@ -113,6 +113,7 @@ class ModelInfo:
     description: str = ""
     license: str = ""
     parameters: dict[str, Any] = field(default_factory=dict)
+    backend: str | None = None
 
     def __post_init__(self):
         if not self.name:
@@ -142,6 +143,7 @@ class ModelInfo:
             description=config.get("description", ""),
             license=config.get("license", ""),
             parameters=config.get("parameters", {}),
+            backend=config.get("backend"),
         )
 
 @dataclass(frozen=True)

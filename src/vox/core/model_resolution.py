@@ -7,7 +7,7 @@ and download only the resolved concrete entry.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from vox.core.capabilities import (
@@ -33,6 +33,7 @@ class VariantResolution:
     entry: dict[str, Any]
     variant_id: str | None = None
     preferred_backend: str | None = None
+    forced_backend: str | None = None
     missing: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
     snapshot: RuntimeCapabilities | None = None
@@ -54,9 +55,22 @@ def resolve_catalog_entry(
     *,
     snapshot: RuntimeCapabilities | None = None,
     forced_variant: str | None = None,
+    forced_backend: str | None = None,
 ) -> VariantResolution:
     """Resolve a concrete or logical catalog entry for the current runtime."""
     snapshot = snapshot or detect_runtime_capabilities()
+    result = _resolve_variant(entry, snapshot=snapshot, forced_variant=forced_variant)
+    if forced_backend:
+        result = _apply_forced_backend(result, forced_backend, snapshot)
+    return result
+
+
+def _resolve_variant(
+    entry: dict[str, Any],
+    *,
+    snapshot: RuntimeCapabilities,
+    forced_variant: str | None,
+) -> VariantResolution:
     variants = entry.get("variants")
     if not isinstance(variants, list):
         preferred_backend, backend_warnings = _preferred_backend_for_variant(entry, snapshot)
@@ -113,6 +127,58 @@ def resolve_catalog_entry(
         warnings=check.warnings,
         preferred_backend=check.preferred_backend,
         snapshot=snapshot,
+    )
+
+
+def _declared_backends(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    backends = entry.get("backends")
+    if not isinstance(backends, dict):
+        return []
+    declared: list[dict[str, Any]] = []
+    preferred = backends.get("preferred")
+    if isinstance(preferred, list):
+        declared.extend(item for item in preferred if isinstance(item, dict))
+    fallback = backends.get("fallback")
+    if isinstance(fallback, dict):
+        declared.append(fallback)
+    return declared
+
+
+def _apply_forced_backend(
+    result: VariantResolution,
+    forced_backend: str,
+    snapshot: RuntimeCapabilities,
+) -> VariantResolution:
+    if not result.entry:
+        return result
+
+    by_name = {
+        str(backend.get("name")): backend
+        for backend in _declared_backends(result.entry)
+        if backend.get("name")
+    }
+    if forced_backend not in by_name:
+        defined = ", ".join(by_name) or "none"
+        reason = (
+            f"backend {forced_backend!r} is not available for this model "
+            f"(defined: {defined})"
+        )
+        return replace(
+            result,
+            missing=(*result.missing, reason),
+            preferred_backend=forced_backend,
+            forced_backend=forced_backend,
+        )
+
+    check = check_runtime_requirement(
+        runtime_requirement_from_mapping(by_name[forced_backend].get("requires")),
+        snapshot=snapshot,
+    )
+    return replace(
+        result,
+        missing=(*result.missing, *check.missing),
+        preferred_backend=forced_backend,
+        forced_backend=forced_backend,
     )
 
 

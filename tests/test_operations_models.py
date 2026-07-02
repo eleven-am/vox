@@ -475,6 +475,62 @@ async def test_pull_model_can_force_onnx_variant_on_cuda_runtime(tmp_path: Path)
     assert manifest.config["runtime"]["detected"]["torch_cuda"] is True
 
 
+@pytest.mark.asyncio
+async def test_pull_model_pins_backend_into_manifest_config(tmp_path: Path):
+    store = BlobStore(root=tmp_path)
+    registry = _registry_mock()
+    registry.lookup.return_value = {
+        "type": "tts",
+        "architecture": "qwen3-tts",
+        "adapter": "qwen3-tts-torch",
+        "format": "pytorch",
+        "source": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+        "parameters": {"sample_rate": 24000},
+        "adapter_package": "",
+        "files": ["model.bin"],
+        "backends": {
+            "preferred": [
+                {
+                    "name": "faster-qwen3-tts",
+                    "requires": {
+                        "python_modules": ["torch", "faster_qwen3_tts"],
+                        "accelerators": ["cuda"],
+                        "min_versions": {"torch": "2.5.1"},
+                    },
+                }
+            ],
+            "fallback": {
+                "name": "qwen-tts",
+                "requires": {"python_modules": ["torch"]},
+            },
+        },
+    }
+    scheduler = MagicMock()
+
+    downloaded = tmp_path / "model.bin"
+    downloaded.write_bytes(b"hello")
+
+    with (
+        patch("vox.core.model_resolution.detect_runtime_capabilities", return_value=_runtime_caps()),
+        patch("huggingface_hub.hf_hub_download", return_value=str(downloaded)),
+    ):
+        events = pull_model(
+            store=store,
+            scheduler=scheduler,
+            registry=registry,
+            request=model_reference_request_from_fields(
+                name="qwen3-tts:0.6b", backend="qwen-tts"
+            ),
+        )
+        collected = [event async for event in events]
+
+    assert collected[-1].status == "success"
+    manifest = store.resolve_model("qwen3-tts", "0.6b")
+    assert manifest is not None
+    assert manifest.config["backend"] == "qwen-tts"
+    assert manifest.config["runtime"]["pinned_backend"] == "qwen-tts"
+
+
 def test_pull_model_forced_missing_variant_fails_clearly(tmp_path: Path):
     store = BlobStore(root=tmp_path)
     registry = _registry_mock()
