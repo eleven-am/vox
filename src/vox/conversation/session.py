@@ -744,7 +744,7 @@ class ConversationSession:
             await self._emit(
                 {
                     "type": WIRE_AUDIO_CLEAR,
-                    "response_id": self._active_response_id or self._last_cancelled_response_id,
+                    "response_id": self._response_lifecycle.active_or_cancelled_response_id(),
                 }
             )
 
@@ -764,7 +764,7 @@ class ConversationSession:
             await self._emit(
                 {
                     "type": WIRE_AUDIO_CLEAR,
-                    "response_id": self._active_response_id or self._last_cancelled_response_id,
+                    "response_id": self._response_lifecycle.active_or_cancelled_response_id(),
                 }
             )
 
@@ -788,7 +788,7 @@ class ConversationSession:
             await self._emit(
                 {
                     "type": WIRE_RESPONSE_CANCELLED,
-                    "response_id": self._active_response_id or self._last_cancelled_response_id,
+                    "response_id": self._response_lifecycle.active_or_cancelled_response_id(),
                 }
             )
 
@@ -1043,14 +1043,6 @@ class ConversationSession:
     @_active_response_id.setter
     def _active_response_id(self, response_id: str | None) -> None:
         self._response_lifecycle.active_response_id = response_id
-
-    @property
-    def _last_cancelled_response_id(self) -> str | None:
-        return self._response_lifecycle.last_cancelled_response_id
-
-    @_last_cancelled_response_id.setter
-    def _last_cancelled_response_id(self, response_id: str | None) -> None:
-        self._response_lifecycle.last_cancelled_response_id = response_id
 
     @property
     def state(self) -> TurnState:
