@@ -26,6 +26,7 @@ from vox.operations.transcription import (
     annotate_text,
     openai_transcription_payload,
     transcribe,
+    transcription_request_from_fields,
 )
 
 
@@ -76,6 +77,38 @@ class LeadingContextSensitiveSTT(FakeSTT):
                 ),
             ),
         )
+
+
+def test_transcription_request_from_fields_normalizes_transport_input():
+    request = transcription_request_from_fields(
+        audio=b"abc",
+        model="",
+        format_hint="",
+        language="",
+        word_timestamps=True,
+        temperature=-1.0,
+        annotate_text=True,
+    )
+
+    assert request == TranscriptionRequest(
+        audio=b"abc",
+        model="",
+        format_hint=None,
+        language=None,
+        word_timestamps=True,
+        temperature=0.0,
+        annotate_text=True,
+    )
+
+
+def test_transcription_request_from_fields_preserves_positive_temperature():
+    request = transcription_request_from_fields(
+        audio=b"abc",
+        model="fake-stt:latest",
+        temperature=0.25,
+    )
+
+    assert request.temperature == 0.25
 
 
 class LeadingContextHurtsSTT(FakeSTT):

@@ -13,9 +13,9 @@ from vox.grpc.transcript_messages import annotate_response, transcribe_response
 from vox.operations.errors import OperationError
 from vox.operations.transcription import (
     AnnotateRequest,
-    TranscriptionRequest,
     annotate_text,
     transcribe,
+    transcription_request_from_fields,
 )
 
 logger = logging.getLogger(__name__)
@@ -29,13 +29,13 @@ class TranscriptionServicer(vox_pb2_grpc.TranscriptionServiceServicer):
         self._scheduler = scheduler
 
     async def Transcribe(self, request, context):
-        op_request = TranscriptionRequest(
+        op_request = transcription_request_from_fields(
             audio=request.audio,
             model=request.model,
             format_hint=request.format_hint or None,
             language=request.language or None,
             word_timestamps=request.word_timestamps,
-            temperature=request.temperature if request.temperature > 0 else 0.0,
+            temperature=request.temperature,
             annotate_text=True,
         )
         try:

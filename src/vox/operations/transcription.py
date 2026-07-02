@@ -49,6 +49,27 @@ class TranscriptionRequest:
     annotate_text: bool = False
 
 
+def transcription_request_from_fields(
+    *,
+    audio: bytes,
+    model: str = "",
+    format_hint: str | None = None,
+    language: str | None = None,
+    word_timestamps: bool = False,
+    temperature: float = 0.0,
+    annotate_text: bool = False,
+) -> TranscriptionRequest:
+    return TranscriptionRequest(
+        audio=audio,
+        model=model or "",
+        format_hint=format_hint or None,
+        language=language or None,
+        word_timestamps=word_timestamps,
+        temperature=temperature if temperature > 0 else 0.0,
+        annotate_text=annotate_text,
+    )
+
+
 @dataclass(frozen=True)
 class TranscriptionResultBundle:
     result: TranscribeResult

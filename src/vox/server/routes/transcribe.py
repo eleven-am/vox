@@ -7,9 +7,9 @@ from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 
 from vox.operations.transcription import (
-    TranscriptionRequest,
     openai_transcription_payload,
     transcribe,
+    transcription_request_from_fields,
 )
 from vox.server.operation_errors import map_operation_errors_to_http
 
@@ -45,7 +45,7 @@ async def _run_transcribe(
     store = request.app.state.store
 
     data = await file.read()
-    op_request = TranscriptionRequest(
+    op_request = transcription_request_from_fields(
         audio=data,
         model=model or "",
         format_hint=_mime_to_format(file.content_type),
