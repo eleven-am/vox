@@ -17,4 +17,6 @@ def operation_error_status(exc: OperationError) -> tuple[grpc.StatusCode, str]:
         return grpc.StatusCode.NOT_FOUND, str(exc)
     if kind is OperationErrorKind.CONFLICT:
         return grpc.StatusCode.FAILED_PRECONDITION, str(exc)
+    if kind is OperationErrorKind.RESOURCE_EXHAUSTED:
+        return grpc.StatusCode.RESOURCE_EXHAUSTED, str(exc)
     return grpc.StatusCode.INTERNAL, str(exc)

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 from pydantic import BaseModel
 
 from vox.operations import system as system_operations
-from vox.operations.errors import ModelInUseError
-from vox.operations.system import MemoryBudgetExceededError
+from vox.operations.errors import OperationError
+from vox.server.operation_errors import operation_error_to_http
 
 router = APIRouter()
 
@@ -40,8 +40,8 @@ async def enforce_memory_budget(req: EnforceMemoryBudgetRequest, request: Reques
             scheduler=request.app.state.scheduler,
             additional_vram_bytes=req.additional_vram_bytes,
         )
-    except MemoryBudgetExceededError as exc:
-        raise HTTPException(status_code=507, detail=str(exc)) from exc
+    except OperationError as exc:
+        raise operation_error_to_http(exc) from exc
     return system_operations.enforce_memory_budget_payload(result)
 
 
@@ -52,8 +52,8 @@ async def trim_model(name: str, request: Request):
             scheduler=request.app.state.scheduler,
             model_name=name,
         )
-    except ModelInUseError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OperationError as exc:
+        raise operation_error_to_http(exc) from exc
     return system_operations.trim_model_payload(result)
 
 

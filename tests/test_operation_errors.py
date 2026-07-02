@@ -7,6 +7,7 @@ from vox.operations.errors import (
     EmptyAudioError,
     EmptyInputError,
     InvalidConfigError,
+    MemoryBudgetExceededError,
     ModelInUseError,
     NoAudioGeneratedError,
     NoDefaultModelError,
@@ -40,6 +41,7 @@ from vox.operations.errors import (
         (VoiceNotFoundOperationError("voice-1"), OperationErrorKind.NOT_FOUND),
         (VoiceReferenceNotFoundError("voice-1"), OperationErrorKind.NOT_FOUND),
         (ModelInUseError("parakeet"), OperationErrorKind.CONFLICT),
+        (MemoryBudgetExceededError("budget exceeded"), OperationErrorKind.RESOURCE_EXHAUSTED),
         (NoAudioGeneratedError(), OperationErrorKind.INTERNAL),
     ],
 )

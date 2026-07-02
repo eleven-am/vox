@@ -17,4 +17,6 @@ def operation_error_to_http(exc: OperationError) -> HTTPException:
         return HTTPException(status_code=404, detail=str(exc))
     if kind is OperationErrorKind.CONFLICT:
         return HTTPException(status_code=409, detail=str(exc))
+    if kind is OperationErrorKind.RESOURCE_EXHAUSTED:
+        return HTTPException(status_code=507, detail=str(exc))
     return HTTPException(status_code=500, detail=str(exc))

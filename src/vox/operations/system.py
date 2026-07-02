@@ -5,12 +5,7 @@ from typing import Any, Protocol
 
 from vox.core.errors import ModelLoadError
 from vox.core.types import LoadedModelInfo, VramSnapshot
-from vox.operations.errors import ModelInUseError, OperationError
-
-
-class MemoryBudgetExceededError(OperationError):
-    def __init__(self, message: str) -> None:
-        super().__init__(message)
+from vox.operations.errors import MemoryBudgetExceededError, ModelInUseError
 
 
 class SystemScheduler(Protocol):

@@ -8,6 +8,7 @@ class OperationErrorKind(StrEnum):
     UNPROCESSABLE_ENTITY = "unprocessable_entity"
     NOT_FOUND = "not_found"
     CONFLICT = "conflict"
+    RESOURCE_EXHAUSTED = "resource_exhausted"
     INTERNAL = "internal"
 
 
@@ -52,6 +53,11 @@ class ModelInUseError(OperationError):
     def __init__(self, model: str) -> None:
         self.model = model
         super().__init__(f"Model '{model}' is currently in use")
+
+
+class MemoryBudgetExceededError(OperationError):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
 
 
 class CatalogEntryNotFoundError(OperationError):
@@ -167,4 +173,6 @@ def classify_operation_error(exc: OperationError) -> OperationErrorKind:
         return OperationErrorKind.NOT_FOUND
     if isinstance(exc, ModelInUseError):
         return OperationErrorKind.CONFLICT
+    if isinstance(exc, MemoryBudgetExceededError):
+        return OperationErrorKind.RESOURCE_EXHAUSTED
     return OperationErrorKind.INTERNAL

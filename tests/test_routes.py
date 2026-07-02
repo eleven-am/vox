@@ -87,6 +87,7 @@ class MockScheduler(FakeScheduler):
         super().__init__()
         self._loaded = []
         self._unload = True
+        self._enforce_error: Exception | None = None
         self.preloaded: list[str] = []
         self.trimmed: list[str] = []
         self.enforced: list[int] = []
@@ -94,6 +95,7 @@ class MockScheduler(FakeScheduler):
     def list_loaded(self): return self._loaded
     def set_loaded(self, ms): self._loaded = ms
     def set_unload_result(self, v: bool): self._unload = v
+    def set_enforce_error(self, error: Exception): self._enforce_error = error
 
     async def unload(self, name: str) -> bool: return self._unload
     async def preload(self, name: str) -> None: self.preloaded.append(name)
@@ -105,6 +107,8 @@ class MockScheduler(FakeScheduler):
         return ["fake:latest"]
     async def enforce_memory_budget(self, *, additional_vram_bytes: int = 0) -> None:
         self.enforced.append(additional_vram_bytes)
+        if self._enforce_error is not None:
+            raise self._enforce_error
     def memory_snapshot(self):
         return VramSnapshot(
             policy=VramPolicy(max_vram_bytes=10_000, headroom_bytes=1_000, idle_trim_seconds=60),
@@ -188,6 +192,18 @@ class TestSystemMemory:
 
         assert resp.status_code == 200
         assert scheduler.enforced == [1024]
+
+    def test_enforce_memory_budget_endpoint_maps_budget_failure_to_507(self):
+        from vox.core.errors import ModelLoadError
+
+        scheduler = MockScheduler()
+        scheduler.set_enforce_error(ModelLoadError("Cannot satisfy VRAM budget"))
+        client = TestClient(_build_app(scheduler=scheduler))
+
+        resp = client.post("/v1/system/enforce-memory-budget", json={"additional_vram_bytes": 1024})
+
+        assert resp.status_code == 507
+        assert "Cannot satisfy VRAM budget" in resp.json()["detail"]
 
     def test_trim_model_endpoint_returns_conflict_when_active(self):
         scheduler = MockScheduler()
