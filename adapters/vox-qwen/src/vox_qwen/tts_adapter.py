@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 QWEN_TTS_SAMPLE_RATE = 24_000
 QWEN_TTS_RUNTIME_PACKAGES = (
+    "onnxruntime>=1.20,<2",
     "sox",
     "einops",
 )

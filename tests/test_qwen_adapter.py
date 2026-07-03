@@ -954,6 +954,7 @@ class TestQwenRuntimeBootstrap:
             )
             assert ensure_runtime.call_args.kwargs["no_deps"] is True
             assert ensure_runtime.call_args.kwargs["extra_packages"] == (
+                "onnxruntime>=1.20,<2",
                 "sox",
                 "einops",
             )
@@ -984,6 +985,7 @@ class TestQwenRuntimeBootstrap:
             )
             assert ensure_runtime.call_args.kwargs["no_deps"] is True
             assert "faster-qwen3-tts>=0.2.6" in ensure_runtime.call_args.kwargs["extra_packages"]
+            assert "onnxruntime>=1.20,<2" in ensure_runtime.call_args.kwargs["extra_packages"]
             assert "qwen_tts" in ensure_runtime.call_args.kwargs["required_imports"]
 
     def test_qwen_asr_runtime_purges_accelerate(self):
