@@ -4,10 +4,12 @@ import asyncio
 import importlib
 import os
 import sys
+from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 
 from vox.core.types import ModelFormat, ModelType
 
@@ -45,6 +47,80 @@ def _install_fake_chatterbox_modules(class_name: str = "ChatterboxTurboTTS") -> 
     return _FakeChatterboxTTS.model
 
 
+class _FakeTokenizer:
+    @classmethod
+    def from_pretrained(cls, model_path: str):
+        return cls()
+
+    def __call__(self, text: str, return_tensors: str):
+        return {"input_ids": np.array([[10, 11]], dtype=np.int64)}
+
+
+class _FakeOrtInput:
+    def __init__(self, name: str, type_: str = "tensor(float)") -> None:
+        self.name = name
+        self.type = type_
+
+
+class _FakeOrtSession:
+    created: list[tuple[str, list[str]]] = []
+
+    def __init__(self, path: str, providers: list[str]):
+        self.path = path
+        self.providers = providers
+        self.created.append((path, providers))
+
+    def get_inputs(self):
+        if "language_model" not in self.path:
+            return []
+        return [_FakeOrtInput("past_key_values.0.key"), _FakeOrtInput("past_key_values.0.value")]
+
+    def run(self, output_names, inputs):
+        if "embed_tokens" in self.path:
+            return [np.ones((1, inputs["input_ids"].shape[1], 4), dtype=np.float32)]
+        if "speech_encoder" in self.path:
+            return [
+                np.ones((1, 1, 4), dtype=np.float32),
+                np.array([[101, 102]], dtype=np.int64),
+                np.ones((1, 3), dtype=np.float32),
+                np.ones((1, 2), dtype=np.float32),
+            ]
+        if "language_model" in self.path:
+            logits = np.zeros((1, 1, 7000), dtype=np.float32)
+            logits[:, :, 6562] = 100.0
+            present = [
+                np.zeros((1, 16, 1, 64), dtype=np.float32),
+                np.zeros((1, 16, 1, 64), dtype=np.float32),
+            ]
+            return [logits, *present]
+        if "conditional_decoder" in self.path:
+            return [np.array([[0.0, 0.2, -0.2, 0.0]], dtype=np.float32)]
+        raise AssertionError(f"unexpected session path {self.path}")
+
+
+def _install_fake_onnx_modules():
+    ort = ModuleType("onnxruntime")
+    ort.InferenceSession = _FakeOrtSession
+    ort.get_available_providers = lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+    transformers = ModuleType("transformers")
+    transformers.AutoTokenizer = _FakeTokenizer
+
+    sys.modules["onnxruntime"] = ort
+    sys.modules["transformers"] = transformers
+    return ort, transformers
+
+
+def _write_fake_chatterbox_onnx_model(tmp_path):
+    model_dir = tmp_path / "model"
+    onnx_dir = model_dir / "onnx"
+    onnx_dir.mkdir(parents=True)
+    for name in ("speech_encoder", "embed_tokens", "language_model", "conditional_decoder"):
+        (onnx_dir / f"{name}.onnx").write_bytes(b"fake")
+    (model_dir / "tokenizer.json").write_text("{}")
+    return model_dir
+
+
 def test_chatterbox_package_import_is_light():
     sys.modules.pop("vox_chatterbox", None)
     sys.modules.pop("vox_chatterbox.adapter", None)
@@ -56,6 +132,7 @@ def test_chatterbox_package_import_is_light():
         "ChatterboxAdapter",
         "ChatterboxMultilingualAdapter",
         "ChatterboxTurboAdapter",
+        "ChatterboxTurboOnnxAdapter",
     ]
     assert "chatterbox" not in sys.modules
 
@@ -69,6 +146,18 @@ def test_chatterbox_info_returns_correct_metadata():
     assert info.type == ModelType.TTS
     assert info.default_sample_rate == 24_000
     assert ModelFormat.PYTORCH in info.supported_formats
+    assert info.supports_voice_cloning is True
+
+
+def test_chatterbox_turbo_onnx_info_returns_correct_metadata():
+    from vox_chatterbox.adapter import ChatterboxTurboOnnxAdapter
+
+    info = ChatterboxTurboOnnxAdapter().info()
+
+    assert info.name == "chatterbox-tts-turbo-onnx"
+    assert info.type == ModelType.TTS
+    assert info.default_sample_rate == 24_000
+    assert info.supported_formats == (ModelFormat.ONNX,)
     assert info.supports_voice_cloning is True
 
 
@@ -136,6 +225,62 @@ def test_chatterbox_bootstraps_runtime_when_missing(tmp_path):
     assert not any(req in dependency_install for req in {"torch", "torchaudio"})
     assert "transformers==5.2.0" in dependency_install
     assert "diffusers==0.29.0" in dependency_install
+
+
+def test_chatterbox_turbo_onnx_loads_local_graphs_and_synthesizes_with_reference(tmp_path):
+    _install_fake_onnx_modules()
+    _FakeOrtSession.created = []
+    model_dir = _write_fake_chatterbox_onnx_model(tmp_path)
+
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        from vox_chatterbox.adapter import ChatterboxTurboOnnxAdapter
+
+        with patch("vox_chatterbox.adapter._install_chatterbox_onnx_runtime"):
+            adapter = ChatterboxTurboOnnxAdapter()
+            adapter.load(str(model_dir), "cuda")
+
+        async def run():
+            chunks = []
+            async for chunk in adapter.synthesize(
+                "Hello",
+                reference_audio=np.ones(24_000, dtype=np.float32),
+            ):
+                chunks.append(chunk)
+            return chunks
+
+        chunks = asyncio.run(run())
+
+    assert adapter.is_loaded is True
+    assert chunks[-1].is_final is True
+    assert any(chunk.audio for chunk in chunks[:-1])
+    assert {Path(path).name for path, _providers in _FakeOrtSession.created} == {
+        "speech_encoder.onnx",
+        "embed_tokens.onnx",
+        "language_model.onnx",
+        "conditional_decoder.onnx",
+    }
+    assert all(providers[0] == "CUDAExecutionProvider" for _path, providers in _FakeOrtSession.created)
+
+
+def test_chatterbox_turbo_onnx_requires_reference_audio_or_voice(tmp_path):
+    _install_fake_onnx_modules()
+    model_dir = _write_fake_chatterbox_onnx_model(tmp_path)
+
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        from vox_chatterbox.adapter import ChatterboxTurboOnnxAdapter
+
+        with patch("vox_chatterbox.adapter._install_chatterbox_onnx_runtime"):
+            adapter = ChatterboxTurboOnnxAdapter()
+            adapter.load(str(model_dir), "cpu")
+
+        async def run():
+            chunks = []
+            async for chunk in adapter.synthesize("Hello"):
+                chunks.append(chunk)
+            return chunks
+
+        with pytest.raises(RuntimeError, match="requires reference_audio or a voice WAV path"):
+            asyncio.run(run())
 
 
 def test_chatterbox_removes_stale_torch_runtime_packages(tmp_path):

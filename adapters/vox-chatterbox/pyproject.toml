@@ -1,6 +1,6 @@
 [project]
 name = "vox-chatterbox"
-version = "0.1.2"
+version = "0.1.3"
 description = "Resemble Chatterbox TTS adapters for Vox"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
@@ -18,6 +18,7 @@ adapter-types = ["tts"]
 
 [project.entry-points."vox.adapters"]
 chatterbox-tts-turbo = "vox_chatterbox.adapter:ChatterboxTurboAdapter"
+chatterbox-tts-turbo-onnx = "vox_chatterbox.adapter:ChatterboxTurboOnnxAdapter"
 chatterbox-tts = "vox_chatterbox.adapter:ChatterboxAdapter"
 chatterbox-tts-multilingual = "vox_chatterbox.adapter:ChatterboxMultilingualAdapter"
 
