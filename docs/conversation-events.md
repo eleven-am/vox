@@ -177,7 +177,7 @@ Developer backend can attach to the control-only stream over PondSocket:
 
 This stream accepts `session.update`, `response.start`, `response.delta`,
 `response.commit`, `response.cancel`, and `client.event`. It emits the same
-conversation events as the conversation control channel, plus `client.event` for browser data
+conversation events as the conversation control channel, plus `browser.event` for browser data
 channel payloads. It does not emit `response.audio.delta`; assistant audio
 belongs on the WebRTC media path for this session.
 
@@ -252,21 +252,15 @@ Optional data channel:
 - Browser to backend:
   - Browser sends JSON text shaped as
     `{ "event": "<name>", "payload": <any JSON> }` on the WebRTC data channel.
-  - Vox relays that message to the control stream as `client.event`
+  - Vox relays that message to the control stream as `browser.event`
     (PondSocket) or `RtcClientEvent` (gRPC).
 - Vox does not define the meaning of `event` names or payload contents. It only
   requires the transport envelope.
 
 RTC diagnostics:
 
-- The RTC control stream emits `rtc.turn_timing` as a derived diagnostic event.
-  It does not replace any conversation event and should not drive turn logic.
-  The payload includes the source event name, turn index, elapsed milliseconds
-  since speech/transcript/response milestones when available, and RTC output
-  buffer stats such as `buffered_audio_ms`, `max_buffered_audio_ms`,
-  `queued_items`, `pending_samples`, and `clear_count`.
 - Browser clients may send `rtc.stats` over the WebRTC data channel using the
-  normal browser-to-backend data event envelope. Vox relays it as `client.event`
+  normal browser-to-backend data event envelope. Vox relays it as `browser.event`
   so application backends can correlate browser WebRTC health with Vox-side turn
   timing. Vox treats `rtc.stats` as application telemetry and does not use it for
   VAD, EOU, interruption, or TTS scheduling.
