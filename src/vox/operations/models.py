@@ -288,6 +288,11 @@ def pull_model(
             )
             store.save_manifest(resolved.resolved_name, resolved.resolved_tag, manifest)
 
+            if adapter_name:
+                yield PullEvent(status=f"preparing adapter runtime {adapter_name}")
+                await asyncio.to_thread(_prepare_adapter_runtime, registry, adapter_name)
+                yield PullEvent(status=f"adapter runtime {adapter_name} ready")
+
             if adapter_name == "voxtral-tts-vllm":
                 model_ref = f"{resolved.resolved_name}:{resolved.resolved_tag}"
                 yield PullEvent(status=f"preloading {model_ref}")
@@ -349,3 +354,9 @@ def _runtime_diagnostic_payload(
     if snapshot is not None:
         payload["detected"] = asdict(snapshot)
     return payload
+
+
+def _prepare_adapter_runtime(registry: Any, adapter_name: str) -> None:
+    adapter_cls = registry.get_adapter_class(adapter_name)
+    adapter = adapter_cls()
+    adapter.prepare_runtime()

@@ -243,7 +243,38 @@ def test_prime_lightning_imports_attaches_utilities_modules(monkeypatch: pytest.
     assert lightning_utilities.imports is lightning_imports
 
 
-def test_install_nemo_runtime_uses_pip_when_uv_install_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_install_nemo_runtime_uses_python312_compatible_pins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+
+    import vox_parakeet.nemo_adapter as module
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        mock = MagicMock()
+        mock.stderr = ""
+        mock.stdout = ""
+        calls.append(cmd)
+        mock.returncode = 0
+        return mock
+
+    monkeypatch.setattr(module, "_runtime_target_dir", lambda: tmp_path / "runtime")
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    module._install_nemo_runtime()
+
+    assert calls[0][:5] == ["uv", "pip", "install", "--python", sys.executable]
+    assert "--target" in calls[0]
+    assert "nemo-toolkit[asr]==2.7.3" in calls[0]
+    assert "numpy>=1.26,<2" in calls[0]
+    assert "numba>=0.61,<0.67" in calls[0]
+    assert "llvmlite>=0.44,<0.49" in calls[0]
+    assert len(calls) == 1
+    assert (tmp_path / "runtime" / ".vox-parakeet-nemo-runtime-ready").is_file()
+
+
+def test_install_nemo_runtime_fails_fast_when_uv_install_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     sys.modules.pop("vox_parakeet", None)
     sys.modules.pop("vox_parakeet.nemo_adapter", None)
 
@@ -258,25 +289,22 @@ def test_install_nemo_runtime_uses_pip_when_uv_install_fails(tmp_path: Path, mon
         calls.append(cmd)
         if cmd[0] == "uv":
             mock.returncode = 1
-            mock.stderr = "uv failed"
-        else:
-            mock.returncode = 0
-        return mock
+            mock.stderr = "resolution failed"
+            return mock
+        raise AssertionError(f"unexpected installer fallback: {cmd}")
 
     monkeypatch.setattr(module, "_runtime_target_dir", lambda: tmp_path / "runtime")
     monkeypatch.setattr(module.subprocess, "run", fake_run)
 
-    module._install_nemo_runtime()
+    with pytest.raises(RuntimeError, match="Failed to install Parakeet NeMo runtime dependencies"):
+        module._install_nemo_runtime()
 
-    assert calls[0][:5] == ["uv", "pip", "install", "--python", sys.executable]
-    assert "--target" in calls[0]
-    assert "nemo-toolkit[asr]" in calls[0]
-    assert calls[1][:4] == [sys.executable, "-m", "pip", "install"]
-    assert "--target" in calls[1]
-    assert (tmp_path / "runtime" / ".vox-parakeet-nemo-runtime-ready").is_file()
+    assert calls[0][:2] == ["uv", "pip"]
+    assert len(calls) == 1
+    assert not (tmp_path / "runtime" / ".vox-parakeet-nemo-runtime-ready").exists()
 
 
-def test_install_nemo_runtime_uses_pip_when_uv_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_install_nemo_runtime_fails_fast_when_uv_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     sys.modules.pop("vox_parakeet", None)
     sys.modules.pop("vox_parakeet.nemo_adapter", None)
 
@@ -285,31 +313,21 @@ def test_install_nemo_runtime_uses_pip_when_uv_is_missing(tmp_path: Path, monkey
     calls: list[list[str]] = []
 
     def fake_run(cmd, **kwargs):
-        mock = MagicMock()
-        mock.stderr = ""
-        mock.stdout = ""
         calls.append(cmd)
         if cmd[0] == "uv":
             raise FileNotFoundError("uv")
-        mock.returncode = 0
+        raise AssertionError(f"unexpected installer fallback: {cmd}")
         return mock
 
     monkeypatch.setattr(module, "_runtime_target_dir", lambda: tmp_path / "runtime")
     monkeypatch.setattr(module.subprocess, "run", fake_run)
 
-    module._install_nemo_runtime()
+    with pytest.raises(RuntimeError, match="Failed to install Parakeet NeMo runtime dependencies"):
+        module._install_nemo_runtime()
 
     assert calls[0][:2] == ["uv", "pip"]
-    assert calls[1] == [
-        sys.executable,
-        "-m",
-        "pip",
-        "install",
-        "--target",
-        str(tmp_path / "runtime"),
-        "nemo-toolkit[asr]",
-    ]
-    assert (tmp_path / "runtime" / ".vox-parakeet-nemo-runtime-ready").is_file()
+    assert len(calls) == 1
+    assert not (tmp_path / "runtime" / ".vox-parakeet-nemo-runtime-ready").exists()
 
 
 def test_transcribe_with_word_timestamps_builds_segment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

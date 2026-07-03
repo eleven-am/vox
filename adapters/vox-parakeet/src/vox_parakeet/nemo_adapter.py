@@ -37,7 +37,12 @@ PARAKEET_SAMPLE_RATE = 16_000
 DEFAULT_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 DEFAULT_VRAM_BYTES = 2_500_000_000
 _RUNTIME_SENTINEL = ".vox-parakeet-nemo-runtime-ready"
-_RUNTIME_DEPENDENCIES = ("nemo-toolkit[asr]",)
+_RUNTIME_DEPENDENCIES = (
+    "nemo-toolkit[asr]==2.7.3",
+    "numpy>=1.26,<2",
+    "numba>=0.61,<0.67",
+    "llvmlite>=0.44,<0.49",
+)
 
 
 
@@ -99,6 +104,7 @@ def _install_nemo_runtime() -> None:
         _RUNTIME_DEPENDENCIES,
         upgrade=False,
         timeout=1800,
+        installer_order=("uv",),
         install_runner=_run_install_command,
         context="Parakeet NeMo runtime install",
     ):
@@ -234,6 +240,9 @@ class ParakeetNemoAdapter(STTAdapter):
             supports_language_detection=True,
             supported_languages=(),
         )
+
+    def prepare_runtime(self) -> None:
+        _install_nemo_runtime()
 
     def load(self, model_path: str, device: str, **kwargs: Any) -> None:
         if self._loaded:

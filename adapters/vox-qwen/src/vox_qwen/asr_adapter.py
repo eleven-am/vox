@@ -269,6 +269,9 @@ class Qwen3ASRAdapter(STTAdapter):
     def is_loaded(self) -> bool:
         return self._loaded
 
+    def prepare_runtime(self) -> None:
+        _load_qwen_asr_model()
+
     def _audio_to_temp_wav(self, audio: NDArray[np.float32]) -> str:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             path = tmp.name

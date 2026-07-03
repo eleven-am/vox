@@ -341,6 +341,49 @@ async def test_pull_model_yields_progress_and_success(tmp_path: Path, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_pull_model_prepares_adapter_runtime_after_download(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("VOX_RUNTIME_OVERRIDE", "1")
+    monkeypatch.setenv("VOX_HAS_ONNXRUNTIME", "1")
+    store = BlobStore(root=tmp_path)
+    registry = _registry_mock()
+    registry.lookup.return_value = {
+        "architecture": "fake",
+        "type": "stt",
+        "adapter": "fake",
+        "format": "onnx",
+        "source": "owner/repo",
+        "parameters": {},
+        "adapter_package": "vox-fake",
+        "files": ["model.bin"],
+    }
+    scheduler = MagicMock()
+    prepared: list[str] = []
+
+    class FakeAdapter:
+        def prepare_runtime(self) -> None:
+            prepared.append("runtime")
+
+    registry.ensure_adapter.return_value = True
+    registry.get_adapter_class.return_value = FakeAdapter
+    downloaded = tmp_path / "model.bin"
+    downloaded.write_bytes(b"hello")
+
+    with patch("huggingface_hub.hf_hub_download", return_value=str(downloaded)):
+        events = pull_model(
+            store=store,
+            scheduler=scheduler,
+            registry=registry,
+            request=model_reference_request_from_fields(name="foo:latest"),
+        )
+        collected = [event async for event in events]
+
+    assert prepared == ["runtime"]
+    assert any(event.status == "preparing adapter runtime fake" for event in collected)
+    assert any(event.status == "adapter runtime fake ready" for event in collected)
+    assert collected[-1].status == "success"
+
+
+@pytest.mark.asyncio
 async def test_pull_model_resolves_logical_variant_and_records_runtime_metadata(
     tmp_path: Path,
     monkeypatch,

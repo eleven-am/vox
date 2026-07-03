@@ -959,5 +959,6 @@ def test_kokoro_torch_runtime_bootstrap_installs_spacy_model(tmp_path: Path, mon
     assert "spacy-curated-transformers>=0.3.0,<0.4.0" in install_calls[2]
     assert "--no-deps" in install_calls[2]
     assert "transformers>=4.57.6,<4.58" in install_calls[3]
+    assert "tokenizers>=0.22,<0.23.1" in install_calls[3]
     assert "--no-deps" in install_calls[3]
     assert any("en_core_web_sm-3.8.0-py3-none-any.whl" in part for part in install_calls[4])

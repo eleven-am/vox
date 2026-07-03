@@ -335,6 +335,9 @@ class _BaseChatterboxAdapter(TTSAdapter):
     def is_loaded(self) -> bool:
         return self._model is not None
 
+    def prepare_runtime(self) -> None:
+        _load_chatterbox_class(self.runtime_module, self.runtime_class)
+
     async def synthesize(
         self,
         text: str,
@@ -481,6 +484,9 @@ class ChatterboxTurboOnnxAdapter(TTSAdapter):
     @property
     def is_loaded(self) -> bool:
         return self._loaded
+
+    def prepare_runtime(self) -> None:
+        _install_chatterbox_onnx_runtime()
 
     def validate_synthesis_request(
         self,

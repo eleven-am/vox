@@ -448,6 +448,12 @@ class Qwen3TTSAdapter(TTSAdapter):
     def is_loaded(self) -> bool:
         return self._loaded
 
+    def prepare_runtime(self) -> None:
+        if _can_try_faster_qwen("cuda"):
+            _load_faster_qwen_tts_model()
+            return
+        _load_qwen_tts_model()
+
     def validate_synthesis_request(
         self,
         *,

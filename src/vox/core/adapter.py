@@ -46,6 +46,10 @@ class BaseAdapter(ABC):
         """Return optional backend-specific memory details for diagnostics."""
         return {}
 
+    def prepare_runtime(self) -> None:
+        """Install or verify adapter-owned runtime dependencies without loading weights."""
+        return None
+
 
 class STTAdapter(BaseAdapter):
     """Base class every STT model adapter must implement."""

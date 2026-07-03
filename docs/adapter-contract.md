@@ -60,6 +60,8 @@ It must include:
 - Lightweight Python dependencies needed to import the adapter package itself.
 - Runtime bootstrap code for heavyweight or conflict-prone dependencies, using
   `vox.core.adapter_runtime` where possible.
+- Optional pull-time runtime preparation through `prepare_runtime()`, limited
+  to installing or verifying adapter-owned runtime dependencies.
 - Adapter-specific compatibility patches that cannot reasonably live in the
   generic runtime.
 - Adapter tests proving import safety, load behavior, runtime bootstrap behavior,
@@ -112,6 +114,11 @@ Examples:
 Runtime directories are adapter-controlled and may be repaired or replaced by
 the adapter. They are not part of the base Vox install. They should be safe to
 delete and recreate if dependency resolution needs to be repaired.
+
+Adapters may prepare runtime dependencies during `vox pull`, but this must not
+load model weights, allocate persistent GPU memory, or start long-lived worker
+processes. Model weights still load through the scheduler when the model is
+actually used.
 
 Adapters should use `vox.core.adapter_runtime` for target-runtime installs when
 the backend can run from a `--target` directory. If a backend needs a stronger

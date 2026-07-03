@@ -112,7 +112,7 @@ def _install_runtime() -> None:
         "transformers>=4.57.6,<4.58",
         "accelerate>=1.10.0,<2.0.0",
         "huggingface-hub>=0.34,<1.0",
-        "tokenizers>=0.22,<0.24",
+        "tokenizers>=0.22,<0.23.1",
         "safetensors>=0.5,<1.0",
     ]
     if not _install_runtime_requirements(runtime_path, core_runtime_requirements, no_deps=True):
@@ -206,6 +206,9 @@ class KokoroTorchAdapter(TTSAdapter):
             supported_languages=SUPPORTED_LANGUAGES,
             max_input_chars=250,
         )
+
+    def prepare_runtime(self) -> None:
+        self._import_runtime()
 
     def load(self, model_path: str, device: str, **kwargs: Any) -> None:
         model_file = self._resolve_model_file(Path(model_path))

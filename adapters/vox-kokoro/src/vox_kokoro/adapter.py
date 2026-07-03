@@ -391,6 +391,9 @@ class KokoroAdapter(TTSAdapter):
             max_input_chars=250,
         )
 
+    def prepare_runtime(self) -> None:
+        _import_kokoro_onnx()
+
     def load(self, model_path: str, device: str, **kwargs: Any) -> None:
         """Load the Kokoro model from *model_path*.
 

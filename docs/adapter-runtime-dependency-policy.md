@@ -41,13 +41,17 @@ release behavior inside the bound and tests cover the adapter's load path.
 Broad ranges should be avoided for heavyweight runtime dependencies:
 
 ```text
-nemo-toolkit[asr]
 coqui-tts>=0.27.5
 ```
 
 They are allowed only as a temporary compatibility bridge. When a broad runtime
 dependency is used, the adapter must verify the runtime after install and fail
 with a clear error if the backend cannot be imported or loaded.
+
+Known-fragile stacks should use explicit pins or repair constraints. For
+example, Parakeet NeMo pins `nemo-toolkit[asr]==2.7.3` and constrains
+`numpy`, `numba`, and `llvmlite` so Python 3.12 does not resolve an old
+`llvmlite` build.
 
 ## `--upgrade` Policy
 
@@ -170,6 +174,18 @@ reinstalling. This is appropriate when:
 
 Adapters should not silently continue with a failed runtime. A broken runtime
 must either be repaired or reported.
+
+## Pull-Time Runtime Preparation
+
+Adapters may implement `prepare_runtime()` to install or verify adapter-owned
+runtime dependencies during `vox pull`. This hook is for package/runtime
+preparation only. It must not load model weights, allocate persistent GPU
+memory, or keep worker processes alive.
+
+`vox pull` calls this hook after adapter package installation, model artifact
+download, and manifest write. A failing hook makes the pull fail visibly instead
+of pushing a multi-minute runtime install or dependency error into the first
+request.
 
 ## Installer Order
 
