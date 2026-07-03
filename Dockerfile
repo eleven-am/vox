@@ -8,6 +8,7 @@ ARG TORCH_VERSION=2.10.0
 ARG TORCHAUDIO_VERSION=2.10.0
 ARG TRANSFORMERS_VERSION=4.57.6
 ARG HUGGINGFACE_HUB_VERSION=0.36.2
+ARG ONNXRUNTIME_GPU_VERSION=1.23.2
 
 FROM ghcr.io/astral-sh/uv:0.7.20 AS uv
 
@@ -22,6 +23,7 @@ ARG TORCH_VERSION
 ARG TORCHAUDIO_VERSION
 ARG TRANSFORMERS_VERSION
 ARG HUGGINGFACE_HUB_VERSION
+ARG ONNXRUNTIME_GPU_VERSION
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -85,9 +87,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     if [ "$VOX_ACCELERATOR" != "cpu" ] && [ "$TARGETARCH" = "amd64" ]; then \
         uv pip uninstall --python .venv/bin/python onnxruntime; \
         uv pip install --python .venv/bin/python \
-            onnxruntime-gpu==1.27.0 \
+            "onnxruntime-gpu==${ONNXRUNTIME_GPU_VERSION}" \
             "huggingface-hub==${HUGGINGFACE_HUB_VERSION}" \
             colorlog; \
+        .venv/bin/python -c 'import onnxruntime as ort; providers = ort.get_available_providers(); assert "CUDAExecutionProvider" in providers, f"onnxruntime-gpu is missing CUDAExecutionProvider: {providers}"'; \
     else \
         uv pip install --python .venv/bin/python \
             "huggingface-hub==${HUGGINGFACE_HUB_VERSION}" \

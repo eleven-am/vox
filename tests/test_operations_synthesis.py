@@ -21,6 +21,7 @@ from vox.core.types import (
 )
 from vox.operations.errors import (
     EmptyInputError,
+    InvalidConfigError,
     NoAudioGeneratedError,
     NoDefaultModelError,
     StoredModelNotFoundError,
@@ -86,6 +87,11 @@ class MultiChunkTTS(FakeTTS):
                 is_final=False,
             )
         yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
+
+
+class ValidatingTTS(FakeTTS):
+    def validate_synthesis_request(self, **kwargs):
+        raise InvalidConfigError("invalid synthesis request")
 
 
 def test_synthesis_request_from_fields_normalizes_transport_input():
@@ -286,6 +292,22 @@ async def test_synthesize_audio_response_non_streamed_wav_preflights_before_retu
             store=store,
             request=SynthesisRequest(input="hello", model="fake-stt:latest", response_format="wav"),
             stream=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_synthesize_audio_response_streamed_runs_adapter_validation_before_returning(tmp_path: Path):
+    sched = DummyScheduler(ValidatingTTS())
+    store = BlobStore(root=tmp_path)
+    registry = MagicMock()
+
+    with pytest.raises(InvalidConfigError, match="invalid synthesis request"):
+        await synthesize_audio_response(
+            scheduler=sched,
+            registry=registry,
+            store=store,
+            request=SynthesisRequest(input="hello", model="fake-tts:latest", response_format="wav"),
+            stream=True,
         )
 
 

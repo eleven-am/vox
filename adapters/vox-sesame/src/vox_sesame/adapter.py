@@ -28,6 +28,7 @@ from vox.core.types import (
     SynthesizeChunk,
     VoiceInfo,
 )
+from vox.operations.errors import InvalidConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +220,21 @@ class SesameTTSAdapter(TTSAdapter):
     @property
     def is_loaded(self) -> bool:
         return self._loaded
+
+    def validate_synthesis_request(
+        self,
+        *,
+        voice: str | None = None,
+        language: str | None = None,
+        reference_audio: NDArray[np.float32] | None = None,
+        reference_text: str | None = None,
+    ) -> None:
+        if (reference_audio is None) ^ (reference_text is None):
+            raise InvalidConfigError(
+                "Sesame CSM requires both reference_audio and reference_text when providing conversational context"
+            )
+        if reference_audio is not None and np.asarray(reference_audio, dtype=np.float32).size == 0:
+            raise InvalidConfigError("Sesame CSM reference_audio is empty")
 
     async def synthesize(
         self,

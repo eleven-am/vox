@@ -19,6 +19,7 @@ from vox.core.adapter_runtime import (
     runtime_root as vox_runtime_root,
 )
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+from vox.operations.errors import InvalidConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,17 @@ class OrpheusAdapter(TTSAdapter):
     @property
     def is_loaded(self) -> bool:
         return self._model is not None
+
+    def validate_synthesis_request(
+        self,
+        *,
+        voice: str | None = None,
+        language: str | None = None,
+        reference_audio: NDArray[np.float32] | None = None,
+        reference_text: str | None = None,
+    ) -> None:
+        if reference_audio is not None or reference_text is not None:
+            raise InvalidConfigError("Orpheus does not support reference_audio/reference_text")
 
     async def synthesize(
         self,

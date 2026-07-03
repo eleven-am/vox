@@ -13,6 +13,7 @@ import pytest
 import soundfile as sf
 
 from vox.core.types import ModelFormat, ModelType
+from vox.operations.errors import InvalidConfigError
 
 
 class _FakeIndexTTS2:
@@ -106,6 +107,13 @@ def test_indextts_requires_reference_audio_or_voice_path(tmp_path):
 
     with pytest.raises(ValueError, match="reference_audio or a voice path"):
         asyncio.run(run())
+
+
+def test_indextts_preflight_requires_reference_audio_or_voice_path():
+    from vox_indextts.adapter import IndexTTSAdapter
+
+    with pytest.raises(InvalidConfigError, match="reference_audio"):
+        IndexTTSAdapter().validate_synthesis_request()
 
 
 def test_indextts_bootstraps_runtime_when_missing(tmp_path):

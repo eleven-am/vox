@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from vox.core.types import ModelFormat, ModelType
+from vox.operations.errors import InvalidConfigError
 
 
 class _FakeNeuTTSAir:
@@ -116,6 +117,13 @@ def test_neutts_requires_reference_audio_or_saved_speaker(tmp_path):
 
     with pytest.raises(ValueError, match="reference_audio"):
         asyncio.run(run())
+
+
+def test_neutts_preflight_requires_reference_audio_or_saved_speaker():
+    from vox_neutts.adapter import NeuTTSAirAdapter
+
+    with pytest.raises(InvalidConfigError, match="reference_audio"):
+        NeuTTSAirAdapter().validate_synthesis_request()
 
 
 def test_neutts_falls_back_when_streaming_backend_is_not_implemented(tmp_path):

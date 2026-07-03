@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from vox.core.types import ModelFormat, ModelType
+from vox.operations.errors import InvalidConfigError
 
 
 def _mock_torch(cuda_available: bool = True, mps_available: bool = False):
@@ -640,6 +641,16 @@ class TestQwen3TTSAdapterInfo:
             with pytest.raises(ValueError, match="reference_audio"):
                 asyncio.run(run())
 
+    def test_preflight_clone_requires_reference_audio(self):
+        with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            adapter._mode = "clone"
+
+            with pytest.raises(InvalidConfigError, match="require reference_audio"):
+                adapter.validate_synthesis_request()
+
     def test_synthesize_clone_calls_generate_voice_clone(self):
         torch_mock = _mock_torch()
         qwen_tts_module, model_cls = _mock_qwen_tts_module()
@@ -710,6 +721,16 @@ class TestQwen3TTSAdapterInfo:
 
             with pytest.raises(ValueError, match="CustomVoice checkpoints do not use reference_audio"):
                 asyncio.run(run())
+
+    def test_preflight_custom_rejects_reference_audio(self):
+        with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            adapter._mode = "custom"
+
+            with pytest.raises(InvalidConfigError, match="do not use reference_audio"):
+                adapter.validate_synthesis_request(reference_audio=np.ones(16_000, dtype=np.float32))
 
     def test_load_mode_override_forces_clone(self):
         torch_mock = _mock_torch()

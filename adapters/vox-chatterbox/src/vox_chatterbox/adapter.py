@@ -24,6 +24,7 @@ from vox.core.adapter_runtime import (
     runtime_root as vox_runtime_root,
 )
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+from vox.operations.errors import InvalidConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -480,6 +481,24 @@ class ChatterboxTurboOnnxAdapter(TTSAdapter):
     @property
     def is_loaded(self) -> bool:
         return self._loaded
+
+    def validate_synthesis_request(
+        self,
+        *,
+        voice: str | None = None,
+        language: str | None = None,
+        reference_audio: NDArray[np.float32] | None = None,
+        reference_text: str | None = None,
+    ) -> None:
+        if reference_audio is not None:
+            if np.asarray(reference_audio, dtype=np.float32).size == 0:
+                raise InvalidConfigError("Chatterbox Turbo ONNX reference_audio is empty")
+            return
+        if _voice_path(voice) is not None:
+            return
+        raise InvalidConfigError(
+            "Chatterbox Turbo ONNX requires reference_audio or a stored voice/reference WAV"
+        )
 
     async def synthesize(
         self,

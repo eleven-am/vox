@@ -13,6 +13,7 @@ import pytest
 
 from tests._catalog_fixture import FIXTURE_CATALOG as CATALOG
 from vox.core.types import ModelFormat, ModelType
+from vox.operations.errors import InvalidConfigError
 
 
 def _mock_torch(cuda_available: bool = True, mps_available: bool = False):
@@ -282,6 +283,13 @@ class TestPiperAdapter:
 
             with pytest.raises(ValueError, match="reference_audio/reference_text"):
                 asyncio.run(run())
+
+    def test_preflight_rejects_reference_audio(self):
+        with patch.dict("sys.modules", {"torch": _mock_torch(), "piper": MagicMock()}):
+            from vox_piper.adapter import PiperAdapter
+
+            with pytest.raises(InvalidConfigError, match="reference_audio/reference_text"):
+                PiperAdapter().validate_synthesis_request(reference_text="hello")
 
     def test_estimate_vram_bytes(self):
         with patch.dict("sys.modules", {"torch": _mock_torch(), "piper": MagicMock()}):

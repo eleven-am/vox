@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from vox.core.types import ModelFormat, ModelType
+from vox.operations.errors import InvalidConfigError
 
 
 class _FakeOrpheusModel:
@@ -92,6 +93,13 @@ def test_orpheus_rejects_reference_audio(tmp_path):
 
     with pytest.raises(ValueError, match="reference_audio/reference_text"):
         asyncio.run(run())
+
+
+def test_orpheus_preflight_rejects_reference_audio():
+    from vox_orpheus.adapter import OrpheusAdapter
+
+    with pytest.raises(InvalidConfigError, match="reference_audio/reference_text"):
+        OrpheusAdapter().validate_synthesis_request(reference_text="x")
 
 
 def test_orpheus_bootstraps_runtime_when_missing(tmp_path):

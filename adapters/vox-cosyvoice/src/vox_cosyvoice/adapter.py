@@ -22,6 +22,7 @@ from vox.core.adapter_runtime import (
     runtime_root as vox_runtime_root,
 )
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+from vox.operations.errors import InvalidConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,24 @@ class CosyVoice2Adapter(TTSAdapter):
     @property
     def is_loaded(self) -> bool:
         return self._model is not None
+
+    def validate_synthesis_request(
+        self,
+        *,
+        voice: str | None = None,
+        language: str | None = None,
+        reference_audio: NDArray[np.float32] | None = None,
+        reference_text: str | None = None,
+    ) -> None:
+        if reference_audio is not None:
+            if np.asarray(reference_audio, dtype=np.float32).size == 0:
+                raise InvalidConfigError("CosyVoice2 reference_audio is empty")
+            return
+        if _voice_path(voice) is not None:
+            return
+        if voice and voice.strip():
+            return
+        raise InvalidConfigError("CosyVoice2 requires reference_audio, a voice path, or a zero_shot_spk_id voice value")
 
     async def synthesize(
         self,

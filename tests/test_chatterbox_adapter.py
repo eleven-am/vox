@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 
 from vox.core.types import ModelFormat, ModelType
+from vox.operations.errors import InvalidConfigError
 
 
 class _FakeChatterboxModel:
@@ -281,6 +282,23 @@ def test_chatterbox_turbo_onnx_requires_reference_audio_or_voice(tmp_path):
 
         with pytest.raises(RuntimeError, match="requires reference_audio or a voice WAV path"):
             asyncio.run(run())
+
+
+def test_chatterbox_turbo_onnx_preflight_rejects_missing_reference():
+    from vox_chatterbox.adapter import ChatterboxTurboOnnxAdapter
+
+    adapter = ChatterboxTurboOnnxAdapter()
+
+    with pytest.raises(InvalidConfigError, match="requires reference_audio"):
+        adapter.validate_synthesis_request()
+
+
+def test_chatterbox_turbo_onnx_preflight_accepts_reference_audio():
+    from vox_chatterbox.adapter import ChatterboxTurboOnnxAdapter
+
+    adapter = ChatterboxTurboOnnxAdapter()
+
+    adapter.validate_synthesis_request(reference_audio=np.ones(24_000, dtype=np.float32))
 
 
 def test_chatterbox_removes_stale_torch_runtime_packages(tmp_path):

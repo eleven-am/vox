@@ -88,3 +88,14 @@ class TTSAdapter(BaseAdapter):
     def list_voices(self) -> list[VoiceInfo]:
         """Return built-in voice options. Empty for voice-cloning-only models."""
         return []
+
+    def validate_synthesis_request(
+        self,
+        *,
+        voice: str | None = None,
+        language: str | None = None,
+        reference_audio: NDArray[np.float32] | None = None,
+        reference_text: str | None = None,
+    ) -> None:
+        """Validate adapter-specific synthesis inputs before a response stream starts."""
+        return None

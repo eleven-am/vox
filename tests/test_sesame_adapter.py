@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from vox.core.types import ModelFormat, ModelType
+from vox.operations.errors import InvalidConfigError
 
 
 def _clear_sesame_modules() -> None:
@@ -277,3 +278,13 @@ class TestSesameAdapterSynthesis:
             import asyncio
             with pytest.raises(ValueError, match="reference_audio and reference_text"):
                 asyncio.run(collect())
+
+    def test_preflight_requires_context_pairs(self):
+        with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
+            _clear_sesame_modules()
+            from vox_sesame.adapter import SesameTTSAdapter
+
+            adapter = SesameTTSAdapter()
+
+            with pytest.raises(InvalidConfigError, match="reference_audio and reference_text"):
+                adapter.validate_synthesis_request(reference_audio=np.zeros(16_000, dtype=np.float32))

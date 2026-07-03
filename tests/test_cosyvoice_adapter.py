@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from vox.core.types import ModelFormat, ModelType
+from vox.operations.errors import InvalidConfigError
 
 
 class _FakeCosyVoice2:
@@ -112,6 +113,13 @@ def test_cosyvoice_requires_reference_or_saved_speaker(tmp_path):
 
     with pytest.raises(ValueError, match="reference_audio"):
         asyncio.run(run())
+
+
+def test_cosyvoice_preflight_requires_reference_or_speaker():
+    from vox_cosyvoice.adapter import CosyVoice2Adapter
+
+    with pytest.raises(InvalidConfigError, match="reference_audio"):
+        CosyVoice2Adapter().validate_synthesis_request()
 
 
 def test_cosyvoice_bootstraps_runtime_when_missing(tmp_path):

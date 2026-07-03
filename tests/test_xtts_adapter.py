@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from vox.core.types import ModelFormat, ModelType
+from vox.operations.errors import InvalidConfigError
 
 
 class TestXTTSAdapter:
@@ -61,6 +62,14 @@ class TestXTTSAdapter:
 
         with pytest.raises(ValueError, match="requires reference_audio or a voice wav path"):
             asyncio.run(self._collect(adapter.synthesize("hello")))
+
+    def test_preflight_requires_reference_audio_or_voice_path(self):
+        from vox_xtts.adapter import XTTSAdapter
+
+        adapter = XTTSAdapter()
+
+        with pytest.raises(InvalidConfigError, match="requires reference_audio"):
+            adapter.validate_synthesis_request()
 
     def test_synthesize_uses_voice_path(self, tmp_path: Path):
         from vox_xtts.adapter import XTTSAdapter

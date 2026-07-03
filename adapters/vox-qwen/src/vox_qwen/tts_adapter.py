@@ -27,6 +27,7 @@ from vox.core.types import (
     SynthesizeChunk,
     VoiceInfo,
 )
+from vox.operations.errors import InvalidConfigError
 from vox_qwen.runtime import ensure_runtime
 
 logger = logging.getLogger(__name__)
@@ -446,6 +447,27 @@ class Qwen3TTSAdapter(TTSAdapter):
     @property
     def is_loaded(self) -> bool:
         return self._loaded
+
+    def validate_synthesis_request(
+        self,
+        *,
+        voice: str | None = None,
+        language: str | None = None,
+        reference_audio: NDArray[np.float32] | None = None,
+        reference_text: str | None = None,
+    ) -> None:
+        if self._mode == "clone":
+            if reference_audio is None or np.asarray(reference_audio, dtype=np.float32).size == 0:
+                raise InvalidConfigError(
+                    "Qwen3-TTS Base (clone) checkpoints require reference_audio; "
+                    "upload a reference sample via POST /v1/audio/voices and pass its voice id"
+                )
+            return
+        if reference_audio is not None:
+            raise InvalidConfigError(
+                "Qwen3-TTS CustomVoice checkpoints do not use reference_audio; "
+                "load a Base checkpoint for zero-shot cloning or pass a speaker name via voice"
+            )
 
     async def synthesize(
         self,

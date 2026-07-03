@@ -107,6 +107,15 @@ def _validate_input(text: str) -> None:
         raise EmptyInputError()
 
 
+def _validate_tts_synthesis_context(context: _TtsSynthesisContext) -> None:
+    context.adapter.validate_synthesis_request(
+        voice=context.voice,
+        language=context.language,
+        reference_audio=context.reference_audio,
+        reference_text=context.reference_text,
+    )
+
+
 @asynccontextmanager
 async def _acquire_tts_synthesis_context(
     *,
@@ -138,6 +147,7 @@ async def _iter_tts_synthesis_chunks(
     context: _TtsSynthesisContext,
     request: SynthesisRequest,
 ) -> AsyncIterator[tuple[int, SynthesizeChunk]]:
+    _validate_tts_synthesis_context(context)
     for idx, text_chunk in enumerate(context.text_chunks):
         async for chunk in context.adapter.synthesize(
             text_chunk,
@@ -219,8 +229,8 @@ async def preflight_synthesis(
         store=store,
         model=model,
         request=request,
-    ):
-        pass
+    ) as context:
+        _validate_tts_synthesis_context(context)
 
 
 async def synthesize_stream(
