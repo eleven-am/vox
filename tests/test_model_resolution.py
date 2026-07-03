@@ -291,3 +291,69 @@ def test_concrete_entry_falls_back_and_warns_when_preferred_unavailable():
     )
     assert resolution.preferred_backend == "standard"
     assert any("fast" in warning for warning in resolution.warnings)
+
+
+def _qwen_concrete_entry():
+    return {
+        "type": "tts",
+        "architecture": "qwen3-tts",
+        "adapter": "qwen3-tts-torch",
+        "adapter_package": "vox-qwen",
+        "format": "pytorch",
+        "source": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+        "backends": {
+            "preferred": [
+                {
+                    "name": "faster-qwen3-tts",
+                    "requires": {
+                        "python_modules": ["torch", "faster_qwen3_tts"],
+                        "accelerators": ["cuda"],
+                        "min_versions": {"torch": "2.5.1"},
+                    },
+                }
+            ],
+            "fallback": {
+                "name": "qwen-tts",
+                "requires": {"python_modules": ["torch"]},
+            },
+        },
+    }
+
+
+def test_forced_backend_pins_standard_qwen_on_cuda_without_missing():
+    resolution = resolve_catalog_entry(
+        _qwen_concrete_entry(),
+        snapshot=_caps(torch_installed=True, torch_version="2.8.0", torch_cuda=True),
+        forced_backend="qwen-tts",
+    )
+
+    assert resolution.forced_backend == "qwen-tts"
+    assert resolution.preferred_backend == "qwen-tts"
+    assert resolution.missing == ()
+
+
+def test_forced_backend_reports_missing_when_not_declared():
+    resolution = resolve_catalog_entry(
+        _qwen_concrete_entry(),
+        snapshot=_caps(torch_installed=True, torch_version="2.8.0", torch_cuda=True),
+        forced_backend="mystery-backend",
+    )
+
+    assert resolution.forced_backend == "mystery-backend"
+    assert resolution.preferred_backend == "mystery-backend"
+    assert any(
+        "mystery-backend" in reason and "not available" in reason
+        for reason in resolution.missing
+    )
+    assert any("faster-qwen3-tts" in reason for reason in resolution.missing)
+
+
+def test_forced_backend_gates_faster_backend_on_non_cuda_runtime():
+    resolution = resolve_catalog_entry(
+        _qwen_concrete_entry(),
+        snapshot=_caps(torch_installed=True, torch_version="2.8.0", torch_cuda=False),
+        forced_backend="faster-qwen3-tts",
+    )
+
+    assert resolution.forced_backend == "faster-qwen3-tts"
+    assert resolution.missing

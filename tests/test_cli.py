@@ -207,6 +207,23 @@ class TestPull:
         }
 
     @patch("httpx.stream")
+    def test_pull_backend_sends_request_field(self, mock_stream, runner):
+        ctx = MagicMock()
+        ctx.status_code = 200
+        ctx.__enter__ = Mock(return_value=ctx)
+        ctx.__exit__ = Mock(return_value=False)
+        ctx.iter_lines.return_value = iter([json.dumps({"status": "done"})])
+        mock_stream.return_value = ctx
+
+        result = runner.invoke(cli, ["pull", "qwen3-tts:0.6b", "--backend", "qwen-tts"])
+
+        assert result.exit_code == 0
+        assert mock_stream.call_args.kwargs["json"] == {
+            "name": "qwen3-tts:0.6b",
+            "backend": "qwen-tts",
+        }
+
+    @patch("httpx.stream")
     def test_pull_error_status_in_stream(self, mock_stream, runner):
         lines = [
             json.dumps({"status": "error", "error": "model not found"}),

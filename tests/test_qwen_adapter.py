@@ -459,6 +459,60 @@ class TestQwen3TTSAdapterInfo:
             assert adapter._backend == "qwen-tts"
             assert adapter._model is model_instance
 
+    def test_load_backend_pin_forces_standard_qwen_over_faster(self):
+        torch_mock = _mock_torch()
+        qwen_tts_module, model_cls = _mock_qwen_tts_module()
+        model_instance = MagicMock()
+        model_instance.processor = MagicMock()
+        model_instance.get_supported_speakers.return_value = ["Ryan"]
+        model_cls.from_pretrained.return_value = model_instance
+        faster_loader = MagicMock()
+
+        with patch.dict("sys.modules", {"torch": torch_mock, "qwen_asr": MagicMock(), "qwen_tts": qwen_tts_module}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            with (
+                patch("vox_qwen.tts_adapter._load_faster_qwen_tts_model", faster_loader),
+                patch("vox_qwen.tts_adapter._supports_flash_attention", return_value=False),
+            ):
+                adapter.load(
+                    "local-path",
+                    "cuda",
+                    _source="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+                    default_voice="Ryan",
+                    backend="qwen-tts",
+                )
+
+            faster_loader.assert_not_called()
+            model_cls.from_pretrained.assert_called_once()
+            assert adapter._backend == "qwen-tts"
+            assert adapter._model is model_instance
+
+    def test_load_without_backend_pin_selects_faster_on_cuda(self):
+        torch_mock = _mock_torch()
+        faster_model = _mock_faster_qwen_model()
+        faster_cls = MagicMock()
+        faster_cls.from_pretrained.return_value = faster_model
+
+        with patch.dict("sys.modules", {"torch": torch_mock, "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            with (
+                patch("vox_qwen.tts_adapter._load_faster_qwen_tts_model", return_value=faster_cls),
+                patch("vox_qwen.tts_adapter._supports_flash_attention", return_value=False),
+            ):
+                adapter.load(
+                    "local-path",
+                    "cuda",
+                    _source="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+                    default_voice="Ryan",
+                )
+
+            faster_cls.from_pretrained.assert_called_once()
+            assert adapter._backend == "faster-qwen3-tts"
+
     def test_synthesize_custom_streams_from_faster_backend(self):
         with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):
             from vox_qwen.tts_adapter import Qwen3TTSAdapter

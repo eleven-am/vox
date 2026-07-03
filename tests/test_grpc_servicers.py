@@ -212,6 +212,28 @@ class TestModelServicerMapping:
         assert len(messages) == 1
         assert messages[0].status == "success"
 
+    @pytest.mark.asyncio
+    async def test_pull_forwards_backend_field(self, tmp_path):
+        from vox.grpc.model_servicer import ModelServicer
+
+        async def fake_events(**kwargs):
+            request = kwargs["request"]
+            assert request.name == "qwen3-tts:0.6b"
+            assert request.backend == "qwen-tts"
+            yield PullEvent(status="success")
+
+        servicer = ModelServicer(_make_store(tmp_path), _make_registry_mock(), MagicMock())
+        with patch("vox.grpc.model_servicer.pull_model", side_effect=fake_events):
+            messages = []
+            async for msg in servicer.Pull(
+                vox_pb2.PullRequest(name="qwen3-tts:0.6b", backend="qwen-tts"),
+                FakeContext(),
+            ):
+                messages.append(msg)
+
+        assert len(messages) == 1
+        assert messages[0].status == "success"
+
 
 class TestGrpcModelMessages:
     def test_list_models_response_matches_operation_payload_fields(self):

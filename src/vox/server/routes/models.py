@@ -28,6 +28,7 @@ router = APIRouter()
 class PullRequest(BaseModel):
     name: str
     variant: str | None = None
+    backend: str | None = None
 
 
 @router.post("/v1/models/pull")
@@ -39,7 +40,9 @@ async def pull_model_route(req: PullRequest, request: Request):
             store=services.store,
             scheduler=services.scheduler,
             registry=services.registry,
-            request=model_reference_request_from_fields(name=req.name, variant=req.variant),
+            request=model_reference_request_from_fields(
+                name=req.name, variant=req.variant, backend=req.backend
+            ),
         )
 
     async def stream():

@@ -42,6 +42,7 @@ class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
                 request=model_reference_request_from_fields(
                     name=request.name,
                     variant=request.variant or None,
+                    backend=request.backend or None,
                 ),
             )
         except CatalogEntryNotFoundError as exc:

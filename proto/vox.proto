@@ -49,6 +49,7 @@ message LoadedModel {
 message PullRequest {
   string name = 1;
   string variant = 2;
+  string backend = 3;
 }
 
 message PullProgress {

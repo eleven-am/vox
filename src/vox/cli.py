@@ -436,14 +436,17 @@ def serve(
 @cli.command()
 @click.argument("model")
 @click.option("--variant", default=None, help="Force a hardware/backend variant such as onnx or torch")
+@click.option("--backend", default=None, help="Pin a load-time backend (e.g. qwen-tts to force the standard backend)")
 @click.pass_context
-def pull(ctx, model: str, variant: str | None):
+def pull(ctx, model: str, variant: str | None, backend: str | None):
     """Download a model."""
     host = ctx.obj["host"]
     had_error = False
     payload = {"name": model}
     if variant:
         payload["variant"] = variant
+    if backend:
+        payload["backend"] = backend
     try:
         with httpx.stream("POST", f"{host}/v1/models/pull", json=payload, timeout=None) as resp:
             if resp.status_code >= 400:

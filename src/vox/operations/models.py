@@ -49,6 +49,7 @@ class PullEvent:
 class ModelReferenceRequest:
     name: str
     variant: str | None = None
+    backend: str | None = None
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,7 @@ class ResolvedModelReference:
     parsed_name: str
     parsed_tag: str
     requested_variant: str | None
+    requested_backend: str | None
     resolved_name: str
     resolved_tag: str
     explicit_tag: bool
@@ -66,8 +68,9 @@ def model_reference_request_from_fields(
     *,
     name: str,
     variant: str | None = None,
+    backend: str | None = None,
 ) -> ModelReferenceRequest:
-    return ModelReferenceRequest(name=name, variant=variant or None)
+    return ModelReferenceRequest(name=name, variant=variant or None, backend=backend or None)
 
 
 def model_info_payload(model: ModelInfo) -> dict[str, Any]:
@@ -182,6 +185,7 @@ def pull_model(
     variant_resolution = resolve_catalog_entry(
         catalog_entry,
         forced_variant=resolved.requested_variant,
+        forced_backend=resolved.requested_backend,
     )
     catalog_entry = variant_resolution.entry
     missing = list(variant_resolution.missing)
@@ -265,27 +269,28 @@ def pull_model(
                     filename=filename,
                 ))
 
-            manifest = Manifest(
-                layers=layers,
-                config={
-                    "architecture": catalog_entry["architecture"],
-                    "type": catalog_entry["type"],
-                    "adapter": catalog_entry["adapter"],
-                    "format": catalog_entry["format"],
-                    "source": source,
-                    "runtime_source": catalog_entry.get("runtime_source", ""),
-                    "parameters": catalog_entry.get("parameters", {}),
-                    "description": catalog_entry.get("description", ""),
-                    "license": catalog_entry.get("license", ""),
-                    "adapter_package": catalog_entry.get("adapter_package", ""),
-                    "runtime": _runtime_diagnostic_payload(
-                        variant_id=variant_resolution.variant_id,
-                        preferred_backend=variant_resolution.preferred_backend,
-                        warnings=variant_resolution.warnings,
-                        snapshot=variant_resolution.snapshot,
-                    ),
-                },
-            )
+            config: dict[str, Any] = {
+                "architecture": catalog_entry["architecture"],
+                "type": catalog_entry["type"],
+                "adapter": catalog_entry["adapter"],
+                "format": catalog_entry["format"],
+                "source": source,
+                "runtime_source": catalog_entry.get("runtime_source", ""),
+                "parameters": catalog_entry.get("parameters", {}),
+                "description": catalog_entry.get("description", ""),
+                "license": catalog_entry.get("license", ""),
+                "adapter_package": catalog_entry.get("adapter_package", ""),
+                "runtime": _runtime_diagnostic_payload(
+                    variant_id=variant_resolution.variant_id,
+                    preferred_backend=variant_resolution.preferred_backend,
+                    forced_backend=variant_resolution.forced_backend,
+                    warnings=variant_resolution.warnings,
+                    snapshot=variant_resolution.snapshot,
+                ),
+            }
+            if variant_resolution.forced_backend:
+                config["backend"] = variant_resolution.forced_backend
+            manifest = Manifest(layers=layers, config=config)
             store.save_manifest(resolved.resolved_name, resolved.resolved_tag, manifest)
 
             if adapter_name:
@@ -332,6 +337,7 @@ def resolve_model_reference(
         parsed_name=parsed.name,
         parsed_tag=parsed.tag,
         requested_variant=request.variant,
+        requested_backend=request.backend,
         resolved_name=resolved_name,
         resolved_tag=resolved_tag,
         explicit_tag=parsed.explicit_tag,
@@ -342,6 +348,7 @@ def _runtime_diagnostic_payload(
     *,
     variant_id: str | None,
     preferred_backend: str | None,
+    forced_backend: str | None,
     warnings: tuple[str, ...],
     snapshot: Any,
 ) -> dict[str, Any]:
@@ -349,6 +356,7 @@ def _runtime_diagnostic_payload(
         "checked_at_pull": True,
         "resolved_variant": variant_id or "",
         "preferred_backend": preferred_backend or "",
+        "pinned_backend": forced_backend or "",
         "warnings": list(warnings),
     }
     if snapshot is not None:

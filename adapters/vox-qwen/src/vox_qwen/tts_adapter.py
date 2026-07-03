@@ -341,13 +341,14 @@ class Qwen3TTSAdapter(TTSAdapter):
         source = kwargs.pop("_source", None)
         self._default_voice = kwargs.pop("default_voice", None)
         mode_override = kwargs.pop("mode", None)
+        pinned = kwargs.pop("backend", None)
         self._model_id = source if source else model_path
         path = Path(model_path)
         self._model_ref = str(path) if path.exists() else self._model_id
         self._mode = _detect_mode(self._model_id, override=mode_override)
 
         self._device = device
-        if _can_try_faster_qwen(self._device):
+        if _can_try_faster_qwen(self._device) and pinned in (None, "faster-qwen3-tts"):
             try:
                 FasterQwen3TTS = _load_faster_qwen_tts_model()
                 dtype = _select_dtype(self._device)
