@@ -5,7 +5,7 @@ import importlib
 import os
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -26,6 +26,20 @@ class _FakeChatterboxModel:
         return np.array([0.0, 0.25, -0.25, 0.0], dtype=np.float32)
 
 
+class _FakeStrictChatterboxModel:
+    sr = 24_000
+
+    def __init__(self) -> None:
+        self.generate_calls: list[tuple[str, dict]] = []
+
+    def generate(self, text: str, *, audio_prompt_path: str | None = None):
+        kwargs = {}
+        if audio_prompt_path is not None:
+            kwargs["audio_prompt_path"] = audio_prompt_path
+        self.generate_calls.append((text, kwargs))
+        return np.array([0.0, 0.25, -0.25, 0.0], dtype=np.float32)
+
+
 class _FakeChatterboxTTS:
     model = _FakeChatterboxModel()
     calls: list[dict] = []
@@ -36,16 +50,33 @@ class _FakeChatterboxTTS:
         return cls.model
 
 
-def _install_fake_chatterbox_modules(class_name: str = "ChatterboxTurboTTS") -> _FakeChatterboxModel:
+def _install_fake_chatterbox_modules(
+    class_name: str = "ChatterboxTurboTTS",
+    model: _FakeChatterboxModel | _FakeStrictChatterboxModel | None = None,
+) -> _FakeChatterboxModel | _FakeStrictChatterboxModel:
+    if model is not None:
+        class fake_tts:
+            calls: list[dict] = []
+
+            @classmethod
+            def from_pretrained(cls, **kwargs):
+                cls.calls.append(kwargs)
+                return model
+
+        tts_cls = fake_tts
+    else:
+        tts_cls = _FakeChatterboxTTS
+        model = _FakeChatterboxTTS.model
+
     chatterbox = ModuleType("chatterbox")
     tts = ModuleType("chatterbox.tts")
     tts_turbo = ModuleType("chatterbox.tts_turbo")
-    setattr(tts, class_name, _FakeChatterboxTTS)
-    setattr(tts_turbo, class_name, _FakeChatterboxTTS)
+    setattr(tts, class_name, tts_cls)
+    setattr(tts_turbo, class_name, tts_cls)
     sys.modules["chatterbox"] = chatterbox
     sys.modules["chatterbox.tts"] = tts
     sys.modules["chatterbox.tts_turbo"] = tts_turbo
-    return _FakeChatterboxTTS.model
+    return model
 
 
 class _FakeTokenizer:
@@ -184,6 +215,96 @@ def test_chatterbox_load_uses_target_runtime_and_synthesizes(tmp_path):
     assert chunks[0].sample_rate == 24_000
     assert model.generate_calls[0][0] == "Hello"
     assert model.generate_calls[0][1]["speed"] == 1.1
+
+
+def test_chatterbox_clone_does_not_pass_reference_text_to_runtime_that_rejects_it(tmp_path):
+    model = _FakeStrictChatterboxModel()
+    _install_fake_chatterbox_modules(model=model)
+
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        from vox_chatterbox.adapter import ChatterboxTurboAdapter
+
+        adapter = ChatterboxTurboAdapter()
+        adapter.load(str(tmp_path), "cpu")
+
+        async def run():
+            chunks = []
+            reference = np.zeros(24_000, dtype=np.float32)
+            async for chunk in adapter.synthesize(
+                "Clone this",
+                reference_audio=reference,
+                reference_text="reference words",
+            ):
+                chunks.append(chunk)
+            return chunks
+
+        chunks = asyncio.run(run())
+
+    assert chunks[-1].is_final is True
+    assert model.generate_calls[0][0] == "Clone this"
+    assert "audio_prompt_path" in model.generate_calls[0][1]
+    assert "audio_prompt_text" not in model.generate_calls[0][1]
+
+
+def test_chatterbox_reference_audio_is_written_as_pcm16(tmp_path):
+    from vox_chatterbox.adapter import _write_reference_audio
+
+    reference = np.zeros(24_000, dtype=np.float32)
+
+    with patch("vox_chatterbox.adapter.sf.write") as write:
+        _write_reference_audio(tmp_path / "reference.wav", reference, 24_000)
+
+    assert write.call_args.kwargs["subtype"] == "PCM_16"
+
+
+def test_chatterbox_norm_loudness_patch_preserves_float32():
+    from vox_chatterbox.adapter import _patch_norm_loudness_float32
+
+    class fake_model:
+        def norm_loudness(self, audio, sr):
+            return np.asarray(audio, dtype=np.float32) * 1.1
+
+    model = fake_model()
+    _patch_norm_loudness_float32(model)
+
+    output = model.norm_loudness(np.ones(4, dtype=np.float32), 24_000)
+
+    assert output.dtype == np.float32
+
+
+def test_chatterbox_cuda_multinomial_samples_on_cpu(monkeypatch):
+    from vox_chatterbox.adapter import _cuda_multinomial_samples_on_cpu
+
+    calls: list[object] = []
+
+    class fake_tensor:
+        is_cuda = True
+        device = "cuda"
+
+        def detach(self):
+            return self
+
+        def cpu(self):
+            calls.append("cpu")
+            return "cpu-tensor"
+
+    class fake_result:
+        def to(self, device):
+            calls.append(("to", device))
+            return "cuda-result"
+
+    def fake_multinomial(input, *args, **kwargs):
+        calls.append(input)
+        return fake_result()
+
+    torch_module = SimpleNamespace(multinomial=fake_multinomial)
+    monkeypatch.setitem(sys.modules, "torch", torch_module)
+
+    with _cuda_multinomial_samples_on_cpu():
+        result = torch_module.multinomial(fake_tensor(), 1)
+
+    assert result == "cuda-result"
+    assert calls == ["cpu", "cpu-tensor", ("to", "cuda")]
 
 
 def test_chatterbox_bootstraps_runtime_when_missing(tmp_path):

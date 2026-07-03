@@ -521,6 +521,39 @@ class TestQwen3TTSAdapterInfo:
             assert chunks[-1].is_final is True
             assert any(chunk.audio for chunk in chunks[:-1])
 
+    def test_synthesize_clone_falls_back_when_faster_backend_hits_cuda_graph_error(self):
+        with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            adapter._loaded = True
+            adapter._backend = "faster-qwen3-tts"
+            adapter._model = _mock_faster_qwen_model()
+            adapter._mode = "clone"
+            adapter._model.generate_voice_clone_streaming.side_effect = RuntimeError(
+                "Offset increment outside graph capture encountered unexpectedly"
+            )
+
+            async def fake_subprocess(**kwargs):
+                yield kwargs
+                yield type("chunk", (), {"audio": b"", "is_final": True})()
+
+            ref = np.linspace(0.0, 0.5, num=24_000, dtype=np.float32)
+
+            with patch.object(adapter, "_stream_subprocess", side_effect=fake_subprocess) as subprocess:
+                async def run():
+                    chunks = []
+                    async for chunk in adapter.synthesize("Hello", language="en", reference_audio=ref):
+                        chunks.append(chunk)
+                    return chunks
+
+                chunks = asyncio.run(run())
+
+            subprocess.assert_called_once()
+            assert chunks[0]["mode"] == "clone"
+            assert chunks[0]["language"] == "English"
+            assert chunks[-1].is_final is True
+
     def test_synthesize_uses_custom_voice_runtime_with_default_voice(self):
         torch_mock = _mock_torch()
         qwen_tts_module, model_cls = _mock_qwen_tts_module()

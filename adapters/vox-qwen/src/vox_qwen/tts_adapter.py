@@ -201,6 +201,15 @@ def _detect_mode(model_id: str, *, override: str | None = None) -> str:
     return "custom"
 
 
+def _is_cuda_graph_capture_error(error: BaseException) -> bool:
+    message = str(error)
+    return (
+        "Offset increment outside graph capture" in message
+        or "cuda graph" in message.lower()
+        or "graph capture" in message.lower()
+    )
+
+
 async def _stream_model_output(output: Any, default_sample_rate: int) -> AsyncIterator[SynthesizeChunk]:
     if not (isinstance(output, tuple) and len(output) == 2):
         raise RuntimeError("Unexpected Qwen3-TTS output shape")
@@ -580,14 +589,31 @@ class Qwen3TTSAdapter(TTSAdapter):
             return
 
         if self._backend == "faster-qwen3-tts":
-            async for chunk in self._stream_fast_clone(
-                text=text,
-                language=language,
-                reference_audio=reference_audio,
-                reference_text=reference_text,
-            ):
-                yield chunk
-            return
+            try:
+                async for chunk in self._stream_fast_clone(
+                    text=text,
+                    language=language,
+                    reference_audio=reference_audio,
+                    reference_text=reference_text,
+                ):
+                    yield chunk
+                return
+            except RuntimeError as exc:
+                if not _is_cuda_graph_capture_error(exc):
+                    raise
+                logger.warning(
+                    "Faster Qwen3-TTS clone failed with CUDA graph capture; "
+                    "retrying with official subprocess backend"
+                )
+                async for chunk in self._stream_subprocess(
+                    mode="clone",
+                    text=text,
+                    language=language,
+                    reference_audio=reference_audio,
+                    reference_text=reference_text,
+                ):
+                    yield chunk
+                return
 
         output = self._model.generate_voice_clone(
             text=text,

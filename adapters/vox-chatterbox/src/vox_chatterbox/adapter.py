@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import inspect
 import logging
 import shutil
 import subprocess
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +79,17 @@ def _runtime_module_available(name: str) -> bool:
         return importlib.util.find_spec(name) is not None
     except (ImportError, ValueError):
         return False
+
+
+def _call_accepts_keyword(call: Any, name: str) -> bool:
+    try:
+        signature = inspect.signature(call)
+    except (TypeError, ValueError):
+        return False
+    return name in signature.parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
 
 
 def _purge_chatterbox_app_runtime_packages(runtime_path: str | Path) -> None:
@@ -199,13 +212,52 @@ def _sample_rate(model: Any) -> int:
 def _load_model(cls: type[Any], device: str) -> Any:
     if hasattr(cls, "from_pretrained"):
         try:
-            return cls.from_pretrained(device=device)
+            model = cls.from_pretrained(device=device)
         except TypeError:
-            return cls.from_pretrained()
+            model = cls.from_pretrained()
+    else:
+        try:
+            model = cls(device=device)
+        except TypeError:
+            model = cls()
+    _patch_norm_loudness_float32(model)
+    return model
+
+
+def _patch_norm_loudness_float32(model: Any) -> None:
+    if getattr(model, "_vox_norm_loudness_float32", False):
+        return
+    norm_loudness = getattr(model, "norm_loudness", None)
+    if norm_loudness is None:
+        return
+
+    def wrapped_norm_loudness(*args: Any, **kwargs: Any) -> NDArray[np.float32]:
+        return np.asarray(norm_loudness(*args, **kwargs), dtype=np.float32)
+
+    model.norm_loudness = wrapped_norm_loudness
+    model._vox_norm_loudness_float32 = True
+
+
+@contextmanager
+def _cuda_multinomial_samples_on_cpu() -> Iterator[None]:
     try:
-        return cls(device=device)
-    except TypeError:
-        return cls()
+        import torch
+    except ImportError:
+        yield
+        return
+
+    original_multinomial = torch.multinomial
+
+    def multinomial(input: Any, *args: Any, **kwargs: Any) -> Any:
+        if getattr(input, "is_cuda", False):
+            return original_multinomial(input.detach().cpu(), *args, **kwargs).to(input.device)
+        return original_multinomial(input, *args, **kwargs)
+
+    torch.multinomial = multinomial
+    try:
+        yield
+    finally:
+        torch.multinomial = original_multinomial
 
 
 def _voice_path(voice: str | None) -> str | None:
@@ -217,7 +269,7 @@ def _voice_path(voice: str | None) -> str | None:
 
 def _write_reference_audio(path: Path, reference_audio: NDArray[np.float32], sample_rate: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    sf.write(path, np.asarray(reference_audio, dtype=np.float32), sample_rate)
+    sf.write(path, np.asarray(reference_audio, dtype=np.float32), sample_rate, subtype="PCM_16")
 
 
 def _load_reference_audio(
@@ -356,7 +408,7 @@ class _BaseChatterboxAdapter(TTSAdapter):
         kwargs: dict[str, Any] = {}
         if speed and speed != 1.0:
             kwargs["speed"] = speed
-        if reference_text:
+        if reference_text and _call_accepts_keyword(self._model.generate, "audio_prompt_text"):
             kwargs["audio_prompt_text"] = reference_text
         if self.supported_languages != ("en",):
             kwargs["language_id"] = language or "en"
@@ -370,9 +422,11 @@ class _BaseChatterboxAdapter(TTSAdapter):
                 ref_path = Path(tmpdir) / "reference.wav"
                 _write_reference_audio(ref_path, reference_audio, self._sample_rate)
                 kwargs["audio_prompt_path"] = str(ref_path)
-                audio = _float_audio(self._model.generate(text, **kwargs))
+                with _cuda_multinomial_samples_on_cpu():
+                    audio = _float_audio(self._model.generate(text, **kwargs))
         else:
-            audio = _float_audio(self._model.generate(text, **kwargs))
+            with _cuda_multinomial_samples_on_cpu():
+                audio = _float_audio(self._model.generate(text, **kwargs))
 
         chunk_size = self._sample_rate * 2
         for i in range(0, len(audio), chunk_size):
