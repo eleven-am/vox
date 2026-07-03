@@ -217,6 +217,7 @@ def infer_model_requirements(entry: dict[str, Any]) -> ModelRequirements:
     )
     fmt = str(entry.get("format") or "").strip().lower()
     adapter = str(entry.get("adapter") or "").strip().lower()
+    adapter_package = str(entry.get("adapter_package") or "").strip()
 
     runtime: str | None = None
     inferred_modules: tuple[str, ...] = ()
@@ -225,15 +226,24 @@ def infer_model_requirements(entry: dict[str, Any]) -> ModelRequirements:
         inferred_modules = ("torch",)
     elif fmt == "onnx":
         runtime = "onnxruntime"
-        inferred_modules = ("onnxruntime",)
+        if not adapter_package:
+            inferred_modules = ("onnxruntime",)
     # ct2/gguf install their inference runtime into an isolated adapter runtime
     # on pull, so they carry no base-environment runtime requirement.
+    # Adapter-backed ONNX entries follow the same rule: the adapter package owns
+    # installing and verifying onnxruntime in its isolated runtime directory.
+    explicit_modules = explicit.python_modules
+    if fmt == "onnx" and adapter_package:
+        explicit_modules = tuple(
+            module for module in explicit_modules
+            if module != "onnxruntime"
+        )
 
     accelerator = "cuda" if adapter.endswith("-vllm") else None
     inferred_accelerators = ("cuda",) if accelerator == "cuda" else ()
 
     requirement = RuntimeRequirement(
-        python_modules=tuple(dict.fromkeys((*inferred_modules, *explicit.python_modules))),
+        python_modules=tuple(dict.fromkeys((*inferred_modules, *explicit_modules))),
         min_versions=explicit.min_versions,
         accelerators=tuple(dict.fromkeys((*inferred_accelerators, *explicit.accelerators))),
         systems=explicit.systems,

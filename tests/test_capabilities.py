@@ -102,7 +102,7 @@ def test_onnx_model_allowed_when_onnxruntime_present(monkeypatch):
     ) == []
 
 
-def test_onnx_model_blocked_when_onnxruntime_missing(monkeypatch):
+def test_bare_onnx_model_blocked_when_onnxruntime_missing(monkeypatch):
     monkeypatch.setenv("VOX_HAS_ONNXRUNTIME", "1")
     monkeypatch.delenv("VOX_RUNTIME_OVERRIDE", raising=False)
     missing = missing_capabilities_for(
@@ -110,6 +110,23 @@ def test_onnx_model_blocked_when_onnxruntime_missing(monkeypatch):
         snapshot=_caps(onnxruntime_installed=False),
     )
     assert missing and "onnxruntime" in missing[0]
+
+
+def test_adapter_backed_onnx_model_does_not_require_base_onnxruntime(monkeypatch):
+    monkeypatch.setenv("VOX_HAS_ONNXRUNTIME", "0")
+    monkeypatch.delenv("VOX_RUNTIME_OVERRIDE", raising=False)
+
+    entry = {
+        "format": "onnx",
+        "adapter": "kokoro-tts-onnx",
+        "adapter_package": "vox-kokoro",
+        "runtime": {"required": {"python_modules": ["onnxruntime"]}},
+    }
+
+    assert missing_capabilities_for(
+        entry,
+        snapshot=_caps(onnxruntime_installed=False),
+    ) == []
 
 
 def test_ct2_model_never_requires_base_runtime(monkeypatch):

@@ -146,7 +146,7 @@ def test_forced_variant_returns_its_missing_reasons():
     assert any("PyTorch" in reason for reason in resolved.missing)
 
 
-def test_no_compatible_variant_reports_every_variant_failure():
+def test_adapter_backed_onnx_fallback_keeps_logical_model_pullable_without_base_onnxruntime():
     entry = _logical_kokoro_entry()
     resolved = resolve_catalog_entry(
         entry,
@@ -155,8 +155,7 @@ def test_no_compatible_variant_reports_every_variant_failure():
 
     assert resolved.variant_id == "onnx"
     assert resolved.entry["adapter"] == "kokoro-tts-onnx"
-    assert any("variant torch:" in reason for reason in resolved.missing)
-    assert any("variant onnx:" in reason for reason in resolved.missing)
+    assert resolved.missing == ()
 
 
 def test_forced_variant_alias_can_select_onnx_on_cuda_runtime():
@@ -173,6 +172,27 @@ def test_forced_variant_alias_can_select_onnx_on_cuda_runtime():
 
     assert resolved.variant_id == "onnx"
     assert resolved.entry["adapter"] == "kokoro-tts-onnx"
+    assert resolved.missing == ()
+
+
+def test_forced_adapter_backed_onnx_variant_does_not_require_base_onnxruntime():
+    resolved = resolve_catalog_entry(
+        _logical_kokoro_entry(),
+        snapshot=_caps(
+            torch_installed=True,
+            torch_cuda=True,
+            torch_compute_capability=89,
+            vram_gb=24.0,
+            onnxruntime_installed=False,
+            onnxruntime_version=None,
+            onnxruntime_providers=(),
+        ),
+        forced_variant="onnx",
+    )
+
+    assert resolved.variant_id == "onnx"
+    assert resolved.entry["adapter"] == "kokoro-tts-onnx"
+    assert resolved.entry["adapter_package"] == "vox-kokoro"
     assert resolved.missing == ()
 
 
