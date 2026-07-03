@@ -426,8 +426,14 @@ class TestAvailableModels:
         standard = CATALOG["chatterbox-tts"]["0.1.7"]
         multilingual = CATALOG["chatterbox-tts-multilingual"]["0.1.7"]
 
-        assert turbo["adapter_package"] == "vox-chatterbox"
-        assert turbo["adapter"] == "chatterbox-tts-turbo"
+        variants = {variant["id"]: variant for variant in turbo["variants"]}
+        assert variants["torch"]["adapter_package"] == "vox-chatterbox"
+        assert variants["torch"]["adapter"] == "chatterbox-tts-turbo"
+        assert variants["torch"]["format"] == "pytorch"
+        assert variants["onnx"]["source"] == "ResembleAI/chatterbox-turbo-ONNX"
+        assert variants["onnx"]["adapter"] == "chatterbox-tts-turbo-onnx"
+        assert variants["onnx"]["format"] == "onnx"
+        assert "onnx/language_model.onnx" in variants["onnx"]["files"]
         assert standard["adapter"] == "chatterbox-tts"
         assert multilingual["adapter"] == "chatterbox-tts-multilingual"
         assert multilingual["parameters"]["sample_rate"] == 24_000
