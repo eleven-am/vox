@@ -12,6 +12,7 @@ import numpy as np
 from vox.audio.codecs import encode_pcm, encode_wav_stream_header
 from vox.audio.pipeline import get_content_type, prepare_for_output
 from vox.core.adapter import TTSAdapter
+from vox.core.async_iterators import iterate_off_event_loop
 from vox.core.errors import VoxError
 from vox.core.types import SynthesizeChunk
 from vox.operations.defaults import resolve_requested_or_default_model
@@ -149,14 +150,15 @@ async def _iter_tts_synthesis_chunks(
 ) -> AsyncIterator[tuple[int, SynthesizeChunk]]:
     _validate_tts_synthesis_context(context)
     for idx, text_chunk in enumerate(context.text_chunks):
-        async for chunk in context.adapter.synthesize(
+        chunks = context.adapter.synthesize(
             text_chunk,
             voice=context.voice,
             speed=request.speed if request.speed > 0 else 1.0,
             language=context.language,
             reference_audio=context.reference_audio,
             reference_text=context.reference_text,
-        ):
+        )
+        async for chunk in iterate_off_event_loop(chunks):
             yield idx, chunk
 
 

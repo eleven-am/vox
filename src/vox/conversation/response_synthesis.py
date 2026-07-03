@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from vox.conversation.response_stream import ResponseStream
 from vox.conversation.text_buffer import StreamingTextBuffer, split_for_tts
 from vox.core.adapter import TTSAdapter
+from vox.core.async_iterators import iterate_off_event_loop
 
 AudioStartedCallback = Callable[[], Awaitable[None]]
 AudioChunkCallback = Callable[[bytes, int], Awaitable[None]]
@@ -74,11 +75,12 @@ async def _synthesize_text(
 ) -> bool:
     for chunk_text in split_for_tts(text, max_chars=max_input_chars):
         chunk_started = False
-        async for chunk in adapter.synthesize(
+        chunks = adapter.synthesize(
             chunk_text,
             voice=voice,
             language=language,
-        ):
+        )
+        async for chunk in iterate_off_event_loop(chunks):
             if chunk.is_final and not chunk.audio:
                 continue
             if not audio_started:

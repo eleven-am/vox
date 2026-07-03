@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -86,6 +88,19 @@ class MultiChunkTTS(FakeTTS):
                 sample_rate=24_000,
                 is_final=False,
             )
+        yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
+
+
+class BlockingTTS(FakeTTS):
+    async def synthesize(self, text, **kwargs):
+        self.last_kwargs = kwargs
+        self.calls.append(text)
+        time.sleep(0.15)
+        yield SynthesizeChunk(
+            audio=np.full(256, 0.1, dtype=np.float32).tobytes(),
+            sample_rate=24_000,
+            is_final=False,
+        )
         yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
 
 
@@ -378,6 +393,38 @@ async def test_synthesize_incremental_uses_adapter_text_chunking(tmp_path: Path)
 
     assert chunks
     assert adapter.calls == ["One.", "Two.", "Three."]
+
+
+@pytest.mark.asyncio
+async def test_synthesize_incremental_does_not_block_event_loop(tmp_path: Path):
+    adapter = BlockingTTS()
+    sched = DummyScheduler(adapter)
+    store = BlobStore(root=tmp_path)
+    registry = MagicMock()
+    ticks = 0
+    keep_ticking = True
+
+    async def ticker():
+        nonlocal ticks
+        while keep_ticking:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    tick_task = asyncio.create_task(ticker())
+    try:
+        iterator = await synthesize_incremental(
+            scheduler=sched,
+            registry=registry,
+            store=store,
+            request=SynthesisRequest(input="hello", model="fake-tts:latest", response_format="pcm"),
+        )
+        chunks = [chunk async for chunk in iterator]
+    finally:
+        keep_ticking = False
+        await tick_task
+
+    assert chunks
+    assert ticks >= 5
 
 
 @pytest.mark.asyncio
