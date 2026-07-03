@@ -1478,39 +1478,39 @@ wheels = [
 
 [[package]]
 name = "pondsocket"
-version = "0.0.1"
+version = "0.0.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pondsocket-common" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e1/09/d85dc81dec78e3452f3da7c03e2e7a045f7fd2f0d168fae219d1ea3253b2/pondsocket-0.0.1.tar.gz", hash = "sha256:6f9b1fa764d76e3c887d47a5a37c1f9d2eff54990ecc371a3c12dbc211f00a07", size = 34801, upload-time = "2026-05-12T13:49:41.55Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/51/fd/bdb81fe51c02424231b630faf5f957eb62e6874e261ba26b4785ab311562/pondsocket-0.0.5.tar.gz", hash = "sha256:10d8b50876857eb8b6a14bddd667dc7f5a882c32131b397863be3969f2170a84", size = 44271, upload-time = "2026-07-03T08:25:25.658Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/29/82/cdecc6dfa669c7276e607c029073f3c5356f6d96b795e00ead8e5b3ee50b/pondsocket-0.0.1-py3-none-any.whl", hash = "sha256:3bcb1819416200b45444121205b6555e1fa93d078bb26f79092422eadd3d3681", size = 33602, upload-time = "2026-05-12T13:49:39.482Z" },
+    { url = "https://files.pythonhosted.org/packages/73/27/232318d362f4b54e359d269f602c6b8ff03208ceb0b334dfd74bc6d4a2e5/pondsocket-0.0.5-py3-none-any.whl", hash = "sha256:60d6b473b5aa84585dcb788e80c51589440631f971805c72ab81e8a0f271fb8f", size = 41457, upload-time = "2026-07-03T08:25:24.439Z" },
 ]
 
 [[package]]
 name = "pondsocket-asgi"
-version = "0.0.1"
+version = "0.0.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pondsocket" },
     { name = "pondsocket-common" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/32/c7/8581cd6d7383985c7281a095518e5af21027383c1e9bf73339c4eae7afa0/pondsocket_asgi-0.0.1.tar.gz", hash = "sha256:50e0fb90e403ef5999991ba69d48b7f76b1d0b510b4f0d2d56cbf0a4435dd329", size = 12524, upload-time = "2026-05-13T16:36:00.895Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/1b/64/c7a5467a711ae749b2a1f71961ed03648c59e57ca4e47c7f8c95f56086f4/pondsocket_asgi-0.0.5.tar.gz", hash = "sha256:5c5daaa3482ae161f1ca3b048752f33739b4ac9bc7a1d187a7dc83fe67b0e71b", size = 12555, upload-time = "2026-07-03T08:25:31.329Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/70/48/bf819afc088063dd81fb333ba54607c6d952375854f3aefdae072a171f22/pondsocket_asgi-0.0.1-py3-none-any.whl", hash = "sha256:62f8d99036c05a866119549b741a05e8e9f0024c107b67d7fb484a7db47681fc", size = 11401, upload-time = "2026-05-13T16:35:57.853Z" },
+    { url = "https://files.pythonhosted.org/packages/59/db/87fb5c76f92a126112540b71a6eec42d5a458f41b21f8a3124a3ca69ea3b/pondsocket_asgi-0.0.5-py3-none-any.whl", hash = "sha256:3bc2c99059f108db566b69551124345a46c1646cffea87e77c7f2a9ec085e1b1", size = 11421, upload-time = "2026-07-03T08:25:30.363Z" },
 ]
 
 [[package]]
 name = "pondsocket-common"
-version = "0.0.1"
+version = "0.0.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/45/e2/cd218959f2b273c04e088cecd7df61ca468d1c395753474553c68ab9ab18/pondsocket_common-0.0.1.tar.gz", hash = "sha256:f19b33504a7d92aebae5601c1642c2adb30ac5645a84068699f9a812f21cc424", size = 10840, upload-time = "2026-05-12T13:49:40.573Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/74/47/a5a33983febe538c0dfbc1fab99008b7ed723d1d3dc9639dc162e89a42a5/pondsocket_common-0.0.5.tar.gz", hash = "sha256:9cb0e17dec373e6c24503b39b6997cfbbca92dfee157ac0ecac168551ab5bdbb", size = 12087, upload-time = "2026-07-03T08:25:05.09Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/33/29/8ed320d5a18615a7b5f8877cef7a7f18f9930f4c0696d5e372fed8db170e/pondsocket_common-0.0.1-py3-none-any.whl", hash = "sha256:970479c65bcbcd6605fd0acdb1455609ec90eae0e9a0992d297778362888afd7", size = 9549, upload-time = "2026-05-12T13:49:39.481Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/b7/6e5ac12ee9233e1a36877fd46b4dd65709c231b348c0c17c2643be31f53a/pondsocket_common-0.0.5-py3-none-any.whl", hash = "sha256:b7d0935247c168144eb51ff4196abfdd01f05bd37db26bcbd09ba660ec1ddeb3", size = 10520, upload-time = "2026-07-03T08:25:04.045Z" },
 ]
 
 [[package]]
