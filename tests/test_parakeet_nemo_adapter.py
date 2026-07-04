@@ -30,6 +30,16 @@ class _FakeNemoModel:
         self.to_calls: list[str] = []
         self.eval_called = False
         self.transcribe_calls: list[dict] = []
+        self.transcribe_errors: list[Exception] = []
+        self.disable_cuda_graph_calls = 0
+        self.decoding = SimpleNamespace(
+            decoding=SimpleNamespace(
+                decoding_computer=SimpleNamespace(
+                    disable_cuda_graphs=self._disable_cuda_graphs,
+                    use_cuda_graph_decoder=True,
+                )
+            )
+        )
         self.cfg = SimpleNamespace(
             preprocessor=SimpleNamespace(window_stride=0.02),
         )
@@ -42,8 +52,14 @@ class _FakeNemoModel:
         self.eval_called = True
         return self
 
+    def _disable_cuda_graphs(self):
+        self.disable_cuda_graph_calls += 1
+        return True
+
     def transcribe(self, paths, **kwargs):
         self.transcribe_calls.append({"paths": paths, **kwargs})
+        if self.transcribe_errors:
+            raise self.transcribe_errors.pop(0)
         if kwargs.get("return_hypotheses"):
             return [
                 SimpleNamespace(
@@ -110,7 +126,8 @@ def test_info_exposes_pytorch_and_nemo_adapter_name():
 
 
 def test_load_uses_pretrained_model_name_when_source_is_provided(monkeypatch: pytest.MonkeyPatch):
-    fake_model_cls = _install_fake_nemo()
+    fake_model = _FakeNemoModel()
+    fake_model_cls = _install_fake_nemo(model=fake_model)
     _install_fake_torch(cuda_available=True)
     sys.modules.pop("vox_parakeet", None)
     sys.modules.pop("vox_parakeet.nemo_adapter", None)
@@ -123,6 +140,8 @@ def test_load_uses_pretrained_model_name_when_source_is_provided(monkeypatch: py
     fake_model_cls.from_pretrained.assert_called_once_with(model_name="nvidia/parakeet-tdt-0.6b-v3")
     assert adapter.is_loaded is True
     assert adapter._model_id == "nvidia/parakeet-tdt-0.6b-v3"
+    assert fake_model.disable_cuda_graph_calls == 1
+    assert fake_model.decoding.decoding.decoding_computer.use_cuda_graph_decoder is False
 
 
 def test_load_uses_restore_from_for_local_nemo_checkpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -317,7 +336,6 @@ def test_install_nemo_runtime_fails_fast_when_uv_is_missing(tmp_path: Path, monk
         if cmd[0] == "uv":
             raise FileNotFoundError("uv")
         raise AssertionError(f"unexpected installer fallback: {cmd}")
-        return mock
 
     monkeypatch.setattr(module, "_runtime_target_dir", lambda: tmp_path / "runtime")
     monkeypatch.setattr(module.subprocess, "run", fake_run)
@@ -372,3 +390,51 @@ def test_transcribe_without_word_timestamps_returns_text(monkeypatch: pytest.Mon
     assert result.text == "plain text"
     assert result.segments[0].text == "plain text"
     assert "timestamps" not in fake_model.transcribe_calls[-1]
+
+
+def test_transcribe_retries_once_after_cuda_graph_failure(monkeypatch: pytest.MonkeyPatch):
+    fake_model = _FakeNemoModel(text="after retry")
+    fake_model.transcribe_errors.append(
+        RuntimeError("Called CUDAGraph::replay without a preceding successful capture")
+    )
+    _install_fake_nemo(model=fake_model)
+    _install_fake_torch(cuda_available=True)
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+
+    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
+
+    adapter = ParakeetNemoAdapter()
+    adapter.load("ignored-local-path", "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")
+
+    result = adapter.transcribe(np.zeros(16000, dtype=np.float32), word_timestamps=False)
+
+    assert result.text == "after retry"
+    assert len(fake_model.transcribe_calls) == 2
+    assert fake_model.disable_cuda_graph_calls == 2
+
+
+def test_transcribe_retries_when_cleanup_error_wraps_cuda_graph_failure(monkeypatch: pytest.MonkeyPatch):
+    try:
+        try:
+            raise RuntimeError("CUDA graph capture failed before replay")
+        except RuntimeError as exc:
+            raise OSError("Directory not empty") from exc
+    except OSError as wrapped_error:
+        fake_model = _FakeNemoModel(text="wrapped retry")
+        fake_model.transcribe_errors.append(wrapped_error)
+
+    _install_fake_nemo(model=fake_model)
+    _install_fake_torch(cuda_available=True)
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+
+    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
+
+    adapter = ParakeetNemoAdapter()
+    adapter.load("ignored-local-path", "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")
+
+    result = adapter.transcribe(np.zeros(16000, dtype=np.float32), word_timestamps=False)
+
+    assert result.text == "wrapped retry"
+    assert len(fake_model.transcribe_calls) == 2

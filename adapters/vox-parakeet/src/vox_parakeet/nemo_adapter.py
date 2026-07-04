@@ -45,6 +45,13 @@ _RUNTIME_DEPENDENCIES = (
 )
 
 
+_CUDA_GRAPH_ERROR_MARKERS = (
+    "cudagraph",
+    "cuda graph",
+    "graph capture",
+    "preceding successful capture",
+)
+
 
 def _torch_module() -> Any:
     try:
@@ -221,6 +228,62 @@ def _to_numpy_audio(audio: NDArray[np.float32]) -> NDArray[np.float32]:
     return np.asarray(audio, dtype=np.float32).reshape(-1)
 
 
+def _iter_decoding_objects(model: Any) -> list[Any]:
+    objects: list[Any] = []
+    decoding = getattr(model, "decoding", None)
+    if decoding is not None:
+        objects.append(decoding)
+        inner = getattr(decoding, "decoding", None)
+        if inner is not None:
+            objects.append(inner)
+            computer = getattr(inner, "decoding_computer", None)
+            if computer is not None:
+                objects.append(computer)
+    return objects
+
+
+def _disable_cuda_graph_decoding(model: Any) -> bool:
+    disabled = False
+    for obj in _iter_decoding_objects(model):
+        disable = getattr(obj, "disable_cuda_graphs", None)
+        if callable(disable):
+            try:
+                disabled = bool(disable()) or disabled
+                logger.info("Disabled Parakeet NeMo CUDA graph decoding via %s", type(obj).__name__)
+            except Exception:
+                logger.warning(
+                    "Failed to disable Parakeet NeMo CUDA graph decoding via %s",
+                    type(obj).__name__,
+                    exc_info=True,
+                )
+
+        for attr in ("use_cuda_graph_decoder", "allow_cuda_graphs", "cuda_graph_decoder"):
+            if hasattr(obj, attr):
+                try:
+                    setattr(obj, attr, False)
+                    disabled = True
+                except Exception:
+                    logger.debug(
+                        "Could not set %s=False on %s",
+                        attr,
+                        type(obj).__name__,
+                        exc_info=True,
+                    )
+    return disabled
+
+
+def _has_cuda_graph_error(exc: BaseException) -> bool:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        message = str(current).lower()
+        if any(marker in message for marker in _CUDA_GRAPH_ERROR_MARKERS):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 class ParakeetNemoAdapter(STTAdapter):
     def __init__(self) -> None:
         self._model: Any | None = None
@@ -270,6 +333,7 @@ class ParakeetNemoAdapter(STTAdapter):
         if hasattr(model, "eval"):
             model.eval()
 
+        _disable_cuda_graph_decoding(model)
         self._model = model
         elapsed = time.perf_counter() - start
         logger.info("Parakeet NeMo model loaded in %.2fs", elapsed)
@@ -324,7 +388,16 @@ class ParakeetNemoAdapter(STTAdapter):
                 transcribe_kwargs["timestamps"] = True
                 transcribe_kwargs["return_hypotheses"] = True
 
-            result = self._model.transcribe([str(temp_path)], **transcribe_kwargs)
+            try:
+                result = self._model.transcribe([str(temp_path)], **transcribe_kwargs)
+            except Exception as exc:
+                if not _has_cuda_graph_error(exc):
+                    raise
+                logger.warning(
+                    "Parakeet NeMo transcription hit CUDA graph decoding failure; disabling graphs and retrying once"
+                )
+                _disable_cuda_graph_decoding(self._model)
+                result = self._model.transcribe([str(temp_path)], **transcribe_kwargs)
 
             if word_timestamps:
                 if isinstance(result, tuple):
