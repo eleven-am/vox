@@ -280,6 +280,7 @@ def test_install_nemo_runtime_uses_python312_compatible_pins(tmp_path: Path, mon
 
     monkeypatch.setattr(module, "_runtime_target_dir", lambda: tmp_path / "runtime")
     monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(module, "_runtime_module_available", lambda name: name == "nemo.collections.asr")
 
     module._install_nemo_runtime()
 
@@ -291,6 +292,82 @@ def test_install_nemo_runtime_uses_python312_compatible_pins(tmp_path: Path, mon
     assert "llvmlite>=0.44,<0.49" in calls[0]
     assert len(calls) == 1
     assert (tmp_path / "runtime" / ".vox-parakeet-nemo-runtime-ready").is_file()
+
+
+def test_install_nemo_runtime_removes_base_framework_shadows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+
+    import vox_parakeet.nemo_adapter as module
+
+    runtime_dir = tmp_path / "runtime"
+
+    def fake_run(cmd, **kwargs):
+        (runtime_dir / "torch").mkdir(parents=True, exist_ok=True)
+        (runtime_dir / "torch-2.9.1.dist-info").mkdir()
+        (runtime_dir / "triton").mkdir()
+        (runtime_dir / "triton-3.5.1.dist-info").mkdir()
+        (runtime_dir / "nvidia").mkdir()
+        (runtime_dir / "nvidia_cublas_cu12-12.8.4.1.dist-info").mkdir()
+        mock = MagicMock()
+        mock.stderr = ""
+        mock.stdout = ""
+        mock.returncode = 0
+        return mock
+
+    installed = False
+
+    def fake_module_available(name: str) -> bool:
+        return installed and name == "nemo.collections.asr"
+
+    original_fake_run = fake_run
+
+    def fake_run_and_mark_installed(cmd, **kwargs):
+        nonlocal installed
+        result = original_fake_run(cmd, **kwargs)
+        installed = True
+        return result
+
+    monkeypatch.setattr(module, "_runtime_target_dir", lambda: runtime_dir)
+    monkeypatch.setattr(module.subprocess, "run", fake_run_and_mark_installed)
+    monkeypatch.setattr(module, "_runtime_module_available", fake_module_available)
+
+    module._install_nemo_runtime()
+
+    assert not (runtime_dir / "torch").exists()
+    assert not (runtime_dir / "torch-2.9.1.dist-info").exists()
+    assert not (runtime_dir / "triton").exists()
+    assert not (runtime_dir / "triton-3.5.1.dist-info").exists()
+    assert not (runtime_dir / "nvidia").exists()
+    assert not (runtime_dir / "nvidia_cublas_cu12-12.8.4.1.dist-info").exists()
+    assert (runtime_dir / ".vox-parakeet-nemo-runtime-ready").is_file()
+
+
+def test_install_nemo_runtime_repairs_stale_framework_shadows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+
+    import vox_parakeet.nemo_adapter as module
+
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    (runtime_dir / ".vox-parakeet-nemo-runtime-ready").touch()
+    (runtime_dir / "torch").mkdir()
+    (runtime_dir / "torch-2.9.1.dist-info").mkdir()
+    install = MagicMock(return_value=True)
+
+    monkeypatch.setattr(module, "_runtime_target_dir", lambda: runtime_dir)
+    monkeypatch.setattr(module, "_runtime_module_available", lambda name: name == "nemo.collections.asr")
+    monkeypatch.setattr(module, "install_target_runtime_requirements", install)
+
+    module._install_nemo_runtime()
+
+    assert not (runtime_dir / "torch").exists()
+    assert not (runtime_dir / "torch-2.9.1.dist-info").exists()
+    install.assert_not_called()
 
 
 def test_install_nemo_runtime_fails_fast_when_uv_install_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import logging
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -43,6 +44,18 @@ _RUNTIME_DEPENDENCIES = (
     "numba>=0.61,<0.67",
     "llvmlite>=0.44,<0.49",
 )
+_BASE_FRAMEWORK_RUNTIME_GLOBS = (
+    "torch",
+    "torch-*.dist-info",
+    "torchaudio",
+    "torchaudio-*.dist-info",
+    "torchvision",
+    "torchvision-*.dist-info",
+    "triton",
+    "triton-*.dist-info",
+    "nvidia",
+    "nvidia_*.dist-info",
+)
 
 
 _CUDA_GRAPH_ERROR_MARKERS = (
@@ -80,6 +93,25 @@ def _runtime_module_available(name: str) -> bool:
         return False
 
 
+def _remove_base_framework_shadows(runtime_dir: Path) -> bool:
+    removed = False
+    for pattern in _BASE_FRAMEWORK_RUNTIME_GLOBS:
+        for path in runtime_dir.glob(pattern):
+            if not path.exists():
+                continue
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink(missing_ok=True)
+            removed = True
+            logger.info("Removed base framework shadow from Parakeet NeMo runtime: %s", path.name)
+    return removed
+
+
+def _runtime_has_base_framework_shadows(runtime_dir: Path) -> bool:
+    return any(any(runtime_dir.glob(pattern)) for pattern in _BASE_FRAMEWORK_RUNTIME_GLOBS)
+
+
 def _clear_nemo_modules() -> None:
     for name in list(sys.modules):
         if name == "nemo" or name.startswith("nemo."):
@@ -103,7 +135,15 @@ def _prime_lightning_imports() -> None:
 def _install_nemo_runtime() -> None:
     runtime_dir = _ensure_runtime_target_on_path()
     sentinel = runtime_dir / _RUNTIME_SENTINEL
-    if sentinel.is_file() and _runtime_module_available("nemo.collections.asr"):
+    if _runtime_has_base_framework_shadows(runtime_dir):
+        _remove_base_framework_shadows(runtime_dir)
+        _clear_nemo_modules()
+
+    if (
+        sentinel.is_file()
+        and _runtime_module_available("nemo.collections.asr")
+        and not _runtime_has_base_framework_shadows(runtime_dir)
+    ):
         return
 
     if not install_target_runtime_requirements(
@@ -118,6 +158,10 @@ def _install_nemo_runtime() -> None:
         raise RuntimeError(
             "Failed to install Parakeet NeMo runtime dependencies."
         )
+    _remove_base_framework_shadows(runtime_dir)
+    _clear_nemo_modules()
+    if not _runtime_module_available("nemo.collections.asr"):
+        raise RuntimeError("Parakeet NeMo runtime installed but nemo.collections.asr is unavailable")
     sentinel.touch()
 
 
