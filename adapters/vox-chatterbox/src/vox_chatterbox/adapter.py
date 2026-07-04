@@ -4,6 +4,7 @@ import importlib
 import importlib.util
 import inspect
 import logging
+import random
 import shutil
 import subprocess
 import tempfile
@@ -25,7 +26,7 @@ from vox.core.adapter_runtime import (
 from vox.core.adapter_runtime import (
     runtime_root as vox_runtime_root,
 )
-from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesisParameterInfo, SynthesizeChunk, VoiceInfo
 from vox.operations.errors import InvalidConfigError
 
 logger = logging.getLogger(__name__)
@@ -299,6 +300,44 @@ def _load_reference_audio(
     return audio
 
 
+@contextmanager
+def _temporary_seed(seed: int | None) -> Iterator[None]:
+    if seed is None:
+        yield
+        return
+
+    py_state = random.getstate()
+    np_state = np.random.get_state()
+    torch_state = None
+    cuda_states = None
+    torch = None
+    try:
+        import torch as torch_module
+
+        torch = torch_module
+        torch_state = torch.random.get_rng_state()
+        if torch.cuda.is_available():
+            cuda_states = torch.cuda.get_rng_state_all()
+    except ImportError:
+        torch = None
+
+    random.seed(seed)
+    np.random.seed(seed % (2**32))
+    if torch is not None:
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+    try:
+        yield
+    finally:
+        random.setstate(py_state)
+        np.random.set_state(np_state)
+        if torch is not None and torch_state is not None:
+            torch.random.set_rng_state(torch_state)
+            if cuda_states is not None:
+                torch.cuda.set_rng_state_all(cuda_states)
+
+
 def _model_file(model_dir: Path, name: str, dtype: str) -> Path:
     suffix = {
         "fp32": "",
@@ -390,6 +429,42 @@ class _BaseChatterboxAdapter(TTSAdapter):
     def prepare_runtime(self) -> None:
         _load_chatterbox_class(self.runtime_module, self.runtime_class)
 
+    def synthesis_parameters(self) -> tuple[SynthesisParameterInfo, ...]:
+        return (
+            SynthesisParameterInfo(
+                name="exaggeration",
+                type="number",
+                default=None,
+                min_value=0.0,
+                max_value=2.0,
+                description="Chatterbox expressiveness/emotion strength. None uses the backend default.",
+            ),
+            SynthesisParameterInfo(
+                name="cfg_weight",
+                type="number",
+                default=None,
+                min_value=0.0,
+                max_value=5.0,
+                description="Chatterbox classifier-free guidance weight. None uses the backend default.",
+            ),
+            SynthesisParameterInfo(
+                name="temperature",
+                type="number",
+                default=None,
+                min_value=0.0,
+                max_value=2.0,
+                description="Sampling temperature when supported by the Chatterbox backend.",
+            ),
+            SynthesisParameterInfo(
+                name="seed",
+                type="integer",
+                default=None,
+                min_value=0,
+                max_value=2**32 - 1,
+                description="Best-effort deterministic seed for Python, NumPy, and Torch RNGs.",
+            ),
+        )
+
     async def synthesize(
         self,
         text: str,
@@ -399,6 +474,7 @@ class _BaseChatterboxAdapter(TTSAdapter):
         language: str | None = None,
         reference_audio: NDArray[np.float32] | None = None,
         reference_text: str | None = None,
+        params: dict[str, Any] | None = None,
     ) -> AsyncIterator[SynthesizeChunk]:
         if self._model is None:
             raise RuntimeError("Chatterbox model is not loaded — call load() first")
@@ -412,6 +488,11 @@ class _BaseChatterboxAdapter(TTSAdapter):
             kwargs["audio_prompt_text"] = reference_text
         if self.supported_languages != ("en",):
             kwargs["language_id"] = language or "en"
+        params = dict(params or {})
+        seed = params.pop("seed", None)
+        for key, value in params.items():
+            if value is not None and _call_accepts_keyword(self._model.generate, key):
+                kwargs[key] = value
 
         voice_file = _voice_path(voice)
         if voice_file is not None:
@@ -422,10 +503,10 @@ class _BaseChatterboxAdapter(TTSAdapter):
                 ref_path = Path(tmpdir) / "reference.wav"
                 _write_reference_audio(ref_path, reference_audio, self._sample_rate)
                 kwargs["audio_prompt_path"] = str(ref_path)
-                with _cuda_multinomial_samples_on_cpu():
+                with _temporary_seed(seed), _cuda_multinomial_samples_on_cpu():
                     audio = _float_audio(self._model.generate(text, **kwargs))
         else:
-            with _cuda_multinomial_samples_on_cpu():
+            with _temporary_seed(seed), _cuda_multinomial_samples_on_cpu():
                 audio = _float_audio(self._model.generate(text, **kwargs))
 
         chunk_size = self._sample_rate * 2
@@ -542,6 +623,26 @@ class ChatterboxTurboOnnxAdapter(TTSAdapter):
     def prepare_runtime(self) -> None:
         _install_chatterbox_onnx_runtime()
 
+    def synthesis_parameters(self) -> tuple[SynthesisParameterInfo, ...]:
+        return (
+            SynthesisParameterInfo(
+                name="max_new_tokens",
+                type="integer",
+                default=1024,
+                min_value=1,
+                max_value=4096,
+                description="Maximum speech tokens generated by the ONNX language model.",
+            ),
+            SynthesisParameterInfo(
+                name="repetition_penalty",
+                type="number",
+                default=1.2,
+                min_value=0.01,
+                max_value=10.0,
+                description="Repetition penalty applied during ONNX speech-token generation.",
+            ),
+        )
+
     def validate_synthesis_request(
         self,
         *,
@@ -549,6 +650,7 @@ class ChatterboxTurboOnnxAdapter(TTSAdapter):
         language: str | None = None,
         reference_audio: NDArray[np.float32] | None = None,
         reference_text: str | None = None,
+        params: dict[str, Any] | None = None,
     ) -> None:
         if reference_audio is not None:
             if np.asarray(reference_audio, dtype=np.float32).size == 0:
@@ -569,18 +671,20 @@ class ChatterboxTurboOnnxAdapter(TTSAdapter):
         language: str | None = None,
         reference_audio: NDArray[np.float32] | None = None,
         reference_text: str | None = None,
+        params: dict[str, Any] | None = None,
     ) -> AsyncIterator[SynthesizeChunk]:
         if not self._loaded:
             raise RuntimeError("Chatterbox Turbo ONNX model is not loaded — call load() first")
         if not text or not text.strip():
             return
 
+        params = dict(params or {})
         audio = self._generate(
             text=text,
             voice=voice,
             reference_audio=reference_audio,
-            max_new_tokens=1024,
-            repetition_penalty=1.2,
+            max_new_tokens=int(params.get("max_new_tokens", 1024)),
+            repetition_penalty=float(params.get("repetition_penalty", 1.2)),
         )
         chunk_size = self._sample_rate * 2
         for i in range(0, len(audio), chunk_size):

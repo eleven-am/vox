@@ -487,6 +487,31 @@ class TestQwen3TTSAdapterInfo:
             assert chunks[-1].is_final is True
             assert len([chunk for chunk in chunks if chunk.audio]) == 2
 
+    def test_synthesize_custom_passes_params_to_faster_backend(self):
+        with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            adapter._loaded = True
+            adapter._backend = "faster-qwen3-tts"
+            adapter._model = _mock_faster_qwen_model()
+            adapter._mode = "custom"
+            adapter._default_voice = "Ryan"
+            adapter._supported_speakers = ["Ryan"]
+
+            async def run():
+                async for _ in adapter.synthesize(
+                    "Hello",
+                    language="en",
+                    params={"chunk_size": 12, "seed": 123},
+                ):
+                    pass
+
+            asyncio.run(run())
+
+            kwargs = adapter._model.generate_custom_voice_streaming.call_args.kwargs
+            assert kwargs["chunk_size"] == 12
+
     def test_synthesize_clone_streams_from_faster_backend_with_temp_reference_wav(self):
         with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):
             from vox_qwen.tts_adapter import Qwen3TTSAdapter
@@ -520,6 +545,32 @@ class TestQwen3TTSAdapterInfo:
             assert isinstance(kwargs["ref_audio"], str)
             assert chunks[-1].is_final is True
             assert any(chunk.audio for chunk in chunks[:-1])
+
+    def test_synthesize_clone_passes_chunk_size_to_faster_backend(self):
+        with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            adapter._loaded = True
+            adapter._backend = "faster-qwen3-tts"
+            adapter._model = _mock_faster_qwen_model()
+            adapter._mode = "clone"
+
+            ref = np.linspace(0.0, 0.5, num=24_000, dtype=np.float32)
+
+            async def run():
+                async for _ in adapter.synthesize(
+                    "Hello",
+                    language="en",
+                    reference_audio=ref,
+                    params={"chunk_size": 16, "seed": 321},
+                ):
+                    pass
+
+            asyncio.run(run())
+
+            kwargs = adapter._model.generate_voice_clone_streaming.call_args.kwargs
+            assert kwargs["chunk_size"] == 16
 
     def test_synthesize_clone_falls_back_when_faster_backend_hits_cuda_graph_error(self):
         with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):
@@ -822,6 +873,35 @@ class TestQwen3TTSAdapterInfo:
 
             assert chunks[-1].is_final is True
             assert ref_paths_seen and ref_paths_seen[0] is not None
+
+    def test_subprocess_fallback_receives_seed(self):
+        with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            adapter._loaded = True
+            adapter._subprocess_only = True
+            adapter._model_id = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+            adapter._default_voice = "Ryan"
+            adapter._device = "cpu"
+
+            audio = np.zeros(24_000, dtype=np.float32).tobytes()
+            payload = json.dumps({
+                "sample_rate": 24_000,
+                "audio_b64": base64.b64encode(audio).decode("ascii"),
+            })
+
+            def fake_run(cmd, **_):
+                assert "--seed" in cmd
+                assert cmd[cmd.index("--seed") + 1] == "777"
+                return subprocess.CompletedProcess(cmd, 0, payload, "")
+
+            async def collect():
+                async for _ in adapter.synthesize("hello", params={"seed": 777}):
+                    pass
+
+            with patch("vox_qwen.tts_adapter.subprocess.run", side_effect=fake_run):
+                asyncio.run(collect())
 
     def test_list_voices_returns_supported_speakers(self):
         torch_mock = _mock_torch()

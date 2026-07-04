@@ -16,6 +16,7 @@ from vox.core.types import (
     AdapterInfo,
     ModelFormat,
     ModelType,
+    SynthesisParameterInfo,
     SynthesizeChunk,
     VoiceInfo,
 )
@@ -44,6 +45,7 @@ from vox.operations.streaming_synthesis_longform import (
 class FakeStreamingTTSAdapter(TTSAdapter):
     def __init__(self, *, supports_voice_cloning: bool = False) -> None:
         self.supports_voice_cloning = supports_voice_cloning
+        self.last_kwargs: dict[str, Any] | None = None
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
@@ -65,8 +67,21 @@ class FakeStreamingTTSAdapter(TTSAdapter):
         return [VoiceInfo(id="default", name="Default", language="en")]
 
     async def synthesize(self, text, **kwargs):
+        self.last_kwargs = kwargs
         yield SynthesizeChunk(audio=np.full(2400, 0.1, dtype=np.float32).tobytes(), sample_rate=24_000, is_final=False)
         yield SynthesizeChunk(audio=np.full(2400, 0.2, dtype=np.float32).tobytes(), sample_rate=24_000, is_final=True)
+
+
+class ParamStreamingTTSAdapter(FakeStreamingTTSAdapter):
+    def synthesis_parameters(self):
+        return (
+            SynthesisParameterInfo(
+                name="temperature",
+                type="number",
+                min_value=0.0,
+                max_value=2.0,
+            ),
+        )
 
 
 class FakeScheduler:
@@ -166,6 +181,27 @@ def test_normalize_clamps_non_positive_speed():
         assert config.speed == 1.0
 
 
+def test_normalize_preserves_params():
+    config = normalize_longform_tts_config(
+        model="t:1", voice=None, speed=1.0, language=None,
+        response_format="pcm16", chunk_chars=None,
+        params={"temperature": 0.4},
+        registry=_make_registry(), store=_make_store(),
+    )
+
+    assert config.params == {"temperature": 0.4}
+
+
+def test_normalize_rejects_non_object_params():
+    with pytest.raises(InvalidConfigError, match="params must be a JSON object"):
+        normalize_longform_tts_config(
+            model="t:1", voice=None, speed=1.0, language=None,
+            response_format="pcm16", chunk_chars=None,
+            params=["temperature"],
+            registry=_make_registry(), store=_make_store(),
+        )
+
+
 def test_longform_tts_event_payloads_preserve_wire_contract():
     assert longform_tts_event_payload(
         TtsReadyEvent(
@@ -244,6 +280,29 @@ async def test_text_synthesis_emits_ready_audio_done():
     assert any(isinstance(e, TtsAudioChunkEvent) for e in events)
     assert any(isinstance(e, TtsProgressEvent) for e in events)
     assert any(isinstance(e, TtsDoneEvent) for e in events)
+    await session.close()
+
+
+@pytest.mark.asyncio
+async def test_text_synthesis_passes_params_to_adapter():
+    adapter = ParamStreamingTTSAdapter()
+    session = LongformSynthesisSession(
+        scheduler=FakeScheduler(adapter),
+        registry=_make_registry(), store=_make_store(tts="t:1"),
+    )
+    config = normalize_longform_tts_config(
+        model="t:1", voice="default", speed=1.0, language=None,
+        response_format="pcm16", chunk_chars=None,
+        registry=_make_registry(), store=_make_store(tts="t:1"),
+        params={"temperature": 0.4},
+    )
+    await session.configure(config)
+    session.append_text("Hello world.")
+    await session.end_of_stream()
+    await _drain_events(session)
+
+    assert adapter.last_kwargs is not None
+    assert adapter.last_kwargs["params"] == {"temperature": 0.4}
     await session.close()
 
 

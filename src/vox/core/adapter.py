@@ -8,7 +8,13 @@ import numpy as np
 from numpy.typing import NDArray
 
 from vox.core.device_placement import PlacementTier
-from vox.core.types import AdapterInfo, SynthesizeChunk, TranscribeResult, VoiceInfo
+from vox.core.types import (
+    AdapterInfo,
+    SynthesisParameterInfo,
+    SynthesizeChunk,
+    TranscribeResult,
+    VoiceInfo,
+)
 
 
 class BaseAdapter(ABC):
@@ -85,6 +91,7 @@ class TTSAdapter(BaseAdapter):
         language: str | None = None,
         reference_audio: NDArray[np.float32] | None = None,
         reference_text: str | None = None,
+        params: dict[str, Any] | None = None,
     ) -> AsyncIterator[SynthesizeChunk]:
         """Stream audio chunks as they are synthesized."""
         ...
@@ -100,6 +107,11 @@ class TTSAdapter(BaseAdapter):
         language: str | None = None,
         reference_audio: NDArray[np.float32] | None = None,
         reference_text: str | None = None,
+        params: dict[str, Any] | None = None,
     ) -> None:
         """Validate adapter-specific synthesis inputs before a response stream starts."""
         return None
+
+    def synthesis_parameters(self) -> tuple[SynthesisParameterInfo, ...]:
+        """Return adapter-specific JSON parameters accepted by synthesize(..., params=...)."""
+        return ()

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from vox.operations.synthesis import (
     synthesis_request_from_fields,
@@ -25,6 +26,7 @@ class SpeechRequest(BaseModel):
     language: str | None = None
     response_format: str = "wav"
     stream: bool = False
+    params: dict[str, Any] = Field(default_factory=dict)
 
 
 async def synthesize(req: SpeechRequest, request: Request):
@@ -42,6 +44,7 @@ async def synthesize(req: SpeechRequest, request: Request):
             speed=req.speed,
             language=req.language,
             response_format=req.response_format,
+            params=req.params,
         )
         result = await synthesize_audio_response(
             scheduler=services.scheduler,

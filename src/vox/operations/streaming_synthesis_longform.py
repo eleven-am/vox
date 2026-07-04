@@ -26,6 +26,7 @@ from vox.operations.model_acquisition import (
     release_entered_adapter_suppressing,
 )
 from vox.operations.streaming_reporting import StreamingOperationErrorReporter
+from vox.operations.synthesis import _call_accepts_keyword, validate_synthesis_params
 from vox.operations.tts_chunking import effective_tts_text_cap, split_text_for_tts_adapter
 from vox.operations.voice_resolution import resolve_tts_voice_request
 from vox.streaming.codecs import float32_to_pcm16
@@ -47,6 +48,7 @@ class LongformSynthesisConfig:
     language: str | None = None
     response_format: str = "pcm16"
     chunk_chars: int | None = None
+    params: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -153,6 +155,7 @@ def normalize_longform_tts_config(
     chunk_chars: object,
     registry: Any,
     store: Any | None,
+    params: object | None = None,
 ) -> LongformSynthesisConfig:
     resolved_model = resolve_requested_or_default_model("tts", model, registry, store)
 
@@ -173,6 +176,13 @@ def normalize_longform_tts_config(
     if resolved_speed <= 0:
         resolved_speed = 1.0
 
+    if params is None:
+        normalized_params: dict[str, Any] = {}
+    elif isinstance(params, dict):
+        normalized_params = dict(params)
+    else:
+        raise InvalidConfigError("params must be a JSON object")
+
     return LongformSynthesisConfig(
         model=resolved_model,
         voice=voice,
@@ -180,6 +190,7 @@ def normalize_longform_tts_config(
         language=language,
         response_format=fmt,
         chunk_chars=cap,
+        params=normalized_params,
     )
 
 
@@ -229,6 +240,16 @@ class LongformSynthesisSession(StreamingOperationErrorReporter):
             reference_audio=reference_audio,
             reference_text=reference_text,
         )
+        validate_synthesis_params(adapter, config.params or {})
+        validate_kwargs: dict[str, Any] = {
+            "voice": voice_arg,
+            "language": language_arg,
+            "reference_audio": reference_audio,
+            "reference_text": reference_text,
+        }
+        if _call_accepts_keyword(adapter.validate_synthesis_request, "params"):
+            validate_kwargs["params"] = config.params or {}
+        adapter.validate_synthesis_request(**validate_kwargs)
 
         self._effective_cap = effective_tts_text_cap(adapter, config.chunk_chars)
 
@@ -301,14 +322,16 @@ class LongformSynthesisSession(StreamingOperationErrorReporter):
 
         for text_chunk in text_chunks:
             chunk_start = time.perf_counter()
-            async for chunk in adapter.synthesize(
-                text_chunk,
-                voice=resolved_voice.voice,
-                speed=config.speed,
-                language=resolved_voice.language,
-                reference_audio=resolved_voice.reference_audio,
-                reference_text=resolved_voice.reference_text,
-            ):
+            synth_kwargs: dict[str, Any] = {
+                "voice": resolved_voice.voice,
+                "speed": config.speed,
+                "language": resolved_voice.language,
+                "reference_audio": resolved_voice.reference_audio,
+                "reference_text": resolved_voice.reference_text,
+            }
+            if _call_accepts_keyword(adapter.synthesize, "params"):
+                synth_kwargs["params"] = config.params or {}
+            async for chunk in adapter.synthesize(text_chunk, **synth_kwargs):
                 audio = np.frombuffer(chunk.audio, dtype=np.float32)
                 if audio.size == 0:
                     continue

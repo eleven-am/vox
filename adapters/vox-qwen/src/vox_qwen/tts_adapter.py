@@ -6,11 +6,13 @@ import importlib
 import json
 import logging
 import os
+import random
 import subprocess
 import sys
 import tempfile
 import time
 from collections.abc import AsyncIterator
+from contextlib import contextmanager
 from importlib import metadata
 from importlib.util import find_spec
 from pathlib import Path
@@ -24,6 +26,7 @@ from vox.core.types import (
     AdapterInfo,
     ModelFormat,
     ModelType,
+    SynthesisParameterInfo,
     SynthesizeChunk,
     VoiceInfo,
 )
@@ -208,6 +211,42 @@ def _is_cuda_graph_capture_error(error: BaseException) -> bool:
         or "cuda graph" in message.lower()
         or "graph capture" in message.lower()
     )
+
+
+@contextmanager
+def _temporary_seed(seed: int | None):
+    if seed is None:
+        yield
+        return
+
+    py_state = random.getstate()
+    np_state = np.random.get_state()
+    torch_state = None
+    cuda_states = None
+    torch = None
+    try:
+        torch = _torch()
+        torch_state = torch.random.get_rng_state()
+        if torch.cuda.is_available():
+            cuda_states = torch.cuda.get_rng_state_all()
+    except Exception:
+        torch = None
+
+    random.seed(seed)
+    np.random.seed(seed % (2**32))
+    if torch is not None:
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+    try:
+        yield
+    finally:
+        random.setstate(py_state)
+        np.random.set_state(np_state)
+        if torch is not None and torch_state is not None:
+            torch.random.set_rng_state(torch_state)
+            if cuda_states is not None:
+                torch.cuda.set_rng_state_all(cuda_states)
 
 
 async def _stream_model_output(output: Any, default_sample_rate: int) -> AsyncIterator[SynthesizeChunk]:
@@ -463,6 +502,26 @@ class Qwen3TTSAdapter(TTSAdapter):
             return
         _load_qwen_tts_model()
 
+    def synthesis_parameters(self) -> tuple[SynthesisParameterInfo, ...]:
+        return (
+            SynthesisParameterInfo(
+                name="seed",
+                type="integer",
+                default=None,
+                min_value=0,
+                max_value=2**32 - 1,
+                description="Best-effort deterministic seed for Python, NumPy, and Torch RNGs.",
+            ),
+            SynthesisParameterInfo(
+                name="chunk_size",
+                type="integer",
+                default=8,
+                min_value=1,
+                max_value=64,
+                description="Streaming chunk size for the Faster Qwen3-TTS backend.",
+            ),
+        )
+
     def validate_synthesis_request(
         self,
         *,
@@ -470,6 +529,7 @@ class Qwen3TTSAdapter(TTSAdapter):
         language: str | None = None,
         reference_audio: NDArray[np.float32] | None = None,
         reference_text: str | None = None,
+        params: dict[str, Any] | None = None,
     ) -> None:
         if self._mode == "clone":
             if reference_audio is None or np.asarray(reference_audio, dtype=np.float32).size == 0:
@@ -493,6 +553,7 @@ class Qwen3TTSAdapter(TTSAdapter):
         language: str | None = None,
         reference_audio: NDArray[np.float32] | None = None,
         reference_text: str | None = None,
+        params: dict[str, Any] | None = None,
     ) -> AsyncIterator[SynthesizeChunk]:
         if not self._loaded:
             raise RuntimeError("Qwen3-TTS model is not loaded — call load() first")
@@ -501,6 +562,9 @@ class Qwen3TTSAdapter(TTSAdapter):
             return
 
         qwen_language = _normalize_language(language) or "English"
+        params = dict(params or {})
+        seed = params.get("seed")
+        chunk_size = int(params.get("chunk_size", 8))
 
         if self._mode == "clone":
             async for chunk in self._synthesize_clone(
@@ -508,6 +572,8 @@ class Qwen3TTSAdapter(TTSAdapter):
                 language=qwen_language,
                 reference_audio=reference_audio,
                 reference_text=reference_text,
+                seed=seed,
+                chunk_size=chunk_size,
             ):
                 yield chunk
             return
@@ -537,30 +603,33 @@ class Qwen3TTSAdapter(TTSAdapter):
                 language=qwen_language,
                 speaker=speaker,
                 reference_text=reference_text,
+                seed=seed,
             ):
                 yield chunk
             return
 
         if self._backend == "faster-qwen3-tts":
-            output = self._model.generate_custom_voice_streaming(
+            with _temporary_seed(seed):
+                output = self._model.generate_custom_voice_streaming(
+                    text=text,
+                    language=qwen_language,
+                    speaker=speaker,
+                    instruct=reference_text,
+                    chunk_size=chunk_size,
+                )
+                async for chunk in _stream_fast_model_output(output, QWEN_TTS_SAMPLE_RATE):
+                    yield chunk
+            return
+
+        with _temporary_seed(seed):
+            output = self._model.generate_custom_voice(
                 text=text,
                 language=qwen_language,
                 speaker=speaker,
                 instruct=reference_text,
-                chunk_size=8,
             )
-            async for chunk in _stream_fast_model_output(output, QWEN_TTS_SAMPLE_RATE):
+            async for chunk in _stream_model_output(output, QWEN_TTS_SAMPLE_RATE):
                 yield chunk
-            return
-
-        output = self._model.generate_custom_voice(
-            text=text,
-            language=qwen_language,
-            speaker=speaker,
-            instruct=reference_text,
-        )
-        async for chunk in _stream_model_output(output, QWEN_TTS_SAMPLE_RATE):
-            yield chunk
 
     async def _synthesize_clone(
         self,
@@ -569,6 +638,8 @@ class Qwen3TTSAdapter(TTSAdapter):
         language: str,
         reference_audio: NDArray[np.float32] | None,
         reference_text: str | None,
+        seed: int | None,
+        chunk_size: int,
     ) -> AsyncIterator[SynthesizeChunk]:
         if reference_audio is None or reference_audio.size == 0:
             raise ValueError(
@@ -584,6 +655,7 @@ class Qwen3TTSAdapter(TTSAdapter):
                 language=language,
                 reference_audio=reference_audio,
                 reference_text=reference_text,
+                seed=seed,
             ):
                 yield chunk
             return
@@ -595,6 +667,8 @@ class Qwen3TTSAdapter(TTSAdapter):
                     language=language,
                     reference_audio=reference_audio,
                     reference_text=reference_text,
+                    seed=seed,
+                    chunk_size=chunk_size,
                 ):
                     yield chunk
                 return
@@ -611,18 +685,20 @@ class Qwen3TTSAdapter(TTSAdapter):
                     language=language,
                     reference_audio=reference_audio,
                     reference_text=reference_text,
+                    seed=seed,
                 ):
                     yield chunk
                 return
 
-        output = self._model.generate_voice_clone(
-            text=text,
-            language=language,
-            ref_audio=(np.asarray(reference_audio, dtype=np.float32), QWEN_TTS_SAMPLE_RATE),
-            ref_text=reference_text,
-        )
-        async for chunk in _stream_model_output(output, QWEN_TTS_SAMPLE_RATE):
-            yield chunk
+        with _temporary_seed(seed):
+            output = self._model.generate_voice_clone(
+                text=text,
+                language=language,
+                ref_audio=(np.asarray(reference_audio, dtype=np.float32), QWEN_TTS_SAMPLE_RATE),
+                ref_text=reference_text,
+            )
+            async for chunk in _stream_model_output(output, QWEN_TTS_SAMPLE_RATE):
+                yield chunk
 
     async def _stream_fast_clone(
         self,
@@ -631,6 +707,8 @@ class Qwen3TTSAdapter(TTSAdapter):
         language: str,
         reference_audio: NDArray[np.float32],
         reference_text: str | None,
+        seed: int | None,
+        chunk_size: int,
     ) -> AsyncIterator[SynthesizeChunk]:
         ref_tmp: Path | None = None
         try:
@@ -645,15 +723,16 @@ class Qwen3TTSAdapter(TTSAdapter):
                 np.asarray(reference_audio, dtype=np.float32),
                 QWEN_TTS_SAMPLE_RATE,
             )
-            output = self._model.generate_voice_clone_streaming(
-                text=text,
-                language=language,
-                ref_audio=str(ref_tmp),
-                ref_text=reference_text or "",
-                chunk_size=8,
-            )
-            async for chunk in _stream_fast_model_output(output, QWEN_TTS_SAMPLE_RATE):
-                yield chunk
+            with _temporary_seed(seed):
+                output = self._model.generate_voice_clone_streaming(
+                    text=text,
+                    language=language,
+                    ref_audio=str(ref_tmp),
+                    ref_text=reference_text or "",
+                    chunk_size=chunk_size,
+                )
+                async for chunk in _stream_fast_model_output(output, QWEN_TTS_SAMPLE_RATE):
+                    yield chunk
         finally:
             if ref_tmp is not None:
                 try:
@@ -670,6 +749,7 @@ class Qwen3TTSAdapter(TTSAdapter):
         speaker: str | None = None,
         reference_audio: NDArray[np.float32] | None = None,
         reference_text: str | None = None,
+        seed: int | None = None,
     ) -> AsyncIterator[SynthesizeChunk]:
         audio, sample_rate = await self._synthesize_via_subprocess(
             mode=mode,
@@ -678,6 +758,7 @@ class Qwen3TTSAdapter(TTSAdapter):
             speaker=speaker,
             reference_audio=reference_audio,
             reference_text=reference_text,
+            seed=seed,
         )
         chunk_size = sample_rate * 2 * 4
         if not audio:
@@ -701,6 +782,7 @@ class Qwen3TTSAdapter(TTSAdapter):
         speaker: str | None = None,
         reference_audio: NDArray[np.float32] | None = None,
         reference_text: str | None = None,
+        seed: int | None = None,
     ) -> tuple[bytes, int]:
         runtime_dir = Path(os.environ.get("VOX_HOME", str(Path.home() / ".vox"))) / "runtime" / "qwen-tts"
         worker = Path(__file__).with_name("qwen_tts_worker.py")
@@ -720,6 +802,8 @@ class Qwen3TTSAdapter(TTSAdapter):
             "--language",
             language,
         ]
+        if seed is not None:
+            cmd.extend(["--seed", str(seed)])
 
         ref_tmp: Path | None = None
         try:

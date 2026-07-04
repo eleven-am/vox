@@ -130,6 +130,7 @@ async def speech_stream(websocket: WebSocket):
                     language=config_msg.get("language"),
                     response_format=config_msg.get("response_format"),
                     chunk_chars=config_msg.get("chunk_chars"),
+                    params=config_msg.get("params"),
                     registry=services.registry,
                     store=services.store,
                 ),

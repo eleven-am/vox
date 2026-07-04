@@ -74,6 +74,15 @@ class SynthesizeChunk:
             raise ValueError(f"sample_rate must be positive, got {self.sample_rate}")
 
 @dataclass(frozen=True)
+class SynthesisParameterInfo:
+    name: str
+    type: str
+    default: Any | None = None
+    min_value: float | None = None
+    max_value: float | None = None
+    description: str = ""
+
+@dataclass(frozen=True)
 class VoiceInfo:
     id: str
     name: str

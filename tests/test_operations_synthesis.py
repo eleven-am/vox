@@ -18,6 +18,7 @@ from vox.core.types import (
     AdapterInfo,
     ModelFormat,
     ModelType,
+    SynthesisParameterInfo,
     SynthesizeChunk,
     VoiceInfo,
 )
@@ -109,6 +110,32 @@ class ValidatingTTS(FakeTTS):
         raise InvalidConfigError("invalid synthesis request")
 
 
+class ParamTTS(FakeTTS):
+    def __init__(self):
+        super().__init__()
+        self.validated_params: dict | None = None
+
+    def synthesis_parameters(self):
+        return (
+            SynthesisParameterInfo(
+                name="temperature",
+                type="number",
+                default=0.7,
+                min_value=0.0,
+                max_value=2.0,
+            ),
+            SynthesisParameterInfo(
+                name="seed",
+                type="integer",
+                min_value=0,
+                max_value=2**32 - 1,
+            ),
+        )
+
+    def validate_synthesis_request(self, **kwargs):
+        self.validated_params = kwargs.get("params")
+
+
 def test_synthesis_request_from_fields_normalizes_transport_input():
     request = synthesis_request_from_fields(
         input="hello",
@@ -117,6 +144,7 @@ def test_synthesis_request_from_fields_normalizes_transport_input():
         speed=0,
         language="",
         response_format="WAV",
+        params={"temperature": 0.5},
     )
 
     assert request == SynthesisRequest(
@@ -126,6 +154,7 @@ def test_synthesis_request_from_fields_normalizes_transport_input():
         speed=1.0,
         language=None,
         response_format="wav",
+        params={"temperature": 0.5},
     )
 
 
@@ -137,6 +166,79 @@ def test_synthesis_request_from_fields_defaults_missing_response_format():
     )
 
     assert request.response_format == "wav"
+
+
+@pytest.mark.asyncio
+async def test_synthesize_rejects_unsupported_params(tmp_path: Path):
+    sched = DummyScheduler(FakeTTS())
+    store = BlobStore(root=tmp_path)
+    registry = MagicMock()
+
+    with pytest.raises(InvalidConfigError, match="Unsupported synthesis parameter"):
+        await synthesize_full(
+            scheduler=sched,
+            registry=registry,
+            store=store,
+            request=SynthesisRequest(
+                input="hello",
+                model="fake-tts:latest",
+                params={"temperature": 0.5},
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_synthesize_validates_and_passes_supported_params(tmp_path: Path):
+    adapter = ParamTTS()
+    sched = DummyScheduler(adapter)
+    store = BlobStore(root=tmp_path)
+    registry = MagicMock()
+
+    await synthesize_full(
+        scheduler=sched,
+        registry=registry,
+        store=store,
+        request=SynthesisRequest(
+            input="hello",
+            model="fake-tts:latest",
+            params={"temperature": 0.5, "seed": 123},
+        ),
+    )
+
+    assert adapter.validated_params == {"temperature": 0.5, "seed": 123}
+    assert adapter.last_kwargs is not None
+    assert adapter.last_kwargs["params"] == {"temperature": 0.5, "seed": 123}
+
+
+@pytest.mark.asyncio
+async def test_synthesize_rejects_invalid_param_type_and_range(tmp_path: Path):
+    sched = DummyScheduler(ParamTTS())
+    store = BlobStore(root=tmp_path)
+    registry = MagicMock()
+
+    with pytest.raises(InvalidConfigError, match="must be number"):
+        await synthesize_full(
+            scheduler=sched,
+            registry=registry,
+            store=store,
+            request=SynthesisRequest(
+                input="hello",
+                model="fake-tts:latest",
+                params={"temperature": "hot"},
+            ),
+        )
+
+    with pytest.raises(InvalidConfigError, match="must be <="):
+        await synthesize_full(
+            scheduler=sched,
+            registry=registry,
+            store=store,
+            request=SynthesisRequest(
+                input="hello",
+                model="fake-tts:latest",
+                params={"temperature": 4.0},
+            ),
+        )
 
 
 @pytest.mark.asyncio

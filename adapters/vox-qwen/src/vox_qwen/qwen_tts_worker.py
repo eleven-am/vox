@@ -4,6 +4,7 @@ import argparse
 import base64
 import contextlib
 import json
+import random
 import sys
 
 
@@ -21,6 +22,7 @@ def _parse_args() -> argparse.Namespace:
 
     parser.add_argument("--ref-audio-path")
     parser.add_argument("--ref-text")
+    parser.add_argument("--seed", type=int)
     return parser.parse_args()
 
 
@@ -30,6 +32,22 @@ def main() -> int:
 
     with contextlib.redirect_stdout(sys.stderr):
         sys.path.insert(0, args.runtime_dir)
+        if args.seed is not None:
+            random.seed(args.seed)
+            try:
+                import numpy as np
+
+                np.random.seed(args.seed % (2**32))
+            except ImportError:
+                pass
+            try:
+                import torch
+
+                torch.manual_seed(args.seed)
+                if torch.cuda.is_available():
+                    torch.cuda.manual_seed_all(args.seed)
+            except ImportError:
+                pass
         from qwen_tts import Qwen3TTSModel
 
         dtype = "bfloat16" if args.device == "cuda" else "float32"

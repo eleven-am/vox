@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
@@ -18,6 +19,7 @@ from vox.core.types import SynthesizeChunk
 from vox.operations.defaults import resolve_requested_or_default_model
 from vox.operations.errors import (
     EmptyInputError,
+    InvalidConfigError,
     NoAudioGeneratedError,
     WrongModelTypeError,
 )
@@ -36,6 +38,7 @@ class SynthesisRequest:
     speed: float = 1.0
     language: str | None = None
     response_format: str = "wav"
+    params: dict[str, Any] = field(default_factory=dict)
 
 
 def synthesis_request_from_fields(
@@ -46,6 +49,7 @@ def synthesis_request_from_fields(
     speed: float = 1.0,
     language: str | None = None,
     response_format: str | None = "wav",
+    params: dict[str, Any] | None = None,
 ) -> SynthesisRequest:
     return SynthesisRequest(
         input=input,
@@ -54,6 +58,7 @@ def synthesis_request_from_fields(
         speed=speed if speed > 0 else 1.0,
         language=language or None,
         response_format=(response_format or "wav").lower(),
+        params=dict(params or {}),
     )
 
 
@@ -95,6 +100,65 @@ class _TtsSynthesisContext:
     text_chunks: tuple[str, ...]
 
 
+def _call_accepts_keyword(call: Any, name: str) -> bool:
+    try:
+        signature = inspect.signature(call)
+    except (TypeError, ValueError):
+        return False
+    return name in signature.parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+
+
+def validate_synthesis_params(adapter: TTSAdapter, params: dict[str, Any]) -> None:
+    if not params:
+        return
+
+    supported = {param.name: param for param in adapter.synthesis_parameters()}
+    unknown = sorted(set(params) - set(supported))
+    if unknown:
+        names = ", ".join(unknown)
+        supported_names = ", ".join(sorted(supported)) or "none"
+        raise InvalidConfigError(
+            f"Unsupported synthesis parameter(s) for {adapter.info().name}: {names}. "
+            f"Supported parameters: {supported_names}"
+        )
+
+    for name, value in params.items():
+        spec = supported[name]
+        expected_type = spec.type.lower()
+        if expected_type == "number":
+            valid = isinstance(value, int | float) and not isinstance(value, bool)
+        elif expected_type == "integer":
+            valid = isinstance(value, int) and not isinstance(value, bool)
+        elif expected_type == "boolean":
+            valid = isinstance(value, bool)
+        elif expected_type == "string":
+            valid = isinstance(value, str)
+        else:
+            raise InvalidConfigError(
+                f"Adapter {adapter.info().name} declares unsupported parameter type "
+                f"{spec.type!r} for {name}"
+            )
+
+        if not valid:
+            raise InvalidConfigError(
+                f"Synthesis parameter {name!r} for {adapter.info().name} must be {expected_type}"
+            )
+
+        if expected_type in ("number", "integer"):
+            numeric = float(value)
+            if spec.min_value is not None and numeric < spec.min_value:
+                raise InvalidConfigError(
+                    f"Synthesis parameter {name!r} for {adapter.info().name} must be >= {spec.min_value}"
+                )
+            if spec.max_value is not None and numeric > spec.max_value:
+                raise InvalidConfigError(
+                    f"Synthesis parameter {name!r} for {adapter.info().name} must be <= {spec.max_value}"
+                )
+
+
 def _split_for_adapter(text: str, adapter: TTSAdapter) -> list[str]:
     return split_text_for_tts_adapter(text, adapter)
 
@@ -108,13 +172,17 @@ def _validate_input(text: str) -> None:
         raise EmptyInputError()
 
 
-def _validate_tts_synthesis_context(context: _TtsSynthesisContext) -> None:
-    context.adapter.validate_synthesis_request(
-        voice=context.voice,
-        language=context.language,
-        reference_audio=context.reference_audio,
-        reference_text=context.reference_text,
-    )
+def _validate_tts_synthesis_context(context: _TtsSynthesisContext, request: SynthesisRequest) -> None:
+    validate_synthesis_params(context.adapter, request.params)
+    kwargs: dict[str, Any] = {
+        "voice": context.voice,
+        "language": context.language,
+        "reference_audio": context.reference_audio,
+        "reference_text": context.reference_text,
+    }
+    if _call_accepts_keyword(context.adapter.validate_synthesis_request, "params"):
+        kwargs["params"] = request.params
+    context.adapter.validate_synthesis_request(**kwargs)
 
 
 @asynccontextmanager
@@ -148,16 +216,18 @@ async def _iter_tts_synthesis_chunks(
     context: _TtsSynthesisContext,
     request: SynthesisRequest,
 ) -> AsyncIterator[tuple[int, SynthesizeChunk]]:
-    _validate_tts_synthesis_context(context)
+    _validate_tts_synthesis_context(context, request)
     for idx, text_chunk in enumerate(context.text_chunks):
-        chunks = context.adapter.synthesize(
-            text_chunk,
-            voice=context.voice,
-            speed=request.speed if request.speed > 0 else 1.0,
-            language=context.language,
-            reference_audio=context.reference_audio,
-            reference_text=context.reference_text,
-        )
+        kwargs: dict[str, Any] = {
+            "voice": context.voice,
+            "speed": request.speed if request.speed > 0 else 1.0,
+            "language": context.language,
+            "reference_audio": context.reference_audio,
+            "reference_text": context.reference_text,
+        }
+        if _call_accepts_keyword(context.adapter.synthesize, "params"):
+            kwargs["params"] = request.params
+        chunks = context.adapter.synthesize(text_chunk, **kwargs)
         async for chunk in iterate_off_event_loop(chunks):
             yield idx, chunk
 
@@ -232,7 +302,7 @@ async def preflight_synthesis(
         model=model,
         request=request,
     ) as context:
-        _validate_tts_synthesis_context(context)
+        _validate_tts_synthesis_context(context, request)
 
 
 async def synthesize_stream(

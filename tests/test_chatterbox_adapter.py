@@ -217,6 +217,35 @@ def test_chatterbox_load_uses_target_runtime_and_synthesizes(tmp_path):
     assert model.generate_calls[0][1]["speed"] == 1.1
 
 
+def test_chatterbox_forwards_supported_synthesis_params(tmp_path):
+    model = _install_fake_chatterbox_modules(model=_FakeChatterboxModel())
+
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        from vox_chatterbox.adapter import ChatterboxTurboAdapter
+
+        adapter = ChatterboxTurboAdapter()
+        adapter.load(str(tmp_path), "cpu")
+
+        async def run():
+            async for _ in adapter.synthesize(
+                "Hello",
+                params={
+                    "exaggeration": 0.8,
+                    "cfg_weight": 0.4,
+                    "temperature": 0.6,
+                    "seed": 123,
+                },
+            ):
+                pass
+
+        asyncio.run(run())
+
+    kwargs = model.generate_calls[0][1]
+    assert kwargs["exaggeration"] == 0.8
+    assert kwargs["cfg_weight"] == 0.4
+    assert kwargs["temperature"] == 0.6
+
+
 def test_chatterbox_clone_does_not_pass_reference_text_to_runtime_that_rejects_it(tmp_path):
     model = _FakeStrictChatterboxModel()
     _install_fake_chatterbox_modules(model=model)
@@ -382,6 +411,36 @@ def test_chatterbox_turbo_onnx_loads_local_graphs_and_synthesizes_with_reference
         "conditional_decoder.onnx",
     }
     assert all(providers[0] == "CUDAExecutionProvider" for _path, providers in _FakeOrtSession.created)
+
+
+def test_chatterbox_turbo_onnx_uses_synthesis_params(tmp_path):
+    _install_fake_onnx_modules()
+    model_dir = _write_fake_chatterbox_onnx_model(tmp_path)
+
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        from vox_chatterbox.adapter import ChatterboxTurboOnnxAdapter
+
+        with patch("vox_chatterbox.adapter._install_chatterbox_onnx_runtime"):
+            adapter = ChatterboxTurboOnnxAdapter()
+            adapter.load(str(model_dir), "cpu")
+
+        with patch.object(
+            adapter,
+            "_generate",
+            return_value=np.array([0.0, 0.1], dtype=np.float32),
+        ) as generate:
+            async def run():
+                async for _ in adapter.synthesize(
+                    "Hello",
+                    reference_audio=np.ones(24_000, dtype=np.float32),
+                    params={"max_new_tokens": 32, "repetition_penalty": 1.05},
+                ):
+                    pass
+
+            asyncio.run(run())
+
+    assert generate.call_args.kwargs["max_new_tokens"] == 32
+    assert generate.call_args.kwargs["repetition_penalty"] == 1.05
 
 
 def test_chatterbox_turbo_onnx_requires_reference_audio_or_voice(tmp_path):
