@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -9,7 +10,7 @@ from tests.fakes import FakeScheduler as DummyScheduler
 from tests.fakes import FakeSTTAdapter as FakeSTT
 from tests.fakes import FakeTTSAdapter as FakeTTS
 from vox.audio.codecs import encode_wav
-from vox.core.types import TranscribeResult, TranscriptSegment, WordTimestamp
+from vox.core.types import AdapterInfo, ModelFormat, ModelType, TranscribeResult, TranscriptSegment, WordTimestamp
 from vox.operations.errors import (
     EmptyAudioError,
     NoDefaultModelError,
@@ -271,6 +272,31 @@ class OnsetHallucinatingSTT(FakeSTT):
         )
 
 
+class ConfidentNemoLikeSTT(FakeSTT):
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def info(self) -> AdapterInfo:
+        return AdapterInfo(
+            name="parakeet-stt-nemo",
+            type=ModelType.STT,
+            architectures=("parakeet-nemo",),
+            default_sample_rate=16_000,
+            supported_formats=(ModelFormat.PYTORCH,),
+        )
+
+    def transcribe(self, audio, **kwargs) -> TranscribeResult:
+        self.calls += 1
+        text = "this direct transcript is already confident"
+        return TranscribeResult(
+            text=text,
+            language="en",
+            duration_ms=int(audio.shape[0] / 16_000 * 1000),
+            segments=(TranscriptSegment(text=text, start_ms=0, end_ms=1000),),
+        )
+
+
 @pytest.mark.asyncio
 async def test_transcribe_onset_guard_prefers_padded_over_longer_hallucination():
     adapter = OnsetHallucinatingSTT()
@@ -284,6 +310,21 @@ async def test_transcribe_onset_guard_prefers_padded_over_longer_hallucination()
 
     assert bundle.result.text == "trying my speech to text model again"
     assert adapter.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_transcribe_onset_guard_skips_padded_pass_for_confident_nemo_result():
+    adapter = ConfidentNemoLikeSTT()
+    sched = DummyScheduler(adapter)
+    registry = MagicMock()
+
+    bundle = await transcribe(
+        scheduler=sched, registry=registry, store=None,
+        request=TranscriptionRequest(audio=_tone_wav_bytes(dur_s=4), model="fake-stt:latest"),
+    )
+
+    assert bundle.result.text == "this direct transcript is already confident"
+    assert adapter.calls == 1
 
 
 def test_choose_onset_result_falls_back_to_direct_when_padded_empty():
@@ -302,6 +343,18 @@ def test_choose_onset_result_prefers_padded_within_ratio():
     direct = TranscribeResult(text="trying my speech to text mode that i can", language="en", duration_ms=1000)
     padded = TranscribeResult(text="trying my speech to text model again", language="en", duration_ms=6000)
     assert _choose_onset_result(direct, padded) is padded
+
+
+class CountingScheduler(DummyScheduler):
+    def __init__(self, adapter):
+        super().__init__(adapter)
+        self.acquire_names: list[str] = []
+
+    @asynccontextmanager
+    async def acquire(self, name: str):
+        self.acquire_names.append(name)
+        async with super().acquire(name) as adapter:
+            yield adapter
 
 
 def test_openai_transcription_payload_uses_seconds_and_top_level_words():
@@ -477,6 +530,26 @@ async def test_transcribe_chunk_without_onset_guard_runs_single_stt_pass():
 
     assert adapter.calls == 1
     assert result.text == "middle only"
+
+
+@pytest.mark.asyncio
+async def test_transcribe_releases_scheduler_between_long_audio_chunks():
+    adapter = ConfidentNemoLikeSTT()
+    sched = CountingScheduler(adapter)
+    registry = MagicMock()
+
+    bundle = await transcribe(
+        scheduler=sched,
+        registry=registry,
+        store=None,
+        request=TranscriptionRequest(
+            audio=_tone_wav_bytes(dur_s=5 * 60 + 1),
+            model="fake-stt:latest",
+        ),
+    )
+
+    assert bundle.result.text
+    assert sched.acquire_names == ["fake-stt:latest", "fake-stt:latest"]
 
 
 @pytest.mark.asyncio

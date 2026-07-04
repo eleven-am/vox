@@ -30,6 +30,8 @@ ONSET_GUARD_COMPARE_MAX_MS = 60_000
 ONSET_GUARD_SPARSE_MIN_MS = 1_500
 ONSET_GUARD_SPARSE_MAX_WORDS = 1
 ONSET_GUARD_PADDED_MIN_SCORE_RATIO = 0.75
+ONSET_GUARD_FAST_SIGNAL_MAX_MS = 120
+ONSET_GUARD_CONFIDENT_MIN_WORDS = 4
 
 
 @dataclass(frozen=True)
@@ -121,6 +123,30 @@ class TranscriptionResultBundle:
     processing_ms: int
     entities: tuple[Entity, ...] = ()
     topics: tuple[str, ...] = ()
+
+
+@dataclass
+class _TranscriptionTimings:
+    decode_ms: int = 0
+    acquire_ms: int = 0
+    stt_ms: int = 0
+    direct_stt_ms: int = 0
+    padded_stt_ms: int = 0
+    merge_ms: int = 0
+    annotate_ms: int = 0
+    chunks: int = 0
+    onset_direct: int = 0
+    onset_padded: int = 0
+    onset_skipped: int = 0
+
+    def add(self, other: _TranscriptionTimings) -> None:
+        self.acquire_ms += other.acquire_ms
+        self.stt_ms += other.stt_ms
+        self.direct_stt_ms += other.direct_stt_ms
+        self.padded_stt_ms += other.padded_stt_ms
+        self.onset_direct += other.onset_direct
+        self.onset_padded += other.onset_padded
+        self.onset_skipped += other.onset_skipped
 
 
 @dataclass(frozen=True)
@@ -286,31 +312,46 @@ async def transcribe(
     if not request.audio:
         raise EmptyAudioError()
 
+    timings = _TranscriptionTimings()
+    decode_start = time.perf_counter()
     chunks = prepare_for_stt_chunks(request.audio, format_hint=request.format_hint)
+    timings.decode_ms = int((time.perf_counter() - decode_start) * 1000)
+    timings.chunks = len(chunks)
     first_signal_ms = _first_signal_ms(chunks[0].data, sample_rate=chunks[0].sample_rate)
 
     start_time = time.perf_counter()
     try:
-        async with acquire_typed_adapter(
-            scheduler,
-            model=model,
-            adapter_type=STTAdapter,
-            expected_type="STT",
-        ) as adapter:
-            per_chunk: list[tuple] = []
-            for chunk in chunks:
+        per_chunk: list[tuple] = []
+        for index, chunk in enumerate(chunks):
+            acquire_start = time.perf_counter()
+            async with acquire_typed_adapter(
+                scheduler,
+                model=model,
+                adapter_type=STTAdapter,
+                expected_type="STT",
+            ) as adapter:
+                timings.acquire_ms += int((time.perf_counter() - acquire_start) * 1000)
+                chunk_timings = _TranscriptionTimings()
                 partial = await _transcribe_chunk(
                     adapter,
                     chunk.data,
                     sample_rate=chunk.sample_rate,
                     duration_ms=chunk.duration_ms,
                     guard_onset=chunk.offset_ms == 0,
+                    first_signal_ms=first_signal_ms if chunk.offset_ms == 0 else None,
                     language=request.language,
                     word_timestamps=request.word_timestamps,
                     temperature=request.temperature,
+                    timings=chunk_timings,
                 )
-                per_chunk.append((partial, chunk.offset_ms))
-            result = merge_transcripts(per_chunk)
+                timings.add(chunk_timings)
+            per_chunk.append((partial, chunk.offset_ms))
+            if index + 1 < len(chunks):
+                # Give interactive requests a chance to acquire the model between long-form chunks.
+                await _yield_between_chunks()
+        merge_start = time.perf_counter()
+        result = merge_transcripts(per_chunk)
+        timings.merge_ms = int((time.perf_counter() - merge_start) * 1000)
     except (WrongModelTypeError, OperationError, VoxError):
         raise
     except Exception:
@@ -323,6 +364,7 @@ async def transcribe(
     entities: tuple[Entity, ...] = ()
     topics: tuple[str, ...] = ()
     if request.annotate_text and result.text:
+        annotate_start = time.perf_counter()
         lang = request.language or result.language or "en"
         ents, tops = annotate(result.text, lang)
         entities = tuple(
@@ -330,9 +372,15 @@ async def transcribe(
             for e in ents
         )
         topics = tuple(tops)
+        timings.annotate_ms = int((time.perf_counter() - annotate_start) * 1000)
 
     logger.info(
-        "transcribe %s input_bytes=%d format=%s audio_ms=%d first_signal_ms=%s chunks=%d processing_ms=%d chars=%d",
+        (
+            "transcribe %s input_bytes=%d format=%s audio_ms=%d first_signal_ms=%s chunks=%d "
+            "processing_ms=%d decode_ms=%d acquire_ms=%d stt_ms=%d direct_stt_ms=%d "
+            "padded_stt_ms=%d merge_ms=%d annotate_ms=%d onset_direct=%d onset_padded=%d "
+            "onset_skipped=%d chars=%d"
+        ),
         model,
         len(request.audio),
         request.format_hint or "auto",
@@ -340,6 +388,16 @@ async def transcribe(
         first_signal_ms if first_signal_ms is not None else "none",
         len(chunks),
         processing_ms,
+        timings.decode_ms,
+        timings.acquire_ms,
+        timings.stt_ms,
+        timings.direct_stt_ms,
+        timings.padded_stt_ms,
+        timings.merge_ms,
+        timings.annotate_ms,
+        timings.onset_direct,
+        timings.onset_padded,
+        timings.onset_skipped,
         len(result.text or ""),
     )
     return TranscriptionResultBundle(
@@ -357,9 +415,11 @@ async def _transcribe_chunk(
     sample_rate: int,
     duration_ms: int,
     guard_onset: bool,
+    first_signal_ms: int | None = None,
     language: str | None,
     word_timestamps: bool,
     temperature: float,
+    timings: _TranscriptionTimings | None = None,
 ) -> TranscribeResult:
     if not guard_onset:
         return await _run_padded_stt(
@@ -370,6 +430,8 @@ async def _transcribe_chunk(
             language=language,
             word_timestamps=word_timestamps,
             temperature=temperature,
+            timings=timings,
+            padded=True,
         )
 
     direct = await _run_stt(
@@ -378,10 +440,32 @@ async def _transcribe_chunk(
         language=language,
         word_timestamps=word_timestamps,
         temperature=temperature,
+        timings=timings,
+        direct=True,
     )
     direct = replace(direct, duration_ms=duration_ms)
 
+    if _can_skip_padded_onset_pass(
+        adapter,
+        direct,
+        duration_ms=duration_ms,
+        first_signal_ms=first_signal_ms,
+    ):
+        if timings is not None:
+            timings.onset_skipped += 1
+            timings.onset_direct += 1
+        logger.info(
+            "transcribe onset guard skipped padded result adapter=%s direct_chars=%d duration_ms=%d first_signal_ms=%s",
+            _adapter_name(adapter),
+            len(direct.text or ""),
+            duration_ms,
+            first_signal_ms if first_signal_ms is not None else "none",
+        )
+        return direct
+
     if duration_ms > ONSET_GUARD_COMPARE_MAX_MS and not _looks_sparse(direct, duration_ms=duration_ms):
+        if timings is not None:
+            timings.onset_direct += 1
         return direct
 
     padded = await _run_padded_stt(
@@ -392,8 +476,15 @@ async def _transcribe_chunk(
         language=language,
         word_timestamps=word_timestamps,
         temperature=temperature,
+        timings=timings,
+        padded=True,
     )
     chosen = _choose_onset_result(direct, padded)
+    if timings is not None:
+        if chosen is direct:
+            timings.onset_direct += 1
+        else:
+            timings.onset_padded += 1
     logger.info(
         "transcribe onset guard selected %s result direct_chars=%d padded_chars=%d duration_ms=%d",
         "direct" if chosen is direct else "padded",
@@ -413,8 +504,11 @@ async def _run_padded_stt(
     language: str | None,
     word_timestamps: bool,
     temperature: float,
+    timings: _TranscriptionTimings | None = None,
+    padded: bool = False,
 ) -> TranscribeResult:
-    return await run_stt_with_leading_context(
+    start = time.perf_counter()
+    result = await run_stt_with_leading_context(
         adapter,
         audio,
         sample_rate=sample_rate,
@@ -422,7 +516,14 @@ async def _run_padded_stt(
         language=language,
         word_timestamps=word_timestamps,
         temperature=temperature,
+        executor=None,
     )
+    elapsed = int((time.perf_counter() - start) * 1000)
+    if timings is not None:
+        timings.stt_ms += elapsed
+        if padded:
+            timings.padded_stt_ms += elapsed
+    return result
 
 
 async def _run_stt(
@@ -432,20 +533,60 @@ async def _run_stt(
     language: str | None,
     word_timestamps: bool,
     temperature: float,
+    timings: _TranscriptionTimings | None = None,
+    direct: bool = False,
 ) -> TranscribeResult:
-    return await run_stt(
+    start = time.perf_counter()
+    result = await run_stt(
         adapter,
         audio,
         language=language,
         word_timestamps=word_timestamps,
         temperature=temperature,
     )
+    elapsed = int((time.perf_counter() - start) * 1000)
+    if timings is not None:
+        timings.stt_ms += elapsed
+        if direct:
+            timings.direct_stt_ms += elapsed
+        else:
+            timings.padded_stt_ms += elapsed
+    return result
+
+
+async def _yield_between_chunks() -> None:
+    import asyncio
+
+    await asyncio.sleep(0)
 
 
 def _looks_sparse(result: TranscribeResult, *, duration_ms: int) -> bool:
     if duration_ms < ONSET_GUARD_SPARSE_MIN_MS:
         return False
     return len((result.text or "").split()) <= ONSET_GUARD_SPARSE_MAX_WORDS
+
+
+def _can_skip_padded_onset_pass(
+    adapter: STTAdapter,
+    direct: TranscribeResult,
+    *,
+    duration_ms: int,
+    first_signal_ms: int | None,
+) -> bool:
+    if _adapter_name(adapter) != "parakeet-stt-nemo":
+        return False
+    if first_signal_ms is None or first_signal_ms > ONSET_GUARD_FAST_SIGNAL_MAX_MS:
+        return False
+    if _looks_sparse(direct, duration_ms=duration_ms):
+        return False
+    return len((direct.text or "").split()) >= ONSET_GUARD_CONFIDENT_MIN_WORDS
+
+
+def _adapter_name(adapter: STTAdapter) -> str:
+    try:
+        return str(adapter.info().name)
+    except Exception:
+        return type(adapter).__name__
 
 
 def _choose_onset_result(direct: TranscribeResult, padded: TranscribeResult) -> TranscribeResult:

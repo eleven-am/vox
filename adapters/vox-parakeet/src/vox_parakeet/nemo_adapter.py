@@ -426,9 +426,11 @@ class ParakeetNemoAdapter(STTAdapter):
 
         duration_ms = int(len(audio) / PARAKEET_SAMPLE_RATE * 1000)
 
+        temp_write_start = time.perf_counter()
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             sf.write(tmp.name, audio, PARAKEET_SAMPLE_RATE)
             temp_path = Path(tmp.name)
+        temp_write_ms = int((time.perf_counter() - temp_write_start) * 1000)
 
         try:
             transcribe_kwargs: dict[str, Any] = {"batch_size": 1}
@@ -436,11 +438,15 @@ class ParakeetNemoAdapter(STTAdapter):
                 transcribe_kwargs["timestamps"] = True
                 transcribe_kwargs["return_hypotheses"] = True
 
-            with self._lock:
+            lock_wait_start = time.perf_counter()
+            self._lock.acquire()
+            lock_wait_ms = int((time.perf_counter() - lock_wait_start) * 1000)
+            try:
                 if not self._loaded or self._model is None:
                     raise RuntimeError("Parakeet NeMo model was unloaded during transcription")
                 model = self._model
 
+                model_start = time.perf_counter()
                 try:
                     result = model.transcribe([str(temp_path)], **transcribe_kwargs)
                 except Exception as exc:
@@ -452,6 +458,9 @@ class ParakeetNemoAdapter(STTAdapter):
                     )
                     _disable_cuda_graph_decoding(model)
                     result = model.transcribe([str(temp_path)], **transcribe_kwargs)
+                model_ms = int((time.perf_counter() - model_start) * 1000)
+            finally:
+                self._lock.release()
 
             if word_timestamps:
                 if isinstance(result, tuple):
@@ -492,6 +501,14 @@ class ParakeetNemoAdapter(STTAdapter):
 
             detected_source = result[0] if isinstance(result, (list, tuple)) and result else result
             detected_language = language or getattr(detected_source, "language", None)
+            logger.info(
+                "Parakeet NeMo transcribed %dms audio temp_write_ms=%d lock_wait_ms=%d model_ms=%d chars=%d",
+                duration_ms,
+                temp_write_ms,
+                lock_wait_ms,
+                model_ms,
+                len(text or ""),
+            )
             return TranscribeResult(
                 text=text,
                 segments=segments,
