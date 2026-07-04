@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -334,6 +335,7 @@ class ParakeetNemoAdapter(STTAdapter):
         self._loaded = False
         self._model_id: str = DEFAULT_MODEL_ID
         self._device: str = "cuda"
+        self._lock = threading.RLock()
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
@@ -352,45 +354,47 @@ class ParakeetNemoAdapter(STTAdapter):
         _install_nemo_runtime()
 
     def load(self, model_path: str, device: str, **kwargs: Any) -> None:
-        if self._loaded:
-            return
+        with self._lock:
+            if self._loaded:
+                return
 
-        if device not in ("cuda", "auto"):
-            raise RuntimeError(
-                "Parakeet NeMo is a CUDA-backed adapter and requires device='cuda' or 'auto'"
-            )
-        self._device = "cuda"
-        source = kwargs.pop("_source", None)
-        self._model_id, checkpoint_path = _resolve_model_ref(model_path, source)
-        ASRModel = _load_asr_model_class()
+            if device not in ("cuda", "auto"):
+                raise RuntimeError(
+                    "Parakeet NeMo is a CUDA-backed adapter and requires device='cuda' or 'auto'"
+                )
+            self._device = "cuda"
+            source = kwargs.pop("_source", None)
+            self._model_id, checkpoint_path = _resolve_model_ref(model_path, source)
+            ASRModel = _load_asr_model_class()
 
-        logger.info("Loading Parakeet NeMo model: %s (device=%s)", self._model_id, self._device)
-        start = time.perf_counter()
+            logger.info("Loading Parakeet NeMo model: %s (device=%s)", self._model_id, self._device)
+            start = time.perf_counter()
 
-        if checkpoint_path is not None:
-            model = ASRModel.restore_from(restore_path=str(checkpoint_path))
-        else:
-            model = ASRModel.from_pretrained(model_name=self._model_id)
+            if checkpoint_path is not None:
+                model = ASRModel.restore_from(restore_path=str(checkpoint_path))
+            else:
+                model = ASRModel.from_pretrained(model_name=self._model_id)
 
-        if hasattr(model, "to"):
-            model = model.to(self._device)
-        if hasattr(model, "eval"):
-            model.eval()
+            if hasattr(model, "to"):
+                model = model.to(self._device)
+            if hasattr(model, "eval"):
+                model.eval()
 
-        _disable_cuda_graph_decoding(model)
-        self._model = model
-        elapsed = time.perf_counter() - start
-        logger.info("Parakeet NeMo model loaded in %.2fs", elapsed)
-        self._loaded = True
+            _disable_cuda_graph_decoding(model)
+            self._model = model
+            elapsed = time.perf_counter() - start
+            logger.info("Parakeet NeMo model loaded in %.2fs", elapsed)
+            self._loaded = True
 
     def unload(self) -> None:
-        self._model = None
-        self._loaded = False
-        self._model_id = DEFAULT_MODEL_ID
-        self._device = "cuda"
-        torch = _torch_module()
-        if torch.cuda.is_available() and hasattr(torch.cuda, "empty_cache"):
-            torch.cuda.empty_cache()
+        with self._lock:
+            self._model = None
+            self._loaded = False
+            self._model_id = DEFAULT_MODEL_ID
+            self._device = "cuda"
+            torch = _torch_module()
+            if torch.cuda.is_available() and hasattr(torch.cuda, "empty_cache"):
+                torch.cuda.empty_cache()
         logger.info("Parakeet NeMo adapter unloaded")
 
     @property
@@ -432,23 +436,29 @@ class ParakeetNemoAdapter(STTAdapter):
                 transcribe_kwargs["timestamps"] = True
                 transcribe_kwargs["return_hypotheses"] = True
 
-            try:
-                result = self._model.transcribe([str(temp_path)], **transcribe_kwargs)
-            except Exception as exc:
-                if not _has_cuda_graph_error(exc):
-                    raise
-                logger.warning(
-                    "Parakeet NeMo transcription hit CUDA graph decoding failure; disabling graphs and retrying once"
-                )
-                _disable_cuda_graph_decoding(self._model)
-                result = self._model.transcribe([str(temp_path)], **transcribe_kwargs)
+            with self._lock:
+                if not self._loaded or self._model is None:
+                    raise RuntimeError("Parakeet NeMo model was unloaded during transcription")
+                model = self._model
+
+                try:
+                    result = model.transcribe([str(temp_path)], **transcribe_kwargs)
+                except Exception as exc:
+                    if not _has_cuda_graph_error(exc):
+                        raise
+                    logger.warning(
+                        "Parakeet NeMo transcription hit CUDA graph decoding failure; "
+                        "disabling graphs and retrying once"
+                    )
+                    _disable_cuda_graph_decoding(model)
+                    result = model.transcribe([str(temp_path)], **transcribe_kwargs)
 
             if word_timestamps:
                 if isinstance(result, tuple):
                     result = result[0]
                 hypothesis = result[0] if isinstance(result, (list, tuple)) else result
                 text = _extract_text(hypothesis)
-                words = tuple(_extract_word_timestamps(hypothesis, self._model))
+                words = tuple(_extract_word_timestamps(hypothesis, model))
                 segments = (
                     (
                         TranscriptSegment(

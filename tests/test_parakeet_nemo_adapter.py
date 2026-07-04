@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
@@ -73,6 +75,22 @@ class _FakeNemoModel:
                 )
             ]
         return [self.text]
+
+
+class _ConcurrentDetectingNemoModel(_FakeNemoModel):
+    def __init__(self) -> None:
+        super().__init__(text="serialized")
+        self.active_calls = 0
+        self.max_active_calls = 0
+
+    def transcribe(self, paths, **kwargs):
+        self.active_calls += 1
+        self.max_active_calls = max(self.max_active_calls, self.active_calls)
+        try:
+            time.sleep(0.05)
+            return super().transcribe(paths, **kwargs)
+        finally:
+            self.active_calls -= 1
 
 
 def _install_fake_nemo(*, model: _FakeNemoModel | None = None):
@@ -467,6 +485,27 @@ def test_transcribe_without_word_timestamps_returns_text(monkeypatch: pytest.Mon
     assert result.text == "plain text"
     assert result.segments[0].text == "plain text"
     assert "timestamps" not in fake_model.transcribe_calls[-1]
+
+
+def test_transcribe_serializes_concurrent_nemo_model_calls(monkeypatch: pytest.MonkeyPatch):
+    fake_model = _ConcurrentDetectingNemoModel()
+    _install_fake_nemo(model=fake_model)
+    _install_fake_torch(cuda_available=True)
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+
+    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
+
+    adapter = ParakeetNemoAdapter()
+    adapter.load("ignored-local-path", "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")
+    audio = np.zeros(16000, dtype=np.float32)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(lambda _: adapter.transcribe(audio), range(2)))
+
+    assert [result.text for result in results] == ["serialized", "serialized"]
+    assert len(fake_model.transcribe_calls) == 2
+    assert fake_model.max_active_calls == 1
 
 
 def test_transcribe_retries_once_after_cuda_graph_failure(monkeypatch: pytest.MonkeyPatch):
