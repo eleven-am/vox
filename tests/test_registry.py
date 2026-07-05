@@ -474,6 +474,11 @@ class TestAvailableModels:
         assert orpheus["adapter_package"] == "vox-orpheus"
         assert orpheus["adapter"] == "orpheus-tts-vllm"
         assert orpheus["parameters"]["default_voice"] == "tara"
+        assert orpheus["runtime"]["required"]["systems"] == ["linux"]
+        assert orpheus["runtime"]["required"]["machines"] == ["x86_64"]
+        assert orpheus["runtime"]["required"]["accelerators"] == ["cuda"]
+        assert orpheus["runtime"]["required"]["min_vram_gb"] == 10
+        assert "Spark/ARM NVIDIA" in orpheus["runtime"]["required"]["notes"][0]
 
     def test_spark_catalog_entry_uses_spark_adapter_package(self):
         spark = CATALOG["spark-tts"]["0.5b"]

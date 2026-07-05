@@ -131,6 +131,41 @@ def test_dia_concrete_entry_requires_cuda_and_declared_vram():
     assert available.missing == ()
 
 
+def test_orpheus_concrete_entry_requires_linux_x86_cuda_and_declared_vram():
+    entry = FIXTURE_CATALOG["orpheus-tts"]["medium-3b"]
+
+    missing_machine = resolve_catalog_entry(
+        entry,
+        snapshot=_caps(
+            machine="aarch64",
+            torch_installed=True,
+            torch_cuda=True,
+            vram_gb=16.0,
+        ),
+    )
+    missing_cuda = resolve_catalog_entry(
+        entry,
+        snapshot=_caps(
+            torch_installed=True,
+            torch_cuda=False,
+            vram_gb=16.0,
+        ),
+    )
+    available = resolve_catalog_entry(
+        entry,
+        snapshot=_caps(
+            torch_installed=True,
+            torch_cuda=True,
+            torch_compute_capability=120,
+            vram_gb=16.0,
+        ),
+    )
+
+    assert any("machine" in reason for reason in missing_machine.missing)
+    assert any("accelerators cuda" in reason for reason in missing_cuda.missing)
+    assert available.missing == ()
+
+
 def test_logical_entry_resolves_cpu_variant_on_torch_free_runtime():
     resolved = resolve_catalog_entry(_logical_kokoro_entry(), snapshot=_caps())
 

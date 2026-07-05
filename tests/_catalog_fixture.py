@@ -341,6 +341,19 @@ FIXTURE_CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "license": "Apache-2.0",
             "parameters": {"sample_rate": 24000, "default_voice": "tara"},
             "adapter_package": "vox-orpheus",
+            "runtime": {
+                "required": {
+                    "python_modules": ["torch"],
+                    "accelerators": ["cuda"],
+                    "systems": ["linux"],
+                    "machines": ["x86_64"],
+                    "min_vram_gb": 10,
+                    "notes": [
+                        "Orpheus uses the orpheus-speech/vLLM runtime; "
+                        "CPU and Spark/ARM NVIDIA paths are not currently packaged."
+                    ],
+                }
+            },
         },
     },
     "indextts-tts": {

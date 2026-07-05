@@ -149,6 +149,9 @@ class OrpheusAdapter(TTSAdapter):
     def is_loaded(self) -> bool:
         return self._model is not None
 
+    def prepare_runtime(self) -> None:
+        _load_orpheus_model_class()
+
     def validate_synthesis_request(
         self,
         *,
