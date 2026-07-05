@@ -14,9 +14,21 @@ pip install vox-cosyvoice
 
 ## Runtime Dependencies
 
-The adapter package is intentionally light. The official CosyVoice runtime is
-installed on demand from GitHub into the isolated target runtime
-`$VOX_HOME/runtime/cosyvoice`.
+The adapter package is intentionally light. The official CosyVoice source is
+checked out on demand from GitHub into `$VOX_HOME/runtime/cosyvoice/CosyVoice`,
+and CosyVoice-specific Python dependencies are installed into the isolated
+target runtime `$VOX_HOME/runtime/cosyvoice`.
+
+The shared Vox GPU stack remains owned by the base Vox environment; the adapter
+does not install its own Torch/CUDA/server runtime packages.
+
+CosyVoice imports `whisper.log_mel_spectrogram` and
+`whisper.tokenizer.Tokenizer` for frontend features. Vox provides those narrow
+compatibility surfaces inside the isolated runtime instead of installing the
+full `openai-whisper` package and its duplicate GPU stack.
+Matcha-TTS also imports `matplotlib` through training/plotting utilities during
+module import; Vox provides an inference-only compatibility package instead of
+installing the full plotting stack.
 
 ## Use with Vox
 

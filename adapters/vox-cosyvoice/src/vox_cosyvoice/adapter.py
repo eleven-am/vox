@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import importlib
 import logging
+import shutil
 import subprocess
+import sys
 import tempfile
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -27,33 +29,267 @@ from vox.operations.errors import InvalidConfigError
 logger = logging.getLogger(__name__)
 
 COSYVOICE_SAMPLE_RATE = 24_000
-COSYVOICE_REPO = "git+https://github.com/FunAudioLLM/CosyVoice.git"
+COSYVOICE_REPO = "https://github.com/FunAudioLLM/CosyVoice.git"
+COSYVOICE_SOURCE_DIR = "CosyVoice"
+COSYVOICE_REQUIRED_PATHS = (
+    Path("cosyvoice") / "cli" / "cosyvoice.py",
+    Path("third_party") / "Matcha-TTS" / "matcha",
+)
+
+# Keep this list intentionally narrower than upstream requirements.txt. The Vox
+# image owns the shared GPU stack (torch, torchaudio, CUDA libraries,
+# transformers, onnxruntime, FastAPI, etc.); installing those here can downgrade
+# or duplicate the server runtime. These packages are the CosyVoice-specific
+# Python pieces needed around the model/runtime source checkout.
+COSYVOICE_RUNTIME_REQUIREMENTS = (
+    "conformer==0.3.2",
+    "diffusers==0.29.0",
+    "gdown==5.1.0",
+    "hydra-core==1.3.2",
+    "HyperPyYAML==1.2.3",
+    "huggingface-hub>=0.34,<1.0",
+    "inflect==7.3.1",
+    "librosa==0.10.2",
+    "lightning==2.2.4",
+    "modelscope==1.20.0",
+    "numpy==1.26.4",
+    "omegaconf==2.3.0",
+    "protobuf>=4.25,<5",
+    "pyworld==0.3.4",
+    "rich==13.7.1",
+    "tiktoken>=0.7,<1",
+    "wetext==0.0.4",
+    "wget==3.2",
+    "x-transformers==2.11.24",
+)
+
+WHISPER_COMPAT_FILES = {
+    "__init__.py": '''
+from __future__ import annotations
+
+from pathlib import Path
+
+import torch
+import torchaudio
+
+
+def _load_audio(audio, device):
+    if isinstance(audio, (str, Path)):
+        waveform, sample_rate = torchaudio.load(str(audio))
+        if sample_rate != 16000:
+            waveform = torchaudio.functional.resample(waveform, sample_rate, 16000)
+        audio = waveform
+    if not torch.is_tensor(audio):
+        audio = torch.as_tensor(audio)
+    if audio.ndim == 2:
+        audio = audio if audio.shape[0] == 1 else audio.mean(dim=0, keepdim=True)
+    return audio.to(device=device, dtype=torch.float32)
+
+
+def log_mel_spectrogram(audio, n_mels=128, padding=0, device=None):
+    device = device or (audio.device if torch.is_tensor(audio) else "cpu")
+    waveform = _load_audio(audio, device)
+    if padding > 0:
+        waveform = torch.nn.functional.pad(waveform, (0, padding))
+    transform = torchaudio.transforms.MelSpectrogram(
+        sample_rate=16000,
+        n_fft=400,
+        win_length=400,
+        hop_length=160,
+        n_mels=n_mels,
+        center=True,
+        power=2.0,
+    ).to(device)
+    mel = transform(waveform)
+    log_spec = torch.clamp(mel, min=1e-10).log10()
+    log_spec = torch.maximum(log_spec, log_spec.max() - 8.0)
+    return (log_spec + 4.0) / 4.0
+'''.lstrip(),
+    "tokenizer.py": '''
+from __future__ import annotations
+
+
+class Tokenizer:
+    def __init__(self, encoding, num_languages=99, language=None, task=None):
+        self.encoding = encoding
+        self.num_languages = num_languages
+        self.language = language
+        self.task = task
+
+    def encode(self, text, **kwargs):
+        allowed_special = kwargs.get("allowed_special", "all")
+        return self.encoding.encode(text, allowed_special=allowed_special)
+
+    def decode(self, tokens):
+        return self.encoding.decode(tokens)
+'''.lstrip(),
+}
+
+MATPLOTLIB_COMPAT_FILES = {
+    "__init__.py": '''
+from __future__ import annotations
+
+from . import axes, colors
+
+__version__ = "0.0.vox-compat"
+
+
+def use(*args, **kwargs):
+    return None
+'''.lstrip(),
+    "axes.py": '''
+from __future__ import annotations
+
+
+class Axes:
+    pass
+'''.lstrip(),
+    "colors.py": '''
+from __future__ import annotations
+
+
+class Colormap:
+    pass
+
+
+def is_color_like(value):
+    return True
+'''.lstrip(),
+    "pyplot.py": '''
+from __future__ import annotations
+
+from contextlib import contextmanager
+
+
+class Figure:
+    pass
+
+
+class _Style:
+    @contextmanager
+    def context(self, *args, **kwargs):
+        yield
+
+
+style = _Style()
+
+
+def subplots(*args, **kwargs):
+    raise ModuleNotFoundError("CosyVoice inference runtime does not include matplotlib plotting support.")
+'''.lstrip(),
+    "pylab.py": '''
+from __future__ import annotations
+
+from .pyplot import *  # noqa: F403
+'''.lstrip(),
+}
 
 
 def _runtime_root() -> Path:
     return vox_runtime_root() / "cosyvoice"
 
 
+def _source_root() -> Path:
+    return _runtime_root() / COSYVOICE_SOURCE_DIR
+
+
 def _ensure_runtime_path() -> str:
     runtime_dir = _runtime_root()
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    return activate_runtime_path(runtime_dir, root=runtime_dir.parent)
+    _write_whisper_compat_package(runtime_dir)
+    _write_matplotlib_compat_package(runtime_dir)
+    runtime_path = activate_runtime_path(runtime_dir, root=runtime_dir.parent)
+    for path in reversed((_source_root(), _source_root() / "third_party" / "Matcha-TTS")):
+        if path.exists():
+            path_value = str(path)
+            if path_value in sys.path:
+                sys.path.remove(path_value)
+            sys.path.insert(0, path_value)
+    importlib.invalidate_caches()
+    return runtime_path
 
 
 def _run_install_command(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
+def _write_whisper_compat_package(runtime_dir: Path) -> None:
+    legacy_module = runtime_dir / "whisper.py"
+    if legacy_module.exists():
+        legacy_module.unlink()
+    package_dir = runtime_dir / "whisper"
+    package_dir.mkdir(parents=True, exist_ok=True)
+    for relative_path, content in WHISPER_COMPAT_FILES.items():
+        file_path = package_dir / relative_path
+        if file_path.exists() and file_path.read_text(encoding="utf-8") == content:
+            continue
+        file_path.write_text(content, encoding="utf-8")
+
+
+def _write_matplotlib_compat_package(runtime_dir: Path) -> None:
+    package_dir = runtime_dir / "matplotlib"
+    package_dir.mkdir(parents=True, exist_ok=True)
+    for relative_path, content in MATPLOTLIB_COMPAT_FILES.items():
+        file_path = package_dir / relative_path
+        if file_path.exists() and file_path.read_text(encoding="utf-8") == content:
+            continue
+        file_path.write_text(content, encoding="utf-8")
+
+
+def _source_checkout_complete(source_dir: Path | None = None) -> bool:
+    root = source_dir or _source_root()
+    return all((root / path).exists() for path in COSYVOICE_REQUIRED_PATHS)
+
+
+def _clone_cosyvoice_source() -> None:
+    source_dir = _source_root()
+    if _source_checkout_complete(source_dir):
+        return
+
+    source_dir.parent.mkdir(parents=True, exist_ok=True)
+    if source_dir.exists():
+        shutil.rmtree(source_dir)
+
+    result = _run_install_command(
+        [
+            "git",
+            "clone",
+            "--depth",
+            "1",
+            "--recurse-submodules",
+            "--shallow-submodules",
+            COSYVOICE_REPO,
+            str(source_dir),
+        ],
+        1800,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to clone CosyVoice runtime source: {result.stderr.strip()}")
+
+    if not _source_checkout_complete(source_dir):
+        result = _run_install_command(
+            ["git", "-C", str(source_dir), "submodule", "update", "--init", "--recursive"],
+            900,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to initialize CosyVoice submodules: {result.stderr.strip()}")
+
+    if not _source_checkout_complete(source_dir):
+        raise RuntimeError("CosyVoice runtime source checkout is incomplete.")
+
+
 def _install_cosyvoice_runtime() -> None:
     runtime_path = _ensure_runtime_path()
+    _clone_cosyvoice_source()
     if not install_target_runtime_requirements(
         runtime_path,
-        (COSYVOICE_REPO,),
+        COSYVOICE_RUNTIME_REQUIREMENTS,
         timeout=1800,
         install_runner=_run_install_command,
         context="CosyVoice runtime install",
     ):
-        raise RuntimeError("Failed to install CosyVoice runtime from GitHub.")
+        raise RuntimeError("Failed to install CosyVoice runtime requirements.")
+    _ensure_runtime_path()
 
 
 def _clear_cosyvoice_modules() -> None:
@@ -73,6 +309,56 @@ def _load_cosyvoice_class() -> type[Any]:
     if cls is None:
         raise RuntimeError("CosyVoice runtime is installed, but cosyvoice.cli.cosyvoice.CosyVoice2 was not found.")
     return cls
+
+
+def _patch_torchaudio_soundfile_loader() -> None:
+    try:
+        import torch
+        import torchaudio
+    except ImportError:
+        logger.debug("Torch/torchaudio not available; skipping CosyVoice torchaudio soundfile patch")
+        return
+
+    if getattr(torchaudio, "_vox_cosyvoice_soundfile_loader", False):
+        return
+
+    original_load = torchaudio.load
+
+    def load_with_soundfile(
+        uri: Any,
+        frame_offset: int = 0,
+        num_frames: int = -1,
+        normalize: bool = True,
+        channels_first: bool = True,
+        format: str | None = None,
+        buffer_size: int = 4096,
+        backend: str | None = None,
+    ) -> tuple[Any, int]:
+        if backend == "soundfile" and isinstance(uri, str | Path):
+            frames = -1 if num_frames is None or num_frames < 0 else num_frames
+            audio, sample_rate = sf.read(
+                str(uri),
+                start=frame_offset,
+                frames=frames,
+                dtype="float32" if normalize else "int16",
+                always_2d=True,
+            )
+            if channels_first:
+                audio = audio.T
+            return torch.from_numpy(np.ascontiguousarray(audio)), int(sample_rate)
+        return original_load(
+            uri,
+            frame_offset=frame_offset,
+            num_frames=num_frames,
+            normalize=normalize,
+            channels_first=channels_first,
+            format=format,
+            buffer_size=buffer_size,
+            backend=backend,
+        )
+
+    torchaudio.load = load_with_soundfile
+    torchaudio._vox_cosyvoice_soundfile_loader = True
 
 
 def _voice_path(voice: str | None) -> Path | None:
@@ -133,6 +419,7 @@ class CosyVoice2Adapter(TTSAdapter):
         self._model_id = model_path
         self._device = device
         cls = _load_cosyvoice_class()
+        _patch_torchaudio_soundfile_loader()
 
         logger.info("Loading CosyVoice2 model from %s (device=%s)", model_path, self._device)
         try:

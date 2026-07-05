@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import os
 import sys
+from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
@@ -122,11 +123,35 @@ def test_cosyvoice_preflight_requires_reference_or_speaker():
         CosyVoice2Adapter().validate_synthesis_request()
 
 
+def test_cosyvoice_torchaudio_soundfile_loader_avoids_torchcodec(tmp_path):
+    torch = pytest.importorskip("torch")
+    torchaudio = pytest.importorskip("torchaudio")
+    sf = pytest.importorskip("soundfile")
+    from vox_cosyvoice.adapter import _patch_torchaudio_soundfile_loader
+
+    wav_path = tmp_path / "reference.wav"
+    sf.write(wav_path, np.array([0.0, 0.1, -0.1], dtype=np.float32), 24_000)
+
+    _patch_torchaudio_soundfile_loader()
+    audio, sample_rate = torchaudio.load(str(wav_path), backend="soundfile")
+
+    assert sample_rate == 24_000
+    assert isinstance(audio, torch.Tensor)
+    assert audio.shape == (1, 3)
+
+
 def test_cosyvoice_bootstraps_runtime_when_missing(tmp_path):
     calls: list[list[str]] = []
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
+        if cmd[:2] == ["git", "clone"]:
+            source_root = Path(cmd[-1])
+            (source_root / "cosyvoice" / "cli").mkdir(parents=True)
+            (source_root / "cosyvoice" / "__init__.py").write_text("")
+            (source_root / "cosyvoice" / "cli" / "__init__.py").write_text("")
+            (source_root / "cosyvoice" / "cli" / "cosyvoice.py").write_text("")
+            (source_root / "third_party" / "Matcha-TTS" / "matcha").mkdir(parents=True)
         _install_fake_cosyvoice_modules()
         result = MagicMock()
         result.returncode = 0
@@ -146,7 +171,31 @@ def test_cosyvoice_bootstraps_runtime_when_missing(tmp_path):
             CosyVoice2Adapter().load(str(tmp_path), "cpu")
 
     assert calls
-    assert calls[0][:2] == ["uv", "pip"]
-    assert "--target" in calls[0]
-    assert str(tmp_path / "vox-home" / "runtime" / "cosyvoice") in calls[0]
-    assert "git+https://github.com/FunAudioLLM/CosyVoice.git" in calls[0]
+    assert calls[0][:2] == ["git", "clone"]
+    assert "--recurse-submodules" in calls[0]
+    assert "https://github.com/FunAudioLLM/CosyVoice.git" in calls[0]
+    install_call = next(call for call in calls if call[:2] == ["uv", "pip"])
+    assert "--target" in install_call
+    assert str(tmp_path / "vox-home" / "runtime" / "cosyvoice") in install_call
+    assert "HyperPyYAML==1.2.3" in install_call
+    assert "huggingface-hub>=0.34,<1.0" in install_call
+    assert "lightning==2.2.4" in install_call
+    assert "numpy==1.26.4" in install_call
+    assert "tiktoken>=0.7,<1" in install_call
+    assert not any(str(part).startswith("matplotlib") for part in install_call)
+    assert "torch==2.3.1" not in install_call
+    assert not any(str(part).startswith("openai-whisper") for part in install_call)
+    assert not any(str(part).startswith("git+https://github.com/FunAudioLLM/CosyVoice") for part in install_call)
+
+    whisper_shim = tmp_path / "vox-home" / "runtime" / "cosyvoice" / "whisper" / "__init__.py"
+    assert "def log_mel_spectrogram" in whisper_shim.read_text()
+    whisper_tokenizer = tmp_path / "vox-home" / "runtime" / "cosyvoice" / "whisper" / "tokenizer.py"
+    assert "class Tokenizer" in whisper_tokenizer.read_text()
+    matplotlib_stub = tmp_path / "vox-home" / "runtime" / "cosyvoice" / "matplotlib" / "pyplot.py"
+    assert "CosyVoice inference runtime does not include matplotlib" in matplotlib_stub.read_text()
+    matplotlib_init = tmp_path / "vox-home" / "runtime" / "cosyvoice" / "matplotlib" / "__init__.py"
+    matplotlib_init_text = matplotlib_init.read_text()
+    assert "from . import axes, colors" in matplotlib_init_text
+    assert "def use" in matplotlib_init_text
+    matplotlib_pylab = tmp_path / "vox-home" / "runtime" / "cosyvoice" / "matplotlib" / "pylab.py"
+    assert "from .pyplot import *" in matplotlib_pylab.read_text()
