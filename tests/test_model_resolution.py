@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from tests._catalog_fixture import FIXTURE_CATALOG
 from vox.core.model_resolution import parse_model_variant_ref, resolve_catalog_entry
 from vox.core.runtime import RuntimeCapabilities
 
@@ -106,6 +107,28 @@ def test_concrete_catalog_entry_resolves_as_single_entry():
     assert resolved.entry == entry
     assert resolved.variant_id is None
     assert resolved.missing == ()
+
+
+def test_dia_concrete_entry_requires_cuda_and_declared_vram():
+    entry = FIXTURE_CATALOG["dia-tts"]["1.6b"]
+
+    missing_cuda = resolve_catalog_entry(
+        entry,
+        snapshot=_caps(torch_installed=True, torch_cuda=False, vram_gb=None),
+    )
+    available = resolve_catalog_entry(
+        entry,
+        snapshot=_caps(
+            torch_installed=True,
+            torch_cuda=True,
+            torch_compute_capability=120,
+            vram_gb=16.0,
+        ),
+    )
+
+    assert missing_cuda.missing
+    assert "accelerators cuda" in missing_cuda.missing[0]
+    assert available.missing == ()
 
 
 def test_logical_entry_resolves_cpu_variant_on_torch_free_runtime():

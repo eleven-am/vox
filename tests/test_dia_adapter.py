@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import importlib
 import sys
+import tomllib
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import ANY, MagicMock, patch
@@ -13,7 +15,32 @@ import pytest
 from vox.core.types import ModelFormat, ModelType
 
 
+def test_dia_package_metadata_keeps_torch_out_of_adapter_dependencies():
+    pyproject = Path(__file__).parents[1] / "adapters" / "vox-dia" / "pyproject.toml"
+    data = tomllib.loads(pyproject.read_text())
+
+    dependencies = data["project"]["dependencies"]
+    assert data["project"]["version"] == "0.2.10"
+    assert not any(dep.startswith("torch") for dep in dependencies)
+
+
 class TestDiaAdapterInfo:
+    def test_package_import_is_light_without_torch(self, monkeypatch):
+        original_import = builtins.__import__
+
+        def guarded_import(name, *args, **kwargs):
+            if name == "torch" or name.startswith("torch."):
+                raise AssertionError("vox-dia imported torch during package import")
+            return original_import(name, *args, **kwargs)
+
+        sys.modules.pop("vox_dia", None)
+        sys.modules.pop("vox_dia.adapter", None)
+        monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+        module = importlib.import_module("vox_dia")
+
+        assert module.__all__ == ["DiaAdapter"]
+
     def test_package_import_does_not_require_transformers_dia_class(self):
         with patch.dict("sys.modules", {"torch": MagicMock()}):
             sys.modules.pop("vox_dia", None)
@@ -64,6 +91,49 @@ class TestDiaAdapterInfo:
                 adapter = DiaAdapter()
                 with pytest.raises(RuntimeError, match="Dia requires Hugging Face Transformers"):
                     adapter.load("nari-labs/Dia-1.6B", "cuda")
+
+    def test_prepare_runtime_verifies_transformers_runtime(self):
+        with patch.dict("sys.modules", {"torch": MagicMock()}):
+            from vox_dia.adapter import DiaAdapter
+
+            with patch("vox_dia.adapter._load_transformers_runtime") as load_runtime:
+                DiaAdapter().prepare_runtime()
+
+            load_runtime.assert_called_once_with()
+
+    def test_runtime_install_does_not_upgrade_moving_transformers_source(self, tmp_path: Path, monkeypatch):
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], timeout: int):
+            calls.append(cmd)
+            if any(str(part).startswith("git+https://github.com/huggingface/transformers.git") for part in cmd):
+                runtime = tmp_path / "vox-home" / "runtime" / "dia"
+                (runtime / "transformers" / "models" / "dia").mkdir(parents=True)
+                (runtime / "transformers" / "__init__.py").write_text(
+                    "class AutoProcessor: pass\nclass DiaForConditionalGeneration: pass\n"
+                )
+                (runtime / "transformers" / "models" / "__init__.py").write_text("")
+                (runtime / "transformers" / "models" / "dia" / "__init__.py").write_text("")
+                (runtime / "transformers" / "models" / "dia" / "modeling_dia.py").write_text("")
+            return MagicMock(returncode=0, stderr="")
+
+        monkeypatch.setenv("VOX_HOME", str(tmp_path / "vox-home"))
+        with patch.dict("sys.modules", {"torch": MagicMock()}):
+            from vox_dia.adapter import _install_transformers_runtime
+
+            with patch("vox_dia.adapter._run_install_command", side_effect=fake_run):
+                _install_transformers_runtime()
+
+        source_call = next(
+            call for call in calls
+            if any(str(part).startswith("git+https://github.com/huggingface/transformers.git") for part in call)
+        )
+        deps_call = next(call for call in calls if "sentencepiece>=0.2.0,<0.3" in call)
+
+        assert "--no-deps" in source_call
+        assert "--upgrade" not in source_call
+        assert "--upgrade" in deps_call
+        assert "tiktoken>=0.9.0,<1" in deps_call
 
     def test_load_bootstraps_transformers_when_dia_symbol_is_missing(self):
         torch = MagicMock()
@@ -224,3 +294,11 @@ class TestDiaAdapterInfo:
 
             adapter = DiaAdapter()
             assert adapter.estimate_vram_bytes() == 10_000_000_000
+
+    def test_unload_does_not_require_torch_when_not_loaded(self, monkeypatch):
+        from vox_dia.adapter import DiaAdapter
+
+        adapter = DiaAdapter()
+        monkeypatch.setattr("vox_dia.adapter._torch_module", MagicMock(side_effect=RuntimeError("no torch")))
+
+        adapter.unload()

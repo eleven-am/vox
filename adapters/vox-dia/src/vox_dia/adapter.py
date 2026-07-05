@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import torch
 from numpy.typing import NDArray
 
 from vox.core.adapter import TTSAdapter
@@ -37,9 +36,18 @@ _DEFAULT_TOP_K = 45
 _DIA_TRANSFORMERS_SPEC = "git+https://github.com/huggingface/transformers.git@main"
 _DIA_RUNTIME_IMPORT = "transformers.models.dia.modeling_dia"
 _DIA_RUNTIME_PACKAGES = (
-    "sentencepiece>=0.2.0",
-    "tiktoken>=0.9.0",
+    "sentencepiece>=0.2.0,<0.3",
+    "tiktoken>=0.9.0,<1",
 )
+
+
+def _torch_module() -> Any:
+    try:
+        return importlib.import_module("torch")
+    except ImportError as exc:
+        raise RuntimeError(
+            "Dia requires PyTorch at runtime. Use a Vox image/runtime with torch and CUDA support."
+        ) from exc
 
 
 def _runtime_root() -> Path:
@@ -96,6 +104,7 @@ def _install_transformers_runtime() -> None:
             runtime_path,
             requirements,
             no_deps=no_deps,
+            upgrade=not no_deps,
             timeout=900,
             install_runner=_run_install_command,
             context="Dia runtime install",
@@ -130,6 +139,7 @@ def _decode_dia_output(
     inputs: Any,
     temp_path: Path,
 ) -> tuple[np.ndarray, int]:
+    torch = _torch_module()
     with torch.inference_mode():
         output = model.generate(
             **inputs,
@@ -186,6 +196,7 @@ class DiaAdapter(TTSAdapter):
             raise RuntimeError(
                 "Dia requires a CUDA-capable GPU. CPU execution is not supported by the official runtime."
             )
+        _torch_module()
 
         AutoProcessor, DiaForConditionalGeneration = _load_transformers_runtime()
 
@@ -205,13 +216,20 @@ class DiaAdapter(TTSAdapter):
         self._processor = None
         self._loaded = False
         self._model_ref = ""
-        if torch.cuda.is_available():
+        try:
+            torch = _torch_module()
+        except RuntimeError:
+            torch = None
+        if torch is not None and torch.cuda.is_available():
             torch.cuda.empty_cache()
         logger.info("Dia adapter unloaded")
 
     @property
     def is_loaded(self) -> bool:
         return self._loaded
+
+    def prepare_runtime(self) -> None:
+        _load_transformers_runtime()
 
     async def synthesize(
         self,
