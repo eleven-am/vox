@@ -21,6 +21,14 @@ def test_expressive_adapter_smoke_script_refuses_production_and_requires_create(
     assert "namespace $NS does not exist; rerun with --create" in script
     assert "pvc $NS/$PVC does not exist; rerun with --create" in script
     assert "pod $NS/$POD does not exist; rerun with --create" in script
+    assert "existing_image=" in script
+    assert "already exists with image" in script
+    assert "existing_has_gpu=0" in script
+    assert "already exists with a GPU limit, but this run requested --cpu-only" in script
+    assert "already exists without a GPU limit, but this run requested GPU validation" in script
+    assert "exit 6" in script
+    assert "verifies that it was created\nwith the requested image and accelerator mode" in runbook
+    assert "switching between GPU and\n`--cpu-only` validation" in runbook
     assert "VOX_ALLOW_INCOMPATIBLE=1" not in script
     assert "scripts/expressive-adapter-smoke.sh --model dia-tts:1.6b" in runbook
     assert "scripts/expressive-adapter-smoke.sh --model chatterbox-tts-turbo:0.1.7 --variant onnx" in runbook

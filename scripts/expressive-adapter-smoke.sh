@@ -179,6 +179,26 @@ if ! kubectl -n "$NS" get pod "$POD" >/dev/null 2>&1; then
     }'
 fi
 
+existing_image="$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.spec.containers[0].image}')"
+if [[ "$existing_image" != "$IMAGE" ]]; then
+  echo "pod $NS/$POD already exists with image $existing_image, expected $IMAGE; delete the disposable pod or rerun with the matching image" >&2
+  exit 6
+fi
+
+existing_limits="$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.spec.containers[0].resources.limits}' 2>/dev/null || true)"
+existing_has_gpu=0
+if [[ "$existing_limits" == *"nvidia.com/gpu"* ]]; then
+  existing_has_gpu=1
+fi
+if [[ "$GPU" == "0" && "$existing_has_gpu" == "1" ]]; then
+  echo "pod $NS/$POD already exists with a GPU limit, but this run requested --cpu-only; delete the disposable pod or rerun without --cpu-only" >&2
+  exit 6
+fi
+if [[ "$GPU" != "0" && "$existing_has_gpu" != "1" ]]; then
+  echo "pod $NS/$POD already exists without a GPU limit, but this run requested GPU validation; delete the disposable pod or rerun with --cpu-only" >&2
+  exit 6
+fi
+
 kubectl -n "$NS" wait --for=condition=Ready "pod/$POD" --timeout=300s
 
 image_id="$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.status.containerStatuses[0].imageID}')"
