@@ -332,6 +332,11 @@ GPU memory:
 Short:
 Long:
 
+## Audio Signal Stats
+
+Short:
+Long:
+
 ## Copied Artifact Stats
 
 Short WAV bytes:
@@ -420,6 +425,33 @@ record_audio_durations() {
   validate_audio_durations "$body"
 }
 
+record_audio_signal() {
+  local body
+  body="$(kubectl -n "$NS" exec "$POD" -- sh -lc '
+    for item in short:/tmp/short.wav long:/tmp/long.wav; do
+      label="${item%%:*}"
+      path="${item#*:}"
+      if [ -f "$path" ]; then
+        if ! stats="$(ffmpeg -hide_banner -nostats -i "$path" -af volumedetect -f null - 2>&1)"; then
+          printf "%s error=ffmpeg_failed\n" "$label"
+          continue
+        fi
+        mean_volume="$(printf "%s\n" "$stats" | awk -F": " "/mean_volume/ {print \$2; exit}")"
+        max_volume="$(printf "%s\n" "$stats" | awk -F": " "/max_volume/ {print \$2; exit}")"
+        if [ -z "$mean_volume" ] || [ -z "$max_volume" ]; then
+          printf "%s error=missing_volumedetect\n" "$label"
+        else
+          printf "%s mean_volume=%s max_volume=%s\n" "$label" "$mean_volume" "$max_volume"
+        fi
+      else
+        printf "%s=missing\n" "$label"
+      fi
+    done
+  ' 2>&1 || true)"
+  append_section "Audio Signal Stats" "$body"
+  validate_audio_signal "$body"
+}
+
 validate_audio_durations() {
   local body="$1"
   local label duration
@@ -438,6 +470,23 @@ validate_audio_durations() {
         ;;
     esac
   done <<< "$body"
+}
+
+validate_audio_signal() {
+  local body="$1"
+  local label line
+  for label in short long; do
+    line="$(grep "^$label[ =]" <<< "$body" || true)"
+    if [[ -z "$line" || "$line" == *"=missing"* || "$line" == *"error="* ]]; then
+      FAILED=1
+      FAILED_STEPS+=("Missing or invalid $label audio signal stats")
+      continue
+    fi
+    if [[ "$line" == *"max_volume=-inf"* ]]; then
+      FAILED=1
+      FAILED_STEPS+=("Silent $label audio output")
+    fi
+  done
 }
 
 validate_model_resolution() {
@@ -664,6 +713,7 @@ record_timed "Long Synthesis Output" \
 record_resources "Resource Snapshot After Long Synthesis"
 
 record_audio_durations
+record_audio_signal
 
 kubectl -n "$NS" cp "$POD:/tmp/short.wav" "$short_wav" >/dev/null 2>&1 || true
 kubectl -n "$NS" cp "$POD:/tmp/long.wav" "$long_wav" >/dev/null 2>&1 || true

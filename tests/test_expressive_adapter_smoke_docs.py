@@ -84,6 +84,8 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert "validate_copied_artifacts()" in script
     assert "record_audio_durations()" in script
     assert "validate_audio_durations()" in script
+    assert "record_audio_signal()" in script
+    assert "validate_audio_signal()" in script
     assert "validate_model_resolution()" in script
     assert "record_smoke_result()" in script
     assert 'env MODEL_REF="$MODEL" TEXT_REF="$SHORT_TEXT"' in script
@@ -125,6 +127,15 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert 'validate_audio_durations "$body"' in script
     assert 'FAILED_STEPS+=("Missing or invalid $label audio duration: $duration")' in script
     assert 'FAILED_STEPS+=("Non-positive $label audio duration: $duration")' in script
+    assert "record_audio_signal" in script
+    assert 'append_section "Audio Signal Stats"' in script
+    assert "volumedetect" in script
+    assert "mean_volume=" in script
+    assert "max_volume=" in script
+    assert 'validate_audio_signal "$body"' in script
+    assert 'FAILED_STEPS+=("Missing or invalid $label audio signal stats")' in script
+    assert 'FAILED_STEPS+=("Silent $label audio output")' in script
+    assert 'record_audio_signal' in script
     assert 'validate_model_resolution "$model_resolution"' in script
     assert 'FAILED_STEPS+=("Model resolution reported an error")' in script
     assert 'FAILED_STEPS+=("Model manifest missing after pull")' in script
@@ -212,6 +223,7 @@ def test_expressive_adapter_smoke_runbook_lists_required_models_and_evidence():
         "short synthesis wall time",
         "long synthesis wall time",
         "generated audio duration",
+        "generated audio signal stats proving the WAV is not silent",
         "pod memory and GPU memory snapshots after pull, short synthesis, and long synthesis",
         "output WAV artifact",
         "copied WAV byte size",

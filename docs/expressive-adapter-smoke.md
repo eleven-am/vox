@@ -136,6 +136,7 @@ For each model, capture:
 - short synthesis wall time
 - long synthesis wall time
 - generated audio duration
+- generated audio signal stats proving the WAV is not silent
 - pod memory and GPU memory snapshots after pull, short synthesis, and long synthesis
 - output WAV artifact
 - copied WAV byte size
@@ -362,6 +363,11 @@ Pod memory:
 GPU memory:
 
 ## Audio Durations
+
+Short:
+Long:
+
+## Audio Signal Stats
 
 Short:
 Long:
