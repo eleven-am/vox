@@ -107,8 +107,8 @@ Evidence and copied WAV files are written under `/tmp/vox-adapter-smoke` by
 default.
 
 If the disposable pod already exists, the script verifies that it was created
-with the requested image and accelerator mode. Delete and recreate the
-disposable pod when switching image tags or switching between GPU and
+with the requested image, PVC, and accelerator mode. Delete and recreate the
+disposable pod when switching image tags, PVCs, or switching between GPU and
 `--cpu-only` validation; otherwise the runner exits before writing misleading
 evidence.
 

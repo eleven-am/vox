@@ -185,6 +185,12 @@ if [[ "$existing_image" != "$IMAGE" ]]; then
   exit 6
 fi
 
+existing_pvc="$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.spec.volumes[?(@.name=="vox-home")].persistentVolumeClaim.claimName}')"
+if [[ "$existing_pvc" != "$PVC" ]]; then
+  echo "pod $NS/$POD already exists with PVC $existing_pvc, expected $PVC; delete the disposable pod or rerun with the matching PVC" >&2
+  exit 6
+fi
+
 existing_limits="$(kubectl -n "$NS" get pod "$POD" -o jsonpath='{.spec.containers[0].resources.limits}' 2>/dev/null || true)"
 existing_has_gpu=0
 if [[ "$existing_limits" == *"nvidia.com/gpu"* ]]; then
