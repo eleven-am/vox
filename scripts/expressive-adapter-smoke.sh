@@ -363,6 +363,10 @@ record_resources() {
   local resources
   resources="$(kubectl top pod -n "$NS" "$POD" 2>&1 || true; kubectl -n "$NS" exec "$POD" -- nvidia-smi 2>&1 || true)"
   append_section "$label" "$resources"
+  if [[ "$GPU" != "0" && "$resources" != *"NVIDIA-SMI"* ]]; then
+    FAILED=1
+    FAILED_STEPS+=("$label missing GPU telemetry")
+  fi
 }
 
 record_artifact_stats() {
