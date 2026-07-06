@@ -26,6 +26,6 @@ changing the public model name.
 ## Use with Vox
 
 ```bash
-vox pull qwen3-stt-torch:0.6b
-vox pull qwen3-tts-torch:0.6b
+vox pull qwen3-stt:0.6b
+vox pull qwen3-tts:0.6b
 ```

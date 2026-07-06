@@ -236,7 +236,7 @@ def test_pull_model_blocks_incompatible_model(tmp_path: Path, monkeypatch):
             store=store,
             scheduler=MagicMock(),
             registry=registry,
-            request=model_reference_request_from_fields(name="qwen3-tts-torch:0.6b"),
+            request=model_reference_request_from_fields(name="qwen3-tts:0.6b"),
         )
 
 
@@ -255,7 +255,7 @@ def test_pull_model_override_allows_incompatible_model(tmp_path: Path, monkeypat
         store=store,
         scheduler=MagicMock(),
         registry=registry,
-        request=model_reference_request_from_fields(name="qwen3-tts-torch:0.6b"),
+        request=model_reference_request_from_fields(name="qwen3-tts:0.6b"),
     )
     assert events is not None
 
@@ -287,7 +287,7 @@ async def test_pull_model_override_emits_missing_capability_warning(tmp_path: Pa
             store=store,
             scheduler=scheduler,
             registry=registry,
-            request=model_reference_request_from_fields(name="qwen3-tts-torch:0.6b"),
+            request=model_reference_request_from_fields(name="qwen3-tts:0.6b"),
         )
         collected = [event async for event in events]
 

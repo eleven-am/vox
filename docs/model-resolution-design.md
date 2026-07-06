@@ -15,11 +15,10 @@ override and debug escape hatches only, never the default source of truth.
 
 ## Current ground truth
 
-- `src/vox/core/registry.py`: built-in `CATALOG` (about 25 entries) plus a remote
-  fallback to `https://raw.githubusercontent.com/eleven-am/vox-registry/main`.
-  Each entry today is one concrete backend with `format` (`onnx` | `ct2` |
-  `pytorch` | `gguf`), `adapter`, `adapter_package`, `source`, `type`,
-  `architecture`, `parameters`.
+- `src/vox/core/registry.py`: the remote registry at
+  `https://raw.githubusercontent.com/eleven-am/vox-registry/main` is the single
+  source of truth. Fetched entries are cached in-memory for the process.
+  Registry entries may be concrete backends or logical models with `variants`.
 - `src/vox/operations/models.py::pull_model`: resolves the alias, looks up a
   catalog entry, runs the compatibility gate, installs the adapter package,
   downloads HF files, writes a manifest. The gate runs before the adapter is
@@ -119,8 +118,8 @@ Matching semantics:
 - ordered fields (`min_compute_capability`, `min_cuda_version`, `min_vram_gb`,
   `min_ram_gb`): detected value at or above the minimum.
 - `UNKNOWN` fails an ordered constraint by default, with the reason logged, so the
-  resolver falls back to a safer variant instead of guessing. `@variant` or
-  `VOX_ALLOW_INCOMPATIBLE=1` can force past it.
+  resolver falls back to a safer variant instead of guessing. A forced
+  `variant` request or `VOX_ALLOW_INCOMPATIBLE=1` can force past it.
 
 ## Catalog schema
 
@@ -151,11 +150,11 @@ Pull-time variants (Kokoro, different download per hardware):
 ```
 
 Load-time backends inside a variant (Qwen, same download, faster runtime when
-possible). Public name stays `qwen3-tts-torch`:
+possible). Public name stays `qwen3-tts`:
 
 ```json
 {
-  "name": "qwen3-tts-torch",
+  "name": "qwen3-tts",
   "type": "tts",
   "variants": [
     { "id": "torch", "priority": 0, "fallback": true,
@@ -182,10 +181,13 @@ single-variant logical model, so backward compatibility is automatic.
 
 ## Resolver and naming
 
-Grammar: `<name>[@<variant>][:<tag>]`.
+Grammar: `<name>[:<tag>]`, with the optional forced variant carried separately
+as the CLI `--variant` flag or the HTTP/gRPC `variant` field.
 
 - `vox pull kokoro-tts` auto-resolves the pull-time variant.
-- `vox pull kokoro-tts@cuda` or `--backend cuda` forces a variant.
+- `vox pull kokoro-tts --variant torch` forces a variant.
+- `POST /v1/models/pull` and gRPC `PullRequest` pass the same value as
+  `variant`.
 - `vox pull kokoro-tts-onnx:v1.0` pulls the existing concrete backend directly.
 
 Pull-time resolver:
@@ -213,7 +215,8 @@ of failing.
    record which backend will likely be used.
 6. Install adapter package.
 7. Download model files.
-8. Write manifest.
+8. Run adapter `prepare_runtime()` when available.
+9. Write the manifest only after runtime preparation succeeds.
 
 Do not install or import adapter packages before the gate. Pull-time
 compatibility stays catalog-driven.
@@ -253,7 +256,7 @@ manifests or changed containers from lying.
 ## faster-qwen3-tts integration
 
 Do not create a new public adapter package. Put the fast backend inside
-`vox-qwen`. Public API is unchanged (`qwen3-tts-torch:0.6b`, `:1.7b`,
+`vox-qwen`. Public API is unchanged (`qwen3-tts:0.6b`, `:1.7b`,
 `:0.6b-clone`, `:1.7b-clone`). Backend selection is internal:
 
 - `faster-qwen3-tts` backend: requires torch, torch >= 2.5.1, CUDA; uses
@@ -261,7 +264,7 @@ Do not create a new public adapter package. Put the fast backend inside
 - `qwen-tts` fallback backend: requires torch, runs on CPU/MPS, slower, existing
   behavior.
 
-Do not require CUDA for all `qwen3-tts-torch` pulls. Report that fast mode is
+Do not require CUDA for all `qwen3-tts` pulls. Report that fast mode is
 unavailable and fall back. (Confirm the current `qwen-tts` backend runs on CPU
 before finalizing.)
 
@@ -278,7 +281,7 @@ Build the runtime snapshot object now (pull needs it). Ship a thin command later
 
 ```
 vox doctor                     # prints the runtime snapshot
-vox doctor qwen3-tts-torch:0.6b   # explains runnable / preferred / fallback and why
+vox doctor qwen3-tts:0.6b      # explains runnable / preferred / fallback and why
 ```
 
 ## Backward compatibility
@@ -292,11 +295,11 @@ block is optional and diagnostic.
 1. Runtime snapshot + layered detection (+ env override policy). Tests.
 2. `RuntimeRequirement` / `CapabilityCheck` + matching + pull-time resolver.
    Pure, unit-tested.
-3. Registry: logical entries with `variants` and `backends`, `name@variant`
-   parsing, concrete-name compatibility.
+3. Registry: logical entries with `variants` and `backends`, forced `variant`
+   pass-through, concrete-name compatibility.
 4. `pull_model` integration: resolve, gate, warn, download, record variant and
-   diagnostic runtime in the manifest. CLI `--backend` / `@variant`, HTTP and
-   gRPC pass-through.
+   diagnostic runtime in the manifest. CLI `--variant`, HTTP and gRPC
+   pass-through.
 5. Adapter load-time backend selection (start with `vox-qwen` + faster-qwen3-tts;
    Kokoro variant wiring).
 6. `vox-registry` schema + JSON Schema + CI validation + example logical models
@@ -334,7 +337,7 @@ Phases 1 to 4 land in this repo before any registry-repo change.
 
 ## Resolved decisions
 
-- Pull UX: logical auto-resolve, `@variant` / `--backend` override, concrete
+- Pull UX: logical auto-resolve, `--variant` override, concrete
   names still work.
 - Requirements: full set from day one, including compute capability, VRAM, RAM,
   plus `min_versions`.
