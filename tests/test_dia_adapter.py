@@ -116,6 +116,52 @@ class TestDiaAdapterInfo:
 
             load_runtime.assert_called_once_with()
 
+    def test_prepare_runtime_bootstraps_without_loading_model(self, tmp_path: Path, monkeypatch):
+        calls: list[list[str]] = []
+
+        def fake_run(cmd: list[str], timeout: int):
+            calls.append(cmd)
+            if any(str(part).startswith("git+https://github.com/huggingface/transformers.git") for part in cmd):
+                runtime = tmp_path / "vox-home" / "runtime" / "dia"
+                (runtime / "transformers" / "models" / "dia").mkdir(parents=True)
+                (runtime / "transformers" / "__init__.py").write_text(
+                    "class AutoProcessor:\n"
+                    "    @classmethod\n"
+                    "    def from_pretrained(cls, *args, **kwargs):\n"
+                    "        raise AssertionError('prepare_runtime must not load processors')\n"
+                    "\n"
+                    "class DiaForConditionalGeneration:\n"
+                    "    @classmethod\n"
+                    "    def from_pretrained(cls, *args, **kwargs):\n"
+                    "        raise AssertionError('prepare_runtime must not load models')\n"
+                )
+                (runtime / "transformers" / "models" / "__init__.py").write_text("")
+                (runtime / "transformers" / "models" / "dia" / "__init__.py").write_text("")
+                (runtime / "transformers" / "models" / "dia" / "modeling_dia.py").write_text("")
+            return MagicMock(returncode=0, stderr="")
+
+        monkeypatch.setenv("VOX_HOME", str(tmp_path / "vox-home"))
+        for name in list(sys.modules):
+            if name == "transformers" or name.startswith("transformers."):
+                sys.modules.pop(name, None)
+
+        from vox_dia.adapter import DiaAdapter
+
+        with patch("vox_dia.adapter._run_install_command", side_effect=fake_run):
+            DiaAdapter().prepare_runtime()
+
+        source_call = next(
+            call for call in calls
+            if any(str(part).startswith("git+https://github.com/huggingface/transformers.git") for part in call)
+        )
+        deps_call = next(call for call in calls if "sentencepiece>=0.2.0,<0.3" in call)
+
+        assert "--target" in source_call
+        assert str(tmp_path / "vox-home" / "runtime" / "dia") in source_call
+        assert "--no-deps" in source_call
+        assert "--upgrade" not in source_call
+        assert "--upgrade" in deps_call
+
     def test_runtime_install_does_not_upgrade_moving_transformers_source(self, tmp_path: Path, monkeypatch):
         calls: list[list[str]] = []
 
