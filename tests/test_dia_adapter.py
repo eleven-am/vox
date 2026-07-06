@@ -64,6 +64,20 @@ class TestDiaAdapterInfo:
             assert info.supports_voice_cloning is False
             assert info.supported_languages == ("en",)
 
+    def test_synthesis_parameters_expose_dia_generation_controls(self):
+        with patch.dict("sys.modules", {"torch": MagicMock()}):
+            from vox_dia.adapter import DiaAdapter
+
+            params = {param.name: param for param in DiaAdapter().synthesis_parameters()}
+
+            assert set(params) == {"max_new_tokens", "guidance_scale", "temperature", "top_p", "top_k"}
+            assert params["max_new_tokens"].type == "integer"
+            assert params["max_new_tokens"].default == 3072
+            assert params["guidance_scale"].default == 3.0
+            assert params["temperature"].default == 1.8
+            assert params["top_p"].max_value == 1.0
+            assert params["top_k"].type == "integer"
+
     def test_is_loaded_initially_false(self):
         with patch.dict("sys.modules", {"torch": MagicMock()}):
             from vox_dia.adapter import DiaAdapter
@@ -307,13 +321,29 @@ class TestDiaAdapterInfo:
 
             async def _run() -> list:
                 chunks = []
-                async for chunk in adapter.synthesize("hello [S1] world"):
+                async for chunk in adapter.synthesize(
+                    "hello [S1] world",
+                    params={
+                        "max_new_tokens": 128,
+                        "guidance_scale": 2.5,
+                        "temperature": 1.1,
+                        "top_p": 0.75,
+                        "top_k": 20,
+                    },
+                ):
                     chunks.append(chunk)
                 return chunks
 
             chunks = asyncio.run(_run())
 
-            model.generate.assert_called_once()
+            model.generate.assert_called_once_with(
+                **processor.return_value.to.return_value,
+                max_new_tokens=128,
+                guidance_scale=2.5,
+                temperature=1.1,
+                top_p=0.75,
+                top_k=20,
+            )
             processor.save_audio.assert_called_once_with(["decoded"], ANY)
             assert len(chunks) == 2
             assert chunks[0].sample_rate == 44100

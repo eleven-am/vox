@@ -43,3 +43,12 @@ the input text, for example:
 ```text
 [S1] This is Dia speaking. (laughs) [S2] Keep the tags sparse or artifacts can appear.
 ```
+
+The adapter also exposes Dia generation parameters through Vox synthesis
+`params`:
+
+- `max_new_tokens` (integer, default `3072`, range `1..8192`)
+- `guidance_scale` (number, default `3.0`, range `0..10`)
+- `temperature` (number, default `1.8`, range `0..3`)
+- `top_p` (number, default `0.9`, range `0..1`)
+- `top_k` (integer, default `45`, range `0..200`)

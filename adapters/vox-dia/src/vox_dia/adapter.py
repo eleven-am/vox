@@ -23,7 +23,7 @@ from vox.core.adapter_runtime import (
 from vox.core.adapter_runtime import (
     runtime_root as vox_runtime_root,
 )
-from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesisParameterInfo, SynthesizeChunk, VoiceInfo
 from vox.operations.errors import InvalidConfigError
 
 logger = logging.getLogger(__name__)
@@ -139,16 +139,21 @@ def _decode_dia_output(
     model: Any,
     inputs: Any,
     temp_path: Path,
+    max_new_tokens: int,
+    guidance_scale: float,
+    temperature: float,
+    top_p: float,
+    top_k: int,
 ) -> tuple[np.ndarray, int]:
     torch = _torch_module()
     with torch.inference_mode():
         output = model.generate(
             **inputs,
-            max_new_tokens=_DEFAULT_MAX_NEW_TOKENS,
-            guidance_scale=_DEFAULT_GUIDANCE_SCALE,
-            temperature=_DEFAULT_TEMPERATURE,
-            top_p=_DEFAULT_TOP_P,
-            top_k=_DEFAULT_TOP_K,
+            max_new_tokens=max_new_tokens,
+            guidance_scale=guidance_scale,
+            temperature=temperature,
+            top_p=top_p,
+            top_k=top_k,
         )
 
     decoded = processor.batch_decode(output)
@@ -247,6 +252,50 @@ class DiaAdapter(TTSAdapter):
                 "Use the official nari-labs/dia runtime if you need reference-audio cloning."
             )
 
+    def synthesis_parameters(self) -> tuple[SynthesisParameterInfo, ...]:
+        return (
+            SynthesisParameterInfo(
+                name="max_new_tokens",
+                type="integer",
+                default=_DEFAULT_MAX_NEW_TOKENS,
+                min_value=1,
+                max_value=8192,
+                description="Maximum number of Dia audio tokens generated for the request.",
+            ),
+            SynthesisParameterInfo(
+                name="guidance_scale",
+                type="number",
+                default=_DEFAULT_GUIDANCE_SCALE,
+                min_value=0.0,
+                max_value=10.0,
+                description="Classifier-free guidance scale used by Dia generation.",
+            ),
+            SynthesisParameterInfo(
+                name="temperature",
+                type="number",
+                default=_DEFAULT_TEMPERATURE,
+                min_value=0.0,
+                max_value=3.0,
+                description="Sampling temperature used by Dia generation.",
+            ),
+            SynthesisParameterInfo(
+                name="top_p",
+                type="number",
+                default=_DEFAULT_TOP_P,
+                min_value=0.0,
+                max_value=1.0,
+                description="Nucleus sampling probability used by Dia generation.",
+            ),
+            SynthesisParameterInfo(
+                name="top_k",
+                type="integer",
+                default=_DEFAULT_TOP_K,
+                min_value=0,
+                max_value=200,
+                description="Top-k sampling cutoff used by Dia generation.",
+            ),
+        )
+
     async def synthesize(
         self,
         text: str,
@@ -256,6 +305,7 @@ class DiaAdapter(TTSAdapter):
         language: str | None = None,
         reference_audio: NDArray[np.float32] | None = None,
         reference_text: str | None = None,
+        params: dict[str, Any] | None = None,
     ) -> AsyncIterator[SynthesizeChunk]:
         if not self._loaded or self._model is None or self._processor is None:
             raise RuntimeError("Dia model is not loaded — call load() first")
@@ -271,6 +321,7 @@ class DiaAdapter(TTSAdapter):
 
         inputs = self._processor(text=[text], padding=True, return_tensors="pt")
         inputs = inputs.to(self._device) if hasattr(inputs, "to") else inputs
+        params = dict(params or {})
 
         temp_path: Path | None = None
         try:
@@ -282,6 +333,11 @@ class DiaAdapter(TTSAdapter):
                 model=self._model,
                 inputs=inputs,
                 temp_path=temp_path,
+                max_new_tokens=int(params.get("max_new_tokens", _DEFAULT_MAX_NEW_TOKENS)),
+                guidance_scale=float(params.get("guidance_scale", _DEFAULT_GUIDANCE_SCALE)),
+                temperature=float(params.get("temperature", _DEFAULT_TEMPERATURE)),
+                top_p=float(params.get("top_p", _DEFAULT_TOP_P)),
+                top_k=int(params.get("top_k", _DEFAULT_TOP_K)),
             )
 
             chunk_size = sample_rate * 2
