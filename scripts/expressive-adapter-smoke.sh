@@ -310,6 +310,23 @@ record_artifact_stats() {
   append_section "$label" "$body"
 }
 
+record_audio_durations() {
+  local body
+  body="$(kubectl -n "$NS" exec "$POD" -- sh -lc '
+    for item in short:/tmp/short.wav long:/tmp/long.wav; do
+      label="${item%%:*}"
+      path="${item#*:}"
+      if [ -f "$path" ]; then
+        duration="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$path" 2>&1)" || duration="error: $duration"
+        printf "%s=%s\n" "$label" "$duration"
+      else
+        printf "%s=missing\n" "$label"
+      fi
+    done
+  ' 2>&1 || true)"
+  append_section "Audio Durations" "$body"
+}
+
 run_timed() {
   local label="$1"
   shift
@@ -432,8 +449,7 @@ record_timed "Long Synthesis Output" \
     env MODEL_REF="$MODEL" TEXT_REF="$LONG_TEXT" sh -lc 'vox run "$MODEL_REF" "$TEXT_REF" --output /tmp/long.wav'
 record_resources "Resource Snapshot After Long Synthesis"
 
-durations="$(kubectl -n "$NS" exec "$POD" -- sh -lc 'ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 /tmp/short.wav /tmp/long.wav' 2>&1 || true)"
-append_section "Audio Durations" "$durations"
+record_audio_durations
 
 kubectl -n "$NS" cp "$POD:/tmp/short.wav" "$short_wav" >/dev/null 2>&1 || true
 kubectl -n "$NS" cp "$POD:/tmp/long.wav" "$long_wav" >/dev/null 2>&1 || true

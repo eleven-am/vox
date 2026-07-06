@@ -219,7 +219,18 @@ kubectl -n "$VOX_SMOKE_NS" exec vox-adapter-smoke -- \
   sh -lc "time vox run '$MODEL' 'This is a longer smoke test. It should produce stable speech, preserve the requested voice behavior, and finish without leaking memory or exhausting the GPU.' --output /tmp/long.wav"
 
 kubectl -n "$VOX_SMOKE_NS" exec vox-adapter-smoke -- \
-  sh -lc "ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 /tmp/short.wav /tmp/long.wav"
+  sh -lc '
+    for item in short:/tmp/short.wav long:/tmp/long.wav; do
+      label="${item%%:*}"
+      path="${item#*:}"
+      if [ -f "$path" ]; then
+        duration="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$path" 2>&1)" || duration="error: $duration"
+        printf "%s=%s\n" "$label" "$duration"
+      else
+        printf "%s=missing\n" "$label"
+      fi
+    done
+  '
 ```
 
 Copy artifacts out before cleanup:

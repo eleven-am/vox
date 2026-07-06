@@ -43,6 +43,7 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert "record_timed()" in script
     assert "record_resources()" in script
     assert "record_artifact_stats()" in script
+    assert "record_audio_durations()" in script
     assert 'env MODEL_REF="$MODEL" TEXT_REF="$SHORT_TEXT"' in script
     assert 'env MODEL_REF="$MODEL" TEXT_REF="$LONG_TEXT"' in script
     assert 'vox run "$MODEL_REF" "$TEXT_REF" --output /tmp/short.wav' in script
@@ -56,6 +57,11 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert 'record_resources "Resource Snapshot After Pull"' in script
     assert 'record_resources "Resource Snapshot After Short Synthesis"' in script
     assert 'record_resources "Resource Snapshot After Long Synthesis"' in script
+    assert "record_audio_durations" in script
+    assert "short:/tmp/short.wav long:/tmp/long.wav" in script
+    assert "printf \"%s=%s\\n\"" in script
+    assert "printf \"%s=missing\\n\"" in script
+    assert "ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 /tmp/short.wav /tmp/long.wav" not in script
     assert 'record_artifact_stats "Copied Artifact Stats"' in script
     assert 'one or more smoke steps failed; inspect evidence' in script
     assert "exit 5" in script
