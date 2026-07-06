@@ -94,6 +94,14 @@ make smoke-expressive MODEL=chatterbox-tts-turbo:0.1.7 SMOKE_VARIANT=onnx
 make smoke-expressive MODEL=chatterbox-tts-turbo:0.1.7 SMOKE_VARIANT=onnx SMOKE_CPU_ONLY=1
 ```
 
+For cloning adapters, copy a small test-only reference WAV into the disposable
+PVC and pass it as the Vox voice path. Do not use production voice data:
+
+```bash
+bash scripts/expressive-adapter-smoke.sh --model indextts-tts:2 --voice /home/vox/.vox/smoke-voices/reference.wav
+make smoke-expressive MODEL=indextts-tts:2 SMOKE_VOICE=/home/vox/.vox/smoke-voices/reference.wav
+```
+
 The script refuses the production `vox` namespace and `vox-data` PVC. It also
 refuses to create the disposable namespace, PVC, or pod unless `--create` is
 passed explicitly after approval:
@@ -121,6 +129,7 @@ For each model, capture:
 - registry entry used
 - requested variant or `auto`
 - accelerator request (`gpu` or `cpu-only`)
+- voice id, voice path, or `none`
 - runtime capability snapshot from the pod
 - `vox pull <model>` output
 - short synthesis wall time
@@ -134,7 +143,7 @@ For each model, capture:
 
 Use a short text around one sentence and a longer text around one paragraph.
 For cloning adapters, provide a small reference WAV copied into the disposable
-PVC or mounted as test-only data.
+PVC or mounted as test-only data, then pass it with `--voice`.
 
 ## Commands
 
@@ -258,6 +267,12 @@ For `indextts-tts:2`, pass reference audio through the API or use an existing
 test voice WAV inside the disposable PVC. The adapter is expected to reject
 requests without reference audio or a voice-path prompt.
 
+The scripted path can pass that same disposable voice WAV through `vox run`:
+
+```bash
+bash scripts/expressive-adapter-smoke.sh --model indextts-tts:2 --voice /home/vox/.vox/smoke-voices/reference.wav
+```
+
 ## Evidence Record
 
 Store one evidence file per model next to the copied WAV artifacts. Do not keep
@@ -270,6 +285,7 @@ cat > /tmp/vox-adapter-smoke/${MODEL//[:\/]/-}-evidence.md <<'EOF'
 Model:
 Variant:
 Accelerator request:
+Voice:
 Image tag:
 Image digest:
 Adapter package:

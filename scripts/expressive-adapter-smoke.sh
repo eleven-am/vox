@@ -20,6 +20,7 @@ Options:
   --output-dir DIR           Local evidence/artifact directory (default: /tmp/vox-adapter-smoke)
   --short TEXT               Short synthesis text
   --long TEXT                Long synthesis text
+  --voice VOICE              Voice id or WAV path to pass to vox run
   --help                     Show this help
 
 Safety:
@@ -39,6 +40,7 @@ STORAGE="${VOX_SMOKE_STORAGE:-40Gi}"
 OUTPUT_DIR="${VOX_SMOKE_OUTPUT_DIR:-/tmp/vox-adapter-smoke}"
 SHORT_TEXT="This is a short expressive smoke test."
 LONG_TEXT="This is a longer smoke test. It should produce stable speech, preserve the requested voice behavior, and finish without leaking memory or exhausting the GPU."
+VOICE=""
 POD="vox-adapter-smoke"
 FAILED=0
 
@@ -86,6 +88,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --long)
       LONG_TEXT="${2:-}"
+      shift 2
+      ;;
+    --voice)
+      VOICE="${2:-}"
       shift 2
       ;;
     --help|-h)
@@ -219,6 +225,7 @@ cat > "$evidence" <<EOF
 Model: $MODEL
 Variant: ${VARIANT:-auto}
 Accelerator request: $accelerator_request
+Voice: ${VOICE:-none}
 Image tag: $IMAGE
 Image digest: $image_id
 Adapter package:
@@ -250,7 +257,7 @@ Used VOX_ALLOW_INCOMPATIBLE: no
 
 ## Short Synthesis
 
-Command: vox run $MODEL "$SHORT_TEXT" --output /tmp/short.wav
+Command: vox run $MODEL "$SHORT_TEXT" ${VOICE:+--voice $VOICE }--output /tmp/short.wav
 Exit status:
 Wall time:
 Output path: $short_wav
@@ -260,7 +267,7 @@ Audio usable: yes/no
 
 ## Long Synthesis
 
-Command: vox run $MODEL "$LONG_TEXT" --output /tmp/long.wav
+Command: vox run $MODEL "$LONG_TEXT" ${VOICE:+--voice $VOICE }--output /tmp/long.wav
 Exit status:
 Wall time:
 Output path: $long_wav
@@ -468,11 +475,23 @@ append_section "Adapter Packages" "$packages"
 
 record_timed "Short Synthesis Output" \
   kubectl -n "$NS" exec "$POD" -- \
-    env MODEL_REF="$MODEL" TEXT_REF="$SHORT_TEXT" sh -lc 'vox run "$MODEL_REF" "$TEXT_REF" --output /tmp/short.wav'
+    env MODEL_REF="$MODEL" TEXT_REF="$SHORT_TEXT" VOICE_REF="$VOICE" sh -lc '
+      if [ -n "$VOICE_REF" ]; then
+        vox run "$MODEL_REF" "$TEXT_REF" --voice "$VOICE_REF" --output /tmp/short.wav
+      else
+        vox run "$MODEL_REF" "$TEXT_REF" --output /tmp/short.wav
+      fi
+    '
 record_resources "Resource Snapshot After Short Synthesis"
 record_timed "Long Synthesis Output" \
   kubectl -n "$NS" exec "$POD" -- \
-    env MODEL_REF="$MODEL" TEXT_REF="$LONG_TEXT" sh -lc 'vox run "$MODEL_REF" "$TEXT_REF" --output /tmp/long.wav'
+    env MODEL_REF="$MODEL" TEXT_REF="$LONG_TEXT" VOICE_REF="$VOICE" sh -lc '
+      if [ -n "$VOICE_REF" ]; then
+        vox run "$MODEL_REF" "$TEXT_REF" --voice "$VOICE_REF" --output /tmp/long.wav
+      else
+        vox run "$MODEL_REF" "$TEXT_REF" --output /tmp/long.wav
+      fi
+    '
 record_resources "Resource Snapshot After Long Synthesis"
 
 record_audio_durations

@@ -28,8 +28,10 @@ def test_expressive_adapter_smoke_script_refuses_production_and_requires_create(
     makefile = Path("Makefile").read_text()
 
     assert "--variant VARIANT" in script
+    assert "--voice VOICE" in script
     assert "--cpu-only" in script
     assert "VARIANT=\"\"" in script
+    assert "VOICE=\"\"" in script
     assert "GPU=\"${VOX_SMOKE_GPU:-1}\"" in script
     assert 'resources_json=\'{"limits": {"nvidia.com/gpu": "1"}}\'' in script
     assert "Accelerator request: $accelerator_request" in script
@@ -57,9 +59,12 @@ def test_expressive_adapter_smoke_script_refuses_production_and_requires_create(
     assert "make smoke-expressive MODEL=dia-tts:1.6b" in runbook
     assert "make smoke-expressive MODEL=chatterbox-tts-turbo:0.1.7 SMOKE_VARIANT=onnx" in runbook
     assert "make smoke-expressive MODEL=chatterbox-tts-turbo:0.1.7 SMOKE_VARIANT=onnx SMOKE_CPU_ONLY=1" in runbook
+    assert "make smoke-expressive MODEL=indextts-tts:2 SMOKE_VOICE=/home/vox/.vox/smoke-voices/reference.wav" in runbook
     assert "make smoke-expressive MODEL=dia-tts:1.6b SMOKE_CREATE=1" in runbook
     assert "unless `--create` is\npassed explicitly after approval" in runbook
     assert "SMOKE_VARIANT=onnx" in makefile
+    assert "SMOKE_VOICE=/home/vox/.vox/voices/test/reference.wav" in makefile
+    assert '$(if $(SMOKE_VOICE),--voice "$(SMOKE_VOICE)",)' in makefile
     assert "SMOKE_CPU_ONLY=1" in makefile
     assert '--variant "$(SMOKE_VARIANT)"' in makefile
     assert "--cpu-only" in makefile
@@ -75,6 +80,9 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert "record_audio_durations()" in script
     assert 'env MODEL_REF="$MODEL" TEXT_REF="$SHORT_TEXT"' in script
     assert 'env MODEL_REF="$MODEL" TEXT_REF="$LONG_TEXT"' in script
+    assert 'VOICE_REF="$VOICE"' in script
+    assert 'vox run "$MODEL_REF" "$TEXT_REF" --voice "$VOICE_REF" --output /tmp/short.wav' in script
+    assert 'vox run "$MODEL_REF" "$TEXT_REF" --voice "$VOICE_REF" --output /tmp/long.wav' in script
     assert 'vox run "$MODEL_REF" "$TEXT_REF" --output /tmp/short.wav' in script
     assert 'vox run "$MODEL_REF" "$TEXT_REF" --output /tmp/long.wav' in script
     assert "vox run '$MODEL' '$SHORT_TEXT'" not in script
@@ -139,6 +147,7 @@ def test_expressive_adapter_smoke_runbook_lists_required_models_and_evidence():
         "adapter package version resolved from PyPI",
         "registry entry used",
         "accelerator request (`gpu` or `cpu-only`)",
+        "voice id, voice path, or `none`",
         "runtime capability snapshot from the pod",
         "`vox pull <model>` output",
         "short synthesis wall time",
@@ -176,7 +185,7 @@ def test_expressive_adapter_smoke_runbook_preserves_runtime_and_artifact_boundar
     for requirement in (
         "Runtime dependencies are installed under `$VOX_HOME/runtime/<adapter>`",
         "Model files are stored in the model store, not in the adapter package or base image",
-        "reference WAV copied into the disposable\nPVC or mounted as test-only data",
+        "reference WAV copied into the disposable\nPVC or mounted as test-only data, then pass it with `--voice`",
         "The adapter is expected to reject\nrequests without reference audio or a voice-path prompt",
         "Do not delete or modify production voice data under `$VOX_HOME/voices`",
         "Failures, if any, are classified as Vox, adapter, dependency, upstream, or hardware",
@@ -250,6 +259,7 @@ def test_expressive_adapter_smoke_runbook_requires_durable_evidence_record():
     for field in (
         "Variant:",
         "Accelerator request:",
+        "Voice:",
         "Image digest:",
         "Adapter package:",
         "Runtime capability snapshot:",

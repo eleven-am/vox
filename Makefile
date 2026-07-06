@@ -206,8 +206,8 @@ test-smoke-runner:
 		fi
 
 smoke-expressive:
-	@test -n "$(MODEL)" || (echo "usage: make smoke-expressive MODEL=dia-tts:1.6b [SMOKE_VARIANT=onnx] [SMOKE_CPU_ONLY=1] [SMOKE_CREATE=1]"; exit 2)
-	bash scripts/expressive-adapter-smoke.sh --model "$(MODEL)" $(if $(SMOKE_VARIANT),--variant "$(SMOKE_VARIANT)",) $(if $(SMOKE_CPU_ONLY),--cpu-only,) $(if $(SMOKE_CREATE),--create,)
+	@test -n "$(MODEL)" || (echo "usage: make smoke-expressive MODEL=dia-tts:1.6b [SMOKE_VARIANT=onnx] [SMOKE_VOICE=/home/vox/.vox/voices/test/reference.wav] [SMOKE_CPU_ONLY=1] [SMOKE_CREATE=1]"; exit 2)
+	bash scripts/expressive-adapter-smoke.sh --model "$(MODEL)" $(if $(SMOKE_VARIANT),--variant "$(SMOKE_VARIANT)",) $(if $(SMOKE_VOICE),--voice "$(SMOKE_VOICE)",) $(if $(SMOKE_CPU_ONLY),--cpu-only,) $(if $(SMOKE_CREATE),--create,)
 
 proto:
 	uv run python -m grpc_tools.protoc \
