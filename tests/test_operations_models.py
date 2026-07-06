@@ -384,6 +384,51 @@ async def test_pull_model_prepares_adapter_runtime_after_download(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_pull_model_does_not_save_manifest_when_runtime_prepare_fails(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setenv("VOX_RUNTIME_OVERRIDE", "1")
+    monkeypatch.setenv("VOX_HAS_ONNXRUNTIME", "1")
+    store = BlobStore(root=tmp_path)
+    registry = _registry_mock()
+    registry.lookup.return_value = {
+        "architecture": "fake",
+        "type": "tts",
+        "adapter": "fake",
+        "format": "onnx",
+        "source": "owner/repo",
+        "parameters": {},
+        "adapter_package": "vox-fake",
+        "files": ["model.bin"],
+    }
+    scheduler = MagicMock()
+
+    class BrokenAdapter:
+        def prepare_runtime(self) -> None:
+            raise RuntimeError("runtime bootstrap failed")
+
+    registry.ensure_adapter.return_value = True
+    registry.get_adapter_class.return_value = BrokenAdapter
+    downloaded = tmp_path / "model.bin"
+    downloaded.write_bytes(b"hello")
+
+    with patch("huggingface_hub.hf_hub_download", return_value=str(downloaded)):
+        events = pull_model(
+            store=store,
+            scheduler=scheduler,
+            registry=registry,
+            request=model_reference_request_from_fields(name="foo:latest"),
+        )
+        collected = [event async for event in events]
+
+    assert any(event.status == "preparing adapter runtime fake" for event in collected)
+    assert collected[-1].status == "error"
+    assert collected[-1].error == "runtime bootstrap failed"
+    assert store.resolve_model("foo", "latest") is None
+
+
+@pytest.mark.asyncio
 async def test_pull_model_resolves_logical_variant_and_records_runtime_metadata(
     tmp_path: Path,
     monkeypatch,

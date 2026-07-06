@@ -265,6 +265,11 @@ def pull_model(
                     filename=filename,
                 ))
 
+            if adapter_name:
+                yield PullEvent(status=f"preparing adapter runtime {adapter_name}")
+                await asyncio.to_thread(_prepare_adapter_runtime, registry, adapter_name)
+                yield PullEvent(status=f"adapter runtime {adapter_name} ready")
+
             manifest = Manifest(
                 layers=layers,
                 config={
@@ -288,11 +293,6 @@ def pull_model(
             )
             store.save_manifest(resolved.resolved_name, resolved.resolved_tag, manifest)
 
-            if adapter_name:
-                yield PullEvent(status=f"preparing adapter runtime {adapter_name}")
-                await asyncio.to_thread(_prepare_adapter_runtime, registry, adapter_name)
-                yield PullEvent(status=f"adapter runtime {adapter_name} ready")
-
             if adapter_name == "voxtral-tts-vllm":
                 model_ref = f"{resolved.resolved_name}:{resolved.resolved_tag}"
                 yield PullEvent(status=f"preloading {model_ref}")
@@ -311,6 +311,7 @@ def pull_model(
 
         except Exception as e:
             logger.exception("pull failed: %s", request.name)
+            store.gc_blobs()
             yield PullEvent(status="error", error=str(e))
 
     return _gen()
