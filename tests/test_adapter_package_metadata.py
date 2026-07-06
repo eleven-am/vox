@@ -158,3 +158,39 @@ def test_externalized_adapter_runtime_dependencies_are_not_package_dependencies(
             assert not any(dep.split(";", 1)[0].strip().startswith(package) for dep in dependencies), (
                 f"{pyproject_path} should bootstrap {package} into its runtime directory"
             )
+
+
+def test_expressive_adapter_readmes_document_hardware_classification():
+    expected_readme_phrases = {
+        "vox-cosyvoice": (
+            "Linux x86_64 CUDA/Torch",
+            "CPU, ONNX, and Spark/ARM NVIDIA paths are not currently production-supported",
+            "Vox-validated ONNX backend",
+            "Spark/ARM NVIDIA dependency stack",
+        ),
+        "vox-dia": (
+            "Linux x86_64 CUDA/Torch",
+            "CPU, ONNX, and Spark/ARM NVIDIA paths are not currently production-supported",
+            "portable CPU/ONNX backend",
+            "Spark/ARM NVIDIA dependency stack",
+        ),
+        "vox-indextts": (
+            "Linux x86_64 CUDA/Torch",
+            "CPU, ONNX, and Spark/ARM NVIDIA paths are not currently production-supported",
+            "acceptable latency",
+            "portable dependency resolution",
+        ),
+        "vox-orpheus": (
+            "Linux x86_64\nCUDA",
+            "CPU and Spark/ARM NVIDIA execution are not currently supported",
+            "orpheus-speech",
+            "vLLM runtime",
+        ),
+    }
+
+    for package_name, phrases in expected_readme_phrases.items():
+        readme = ADAPTERS_ROOT / package_name / "README.md"
+        content = re.sub(r"\s+", " ", readme.read_text())
+        for phrase in phrases:
+            phrase = re.sub(r"\s+", " ", phrase)
+            assert phrase in content, f"{readme} should document: {phrase}"
