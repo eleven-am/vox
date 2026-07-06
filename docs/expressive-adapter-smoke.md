@@ -185,6 +185,70 @@ For `indextts-tts:2`, pass reference audio through the API or use an existing
 test voice WAV inside the disposable PVC. The adapter is expected to reject
 requests without reference audio or a voice-path prompt.
 
+## Evidence Record
+
+Store one evidence file per model next to the copied WAV artifacts. Do not keep
+the only record in chat logs or terminal scrollback.
+
+```bash
+cat > /tmp/vox-adapter-smoke/${MODEL//[:\/]/-}-evidence.md <<'EOF'
+# Expressive Adapter Smoke Evidence
+
+Model:
+Image tag:
+Image digest:
+Adapter package:
+Registry entry:
+Runtime capability snapshot:
+
+## Pull
+
+Command:
+Exit status:
+Duration:
+Output summary:
+Used VOX_ALLOW_INCOMPATIBLE: no
+Runtime directory:
+Model store path:
+
+## Short Synthesis
+
+Command:
+Exit status:
+Wall time:
+Output path:
+Output bytes:
+Audio duration:
+Peak pod memory:
+Peak GPU memory:
+Audio usable: yes/no
+
+## Long Synthesis
+
+Command:
+Exit status:
+Wall time:
+Output path:
+Output bytes:
+Audio duration:
+Peak pod memory:
+Peak GPU memory:
+Audio usable: yes/no
+
+## Classification
+
+Result: pass/fail
+Failure class: Vox / adapter / dependency / upstream / hardware / none
+Exact error:
+Notes:
+EOF
+```
+
+If a model fails, fill in the same record instead of deleting it. The failure
+record is the evidence needed to decide whether the next fix belongs in Vox,
+the adapter package, the remote registry, upstream code, or the hardware
+classification.
+
 ## Cleanup
 
 Only delete the disposable smoke resources:

@@ -97,3 +97,25 @@ def test_expressive_adapter_status_names_local_regression_evidence():
         "a stale `indextts.infer_v2` module missing `IndexTTS2` is\n  repaired",
     ):
         assert evidence in status
+
+
+def test_expressive_adapter_smoke_runbook_requires_durable_evidence_record():
+    runbook = Path("docs/expressive-adapter-smoke.md").read_text()
+
+    assert "Store one evidence file per model next to the copied WAV artifacts" in runbook
+    assert "Do not keep\nthe only record in chat logs or terminal scrollback" in runbook
+    assert "${MODEL//[:\\/]/-}-evidence.md" in runbook
+
+    for field in (
+        "Image digest:",
+        "Adapter package:",
+        "Runtime capability snapshot:",
+        "Used VOX_ALLOW_INCOMPATIBLE: no",
+        "Runtime directory:",
+        "Model store path:",
+        "Peak pod memory:",
+        "Peak GPU memory:",
+        "Failure class: Vox / adapter / dependency / upstream / hardware / none",
+        "Exact error:",
+    ):
+        assert field in runbook
