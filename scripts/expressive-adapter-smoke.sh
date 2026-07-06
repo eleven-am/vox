@@ -450,6 +450,10 @@ validate_model_resolution() {
     FAILED=1
     FAILED_STEPS+=("Resolved adapter package is not installed")
   fi
+  if grep -q '"adapter_runtime_missing": true' <<< "$body"; then
+    FAILED=1
+    FAILED_STEPS+=("Expected adapter runtime path is missing after pull")
+  fi
 }
 
 run_timed() {
@@ -549,6 +553,29 @@ try:
         payload['adapter_package_version'] = adapter_package_version
         payload['adapter_package_installed'] = bool(
             not adapter_package or adapter_package_version
+        )
+        expected_runtime_names = {
+            'vox-cosyvoice': ['cosyvoice'],
+            'vox-dia': ['dia'],
+            'vox-orpheus': ['orpheus'],
+            'vox-indextts': ['indextts'],
+        }.get(adapter_package, [])
+        runtime_checks = []
+        for runtime_name in expected_runtime_names:
+            runtime_path = store.root / 'runtime' / runtime_name
+            runtime_checks.append({
+                'name': runtime_name,
+                'path': str(runtime_path),
+                'exists': runtime_path.is_dir(),
+                'entry_count': (
+                    len(list(runtime_path.iterdir()))
+                    if runtime_path.is_dir()
+                    else 0
+                ),
+            })
+        payload['adapter_runtime_paths'] = runtime_checks
+        payload['adapter_runtime_missing'] = any(
+            not check['exists'] for check in runtime_checks
         )
 
     manifest = store.resolve_model(resolved.resolved_name, resolved.resolved_tag)

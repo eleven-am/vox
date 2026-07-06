@@ -123,6 +123,7 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert 'FAILED_STEPS+=("Model manifest layers missing after pull")' in script
     assert 'FAILED_STEPS+=("Model adapter package missing from resolved entry")' in script
     assert 'FAILED_STEPS+=("Resolved adapter package is not installed")' in script
+    assert 'FAILED_STEPS+=("Expected adapter runtime path is missing after pull")' in script
     assert "short:/tmp/short.wav long:/tmp/long.wav" in script
     assert "printf \"%s=%s\\n\"" in script
     assert "printf \"%s=missing\\n\"" in script
@@ -159,6 +160,13 @@ def test_expressive_adapter_smoke_script_records_model_resolution_evidence():
     assert "'adapter_package_version'" in script
     assert "'adapter_package_installed'" in script
     assert "registry.adapter_resolver.installed_version(adapter_package)" in script
+    assert "'vox-cosyvoice': ['cosyvoice']" in script
+    assert "'vox-dia': ['dia']" in script
+    assert "'vox-orpheus': ['orpheus']" in script
+    assert "'vox-indextts': ['indextts']" in script
+    assert "'adapter_runtime_paths'" in script
+    assert "'adapter_runtime_missing'" in script
+    assert "store.root / 'runtime' / runtime_name" in script
 
 
 def test_expressive_adapter_smoke_runbook_keeps_production_safety_boundary():
