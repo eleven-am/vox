@@ -655,6 +655,15 @@ validate_model_resolution() {
   fi
 }
 
+validate_timed_output() {
+  local label="$1"
+  local output="$2"
+  if ! grep -Eq '^real[[:space:]]+[0-9]+([.][0-9]+)?$' <<< "$output"; then
+    FAILED=1
+    FAILED_STEPS+=("$label missing machine-readable real duration")
+  fi
+}
+
 run_timed() {
   local label="$1"
   shift
@@ -664,6 +673,7 @@ run_timed() {
   local status=$?
   set -e
   append_section "$label" "exit=$status"$'\n'"$output"
+  validate_timed_output "$label" "$output"
   return "$status"
 }
 

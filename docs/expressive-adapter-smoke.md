@@ -133,6 +133,7 @@ For each model, capture:
 - voice path existence inside the disposable pod when `--voice` is a file path
 - runtime capability snapshot from the pod
 - `vox pull <model>` output
+- machine-readable `real` durations for pull, short synthesis, and long synthesis
 - adapter, runtime, model, manifest, and blob storage usage after pull
 - short synthesis wall time
 - long synthesis wall time

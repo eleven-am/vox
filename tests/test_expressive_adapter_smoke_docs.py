@@ -86,6 +86,7 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert "FAILED=0" in script
     assert "FAILED_STEPS=()" in script
     assert "record_timed()" in script
+    assert "validate_timed_output()" in script
     assert "record_resources()" in script
     assert "record_storage_usage()" in script
     assert "validate_storage_usage()" in script
@@ -112,6 +113,9 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert 'record_timed "Pull Output"' in script
     assert 'record_timed "Short Synthesis Output"' in script
     assert 'record_timed "Long Synthesis Output"' in script
+    assert "^real[[:space:]]+[0-9]+([.][0-9]+)?$" in script
+    assert 'FAILED_STEPS+=("$label missing machine-readable real duration")' in script
+    assert 'validate_timed_output "$label" "$output"' in script
     assert 'FAILED_STEPS+=("$label")' in script
     assert 'append_section "Smoke Result"' in script
     assert script.count("## Smoke Result") == 0
@@ -256,6 +260,7 @@ def test_expressive_adapter_smoke_runbook_lists_required_models_and_evidence():
         "voice path existence inside the disposable pod when `--voice` is a file path",
         "runtime capability snapshot from the pod",
         "`vox pull <model>` output",
+        "machine-readable `real` durations for pull, short synthesis, and long synthesis",
         "adapter, runtime, model, manifest, and blob storage usage after pull",
         "short synthesis wall time",
         "long synthesis wall time",
