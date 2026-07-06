@@ -182,10 +182,12 @@ runtime dependencies during `vox pull`. This hook is for package/runtime
 preparation only. It must not load model weights, allocate persistent GPU
 memory, or keep worker processes alive.
 
-`vox pull` calls this hook after adapter package installation, model artifact
-download, and manifest write. A failing hook makes the pull fail visibly instead
-of pushing a multi-minute runtime install or dependency error into the first
-request.
+`vox pull` calls this hook after adapter package installation and model artifact
+download, but before writing the model manifest. A failing hook makes the pull
+fail visibly instead of pushing a multi-minute runtime install or dependency
+error into the first request. Vox must not save the manifest when runtime
+preparation fails, because a model whose adapter runtime is missing or broken
+should not appear installed in `/v1/models`.
 
 ## Installer Order
 
