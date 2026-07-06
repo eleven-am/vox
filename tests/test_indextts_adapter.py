@@ -23,7 +23,7 @@ def test_indextts_package_metadata_is_lightweight():
     data = tomllib.loads(pyproject.read_text())
 
     dependencies = data["project"]["dependencies"]
-    assert data["project"]["version"] == "0.1.8"
+    assert data["project"]["version"] == "0.1.12"
     assert not any(dep.startswith(("torch", "torchaudio", "indextts")) for dep in dependencies)
 
 
@@ -150,6 +150,34 @@ def test_indextts_load_uses_config_and_synthesizes_with_reference_audio(tmp_path
     assert chunks[0].sample_rate == 24_000
 
 
+def test_indextts_constructor_does_not_swallow_internal_type_error(tmp_path):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "config.yaml").write_text("fake: true\n")
+
+    class BrokenIndexTTS2:
+        calls = 0
+
+        def __init__(
+            self,
+            cfg_path="checkpoints/config.yaml",
+            model_dir="checkpoints",
+            use_fp16=False,
+            device=None,
+            use_cuda_kernel=None,
+            use_deepspeed=False,
+        ) -> None:
+            BrokenIndexTTS2.calls += 1
+            raise TypeError("internal upstream constructor failure")
+
+    from vox_indextts.adapter import _construct_model
+
+    with pytest.raises(TypeError, match="internal upstream constructor failure"):
+        _construct_model(BrokenIndexTTS2, model_dir, "cuda")
+
+    assert BrokenIndexTTS2.calls == 1
+
+
 def test_indextts_requires_reference_audio_or_voice_path(tmp_path):
     with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
         _install_fake_indextts_modules()
@@ -207,6 +235,8 @@ def test_indextts_bootstraps_runtime_when_missing(tmp_path):
     dependency_commands = " ".join(" ".join(call) for call in calls[1:])
     assert "torch" not in dependency_commands
     assert "torchaudio" not in dependency_commands
+    assert "numpy>=1.26,<2" in calls[1]
+    assert "protobuf==3.19.6" in calls[1]
     assert "transformers==4.52.1" in calls[1]
 
 
@@ -239,6 +269,8 @@ def test_indextts_prepare_runtime_bootstraps_without_loading_model(tmp_path):
     assert "git+https://github.com/index-tts/index-tts.git" in calls[0]
     assert "--no-deps" in calls[0]
     assert "--upgrade" not in calls[0]
+    assert "numpy>=1.26,<2" in calls[1]
+    assert "protobuf==3.19.6" in calls[1]
     assert "transformers==4.52.1" in calls[1]
 
 
@@ -311,12 +343,21 @@ def test_indextts_repairs_runtime_when_import_probe_is_broken(tmp_path):
 def test_indextts_clears_sibling_runtime_transformers_before_probe(tmp_path):
     stale_transformers = ModuleType("transformers")
     stale_cache_utils = ModuleType("transformers.cache_utils")
+    stale_google = ModuleType("google")
+    stale_protobuf = ModuleType("google.protobuf")
+    stale_tensorboard = ModuleType("tensorboard")
     sys.modules["transformers"] = stale_transformers
     sys.modules["transformers.cache_utils"] = stale_cache_utils
+    sys.modules["google"] = stale_google
+    sys.modules["google.protobuf"] = stale_protobuf
+    sys.modules["tensorboard"] = stale_tensorboard
 
     def fake_probe():
         assert "transformers" not in sys.modules
         assert "transformers.cache_utils" not in sys.modules
+        assert "google" not in sys.modules
+        assert "google.protobuf" not in sys.modules
+        assert "tensorboard" not in sys.modules
         return _FakeIndexTTS2
 
     with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):

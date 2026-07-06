@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-import importlib.util
 import logging
 import shutil
 import subprocess
@@ -44,6 +43,7 @@ _RUNTIME_DEPENDENCIES = (
     "numpy>=1.26,<2",
     "numba>=0.61,<0.67",
     "llvmlite>=0.44,<0.49",
+    "matplotlib>=3.9,<3.10",
 )
 _BASE_FRAMEWORK_RUNTIME_GLOBS = (
     "torch",
@@ -56,6 +56,11 @@ _BASE_FRAMEWORK_RUNTIME_GLOBS = (
     "triton-*.dist-info",
     "nvidia",
     "nvidia_*.dist-info",
+)
+_STALE_RUNTIME_REPAIR_GLOBS = (
+    "matplotlib",
+    "matplotlib-*.dist-info",
+    "matplotlib.libs",
 )
 
 
@@ -86,11 +91,13 @@ def _ensure_runtime_target_on_path() -> Path:
 
 
 def _runtime_module_available(name: str) -> bool:
-    if name in sys.modules:
-        return True
     try:
-        return importlib.util.find_spec(name) is not None
-    except (ImportError, ValueError):
+        module = importlib.import_module(name)
+        if name == "nemo.collections.asr":
+            models = getattr(module, "models", None)
+            return hasattr(models, "ASRModel")
+        return True
+    except Exception:
         return False
 
 
@@ -113,9 +120,50 @@ def _runtime_has_base_framework_shadows(runtime_dir: Path) -> bool:
     return any(any(runtime_dir.glob(pattern)) for pattern in _BASE_FRAMEWORK_RUNTIME_GLOBS)
 
 
+def _remove_stale_runtime_repair_targets(runtime_dir: Path) -> bool:
+    removed = False
+    for pattern in _STALE_RUNTIME_REPAIR_GLOBS:
+        for path in runtime_dir.glob(pattern):
+            if not path.exists():
+                continue
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink(missing_ok=True)
+            removed = True
+            logger.info("Removed stale Parakeet NeMo runtime package before repair: %s", path.name)
+    return removed
+
+
 def _clear_nemo_modules() -> None:
+    runtime_root = vox_runtime_root().resolve()
+    runtime_dir = _runtime_target_dir().resolve()
     for name in list(sys.modules):
-        if name == "nemo" or name.startswith("nemo."):
+        module = sys.modules.get(name)
+        module_file = getattr(module, "__file__", None)
+        if module_file:
+            try:
+                module_path = Path(module_file).resolve()
+                if module_path.is_relative_to(runtime_root) and not module_path.is_relative_to(runtime_dir):
+                    sys.modules.pop(name, None)
+                    continue
+            except OSError:
+                pass
+
+        if (
+            name == "nemo"
+            or name.startswith("nemo.")
+            or name == "lightning"
+            or name.startswith("lightning.")
+            or name == "torchmetrics"
+            or name.startswith("torchmetrics.")
+            or name == "matplotlib"
+            or name.startswith("matplotlib.")
+            or name == "omegaconf"
+            or name.startswith("omegaconf.")
+            or name == "packaging"
+            or name.startswith("packaging.")
+        ):
             sys.modules.pop(name, None)
     importlib.invalidate_caches()
 
@@ -147,6 +195,9 @@ def _install_nemo_runtime() -> None:
     ):
         return
 
+    _remove_stale_runtime_repair_targets(runtime_dir)
+    _clear_nemo_modules()
+
     if not install_target_runtime_requirements(
         runtime_dir,
         _RUNTIME_DEPENDENCIES,
@@ -174,14 +225,14 @@ def _load_asr_model_class() -> Any:
     _prime_lightning_imports()
     try:
         nemo_asr = importlib.import_module("nemo.collections.asr")
-    except ImportError:
+    except Exception:
         _ensure_runtime_target_on_path()
         _install_nemo_runtime()
         _clear_nemo_modules()
         _prime_lightning_imports()
         try:
             nemo_asr = importlib.import_module("nemo.collections.asr")
-        except ImportError as exc:  # pragma: no cover - runtime-image dependent
+        except Exception as exc:  # pragma: no cover - runtime-image dependent
             raise RuntimeError(
                 "Parakeet NeMo could not import nemo-toolkit[asr] after adapter-local bootstrap"
             ) from exc

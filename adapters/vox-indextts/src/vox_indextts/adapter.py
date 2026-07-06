@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 import shutil
 import subprocess
@@ -46,9 +47,11 @@ INDEXTTS_RUNTIME_DEPS = (
     "modelscope==1.27.0",
     "munch==4.0.0",
     "numba>=0.61,<0.63",
+    "numpy>=1.26,<2",
     "omegaconf>=2.3.0,<3",
     "opencv-python==4.9.0.80",
     "pandas==2.3.2",
+    "protobuf==3.19.6",
     "safetensors==0.5.2",
     "sentencepiece>=0.2.1,<0.3",
     "tensorboard==2.9.1",
@@ -134,6 +137,8 @@ def _clear_indextts_modules() -> None:
         "tokenizers",
         "accelerate",
         "modelscope",
+        "tensorboard",
+        "google",
     ))
 
 
@@ -264,39 +269,58 @@ def _candidate_model_configs(model_root: Path) -> list[Path]:
     return [candidate for candidate in candidates if candidate.is_file()]
 
 
+def _constructor_accepts(cls: type[Any], *args: Any, **kwargs: Any) -> bool:
+    try:
+        inspect.signature(cls).bind(*args, **kwargs)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def _construct_model(cls: type[Any], model_path: Path, device: str) -> Any:
     cfg_candidates = _candidate_model_configs(model_path)
-    attempts: list[Callable[[], Any]] = []
+    attempts: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     for cfg_path in cfg_candidates:
-        attempts.append(
-            lambda cfg_path=cfg_path: cls(
-                cfg_path=str(cfg_path),
-                model_dir=str(model_path),
-                device=device,
-                use_fp16=device == "cuda",
-                use_cuda_kernel=device == "cuda",
-                use_deepspeed=False,
-            )
-        )
-        attempts.append(lambda cfg_path=cfg_path: cls(cfg_path=str(cfg_path), model_dir=str(model_path), device=device))
-        attempts.append(lambda cfg_path=cfg_path: cls(str(cfg_path), str(model_path), device=device))
+        attempts.append((
+            (),
+            {
+                "cfg_path": str(cfg_path),
+                "model_dir": str(model_path),
+                "device": device,
+                "use_fp16": device == "cuda",
+                "use_cuda_kernel": False,
+                "use_deepspeed": False,
+            },
+        ))
+        attempts.append((
+            (),
+            {
+                "cfg_path": str(cfg_path),
+                "model_dir": str(model_path),
+                "device": device,
+            },
+        ))
+        attempts.append((
+            (str(cfg_path), str(model_path)),
+            {"device": device},
+        ))
     attempts.extend(
-        [
-            lambda: cls(model_dir=str(model_path), device=device),
-            lambda: cls(str(model_path), device=device),
-            lambda: cls(str(model_path)),
-        ]
+        (
+            ((), {"model_dir": str(model_path), "device": device}),
+            ((str(model_path),), {"device": device}),
+            ((str(model_path),), {}),
+        )
     )
 
-    errors: list[str] = []
-    for attempt in attempts:
-        try:
-            return attempt()
-        except TypeError as exc:
-            errors.append(str(exc))
+    rejected: list[str] = []
+    for args, kwargs in attempts:
+        if not _constructor_accepts(cls, *args, **kwargs):
+            rejected.append(f"args={args!r} kwargs={kwargs!r}")
+            continue
+        return cls(*args, **kwargs)
 
     raise RuntimeError("Could not initialize IndexTTS2 with the available constructor signatures.") from (
-        TypeError("; ".join(errors)) if errors else None
+        TypeError("; ".join(rejected)) if rejected else None
     )
 
 

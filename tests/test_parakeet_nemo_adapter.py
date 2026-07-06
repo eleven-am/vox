@@ -308,6 +308,7 @@ def test_install_nemo_runtime_uses_python312_compatible_pins(tmp_path: Path, mon
     assert "numpy>=1.26,<2" in calls[0]
     assert "numba>=0.61,<0.67" in calls[0]
     assert "llvmlite>=0.44,<0.49" in calls[0]
+    assert "matplotlib>=3.9,<3.10" in calls[0]
     assert len(calls) == 1
     assert (tmp_path / "runtime" / ".vox-parakeet-nemo-runtime-ready").is_file()
 
@@ -386,6 +387,128 @@ def test_install_nemo_runtime_repairs_stale_framework_shadows(
     assert not (runtime_dir / "torch").exists()
     assert not (runtime_dir / "torch-2.9.1.dist-info").exists()
     install.assert_not_called()
+
+
+def test_install_nemo_runtime_repairs_stale_broken_sentinel(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+
+    import vox_parakeet.nemo_adapter as module
+
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    (runtime_dir / ".vox-parakeet-nemo-runtime-ready").touch()
+    install = MagicMock(return_value=True)
+    probes = [False, True]
+
+    monkeypatch.setattr(module, "_runtime_target_dir", lambda: runtime_dir)
+    monkeypatch.setattr(module, "_runtime_module_available", lambda name: probes.pop(0))
+    monkeypatch.setattr(module, "install_target_runtime_requirements", install)
+
+    module._install_nemo_runtime()
+
+    install.assert_called_once()
+    assert (runtime_dir / ".vox-parakeet-nemo-runtime-ready").is_file()
+
+
+def test_install_nemo_runtime_removes_stale_matplotlib_before_repair(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+
+    import vox_parakeet.nemo_adapter as module
+
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    (runtime_dir / ".vox-parakeet-nemo-runtime-ready").touch()
+    (runtime_dir / "matplotlib").mkdir()
+    (runtime_dir / "matplotlib-3.8.2.dist-info").mkdir()
+    (runtime_dir / "matplotlib-3.9.4.dist-info").mkdir()
+    (runtime_dir / "matplotlib.libs").mkdir()
+    install = MagicMock(return_value=True)
+    probes = [False, True]
+
+    monkeypatch.setattr(module, "_runtime_target_dir", lambda: runtime_dir)
+    monkeypatch.setattr(module, "_runtime_module_available", lambda name: probes.pop(0))
+    monkeypatch.setattr(module, "install_target_runtime_requirements", install)
+
+    module._install_nemo_runtime()
+
+    assert not (runtime_dir / "matplotlib").exists()
+    assert not (runtime_dir / "matplotlib-3.8.2.dist-info").exists()
+    assert not (runtime_dir / "matplotlib-3.9.4.dist-info").exists()
+    assert not (runtime_dir / "matplotlib.libs").exists()
+    install.assert_called_once()
+
+
+def test_clear_nemo_modules_removes_partial_import_resolver_state():
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+
+    import vox_parakeet.nemo_adapter as module
+
+    sys.modules["nemo"] = ModuleType("nemo")
+    sys.modules["nemo.collections.asr"] = ModuleType("nemo.collections.asr")
+    sys.modules["omegaconf"] = ModuleType("omegaconf")
+    sys.modules["omegaconf.omegaconf"] = ModuleType("omegaconf.omegaconf")
+    sys.modules["matplotlib"] = ModuleType("matplotlib")
+
+    module._clear_nemo_modules()
+
+    assert "nemo" not in sys.modules
+    assert "nemo.collections.asr" not in sys.modules
+    assert "omegaconf" not in sys.modules
+    assert "omegaconf.omegaconf" not in sys.modules
+    assert "matplotlib" not in sys.modules
+
+
+def test_clear_nemo_modules_removes_modules_loaded_from_sibling_runtimes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+
+    import vox_parakeet.nemo_adapter as module
+
+    runtime_root = tmp_path / "runtime"
+    parakeet_runtime = runtime_root / "parakeet-nemo"
+    kokoro_runtime = runtime_root / "kokoro"
+    parakeet_runtime.mkdir(parents=True)
+    kokoro_runtime.mkdir()
+    (kokoro_runtime / "packaging.py").write_text("# fake", encoding="utf-8")
+    (parakeet_runtime / "nemo.py").write_text("# fake", encoding="utf-8")
+
+    sibling_module = ModuleType("packaging")
+    sibling_module.__file__ = str(kokoro_runtime / "packaging.py")
+    current_module = ModuleType("nemo")
+    current_module.__file__ = str(parakeet_runtime / "nemo.py")
+    sys.modules["packaging"] = sibling_module
+    sys.modules["nemo"] = current_module
+
+    monkeypatch.setattr(module, "vox_runtime_root", lambda: runtime_root)
+    monkeypatch.setattr(module, "_runtime_target_dir", lambda: parakeet_runtime)
+
+    module._clear_nemo_modules()
+
+    assert "packaging" not in sys.modules
+    assert "nemo" not in sys.modules
+
+
+def test_runtime_module_available_rejects_partial_nemo_asr_module():
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+
+    import vox_parakeet.nemo_adapter as module
+
+    sys.modules["nemo.collections.asr"] = ModuleType("nemo.collections.asr")
+
+    assert module._runtime_module_available("nemo.collections.asr") is False
 
 
 def test_install_nemo_runtime_fails_fast_when_uv_install_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
