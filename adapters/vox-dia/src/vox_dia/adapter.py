@@ -24,6 +24,7 @@ from vox.core.adapter_runtime import (
     runtime_root as vox_runtime_root,
 )
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+from vox.operations.errors import InvalidConfigError
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +231,21 @@ class DiaAdapter(TTSAdapter):
 
     def prepare_runtime(self) -> None:
         _load_transformers_runtime()
+
+    def validate_synthesis_request(
+        self,
+        *,
+        voice: str | None = None,
+        language: str | None = None,
+        reference_audio: NDArray[np.float32] | None = None,
+        reference_text: str | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> None:
+        if reference_audio is not None or reference_text is not None:
+            raise InvalidConfigError(
+                "Dia transformers backend does not yet wire the audio-prompt voice cloning path. "
+                "Use the official nari-labs/dia runtime if you need reference-audio cloning."
+            )
 
     async def synthesize(
         self,

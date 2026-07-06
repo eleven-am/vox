@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from vox.core.types import ModelFormat, ModelType
+from vox.operations.errors import InvalidConfigError
 
 
 def test_dia_package_metadata_keeps_torch_out_of_adapter_dependencies():
@@ -250,6 +251,37 @@ class TestDiaAdapterInfo:
                     pass
 
             with pytest.raises(RuntimeError, match="not loaded"):
+                asyncio.run(_run())
+
+    def test_preflight_rejects_reference_audio_cloning(self):
+        with patch.dict("sys.modules", {"torch": MagicMock()}):
+            from vox_dia.adapter import DiaAdapter
+
+            adapter = DiaAdapter()
+
+            with pytest.raises(InvalidConfigError, match="audio-prompt voice cloning path"):
+                adapter.validate_synthesis_request(reference_audio=np.zeros(10, dtype=np.float32))
+
+            with pytest.raises(InvalidConfigError, match="audio-prompt voice cloning path"):
+                adapter.validate_synthesis_request(reference_text="reference")
+
+    def test_synthesize_rejects_reference_audio_cloning(self):
+        with patch.dict("sys.modules", {"torch": MagicMock()}):
+            from vox_dia.adapter import DiaAdapter
+
+            adapter = DiaAdapter()
+            adapter._loaded = True
+            adapter._processor = MagicMock()
+            adapter._model = MagicMock()
+
+            async def _run() -> None:
+                async for _chunk in adapter.synthesize(
+                    "hello",
+                    reference_audio=np.zeros(10, dtype=np.float32),
+                ):
+                    pass
+
+            with pytest.raises(NotImplementedError, match="audio-prompt voice cloning path"):
                 asyncio.run(_run())
 
     def test_synthesize_streams_audio_from_saved_output(self):
