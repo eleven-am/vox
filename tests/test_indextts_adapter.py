@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import importlib
 import os
 import sys
+import tomllib
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
@@ -14,6 +16,15 @@ import soundfile as sf
 
 from vox.core.types import ModelFormat, ModelType
 from vox.operations.errors import InvalidConfigError
+
+
+def test_indextts_package_metadata_is_lightweight():
+    pyproject = Path(__file__).parents[1] / "adapters" / "vox-indextts" / "pyproject.toml"
+    data = tomllib.loads(pyproject.read_text())
+
+    dependencies = data["project"]["dependencies"]
+    assert data["project"]["version"] == "0.1.2"
+    assert not any(dep.startswith(("torch", "torchaudio", "indextts")) for dep in dependencies)
 
 
 class _FakeIndexTTS2:
@@ -41,11 +52,20 @@ def _install_fake_indextts_modules() -> None:
 
 
 def test_indextts_package_import_is_light():
+    original_import = builtins.__import__
+
+    def guarded_import(name, *args, **kwargs):
+        heavy_modules = ("indextts", "torch", "torchaudio")
+        if name in heavy_modules or name.startswith(tuple(f"{module}." for module in heavy_modules)):
+            raise AssertionError(f"vox-indextts imported heavy runtime dependency during package import: {name}")
+        return original_import(name, *args, **kwargs)
+
     sys.modules.pop("vox_indextts", None)
     sys.modules.pop("vox_indextts.adapter", None)
     sys.modules.pop("indextts", None)
 
-    module = importlib.import_module("vox_indextts")
+    with patch.object(builtins, "__import__", side_effect=guarded_import):
+        module = importlib.import_module("vox_indextts")
 
     assert module.__all__ == ["IndexTTSAdapter"]
     assert "indextts" not in sys.modules
@@ -121,7 +141,8 @@ def test_indextts_bootstraps_runtime_when_missing(tmp_path):
 
     def fake_run(cmd, **kwargs):
         calls.append(cmd)
-        _install_fake_indextts_modules()
+        if "transformers==4.52.1" in cmd:
+            _install_fake_indextts_modules()
         result = MagicMock()
         result.returncode = 0
         result.stderr = ""
@@ -143,3 +164,41 @@ def test_indextts_bootstraps_runtime_when_missing(tmp_path):
     assert "--target" in calls[0]
     assert str(tmp_path / "vox-home" / "runtime" / "indextts") in calls[0]
     assert "git+https://github.com/index-tts/index-tts.git" in calls[0]
+    assert "--no-deps" in calls[0]
+    assert "--upgrade" not in calls[0]
+    dependency_commands = " ".join(" ".join(call) for call in calls[1:])
+    assert "torch" not in dependency_commands
+    assert "torchaudio" not in dependency_commands
+    assert "transformers==4.52.1" in calls[1]
+
+
+def test_indextts_prepare_runtime_bootstraps_without_loading_model(tmp_path):
+    calls: list[list[str]] = []
+    _FakeIndexTTS2.instances.clear()
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if "transformers==4.52.1" in cmd:
+            _install_fake_indextts_modules()
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        return result
+
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        sys.modules.pop("indextts", None)
+        sys.modules.pop("indextts.infer_v2", None)
+        from vox_indextts.adapter import IndexTTSAdapter
+
+        with (
+            patch("vox_indextts.adapter.subprocess.run", side_effect=fake_run),
+            patch("vox_indextts.adapter._clear_indextts_modules"),
+        ):
+            IndexTTSAdapter().prepare_runtime()
+
+    assert calls
+    assert _FakeIndexTTS2.instances == []
+    assert "git+https://github.com/index-tts/index-tts.git" in calls[0]
+    assert "--no-deps" in calls[0]
+    assert "--upgrade" not in calls[0]
+    assert "transformers==4.52.1" in calls[1]

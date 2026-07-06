@@ -448,6 +448,11 @@ class TestAvailableModels:
         assert indextts["adapter"] == "indextts-tts-torch"
         assert indextts["format"] == "pytorch"
         assert indextts["parameters"]["sample_rate"] == 24_000
+        assert indextts["runtime"]["required"]["systems"] == ["linux"]
+        assert indextts["runtime"]["required"]["machines"] == ["x86_64"]
+        assert indextts["runtime"]["required"]["accelerators"] == ["cuda"]
+        assert indextts["runtime"]["required"]["min_vram_gb"] == 10
+        assert "Spark/ARM NVIDIA" in indextts["runtime"]["required"]["notes"][0]
 
     def test_qwen_tts_catalog_entries_prefer_faster_backend_with_fallback(self):
         for entry in CATALOG["qwen3-tts"].values():

@@ -367,6 +367,19 @@ FIXTURE_CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "license": "other",
             "parameters": {"sample_rate": 24000},
             "adapter_package": "vox-indextts",
+            "runtime": {
+                "required": {
+                    "python_modules": ["torch"],
+                    "accelerators": ["cuda"],
+                    "systems": ["linux"],
+                    "machines": ["x86_64"],
+                    "min_vram_gb": 10,
+                    "notes": [
+                        "IndexTTS2 uses a CUDA-oriented Torch runtime in Vox; "
+                        "CPU, ONNX, and Spark/ARM NVIDIA paths are not currently production-supported."
+                    ],
+                }
+            },
         },
     },
     "spark-tts": {

@@ -17,6 +17,7 @@ from vox.core.adapter_runtime import (
     activate_runtime_path,
     install_target_runtime_requirements,
     purge_runtime_modules,
+    write_app_fallback_path,
 )
 from vox.core.adapter_runtime import (
     runtime_root as vox_runtime_root,
@@ -27,7 +28,35 @@ from vox.operations.errors import InvalidConfigError
 logger = logging.getLogger(__name__)
 
 INDEXTTS_SAMPLE_RATE = 24_000
-INDEXTTS_REPO = "git+https://github.com/index-tts/index-tts.git"
+INDEXTTS_RUNTIME_PACKAGE = "git+https://github.com/index-tts/index-tts.git"
+INDEXTTS_RUNTIME_DEPS = (
+    "accelerate==1.8.1",
+    "cn2an==0.5.22",
+    "cython==3.0.7",
+    "descript-audiotools==0.7.2",
+    "einops>=0.8.1,<1",
+    "ffmpeg-python==0.2.0",
+    "g2p-en==2.1.0",
+    "jieba==0.42.1",
+    "json5==0.10.0",
+    "keras==2.9.0",
+    "librosa==0.10.2.post1",
+    "matplotlib==3.8.2",
+    "modelscope==1.27.0",
+    "munch==4.0.0",
+    "numba>=0.61,<0.63",
+    "omegaconf>=2.3.0,<3",
+    "opencv-python==4.9.0.80",
+    "pandas==2.3.2",
+    "safetensors==0.5.2",
+    "sentencepiece>=0.2.1,<0.3",
+    "tensorboard==2.9.1",
+    "textstat>=0.7.10,<1",
+    "tokenizers==0.21.0",
+    "transformers==4.52.1",
+    "wetext>=0.0.9; sys_platform != 'linux'",
+    "WeTextProcessing; sys_platform == 'linux'",
+)
 
 
 def _runtime_root() -> Path:
@@ -37,6 +66,7 @@ def _runtime_root() -> Path:
 def _ensure_runtime_path() -> str:
     runtime_dir = _runtime_root()
     runtime_dir.mkdir(parents=True, exist_ok=True)
+    write_app_fallback_path(runtime_dir)
     return activate_runtime_path(runtime_dir, root=runtime_dir.parent)
 
 
@@ -48,12 +78,22 @@ def _install_indextts_runtime() -> None:
     runtime_path = _ensure_runtime_path()
     if not install_target_runtime_requirements(
         runtime_path,
-        (INDEXTTS_REPO,),
+        (INDEXTTS_RUNTIME_PACKAGE,),
+        no_deps=True,
+        upgrade=False,
         timeout=1200,
         install_runner=_run_install_command,
-        context="IndexTTS runtime install",
+        context="IndexTTS runtime package install",
     ):
-        raise RuntimeError("Failed to install IndexTTS runtime from GitHub.")
+        raise RuntimeError("Failed to install IndexTTS runtime package from GitHub.")
+    if not install_target_runtime_requirements(
+        runtime_path,
+        INDEXTTS_RUNTIME_DEPS,
+        timeout=1200,
+        install_runner=_run_install_command,
+        context="IndexTTS runtime dependency install",
+    ):
+        raise RuntimeError("Failed to install IndexTTS runtime dependencies.")
 
 
 def _clear_indextts_modules() -> None:
@@ -223,6 +263,9 @@ class IndexTTSAdapter(TTSAdapter):
     @property
     def is_loaded(self) -> bool:
         return self._model is not None
+
+    def prepare_runtime(self) -> None:
+        _load_indextts_class()
 
     def validate_synthesis_request(
         self,
