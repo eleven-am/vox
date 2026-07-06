@@ -70,6 +70,16 @@ def test_cosyvoice_info_returns_correct_metadata():
     assert info.supports_voice_cloning is True
 
 
+def test_cosyvoice_load_rejects_cpu_before_runtime_install(tmp_path):
+    from vox_cosyvoice.adapter import CosyVoice2Adapter
+
+    with patch("vox_cosyvoice.adapter._load_cosyvoice_class") as load_cosyvoice_class:
+        with pytest.raises(RuntimeError, match="requires a Linux x86_64 CUDA runtime"):
+            CosyVoice2Adapter().load(str(tmp_path), "cpu")
+
+    load_cosyvoice_class.assert_not_called()
+
+
 def test_cosyvoice_load_and_synthesize_with_reference_audio(tmp_path):
     _install_fake_cosyvoice_modules()
     from vox_cosyvoice.adapter import CosyVoice2Adapter
@@ -106,7 +116,7 @@ def test_cosyvoice_requires_reference_or_saved_speaker(tmp_path):
     from vox_cosyvoice.adapter import CosyVoice2Adapter
 
     adapter = CosyVoice2Adapter()
-    adapter.load(str(tmp_path), "cpu")
+    adapter.load(str(tmp_path), "cuda")
 
     async def run():
         async for _ in adapter.synthesize("Hello"):
@@ -168,7 +178,7 @@ def test_cosyvoice_bootstraps_runtime_when_missing(tmp_path):
             patch("vox_cosyvoice.adapter.subprocess.run", side_effect=fake_run),
             patch("vox_cosyvoice.adapter._clear_cosyvoice_modules"),
         ):
-            CosyVoice2Adapter().load(str(tmp_path), "cpu")
+            CosyVoice2Adapter().load(str(tmp_path), "cuda")
 
     assert calls
     assert calls[0][:2] == ["git", "clone"]

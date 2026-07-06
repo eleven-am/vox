@@ -393,6 +393,16 @@ def _extract_audio(output: Any) -> NDArray[np.float32]:
     return audio
 
 
+def _require_cuda_device(device: str) -> None:
+    if device == "cuda":
+        return
+    raise RuntimeError(
+        "CosyVoice2 requires a Linux x86_64 CUDA runtime. "
+        "CPU, ONNX, and Spark/ARM NVIDIA execution are not production-supported "
+        "by this adapter."
+    )
+
+
 class CosyVoice2Adapter(TTSAdapter):
     def __init__(self) -> None:
         self._model: Any | None = None
@@ -414,6 +424,8 @@ class CosyVoice2Adapter(TTSAdapter):
     def load(self, model_path: str, device: str, **kwargs: Any) -> None:
         if self._model is not None:
             return
+
+        _require_cuda_device(device)
 
         kwargs.pop("_source", None)
         self._model_id = model_path
