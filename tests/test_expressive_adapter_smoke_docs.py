@@ -19,6 +19,20 @@ def test_expressive_adapter_smoke_script_refuses_production_and_requires_create(
     assert "unless `--create` is\npassed explicitly after approval" in runbook
 
 
+def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures():
+    script = Path("scripts/expressive-adapter-smoke.sh").read_text()
+
+    assert "FAILED=0" in script
+    assert "record_timed()" in script
+    assert 'FAILED=1' in script
+    assert 'record_timed "Pull Output"' in script
+    assert 'record_timed "Short Synthesis Output"' in script
+    assert 'record_timed "Long Synthesis Output"' in script
+    assert 'append_section "Resource Snapshot"' in script
+    assert 'one or more smoke steps failed; inspect evidence' in script
+    assert "exit 5" in script
+
+
 def test_expressive_adapter_smoke_runbook_keeps_production_safety_boundary():
     runbook = Path("docs/expressive-adapter-smoke.md").read_text()
 

@@ -36,6 +36,7 @@ OUTPUT_DIR="${VOX_SMOKE_OUTPUT_DIR:-/tmp/vox-adapter-smoke}"
 SHORT_TEXT="This is a short expressive smoke test."
 LONG_TEXT="This is a longer smoke test. It should produce stable speech, preserve the requested voice behavior, and finish without leaking memory or exhausting the GPU."
 POD="vox-adapter-smoke"
+FAILED=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -239,7 +240,15 @@ run_timed() {
   return "$status"
 }
 
-run_timed "Pull Output" kubectl -n "$NS" exec "$POD" -- sh -lc "vox pull '$MODEL'"
+record_timed() {
+  local label="$1"
+  shift
+  if ! run_timed "$label" "$@"; then
+    FAILED=1
+  fi
+}
+
+record_timed "Pull Output" kubectl -n "$NS" exec "$POD" -- sh -lc "vox pull '$MODEL'"
 
 packages="$(kubectl -n "$NS" exec "$POD" -- sh -lc "python - <<'PY'
 from importlib.metadata import version
@@ -251,9 +260,9 @@ for package in ('vox-cosyvoice', 'vox-dia', 'vox-orpheus', 'vox-indextts'):
 PY")"
 append_section "Adapter Packages" "$packages"
 
-run_timed "Short Synthesis Output" \
+record_timed "Short Synthesis Output" \
   kubectl -n "$NS" exec "$POD" -- sh -lc "vox run '$MODEL' '$SHORT_TEXT' --output /tmp/short.wav"
-run_timed "Long Synthesis Output" \
+record_timed "Long Synthesis Output" \
   kubectl -n "$NS" exec "$POD" -- sh -lc "vox run '$MODEL' '$LONG_TEXT' --output /tmp/long.wav"
 
 durations="$(kubectl -n "$NS" exec "$POD" -- sh -lc 'ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 /tmp/short.wav /tmp/long.wav' 2>&1 || true)"
@@ -269,3 +278,8 @@ echo "wrote evidence: $evidence"
 echo "copied artifacts when available:"
 echo "  $short_wav"
 echo "  $long_wav"
+
+if [[ "$FAILED" != "0" ]]; then
+  echo "one or more smoke steps failed; inspect evidence: $evidence" >&2
+  exit 5
+fi
