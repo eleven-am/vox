@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import shutil
 import subprocess
 import tempfile
 from collections.abc import AsyncIterator, Callable
@@ -58,6 +59,20 @@ INDEXTTS_RUNTIME_DEPS = (
     "WeTextProcessing; sys_platform == 'linux'",
 )
 _RUNTIME_PROBE_ERRORS = (ImportError, ModuleNotFoundError, AttributeError, ValueError)
+_FORBIDDEN_RUNTIME_PACKAGE_GLOBS = (
+    "torch",
+    "torch-*.dist-info",
+    "torchaudio",
+    "torchaudio-*.dist-info",
+    "torchvision",
+    "torchvision-*.dist-info",
+    "triton",
+    "triton-*.dist-info",
+    "nvidia",
+    "nvidia_*.dist-info",
+    "cuda",
+    "cuda_*.dist-info",
+)
 
 
 def _runtime_root() -> Path:
@@ -69,6 +84,21 @@ def _ensure_runtime_path() -> str:
     runtime_dir.mkdir(parents=True, exist_ok=True)
     write_app_fallback_path(runtime_dir)
     return activate_runtime_path(runtime_dir, root=runtime_dir.parent)
+
+
+def _remove_forbidden_runtime_packages() -> None:
+    runtime_dir = _runtime_root()
+    for pattern in _FORBIDDEN_RUNTIME_PACKAGE_GLOBS:
+        for path in runtime_dir.glob(pattern):
+            try:
+                if path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                logger.warning("Failed to remove stale IndexTTS runtime path %s: %s", path, exc)
 
 
 def _run_install_command(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
@@ -143,6 +173,7 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
 
 def _load_indextts_class() -> type[Any]:
     _ensure_runtime_path()
+    _remove_forbidden_runtime_packages()
     _clear_indextts_modules()
     try:
         cls = _indextts_class_from_runtime()

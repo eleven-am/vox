@@ -23,7 +23,7 @@ def test_indextts_package_metadata_is_lightweight():
     data = tomllib.loads(pyproject.read_text())
 
     dependencies = data["project"]["dependencies"]
-    assert data["project"]["version"] == "0.1.7"
+    assert data["project"]["version"] == "0.1.8"
     assert not any(dep.startswith(("torch", "torchaudio", "indextts")) for dep in dependencies)
 
 
@@ -320,6 +320,37 @@ def test_indextts_clears_sibling_runtime_transformers_before_probe(tmp_path):
         return _FakeIndexTTS2
 
     with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        from vox_indextts.adapter import _load_indextts_class
+
+        with patch("vox_indextts.adapter._indextts_class_from_runtime", side_effect=fake_probe):
+            assert _load_indextts_class() is _FakeIndexTTS2
+
+
+def test_indextts_removes_forbidden_torch_runtime_packages_before_probe(tmp_path):
+    vox_home = tmp_path / "vox-home"
+    runtime = vox_home / "runtime" / "indextts"
+    for relative in (
+        "torch",
+        "torch-2.10.0.dist-info",
+        "torchaudio",
+        "torchaudio-2.10.0.dist-info",
+        "nvidia",
+        "nvidia_cuda_runtime_cu13-13.0.0.dist-info",
+        "cuda",
+        "cuda_toolkit-13.0.2.dist-info",
+        "triton",
+        "triton-3.5.0.dist-info",
+    ):
+        path = runtime / relative
+        path.mkdir(parents=True)
+        (path / "marker").write_text("stale", encoding="utf-8")
+
+    def fake_probe():
+        for path in runtime.iterdir():
+            assert path.name in {"_vox_runtime_fallback_paths.pth"}
+        return _FakeIndexTTS2
+
+    with patch.dict(os.environ, {"VOX_HOME": str(vox_home)}):
         from vox_indextts.adapter import _load_indextts_class
 
         with patch("vox_indextts.adapter._indextts_class_from_runtime", side_effect=fake_probe):
