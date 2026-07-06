@@ -77,6 +77,7 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert "record_timed()" in script
     assert "record_resources()" in script
     assert "record_artifact_stats()" in script
+    assert "validate_copied_artifacts()" in script
     assert "record_audio_durations()" in script
     assert "record_smoke_result()" in script
     assert 'env MODEL_REF="$MODEL" TEXT_REF="$SHORT_TEXT"' in script
@@ -116,6 +117,8 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     )
     assert disallowed_multi_probe not in script
     assert 'record_artifact_stats "Copied Artifact Stats"' in script
+    assert 'validate_copied_artifacts "$short_wav" "$long_wav"' in script
+    assert 'FAILED_STEPS+=("Missing or empty copied artifact: $path")' in script
     assert 'one or more smoke steps failed; inspect evidence' in script
     assert "exit 5" in script
 

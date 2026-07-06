@@ -370,6 +370,16 @@ record_artifact_stats() {
   append_section "$label" "$body"
 }
 
+validate_copied_artifacts() {
+  local path
+  for path in "$@"; do
+    if [[ ! -s "$path" ]]; then
+      FAILED=1
+      FAILED_STEPS+=("Missing or empty copied artifact: $path")
+    fi
+  done
+}
+
 record_audio_durations() {
   local body
   body="$(kubectl -n "$NS" exec "$POD" -- sh -lc '
@@ -537,6 +547,7 @@ record_audio_durations
 kubectl -n "$NS" cp "$POD:/tmp/short.wav" "$short_wav" >/dev/null 2>&1 || true
 kubectl -n "$NS" cp "$POD:/tmp/long.wav" "$long_wav" >/dev/null 2>&1 || true
 record_artifact_stats "Copied Artifact Stats" "$short_wav" "$long_wav"
+validate_copied_artifacts "$short_wav" "$long_wav"
 record_smoke_result
 
 echo "wrote evidence: $evidence"
