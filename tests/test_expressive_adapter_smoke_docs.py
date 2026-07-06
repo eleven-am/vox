@@ -63,7 +63,7 @@ def test_expressive_adapter_smoke_script_refuses_production_and_requires_create(
     assert "make smoke-expressive MODEL=dia-tts:1.6b SMOKE_CREATE=1" in runbook
     assert "unless `--create` is\npassed explicitly after approval" in runbook
     assert "SMOKE_VARIANT=onnx" in makefile
-    assert "SMOKE_VOICE=/home/vox/.vox/voices/test/reference.wav" in makefile
+    assert "SMOKE_VOICE=/home/vox/.vox/smoke-voices/reference.wav" in makefile
     assert '$(if $(SMOKE_VOICE),--voice "$(SMOKE_VOICE)",)' in makefile
     assert "SMOKE_CPU_ONLY=1" in makefile
     assert '--variant "$(SMOKE_VARIANT)"' in makefile
