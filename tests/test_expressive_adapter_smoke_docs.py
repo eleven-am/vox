@@ -124,6 +124,7 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert 'FAILED_STEPS+=("Model adapter package missing from resolved entry")' in script
     assert 'FAILED_STEPS+=("Resolved adapter package is not installed")' in script
     assert 'FAILED_STEPS+=("Expected adapter runtime path is missing after pull")' in script
+    assert 'FAILED_STEPS+=("Expected adapter runtime path has no adapter-owned contents")' in script
     assert "short:/tmp/short.wav long:/tmp/long.wav" in script
     assert "printf \"%s=%s\\n\"" in script
     assert "printf \"%s=missing\\n\"" in script
@@ -166,6 +167,9 @@ def test_expressive_adapter_smoke_script_records_model_resolution_evidence():
     assert "'vox-indextts': ['indextts']" in script
     assert "'adapter_runtime_paths'" in script
     assert "'adapter_runtime_missing'" in script
+    assert "'adapter_runtime_empty'" in script
+    assert "'meaningful_entry_count'" in script
+    assert "_vox_runtime_fallback_paths.pth" in script
     assert "store.root / 'runtime' / runtime_name" in script
 
 

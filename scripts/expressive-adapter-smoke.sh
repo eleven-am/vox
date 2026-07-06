@@ -454,6 +454,10 @@ validate_model_resolution() {
     FAILED=1
     FAILED_STEPS+=("Expected adapter runtime path is missing after pull")
   fi
+  if grep -q '"adapter_runtime_empty": true' <<< "$body"; then
+    FAILED=1
+    FAILED_STEPS+=("Expected adapter runtime path has no adapter-owned contents")
+  fi
 }
 
 run_timed() {
@@ -563,6 +567,11 @@ try:
         runtime_checks = []
         for runtime_name in expected_runtime_names:
             runtime_path = store.root / 'runtime' / runtime_name
+            meaningful_entries = [
+                path.name
+                for path in runtime_path.iterdir()
+                if path.name != '_vox_runtime_fallback_paths.pth'
+            ] if runtime_path.is_dir() else []
             runtime_checks.append({
                 'name': runtime_name,
                 'path': str(runtime_path),
@@ -572,10 +581,15 @@ try:
                     if runtime_path.is_dir()
                     else 0
                 ),
+                'meaningful_entry_count': len(meaningful_entries),
             })
         payload['adapter_runtime_paths'] = runtime_checks
         payload['adapter_runtime_missing'] = any(
             not check['exists'] for check in runtime_checks
+        )
+        payload['adapter_runtime_empty'] = any(
+            check['exists'] and check['meaningful_entry_count'] == 0
+            for check in runtime_checks
         )
 
     manifest = store.resolve_model(resolved.resolved_name, resolved.resolved_tag)
