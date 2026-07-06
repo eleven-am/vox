@@ -84,6 +84,8 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert "validate_copied_artifacts()" in script
     assert "record_audio_durations()" in script
     assert "validate_audio_durations()" in script
+    assert "record_audio_streams()" in script
+    assert "validate_audio_streams()" in script
     assert "record_audio_signal()" in script
     assert "validate_audio_signal()" in script
     assert "validate_model_resolution()" in script
@@ -127,6 +129,15 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert 'validate_audio_durations "$body"' in script
     assert 'FAILED_STEPS+=("Missing or invalid $label audio duration: $duration")' in script
     assert 'FAILED_STEPS+=("Non-positive $label audio duration: $duration")' in script
+    assert "record_audio_streams" in script
+    assert 'append_section "Audio Stream Metadata"' in script
+    assert "codec_name,sample_rate,channels" in script
+    assert "sample_rate=" in script
+    assert "channels=" in script
+    assert 'validate_audio_streams "$body"' in script
+    assert 'FAILED_STEPS+=("Missing or invalid $label audio stream metadata")' in script
+    assert 'FAILED_STEPS+=("Invalid $label audio sample rate: ${sample_rate:-missing}")' in script
+    assert 'FAILED_STEPS+=("Invalid $label audio channel count: ${channels:-missing}")' in script
     assert "record_audio_signal" in script
     assert 'append_section "Audio Signal Stats"' in script
     assert "volumedetect" in script
@@ -223,6 +234,7 @@ def test_expressive_adapter_smoke_runbook_lists_required_models_and_evidence():
         "short synthesis wall time",
         "long synthesis wall time",
         "generated audio duration",
+        "generated audio stream metadata, including codec, sample rate, and channels",
         "generated audio signal stats proving the WAV is not silent",
         "pod memory and GPU memory snapshots after pull, short synthesis, and long synthesis",
         "output WAV artifact",
@@ -357,6 +369,8 @@ def test_expressive_adapter_smoke_runbook_requires_durable_evidence_record():
         "Pod memory:",
         "GPU memory:",
         "## Audio Durations",
+        "## Audio Stream Metadata",
+        "## Audio Signal Stats",
         "## Copied Artifact Stats",
         "Short WAV bytes:",
         "Long WAV bytes:",

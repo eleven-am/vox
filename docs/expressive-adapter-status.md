@@ -86,6 +86,8 @@ Use a disposable namespace and PVC as described in
 3. Model files are stored in the model store.
 4. Short and long synthesis return non-empty WAV files.
 5. Output durations are plausible.
-6. Peak RAM and VRAM fit the documented limits.
-7. Audio is manually judged usable.
-8. Any failure is classified as Vox, adapter, dependency, upstream, or hardware.
+6. Audio stream metadata has a valid codec, sample rate, and channel count.
+7. Audio signal stats prove the output is not silent.
+8. Peak RAM and VRAM fit the documented limits.
+9. Audio is manually judged usable.
+10. Any failure is classified as Vox, adapter, dependency, upstream, or hardware.

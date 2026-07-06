@@ -332,6 +332,11 @@ GPU memory:
 Short:
 Long:
 
+## Audio Stream Metadata
+
+Short:
+Long:
+
 ## Audio Signal Stats
 
 Short:
@@ -425,6 +430,30 @@ record_audio_durations() {
   validate_audio_durations "$body"
 }
 
+record_audio_streams() {
+  local body
+  body="$(kubectl -n "$NS" exec "$POD" -- sh -lc '
+    for item in short:/tmp/short.wav long:/tmp/long.wav; do
+      label="${item%%:*}"
+      path="${item#*:}"
+      if [ -f "$path" ]; then
+        if ! metadata="$(ffprobe -v error -select_streams a:0 -show_entries stream=codec_name,sample_rate,channels -of default=nw=1 "$path" 2>&1)"; then
+          printf "%s error=ffprobe_failed\n" "$label"
+          continue
+        fi
+        codec="$(printf "%s\n" "$metadata" | awk -F= "/^codec_name=/ {print \$2; exit}")"
+        sample_rate="$(printf "%s\n" "$metadata" | awk -F= "/^sample_rate=/ {print \$2; exit}")"
+        channels="$(printf "%s\n" "$metadata" | awk -F= "/^channels=/ {print \$2; exit}")"
+        printf "%s codec=%s sample_rate=%s channels=%s\n" "$label" "${codec:-missing}" "${sample_rate:-missing}" "${channels:-missing}"
+      else
+        printf "%s=missing\n" "$label"
+      fi
+    done
+  ' 2>&1 || true)"
+  append_section "Audio Stream Metadata" "$body"
+  validate_audio_streams "$body"
+}
+
 record_audio_signal() {
   local body
   body="$(kubectl -n "$NS" exec "$POD" -- sh -lc '
@@ -470,6 +499,29 @@ validate_audio_durations() {
         ;;
     esac
   done <<< "$body"
+}
+
+validate_audio_streams() {
+  local body="$1"
+  local label line sample_rate channels
+  for label in short long; do
+    line="$(grep "^$label[ =]" <<< "$body" || true)"
+    if [[ -z "$line" || "$line" == *"=missing"* || "$line" == *"error="* ]]; then
+      FAILED=1
+      FAILED_STEPS+=("Missing or invalid $label audio stream metadata")
+      continue
+    fi
+    sample_rate="$(sed -n 's/.*sample_rate=\([^ ]*\).*/\1/p' <<< "$line")"
+    channels="$(sed -n 's/.*channels=\([^ ]*\).*/\1/p' <<< "$line")"
+    if [[ ! "$sample_rate" =~ ^[0-9]+$ ]] || ! awk "BEGIN { exit !($sample_rate > 0) }"; then
+      FAILED=1
+      FAILED_STEPS+=("Invalid $label audio sample rate: ${sample_rate:-missing}")
+    fi
+    if [[ ! "$channels" =~ ^[0-9]+$ ]] || ! awk "BEGIN { exit !($channels > 0) }"; then
+      FAILED=1
+      FAILED_STEPS+=("Invalid $label audio channel count: ${channels:-missing}")
+    fi
+  done
 }
 
 validate_audio_signal() {
@@ -713,6 +765,7 @@ record_timed "Long Synthesis Output" \
 record_resources "Resource Snapshot After Long Synthesis"
 
 record_audio_durations
+record_audio_streams
 record_audio_signal
 
 kubectl -n "$NS" cp "$POD:/tmp/short.wav" "$short_wav" >/dev/null 2>&1 || true
