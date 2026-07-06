@@ -82,8 +82,9 @@ The remaining production-readiness gap is runtime smoke evidence for:
 Existing-server smoke is available for the currently running Vox endpoint via
 `scripts/expressive-adapter-served-smoke.py`. That path is the default for
 checking the existing Vox service. It records short/long synthesis, timings,
-WAV metadata, SHA-256 digests, silence checks, and `/v1/models/loaded` before
-and after synthesis without creating namespaces, PVCs, or running `vox pull`.
+WAV metadata, SHA-256 digests, silence checks, the requested model detail from
+`GET /v1/models/{model}`, and `/v1/models/loaded` before and after synthesis
+without creating namespaces, PVCs, or running `vox pull`.
 It can still change in-memory loaded model state and VRAM while a request is in
 flight, so heavy synthesis against production should be intentional.
 

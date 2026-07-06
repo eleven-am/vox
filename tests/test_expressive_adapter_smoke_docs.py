@@ -131,6 +131,8 @@ def test_expressive_adapter_served_smoke_script_uses_existing_server_only():
     assert "does not call Kubernetes" in script
     assert "v1/audio/speech" in script
     assert "v1/health" in script
+    assert "urllib.parse.quote(args.model, safe='')" in script
+    assert "model_detail" in script
     assert "v1/models/loaded" in script
     assert "_response_evidence" in script
     assert "loaded_before" in script
@@ -148,6 +150,7 @@ def test_expressive_adapter_served_smoke_script_uses_existing_server_only():
     assert "Existing Server Smoke" in runbook
     assert "do not create\na new namespace or PVC" in runbook
     assert "does not call `kubectl`, `vox pull`, or mutate adapter,\nruntime, model, or PVC contents" in runbook
+    assert "`GET /v1/models/{model}` for the requested model" in runbook
     assert "`/v1/models/loaded` before synthesis" in runbook
     assert "`/v1/models/loaded` after synthesis" in runbook
     assert "can change in-memory scheduler state and VRAM usage" in runbook
@@ -423,7 +426,8 @@ def test_expressive_adapter_status_tracks_all_goal_targets_and_smoke_gap():
     assert status.count("registry requires `min_vram_gb=10`") == 2
     assert "Existing-server smoke is available for the currently running Vox endpoint" in status
     assert "That path is the default for\nchecking the existing Vox service" in status
-    assert "`/v1/models/loaded` before\nand after synthesis" in status
+    assert "requested model detail from\n`GET /v1/models/{model}`" in status
+    assert "`/v1/models/loaded` before and after synthesis" in status
     assert "without creating namespaces, PVCs, or running `vox pull`" in status
     assert "It can still change in-memory loaded model state and VRAM" in status
     assert "not sufficient to mark a model production-ready" in status

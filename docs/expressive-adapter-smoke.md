@@ -78,9 +78,10 @@ python scripts/expressive-adapter-served-smoke.py \
 
 This path intentionally does not call `kubectl`, `vox pull`, or mutate adapter,
 runtime, model, or PVC contents. It records whether an API key was provided,
-`/v1/health`, `/v1/models`, `/v1/models/loaded` before synthesis,
-`/v1/models/loaded` after synthesis, short synthesis, long synthesis, wall
-times, WAV metadata, SHA-256 digests, and silence checks under
+`/v1/health`, `/v1/models`, `GET /v1/models/{model}` for the requested model,
+`/v1/models/loaded` before synthesis, `/v1/models/loaded` after synthesis,
+short synthesis, long synthesis, wall times, WAV metadata, SHA-256 digests,
+and silence checks under
 `/tmp/vox-served-smoke` by default.
 
 Existing-server smoke can change in-memory scheduler state and VRAM usage while

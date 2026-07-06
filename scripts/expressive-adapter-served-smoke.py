@@ -16,6 +16,7 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import wave
 from dataclasses import asdict, dataclass
@@ -312,6 +313,11 @@ def main() -> int:
         timeout=min(args.timeout, 30.0),
         api_key=args.api_key,
     )
+    model_detail = _request_json(
+        f"{args.base_url.rstrip('/')}/v1/models/{urllib.parse.quote(args.model, safe='')}",
+        timeout=min(args.timeout, 30.0),
+        api_key=args.api_key,
+    )
     loaded = _request_json(
         f"{args.base_url.rstrip('/')}/v1/models/loaded",
         timeout=min(args.timeout, 30.0),
@@ -319,6 +325,7 @@ def main() -> int:
     )
     evidence["health"] = _response_evidence(health)
     evidence["models"] = _response_evidence(models)
+    evidence["model_detail"] = _response_evidence(model_detail)
     evidence["loaded_before"] = _response_evidence(loaded)
 
     cases = [
