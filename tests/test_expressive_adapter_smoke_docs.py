@@ -82,6 +82,7 @@ def test_expressive_adapter_status_tracks_all_goal_targets_and_smoke_gap():
 
     assert "Previously cluster-smoked successfully, but slow" in status
     assert "Pending isolated GPU smoke" in status
+    assert "registry requires `min_vram_gb=12`" in status
     assert "Do not run these against the production `vox` namespace or `vox-data` PVC" in status
     assert "vox pull` succeeds without `VOX_ALLOW_INCOMPATIBLE" in status
 
@@ -116,6 +117,7 @@ def test_expressive_adapter_status_records_dia_budget_finding():
         "`vox-dia==0.2.11`",
         "`/home/vox/.vox/runtime/dia` only contained",
         "`--max-vram 10GiB --vram-headroom 1GiB`",
+        "`min_vram_gb=12`",
         "not a successful smoke test",
         "fresh pull and synthesis in the disposable smoke namespace",
     ):
