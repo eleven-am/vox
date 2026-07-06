@@ -73,3 +73,4 @@ The current Orpheus backend is vLLM-based and is classified for Linux x86_64
 CUDA runtimes. CPU and Spark/ARM NVIDIA execution are not currently supported
 by this adapter because the `orpheus-speech`/vLLM runtime is not packaged as a
 portable CPU or ARM NVIDIA backend.
+Plan for at least 10GiB of usable VRAM budget before deployment headroom.

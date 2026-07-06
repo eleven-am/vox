@@ -3,7 +3,6 @@ from __future__ import annotations
 import tomllib
 from pathlib import Path
 
-
 ADAPTER_PACKAGE_DIRS = {
     "vox-cosyvoice": Path("adapters/vox-cosyvoice"),
     "vox-dia": Path("adapters/vox-dia"),
@@ -111,7 +110,11 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert "short:/tmp/short.wav long:/tmp/long.wav" in script
     assert "printf \"%s=%s\\n\"" in script
     assert "printf \"%s=missing\\n\"" in script
-    assert "ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 /tmp/short.wav /tmp/long.wav" not in script
+    disallowed_multi_probe = (
+        "ffprobe -v error -show_entries format=duration "
+        "-of default=nw=1:nk=1 /tmp/short.wav /tmp/long.wav"
+    )
+    assert disallowed_multi_probe not in script
     assert 'record_artifact_stats "Copied Artifact Stats"' in script
     assert 'one or more smoke steps failed; inspect evidence' in script
     assert "exit 5" in script
@@ -222,7 +225,9 @@ def test_expressive_adapter_status_tracks_all_goal_targets_and_smoke_gap():
 
     assert "Previously cluster-smoked successfully, but slow" in status
     assert "Pending isolated GPU smoke" in status
+    assert "registry requires `min_vram_gb=8`" in status
     assert "registry requires `min_vram_gb=12`" in status
+    assert status.count("registry requires `min_vram_gb=10`") == 2
     assert "Do not run these against the production `vox` namespace or `vox-data` PVC" in status
     assert "vox pull` succeeds without `VOX_ALLOW_INCOMPATIBLE" in status
 

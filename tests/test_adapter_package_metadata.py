@@ -167,24 +167,28 @@ def test_expressive_adapter_readmes_document_hardware_classification():
             "CPU, ONNX, and Spark/ARM NVIDIA paths are not currently production-supported",
             "Vox-validated ONNX backend",
             "Spark/ARM NVIDIA dependency stack",
+            "8GiB of usable VRAM budget",
         ),
         "vox-dia": (
             "Linux x86_64 CUDA/Torch",
             "CPU, ONNX, and Spark/ARM NVIDIA paths are not currently production-supported",
             "portable CPU/ONNX backend",
             "Spark/ARM NVIDIA dependency stack",
+            "12GiB of usable VRAM budget",
         ),
         "vox-indextts": (
             "Linux x86_64 CUDA/Torch",
             "CPU, ONNX, and Spark/ARM NVIDIA paths are not currently production-supported",
             "acceptable latency",
             "portable dependency resolution",
+            "10GiB of usable VRAM budget",
         ),
         "vox-orpheus": (
             "Linux x86_64\nCUDA",
             "CPU and Spark/ARM NVIDIA execution are not currently supported",
             "orpheus-speech",
             "vLLM runtime",
+            "10GiB of usable VRAM budget",
         ),
     }
 

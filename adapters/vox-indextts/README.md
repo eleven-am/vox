@@ -59,3 +59,4 @@ CPU, ONNX, and Spark/ARM NVIDIA paths are not currently production-supported by
 this adapter. Upstream documents CPU-style constructor switches, but Vox has
 not validated those paths with acceptable latency or portable dependency
 resolution.
+Plan for at least 10GiB of usable VRAM budget before deployment headroom.

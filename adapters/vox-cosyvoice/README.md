@@ -27,6 +27,7 @@ CPU, ONNX, and Spark/ARM NVIDIA paths are not currently production-supported by
 this adapter. Upstream CosyVoice 2 does not provide a Vox-validated ONNX backend
 for this package, and the Spark/ARM NVIDIA dependency stack has not been proven
 cleanly installable with the adapter runtime isolation contract.
+Plan for at least 8GiB of usable VRAM budget before deployment headroom.
 
 CosyVoice imports `whisper.log_mel_spectrogram` and
 `whisper.tokenizer.Tokenizer` for frontend features. Vox provides those narrow
