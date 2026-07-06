@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import inspect
 import logging
 import subprocess
 from collections.abc import AsyncIterator
@@ -19,7 +20,7 @@ from vox.core.adapter_runtime import (
 from vox.core.adapter_runtime import (
     runtime_root as vox_runtime_root,
 )
-from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesisParameterInfo, SynthesizeChunk, VoiceInfo
 from vox.operations.errors import InvalidConfigError
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,10 @@ ORPHEUS_RUNTIME_DEPS = ("orpheus-speech==0.1.0",)
 DEFAULT_VOICE = "tara"
 ORPHEUS_VOICES = ("tara", "leah", "jess", "leo", "dan", "mia", "zoe", "zac")
 _RUNTIME_PROBE_ERRORS = (ImportError, ModuleNotFoundError, AttributeError, ValueError)
+_DEFAULT_TEMPERATURE = 0.6
+_DEFAULT_TOP_P = 0.8
+_DEFAULT_REPETITION_PENALTY = 1.1
+_DEFAULT_MAX_TOKENS = 1200
 
 
 def _runtime_root():
@@ -160,6 +165,44 @@ def _audio_array(chunk: Any) -> NDArray[np.float32]:
     return audio
 
 
+def _call_accepts_keyword(call: Any, name: str) -> bool:
+    try:
+        signature = inspect.signature(call)
+    except (TypeError, ValueError):
+        return False
+    return name in signature.parameters or any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+
+
+def _validate_voice(voice: str | None) -> str:
+    selected = voice or DEFAULT_VOICE
+    if selected not in ORPHEUS_VOICES:
+        valid = ", ".join(ORPHEUS_VOICES)
+        raise InvalidConfigError(f"Unsupported Orpheus voice {selected!r}. Supported voices: {valid}")
+    return selected
+
+
+def _generation_kwargs(model: Any, params: dict[str, Any] | None) -> dict[str, Any]:
+    if not params:
+        return {}
+    generate_speech = getattr(model, "generate_speech", None)
+    if generate_speech is None:
+        return {}
+
+    kwargs: dict[str, Any] = {}
+    for name, value in params.items():
+        if value is None:
+            continue
+        if not _call_accepts_keyword(generate_speech, name):
+            raise RuntimeError(
+                f"Installed Orpheus runtime does not accept synthesis parameter {name!r}."
+            )
+        kwargs[name] = value
+    return kwargs
+
+
 class OrpheusAdapter(TTSAdapter):
     def __init__(self) -> None:
         self._model: Any | None = None
@@ -208,6 +251,42 @@ class OrpheusAdapter(TTSAdapter):
     def prepare_runtime(self) -> None:
         _load_orpheus_model_class()
 
+    def synthesis_parameters(self) -> tuple[SynthesisParameterInfo, ...]:
+        return (
+            SynthesisParameterInfo(
+                name="temperature",
+                type="number",
+                default=_DEFAULT_TEMPERATURE,
+                min_value=0.0,
+                max_value=2.0,
+                description="Orpheus LLM sampling temperature.",
+            ),
+            SynthesisParameterInfo(
+                name="top_p",
+                type="number",
+                default=_DEFAULT_TOP_P,
+                min_value=0.0,
+                max_value=1.0,
+                description="Orpheus nucleus sampling probability.",
+            ),
+            SynthesisParameterInfo(
+                name="repetition_penalty",
+                type="number",
+                default=_DEFAULT_REPETITION_PENALTY,
+                min_value=1.0,
+                max_value=2.0,
+                description="Orpheus repetition penalty; upstream recommends >= 1.1 for stable output.",
+            ),
+            SynthesisParameterInfo(
+                name="max_tokens",
+                type="integer",
+                default=_DEFAULT_MAX_TOKENS,
+                min_value=1,
+                max_value=4096,
+                description="Maximum Orpheus audio-token generation budget when supported by the runtime.",
+            ),
+        )
+
     def validate_synthesis_request(
         self,
         *,
@@ -215,9 +294,11 @@ class OrpheusAdapter(TTSAdapter):
         language: str | None = None,
         reference_audio: NDArray[np.float32] | None = None,
         reference_text: str | None = None,
+        params: dict[str, Any] | None = None,
     ) -> None:
         if reference_audio is not None or reference_text is not None:
             raise InvalidConfigError("Orpheus does not support reference_audio/reference_text")
+        _validate_voice(voice)
 
     async def synthesize(
         self,
@@ -228,6 +309,7 @@ class OrpheusAdapter(TTSAdapter):
         language: str | None = None,
         reference_audio: NDArray[np.float32] | None = None,
         reference_text: str | None = None,
+        params: dict[str, Any] | None = None,
     ) -> AsyncIterator[SynthesizeChunk]:
         if self._model is None:
             raise RuntimeError("Orpheus model is not loaded — call load() first")
@@ -236,11 +318,12 @@ class OrpheusAdapter(TTSAdapter):
         if not text or not text.strip():
             return
 
-        selected_voice = voice or DEFAULT_VOICE
+        selected_voice = _validate_voice(voice)
         kwargs: dict[str, Any] = {
             "prompt": text,
             "voice": selected_voice,
         }
+        kwargs.update(_generation_kwargs(self._model, params))
         if speed and speed != 1.0:
             logger.debug("Orpheus runtime does not expose a speed control; ignoring speed=%s", speed)
 

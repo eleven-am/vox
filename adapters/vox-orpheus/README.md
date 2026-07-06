@@ -69,6 +69,14 @@ This adapter supports Orpheus preset voices, not reference-audio voice cloning.
 Requests with `reference_audio` or `reference_text` are rejected clearly rather
 than silently ignored.
 
+The adapter exposes Orpheus generation parameters through Vox synthesis
+`params`:
+
+- `temperature` (number, default `0.6`, range `0..2`)
+- `top_p` (number, default `0.8`, range `0..1`)
+- `repetition_penalty` (number, default `1.1`, range `1..2`)
+- `max_tokens` (integer, default `1200`, range `1..4096`)
+
 The current Orpheus backend is vLLM-based and is classified for Linux x86_64
 CUDA runtimes. CPU and Spark/ARM NVIDIA execution are not currently supported
 by this adapter because the `orpheus-speech`/vLLM runtime is not packaged as a

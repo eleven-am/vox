@@ -196,7 +196,7 @@ case "$MODEL" in
     expected_adapter_package="vox-dia==0.2.13"
     ;;
   orpheus-tts:*)
-    expected_adapter_package="vox-orpheus==0.1.6"
+    expected_adapter_package="vox-orpheus==0.1.7"
     ;;
   indextts-tts:*)
     expected_adapter_package="vox-indextts==0.1.18"

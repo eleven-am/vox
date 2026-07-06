@@ -21,7 +21,7 @@ def test_orpheus_package_metadata_is_lightweight():
     data = tomllib.loads(pyproject.read_text())
 
     dependencies = data["project"]["dependencies"]
-    assert data["project"]["version"] == "0.1.6"
+    assert data["project"]["version"] == "0.1.7"
     assert not any(dep.startswith(("torch", "vllm", "orpheus-speech", "snac")) for dep in dependencies)
 
 
@@ -99,12 +99,26 @@ def test_orpheus_info_returns_correct_metadata():
     assert info.supports_voice_cloning is False
 
 
+def test_orpheus_synthesis_parameters_expose_generation_controls():
+    from vox_orpheus.adapter import OrpheusAdapter
+
+    params = {param.name: param for param in OrpheusAdapter().synthesis_parameters()}
+
+    assert set(params) == {"temperature", "top_p", "repetition_penalty", "max_tokens"}
+    assert params["temperature"].default == 0.6
+    assert params["top_p"].max_value == 1.0
+    assert params["repetition_penalty"].min_value == 1.0
+    assert params["max_tokens"].type == "integer"
+
+
 def test_orpheus_load_rejects_cpu_before_runtime_install(tmp_path):
     from vox_orpheus.adapter import OrpheusAdapter
 
-    with patch("vox_orpheus.adapter._load_orpheus_model_class") as load_model_class:
-        with pytest.raises(RuntimeError, match="requires a Linux x86_64 CUDA runtime"):
-            OrpheusAdapter().load(str(tmp_path), "cpu")
+    with (
+        patch("vox_orpheus.adapter._load_orpheus_model_class") as load_model_class,
+        pytest.raises(RuntimeError, match="requires a Linux x86_64 CUDA runtime"),
+    ):
+        OrpheusAdapter().load(str(tmp_path), "cpu")
 
     load_model_class.assert_not_called()
 
@@ -119,7 +133,16 @@ def test_orpheus_load_and_synthesize(tmp_path):
 
         async def run():
             chunks = []
-            async for chunk in adapter.synthesize("Hello", voice="tara"):
+            async for chunk in adapter.synthesize(
+                "Hello",
+                voice="tara",
+                params={
+                    "temperature": 0.7,
+                    "top_p": 0.9,
+                    "repetition_penalty": 1.2,
+                    "max_tokens": 256,
+                },
+            ):
                 chunks.append(chunk)
             return chunks
 
@@ -127,7 +150,14 @@ def test_orpheus_load_and_synthesize(tmp_path):
     instance = _FakeOrpheusModel.instances[-1]
 
     assert instance.args[0] == "canopylabs/orpheus-tts-0.1-finetune-prod"
-    assert instance.calls[0] == {"prompt": "Hello", "voice": "tara"}
+    assert instance.calls[0] == {
+        "prompt": "Hello",
+        "voice": "tara",
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "repetition_penalty": 1.2,
+        "max_tokens": 256,
+    }
     assert chunks[-1].is_final is True
     assert chunks[0].sample_rate == 24_000
     assert chunks[0].audio
@@ -154,6 +184,32 @@ def test_orpheus_preflight_rejects_reference_audio():
 
     with pytest.raises(InvalidConfigError, match="reference_audio/reference_text"):
         OrpheusAdapter().validate_synthesis_request(reference_text="x")
+
+
+def test_orpheus_preflight_rejects_unknown_voice():
+    from vox_orpheus.adapter import OrpheusAdapter
+
+    with pytest.raises(InvalidConfigError, match="Unsupported Orpheus voice"):
+        OrpheusAdapter().validate_synthesis_request(voice="unknown")
+
+
+def test_orpheus_rejects_runtime_that_cannot_accept_requested_params(tmp_path):
+    class RuntimeWithoutParams:
+        def generate_speech(self, prompt: str, voice: str):
+            yield b"\x00\x00"
+
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        from vox_orpheus.adapter import OrpheusAdapter
+
+        adapter = OrpheusAdapter()
+        adapter._model = RuntimeWithoutParams()
+
+        async def run():
+            async for _ in adapter.synthesize("Hello", params={"temperature": 0.8}):
+                pass
+
+        with pytest.raises(RuntimeError, match="does not accept synthesis parameter 'temperature'"):
+            asyncio.run(run())
 
 
 def test_orpheus_bootstraps_runtime_when_missing(tmp_path):
