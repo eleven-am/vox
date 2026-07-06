@@ -34,10 +34,31 @@ marking any unproven GPU-heavy adapter as production-ready.
   broken runtime import probe are repaired instead of accepted as valid.
 - Pull-time runtime metadata for these entries is covered in
   `tests/test_model_resolution.py` and `tests/test_registry.py`.
+- Pull atomicity across adapter runtime preparation is covered by
+  `tests/test_operations_models.py`; the test proves Vox does not save a model
+  manifest when `prepare_runtime()` fails after model files have downloaded.
+  This prevents a model from appearing in `/v1/models` when its isolated
+  runtime is missing or broken.
 - The registry repository has a dedicated expressive runtime metadata check in
   `tests/test_registry_metadata.py`.
 - The smoke safety boundary and required evidence list are covered by
   `tests/test_expressive_adapter_smoke_docs.py`.
+
+## Current Dia Cluster Finding
+
+The production `vox` deployment was inspected read-only while running
+`ghcr.io/eleven-am/vox:v0.2.86`. It had `dia-tts:1.6b` model artifacts and
+`vox-dia==0.2.11` installed, but `/home/vox/.vox/runtime/dia` only contained
+the Vox fallback `.pth` file. Dia synthesis did not reach model/runtime load:
+the scheduler rejected the request because the deployment was started with
+`--max-vram 10GiB --vram-headroom 1GiB`, while Dia is budgeted as a 10GB model
+plus headroom.
+
+That finding is not a successful smoke test. It is evidence that the current
+production deployment is too tightly budgeted for Dia and that older manifests
+may exist from before the pull-atomicity fix. A valid Dia pass still requires a
+fresh pull and synthesis in the disposable smoke namespace with a VRAM budget
+that satisfies the registry metadata.
 
 ## Remaining Work
 

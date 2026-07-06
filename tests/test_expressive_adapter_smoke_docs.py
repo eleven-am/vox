@@ -91,10 +91,27 @@ def test_expressive_adapter_status_names_local_regression_evidence():
         "bootstrap the isolated runtime without loading model weights",
         "`tests/test_dia_adapter.py`; the test\n  proves the isolated Transformers runtime",
         "without loading\n  processors or model weights",
+        "Pull atomicity across adapter runtime preparation is covered by",
+        "Vox does not save a model\n  manifest when `prepare_runtime()` fails",
         "`tests/test_orpheus_adapter.py`",
         "a stale `orpheus_tts` module missing `OrpheusModel` and a\n  broken runtime import probe are repaired",
         "`tests/test_indextts_adapter.py`",
         "a stale `indextts.infer_v2` module missing `IndexTTS2` and a\n  broken runtime import probe are repaired",
+    ):
+        assert evidence in status
+
+
+def test_expressive_adapter_status_records_dia_budget_finding():
+    status = Path("docs/expressive-adapter-status.md").read_text()
+
+    for evidence in (
+        "Current Dia Cluster Finding",
+        "`ghcr.io/eleven-am/vox:v0.2.86`",
+        "`vox-dia==0.2.11`",
+        "`/home/vox/.vox/runtime/dia` only contained",
+        "`--max-vram 10GiB --vram-headroom 1GiB`",
+        "not a successful smoke test",
+        "fresh pull and synthesis in the disposable smoke namespace",
     ):
         assert evidence in status
 
