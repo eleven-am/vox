@@ -20,8 +20,18 @@ marking any unproven GPU-heavy adapter as production-ready.
 
 - Adapter package metadata, README shape, entry points, and runtime isolation
   policy are covered by `tests/test_adapter_package_metadata.py`.
-- CosyVoice, Dia, Orpheus, and IndexTTS adapter behavior and runtime bootstrap
-  paths are covered by their adapter-specific tests.
+- CosyVoice pull-time preparation is covered by
+  `tests/test_cosyvoice_adapter.py`; the test proves `prepare_runtime()` can
+  bootstrap the isolated runtime without loading model weights.
+- Dia pull-time preparation is covered by `tests/test_dia_adapter.py`; the test
+  proves the isolated Transformers runtime can be bootstrapped without loading
+  processors or model weights.
+- Orpheus stale-runtime repair is covered by `tests/test_orpheus_adapter.py`;
+  the test proves a stale `orpheus_tts` module missing `OrpheusModel` is
+  repaired instead of accepted as valid.
+- IndexTTS stale-runtime repair is covered by `tests/test_indextts_adapter.py`;
+  the test proves a stale `indextts.infer_v2` module missing `IndexTTS2` is
+  repaired instead of accepted as valid.
 - Pull-time runtime metadata for these entries is covered in
   `tests/test_model_resolution.py` and `tests/test_registry.py`.
 - The registry repository has a dedicated expressive runtime metadata check in

@@ -81,3 +81,19 @@ def test_expressive_adapter_status_tracks_all_goal_targets_and_smoke_gap():
     assert "Pending isolated GPU smoke" in status
     assert "Do not run these against the production `vox` namespace or `vox-data` PVC" in status
     assert "vox pull` succeeds without `VOX_ALLOW_INCOMPATIBLE" in status
+
+
+def test_expressive_adapter_status_names_local_regression_evidence():
+    status = Path("docs/expressive-adapter-status.md").read_text()
+
+    for evidence in (
+        "`tests/test_cosyvoice_adapter.py`; the test proves `prepare_runtime()` can",
+        "bootstrap the isolated runtime without loading model weights",
+        "`tests/test_dia_adapter.py`; the test\n  proves the isolated Transformers runtime",
+        "without loading\n  processors or model weights",
+        "`tests/test_orpheus_adapter.py`",
+        "a stale `orpheus_tts` module missing `OrpheusModel` is\n  repaired",
+        "`tests/test_indextts_adapter.py`",
+        "a stale `indextts.infer_v2` module missing `IndexTTS2` is\n  repaired",
+    ):
+        assert evidence in status
