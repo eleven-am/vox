@@ -78,6 +78,15 @@ def test_cosyvoice_package_metadata_version():
     assert data["project"]["version"] == "0.1.5"
 
 
+def test_cosyvoice_readme_uses_public_model_reference():
+    readme = Path(__file__).parents[1] / "adapters" / "vox-cosyvoice" / "README.md"
+    text = readme.read_text(encoding="utf-8")
+
+    assert "vox pull cosyvoice2-tts:0.5b" in text
+    assert "vox run cosyvoice2-tts:0.5b" in text
+    assert "vox pull cosyvoice2-tts-torch:0.5b" not in text
+
+
 def test_cosyvoice_load_rejects_cpu_before_runtime_install(tmp_path):
     from vox_cosyvoice.adapter import CosyVoice2Adapter
 

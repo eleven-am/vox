@@ -39,8 +39,8 @@ installing the full plotting stack.
 ## Use with Vox
 
 ```bash
-vox pull cosyvoice2-tts-torch:0.5b
-vox run cosyvoice2-tts-torch:0.5b "Hello from CosyVoice 2"
+vox pull cosyvoice2-tts:0.5b
+vox run cosyvoice2-tts:0.5b "Hello from CosyVoice 2"
 ```
 
 CosyVoice 2 is best used with a reference voice. Pass `reference_audio` and

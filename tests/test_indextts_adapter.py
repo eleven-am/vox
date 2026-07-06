@@ -90,6 +90,15 @@ def test_indextts_info_returns_correct_metadata():
     assert info.supports_voice_cloning is True
 
 
+def test_indextts_readme_uses_public_model_reference():
+    readme = Path(__file__).parents[1] / "adapters" / "vox-indextts" / "README.md"
+    text = readme.read_text(encoding="utf-8")
+
+    assert "vox pull indextts-tts:2" in text
+    assert "vox run indextts-tts:2" in text
+    assert "vox pull indextts-tts-torch:2" not in text
+
+
 def test_indextts_load_rejects_cpu_before_runtime_install(tmp_path):
     from vox_indextts.adapter import IndexTTSAdapter
 
