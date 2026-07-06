@@ -432,6 +432,14 @@ validate_model_resolution() {
     FAILED=1
     FAILED_STEPS+=("Model manifest layers missing after pull")
   fi
+  if ! grep -q '"adapter_package": "[^"]' <<< "$body"; then
+    FAILED=1
+    FAILED_STEPS+=("Model adapter package missing from resolved entry")
+  fi
+  if grep -q '"adapter_package_installed": false' <<< "$body"; then
+    FAILED=1
+    FAILED_STEPS+=("Resolved adapter package is not installed")
+  fi
 }
 
 run_timed() {
@@ -520,6 +528,18 @@ try:
         payload['variant_missing'] = list(variant.missing)
         payload['variant_warnings'] = list(variant.warnings)
         payload['concrete_entry'] = variant.entry
+        concrete_entry = variant.entry or {}
+        adapter_package = concrete_entry.get('adapter_package') or ''
+        adapter_package_version = (
+            registry.adapter_resolver.installed_version(adapter_package)
+            if adapter_package
+            else None
+        )
+        payload['adapter_package'] = adapter_package
+        payload['adapter_package_version'] = adapter_package_version
+        payload['adapter_package_installed'] = bool(
+            not adapter_package or adapter_package_version
+        )
 
     manifest = store.resolve_model(resolved.resolved_name, resolved.resolved_tag)
     payload['manifest_path'] = str(
