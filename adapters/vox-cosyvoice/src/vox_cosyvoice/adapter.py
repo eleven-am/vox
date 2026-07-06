@@ -35,6 +35,7 @@ COSYVOICE_REQUIRED_PATHS = (
     Path("cosyvoice") / "cli" / "cosyvoice.py",
     Path("third_party") / "Matcha-TTS" / "matcha",
 )
+_RUNTIME_PROBE_ERRORS = (ImportError, ModuleNotFoundError, AttributeError, ValueError)
 
 # Keep this list intentionally narrower than upstream requirements.txt. The Vox
 # image owns the shared GPU stack (torch, torchaudio, CUDA libraries,
@@ -306,14 +307,19 @@ def _load_cosyvoice_class() -> type[Any]:
     _ensure_runtime_path()
     try:
         cls = _cosyvoice_class_from_runtime()
-    except ImportError:
+    except _RUNTIME_PROBE_ERRORS:
         cls = None
     if cls is not None:
         return cls
 
     _install_cosyvoice_runtime()
     _clear_cosyvoice_modules()
-    cls = _cosyvoice_class_from_runtime()
+    try:
+        cls = _cosyvoice_class_from_runtime()
+    except _RUNTIME_PROBE_ERRORS as exc:
+        raise RuntimeError(
+            "CosyVoice runtime is installed, but cosyvoice.cli.cosyvoice.CosyVoice2 could not be imported."
+        ) from exc
     if cls is not None:
         return cls
 

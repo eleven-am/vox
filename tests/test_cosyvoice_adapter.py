@@ -75,7 +75,7 @@ def test_cosyvoice_package_metadata_version():
     pyproject = Path(__file__).parents[1] / "adapters" / "vox-cosyvoice" / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text())
 
-    assert data["project"]["version"] == "0.1.4"
+    assert data["project"]["version"] == "0.1.5"
 
 
 def test_cosyvoice_load_rejects_cpu_before_runtime_install(tmp_path):
@@ -253,6 +253,41 @@ def test_cosyvoice_prepare_runtime_bootstraps_without_loading_model(tmp_path):
     assert calls
     assert _FakeCosyVoice2.instances == []
     assert calls[0][:2] == ["git", "clone"]
+    install_call = next(call for call in calls if call[:2] == ["uv", "pip"])
+    assert "--target" in install_call
+    assert str(tmp_path / "vox-home" / "runtime" / "cosyvoice") in install_call
+    assert "HyperPyYAML==1.2.3" in install_call
+
+
+def test_cosyvoice_repairs_runtime_when_import_probe_is_broken(tmp_path):
+    calls: list[list[str]] = []
+    probe_results = [ValueError("broken runtime metadata"), _FakeCosyVoice2]
+
+    def fake_probe():
+        result = probe_results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        return result
+
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        from vox_cosyvoice.adapter import CosyVoice2Adapter
+
+        with (
+            patch("vox_cosyvoice.adapter._source_checkout_complete", return_value=True),
+            patch("vox_cosyvoice.adapter._cosyvoice_class_from_runtime", side_effect=fake_probe),
+            patch("vox_cosyvoice.adapter.subprocess.run", side_effect=fake_run),
+            patch("vox_cosyvoice.adapter._clear_cosyvoice_modules"),
+        ):
+            CosyVoice2Adapter().prepare_runtime()
+
+    assert calls
     install_call = next(call for call in calls if call[:2] == ["uv", "pip"])
     assert "--target" in install_call
     assert str(tmp_path / "vox-home" / "runtime" / "cosyvoice") in install_call

@@ -41,7 +41,7 @@ def test_expressive_adapter_smoke_runbook_pins_published_adapter_baseline():
     runbook = Path("docs/expressive-adapter-smoke.md").read_text()
 
     for package in (
-        "vox-cosyvoice==0.1.4",
+        "vox-cosyvoice==0.1.5",
         "vox-dia==0.2.11",
         "vox-orpheus==0.1.5",
         "vox-indextts==0.1.5",

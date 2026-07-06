@@ -11,7 +11,7 @@ marking any unproven GPU-heavy adapter as production-ready.
 
 | Model | Adapter package | Packaging/runtime isolation | Runtime metadata | Smoke status |
 | --- | --- | --- | --- | --- |
-| `cosyvoice2-tts:0.5b` | `vox-cosyvoice==0.1.4` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/cosyvoice` | Linux x86_64 CUDA/Torch; CPU/ONNX and Spark/ARM NVIDIA not production-supported | Previously cluster-smoked successfully, but slow; retain as known baseline |
+| `cosyvoice2-tts:0.5b` | `vox-cosyvoice==0.1.5` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/cosyvoice` | Linux x86_64 CUDA/Torch; CPU/ONNX and Spark/ARM NVIDIA not production-supported | Previously cluster-smoked successfully, but slow; retain as known baseline |
 | `dia-tts:1.6b` | `vox-dia==0.2.11` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/dia` | Linux x86_64 CUDA/Torch; CPU/ONNX and Spark/ARM NVIDIA not production-supported | Pending isolated GPU smoke |
 | `orpheus-tts:medium-3b` | `vox-orpheus==0.1.5` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/orpheus` | Linux x86_64 CUDA/Torch; CPU and Spark/ARM NVIDIA not packaged | Pending isolated GPU smoke |
 | `indextts-tts:2` | `vox-indextts==0.1.5` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/indextts` | Linux x86_64 CUDA/Torch; CPU/ONNX and Spark/ARM NVIDIA not production-supported | Pending isolated GPU smoke |
