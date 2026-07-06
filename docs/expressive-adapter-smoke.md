@@ -66,6 +66,23 @@ substitute `vox`, `vox-data`, or any production pod/PVC to "just test quickly".
 The preflight is allowed to fail with `NotFound`; that means the isolated smoke
 environment does not exist yet.
 
+The scripted path is:
+
+```bash
+bash scripts/expressive-adapter-smoke.sh --model dia-tts:1.6b
+```
+
+The script refuses the production `vox` namespace and `vox-data` PVC. It also
+refuses to create the disposable namespace, PVC, or pod unless `--create` is
+passed explicitly after approval:
+
+```bash
+bash scripts/expressive-adapter-smoke.sh --model dia-tts:1.6b --create
+```
+
+Evidence and copied WAV files are written under `/tmp/vox-adapter-smoke` by
+default.
+
 ## Required Evidence
 
 For each model, capture:

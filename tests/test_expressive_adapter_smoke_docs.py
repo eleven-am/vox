@@ -3,6 +3,20 @@ from __future__ import annotations
 from pathlib import Path
 
 
+def test_expressive_adapter_smoke_script_refuses_production_and_requires_create():
+    script = Path("scripts/expressive-adapter-smoke.sh").read_text()
+    runbook = Path("docs/expressive-adapter-smoke.md").read_text()
+
+    assert '[[ "$NS" == "vox" || "$PVC" == "vox-data" ]]' in script
+    assert "refusing to use production Vox namespace/PVC" in script
+    assert "namespace $NS does not exist; rerun with --create" in script
+    assert "pvc $NS/$PVC does not exist; rerun with --create" in script
+    assert "pod $NS/$POD does not exist; rerun with --create" in script
+    assert "VOX_ALLOW_INCOMPATIBLE=1" not in script
+    assert "scripts/expressive-adapter-smoke.sh --model dia-tts:1.6b" in runbook
+    assert "unless `--create` is\npassed explicitly after approval" in runbook
+
+
 def test_expressive_adapter_smoke_runbook_keeps_production_safety_boundary():
     runbook = Path("docs/expressive-adapter-smoke.md").read_text()
 
