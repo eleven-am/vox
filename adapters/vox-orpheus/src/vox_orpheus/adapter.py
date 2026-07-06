@@ -84,6 +84,16 @@ def _select_dtype(device: str) -> Any:
     return torch.float32
 
 
+def _require_cuda_device(device: str) -> None:
+    if device == "cuda":
+        return
+    raise RuntimeError(
+        "Orpheus requires a Linux x86_64 CUDA runtime. "
+        "CPU and Spark/ARM NVIDIA execution are not supported by the "
+        "orpheus-speech/vLLM backend."
+    )
+
+
 def _pcm16_bytes_to_float32(pcm: bytes) -> NDArray[np.float32]:
     audio = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
     if audio.size == 0:
@@ -127,6 +137,8 @@ class OrpheusAdapter(TTSAdapter):
     def load(self, model_path: str, device: str, **kwargs: Any) -> None:
         if self._model is not None:
             return
+
+        _require_cuda_device(device)
 
         source = kwargs.pop("_source", None)
         self._model_id = source if source else model_path

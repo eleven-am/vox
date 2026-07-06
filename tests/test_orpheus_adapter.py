@@ -78,12 +78,22 @@ def test_orpheus_info_returns_correct_metadata():
     assert info.supports_voice_cloning is False
 
 
+def test_orpheus_load_rejects_cpu_before_runtime_install(tmp_path):
+    from vox_orpheus.adapter import OrpheusAdapter
+
+    with patch("vox_orpheus.adapter._load_orpheus_model_class") as load_model_class:
+        with pytest.raises(RuntimeError, match="requires a Linux x86_64 CUDA runtime"):
+            OrpheusAdapter().load(str(tmp_path), "cpu")
+
+    load_model_class.assert_not_called()
+
+
 def test_orpheus_load_and_synthesize(tmp_path):
     _install_fake_orpheus_modules()
     from vox_orpheus.adapter import OrpheusAdapter
 
     adapter = OrpheusAdapter()
-    adapter.load(str(tmp_path), "cpu", _source="canopylabs/orpheus-tts-0.1-finetune-prod")
+    adapter.load(str(tmp_path), "cuda", _source="canopylabs/orpheus-tts-0.1-finetune-prod")
 
     async def run():
         chunks = []
@@ -106,7 +116,7 @@ def test_orpheus_rejects_reference_audio(tmp_path):
     from vox_orpheus.adapter import OrpheusAdapter
 
     adapter = OrpheusAdapter()
-    adapter.load(str(tmp_path), "cpu")
+    adapter.load(str(tmp_path), "cuda")
 
     async def run():
         async for _ in adapter.synthesize("Hello", reference_text="x"):
@@ -142,7 +152,7 @@ def test_orpheus_bootstraps_runtime_when_missing(tmp_path):
             patch("vox_orpheus.adapter.subprocess.run", side_effect=fake_run),
             patch("vox_orpheus.adapter._clear_orpheus_modules"),
         ):
-            OrpheusAdapter().load(str(tmp_path), "cpu")
+            OrpheusAdapter().load(str(tmp_path), "cuda")
 
     assert calls
     assert calls[0][:2] == ["uv", "pip"]
