@@ -22,6 +22,7 @@ Options:
   --long TEXT                Long synthesis text
   --voice VOICE              Voice id or WAV path to pass to vox run; required for indextts-tts
   --audio-usable yes|no      Manual listening verdict for copied WAV artifacts
+  --failure-class CLASS      none, Vox, adapter, dependency, upstream, or hardware
   --help                     Show this help
 
 Safety:
@@ -44,6 +45,7 @@ LONG_TEXT="This is a longer smoke test. It should produce stable speech, preserv
 VOICE=""
 AUDIO_USABLE="unchecked"
 AUDIO_USABLE_PROVIDED=0
+FAILURE_CLASS="none"
 POD="vox-adapter-smoke"
 FAILED=0
 FAILED_STEPS=()
@@ -114,6 +116,10 @@ while [[ $# -gt 0 ]]; do
       AUDIO_USABLE_PROVIDED=1
       shift 2
       ;;
+    --failure-class)
+      FAILURE_CLASS="${2:-}"
+      shift 2
+      ;;
     --help|-h)
       usage
       exit 0
@@ -142,6 +148,15 @@ if [[ "$AUDIO_USABLE_PROVIDED" == "1" ]]; then
       ;;
   esac
 fi
+
+case "$FAILURE_CLASS" in
+  none|Vox|adapter|dependency|upstream|hardware)
+    ;;
+  *)
+    echo "--failure-class must be one of: none, Vox, adapter, dependency, upstream, hardware" >&2
+    exit 2
+    ;;
+esac
 
 if requires_voice_reference "$MODEL" && [[ -z "$VOICE" ]]; then
   echo "model $MODEL requires --voice with a disposable reference WAV or voice id for smoke validation" >&2
@@ -414,7 +429,7 @@ Long WAV sha256:
 ## Classification
 
 Result: pass/fail
-Failure class: Vox / adapter / dependency / upstream / hardware / none
+Failure class: $FAILURE_CLASS
 Exact error:
 Notes:
 EOF
@@ -530,6 +545,18 @@ validate_audio_usability() {
       FAILED_STEPS+=("Manual audio usability not confirmed")
       ;;
   esac
+}
+
+validate_failure_classification() {
+  if [[ "$FAILED" == "0" && "$FAILURE_CLASS" != "none" ]]; then
+    FAILED=1
+    FAILED_STEPS+=("Passing smoke run must use --failure-class none")
+    return
+  fi
+  if [[ "$FAILED" != "0" && "$FAILURE_CLASS" == "none" ]]; then
+    FAILED=1
+    FAILED_STEPS+=("Failing smoke run must set --failure-class")
+  fi
 }
 
 record_audio_durations() {
@@ -931,6 +958,7 @@ kubectl -n "$NS" cp "$POD:/tmp/long.wav" "$long_wav" >/dev/null 2>&1 || true
 record_artifact_stats "Copied Artifact Stats" "$short_wav" "$long_wav"
 validate_copied_artifacts "$short_wav" "$long_wav"
 validate_audio_usability
+validate_failure_classification
 record_smoke_result
 
 echo "wrote evidence: $evidence"

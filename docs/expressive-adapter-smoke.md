@@ -161,6 +161,9 @@ Kubernetes resources when no disposable reference WAV or voice id is provided.
 The smoke runner writes copied WAV artifacts even on failure. Listen to those
 files and rerun with `--audio-usable yes` only when both short and long outputs
 are usable; `--audio-usable no` records a failed usability verdict.
+Failing smoke runs must be rerun or recorded with a concrete failure class:
+`--failure-class Vox`, `adapter`, `dependency`, `upstream`, or `hardware`.
+Passing runs must use the default `--failure-class none`.
 
 ## Commands
 

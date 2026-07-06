@@ -30,17 +30,23 @@ def test_expressive_adapter_smoke_script_refuses_production_and_requires_create(
     assert "--voice VOICE" in script
     assert "--voice VOICE              Voice id or WAV path to pass to vox run; required for indextts-tts" in script
     assert "--audio-usable yes|no" in script
+    assert "--failure-class CLASS" in script
     assert "--cpu-only" in script
     assert "VARIANT=\"\"" in script
     assert "VOICE=\"\"" in script
     assert "AUDIO_USABLE=\"unchecked\"" in script
     assert "AUDIO_USABLE_PROVIDED=0" in script
     assert "AUDIO_USABLE_PROVIDED=1" in script
+    assert "FAILURE_CLASS=\"none\"" in script
     assert '[[ "$AUDIO_USABLE_PROVIDED" == "1" ]]' in script
     assert "Manual audio usable: $AUDIO_USABLE" in script
     assert "validate_audio_usability()" in script
+    assert "validate_failure_classification()" in script
     assert "Manual audio usability not confirmed" in script
     assert "Manual audio usability rejected" in script
+    assert "Failing smoke run must set --failure-class" in script
+    assert "Passing smoke run must use --failure-class none" in script
+    assert "none|Vox|adapter|dependency|upstream|hardware" in script
     assert "requires_voice_reference()" in script
     assert "indextts-tts:*)" in script
     assert 'requires_voice_reference "$MODEL" && [[ -z "$VOICE" ]]' in script
@@ -99,12 +105,15 @@ def test_expressive_adapter_smoke_script_refuses_production_and_requires_create(
     assert "`indextts-tts:*` smoke validation requires `--voice`" in runbook
     assert "fails before touching\nKubernetes resources" in runbook
     assert "rerun with `--audio-usable yes` only when both short and long outputs\nare usable" in runbook
+    assert "Failing smoke runs must be rerun or recorded with a concrete failure class" in runbook
     assert "SMOKE_VARIANT=onnx" in makefile
     assert "SMOKE_VOICE=/home/vox/.vox/smoke-voices/reference.wav" in makefile
     assert '$(if $(SMOKE_VOICE),--voice "$(SMOKE_VOICE)",)' in makefile
     assert "SMOKE_CPU_ONLY=1" in makefile
     assert "SMOKE_AUDIO_USABLE=yes" in makefile
+    assert "SMOKE_FAILURE_CLASS=dependency" in makefile
     assert '--audio-usable "$(SMOKE_AUDIO_USABLE)"' in makefile
+    assert '--failure-class "$(SMOKE_FAILURE_CLASS)"' in makefile
     assert '--variant "$(SMOKE_VARIANT)"' in makefile
     assert "--cpu-only" in makefile
 
@@ -128,6 +137,7 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert "record_audio_signal()" in script
     assert "validate_audio_signal()" in script
     assert "validate_audio_usability()" in script
+    assert "validate_failure_classification()" in script
     assert "validate_model_resolution()" in script
     assert "record_smoke_result()" in script
     assert 'env MODEL_REF="$MODEL" TEXT_REF="$SHORT_TEXT"' in script
@@ -225,6 +235,7 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert "sha256=$digest" in script
     assert 'validate_copied_artifacts "$short_wav" "$long_wav"' in script
     assert "validate_audio_usability" in script
+    assert "validate_failure_classification" in script
     assert 'FAILED_STEPS+=("Missing or empty copied artifact: $path")' in script
     assert 'one or more smoke steps failed; inspect evidence' in script
     assert "exit 5" in script
