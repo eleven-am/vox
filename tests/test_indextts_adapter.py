@@ -83,6 +83,16 @@ def test_indextts_info_returns_correct_metadata():
     assert info.supports_voice_cloning is True
 
 
+def test_indextts_load_rejects_cpu_before_runtime_install(tmp_path):
+    from vox_indextts.adapter import IndexTTSAdapter
+
+    with patch("vox_indextts.adapter._load_indextts_class") as load_indextts_class:
+        with pytest.raises(RuntimeError, match="requires a Linux x86_64 CUDA runtime"):
+            IndexTTSAdapter().load(str(tmp_path), "cpu")
+
+    load_indextts_class.assert_not_called()
+
+
 def test_indextts_load_uses_config_and_synthesizes_with_reference_audio(tmp_path):
     _install_fake_indextts_modules()
     model_dir = tmp_path / "model"
@@ -93,7 +103,7 @@ def test_indextts_load_uses_config_and_synthesizes_with_reference_audio(tmp_path
         from vox_indextts.adapter import IndexTTSAdapter
 
         adapter = IndexTTSAdapter()
-        adapter.load(str(model_dir), "cpu")
+        adapter.load(str(model_dir), "cuda")
 
         async def run():
             chunks = []
@@ -119,7 +129,7 @@ def test_indextts_requires_reference_audio_or_voice_path(tmp_path):
     from vox_indextts.adapter import IndexTTSAdapter
 
     adapter = IndexTTSAdapter()
-    adapter.load(str(tmp_path), "cpu")
+    adapter.load(str(tmp_path), "cuda")
 
     async def run():
         async for _ in adapter.synthesize("Hello"):
@@ -157,7 +167,7 @@ def test_indextts_bootstraps_runtime_when_missing(tmp_path):
             patch("vox_indextts.adapter.subprocess.run", side_effect=fake_run),
             patch("vox_indextts.adapter._clear_indextts_modules"),
         ):
-            IndexTTSAdapter().load(str(tmp_path), "cpu")
+            IndexTTSAdapter().load(str(tmp_path), "cuda")
 
     assert calls
     assert calls[0][:2] == ["uv", "pip"]

@@ -163,6 +163,16 @@ def _audio_array(audio: Any) -> NDArray[np.float32]:
     return array
 
 
+def _require_cuda_device(device: str) -> None:
+    if device == "cuda":
+        return
+    raise RuntimeError(
+        "IndexTTS requires a Linux x86_64 CUDA runtime. "
+        "CPU, ONNX, and Spark/ARM NVIDIA execution are not production-supported "
+        "by this adapter."
+    )
+
+
 def _candidate_model_configs(model_root: Path) -> list[Path]:
     candidates = [
         model_root / "config.yaml",
@@ -248,6 +258,8 @@ class IndexTTSAdapter(TTSAdapter):
     def load(self, model_path: str, device: str, **kwargs: Any) -> None:
         if self._model is not None:
             return
+
+        _require_cuda_device(device)
 
         kwargs.pop("_source", None)
         self._device = device
