@@ -33,11 +33,16 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
 
     assert "FAILED=0" in script
     assert "record_timed()" in script
+    assert "record_resources()" in script
+    assert "record_artifact_stats()" in script
     assert 'FAILED=1' in script
     assert 'record_timed "Pull Output"' in script
     assert 'record_timed "Short Synthesis Output"' in script
     assert 'record_timed "Long Synthesis Output"' in script
-    assert 'append_section "Resource Snapshot"' in script
+    assert 'record_resources "Resource Snapshot After Pull"' in script
+    assert 'record_resources "Resource Snapshot After Short Synthesis"' in script
+    assert 'record_resources "Resource Snapshot After Long Synthesis"' in script
+    assert 'record_artifact_stats "Copied Artifact Stats"' in script
     assert 'one or more smoke steps failed; inspect evidence' in script
     assert "exit 5" in script
 
@@ -89,9 +94,9 @@ def test_expressive_adapter_smoke_runbook_lists_required_models_and_evidence():
         "short synthesis wall time",
         "long synthesis wall time",
         "generated audio duration",
-        "peak pod memory",
-        "peak GPU memory",
+        "pod memory and GPU memory snapshots after pull, short synthesis, and long synthesis",
         "output WAV artifact",
+        "copied WAV byte size",
         "audio is usable",
         "exact failure output",
     ):

@@ -242,6 +242,28 @@ append_section() {
   } >> "$evidence"
 }
 
+record_resources() {
+  local label="$1"
+  local resources
+  resources="$(kubectl top pod -n "$NS" "$POD" 2>&1 || true; kubectl -n "$NS" exec "$POD" -- nvidia-smi 2>&1 || true)"
+  append_section "$label" "$resources"
+}
+
+record_artifact_stats() {
+  local label="$1"
+  shift
+  local body=""
+  local path
+  for path in "$@"; do
+    if [[ -f "$path" ]]; then
+      body+="$path bytes=$(stat -f%z "$path" 2>/dev/null || stat -c%s "$path" 2>/dev/null || echo unknown)"$'\n'
+    else
+      body+="$path missing"$'\n'
+    fi
+  done
+  append_section "$label" "$body"
+}
+
 run_timed() {
   local label="$1"
   shift
@@ -270,6 +292,7 @@ record_timed "Pull Output" kubectl -n "$NS" exec "$POD" -- \
       vox pull "$MODEL_REF"
     fi
   '
+record_resources "Resource Snapshot After Pull"
 
 model_resolution="$(kubectl -n "$NS" exec "$POD" -- env MODEL_REF="$MODEL" VARIANT_REF="$VARIANT" sh -lc "python - <<'PY'
 import json
@@ -356,17 +379,17 @@ append_section "Adapter Packages" "$packages"
 
 record_timed "Short Synthesis Output" \
   kubectl -n "$NS" exec "$POD" -- sh -lc "vox run '$MODEL' '$SHORT_TEXT' --output /tmp/short.wav"
+record_resources "Resource Snapshot After Short Synthesis"
 record_timed "Long Synthesis Output" \
   kubectl -n "$NS" exec "$POD" -- sh -lc "vox run '$MODEL' '$LONG_TEXT' --output /tmp/long.wav"
+record_resources "Resource Snapshot After Long Synthesis"
 
 durations="$(kubectl -n "$NS" exec "$POD" -- sh -lc 'ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 /tmp/short.wav /tmp/long.wav' 2>&1 || true)"
 append_section "Audio Durations" "$durations"
 
-resources="$(kubectl top pod -n "$NS" "$POD" 2>&1 || true; kubectl -n "$NS" exec "$POD" -- nvidia-smi 2>&1 || true)"
-append_section "Resource Snapshot" "$resources"
-
 kubectl -n "$NS" cp "$POD:/tmp/short.wav" "$short_wav" >/dev/null 2>&1 || true
 kubectl -n "$NS" cp "$POD:/tmp/long.wav" "$long_wav" >/dev/null 2>&1 || true
+record_artifact_stats "Copied Artifact Stats" "$short_wav" "$long_wav"
 
 echo "wrote evidence: $evidence"
 echo "copied artifacts when available:"

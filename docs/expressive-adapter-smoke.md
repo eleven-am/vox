@@ -111,9 +111,9 @@ For each model, capture:
 - short synthesis wall time
 - long synthesis wall time
 - generated audio duration
-- peak pod memory
-- peak GPU memory while loaded and while synthesizing
+- pod memory and GPU memory snapshots after pull, short synthesis, and long synthesis
 - output WAV artifact
+- copied WAV byte size
 - whether the audio is usable
 - exact failure output if any step fails
 
