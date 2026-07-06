@@ -193,7 +193,7 @@ case "$MODEL" in
     expected_adapter_package="vox-cosyvoice==0.1.6"
     ;;
   dia-tts:*)
-    expected_adapter_package="vox-dia==0.2.12"
+    expected_adapter_package="vox-dia==0.2.13"
     ;;
   orpheus-tts:*)
     expected_adapter_package="vox-orpheus==0.1.6"

@@ -168,6 +168,7 @@ def _decode_dia_output(
     model: Any,
     inputs: Any,
     temp_path: Path,
+    audio_prompt_len: Any | None,
     max_new_tokens: int,
     guidance_scale: float,
     temperature: float,
@@ -185,7 +186,10 @@ def _decode_dia_output(
             top_k=top_k,
         )
 
-    decoded = processor.batch_decode(output)
+    if audio_prompt_len is not None:
+        decoded = processor.batch_decode(output, audio_prompt_len=audio_prompt_len)
+    else:
+        decoded = processor.batch_decode(output)
     processor.save_audio(decoded, str(temp_path))
 
     import soundfile as sf
@@ -195,6 +199,44 @@ def _decode_dia_output(
     if audio.ndim > 1:
         audio = audio.mean(axis=1)
     return audio, int(sample_rate)
+
+
+def _dia_text_with_reference(text: str, reference_text: str | None) -> str:
+    target = text.strip()
+    if reference_text is None or not reference_text.strip():
+        return target
+    return f"{reference_text.strip()} {target}".strip()
+
+
+def _dia_inputs(
+    *,
+    processor: Any,
+    text: str,
+    device: str,
+    reference_audio: NDArray[np.float32] | None,
+    reference_text: str | None,
+) -> tuple[Any, Any | None]:
+    if reference_audio is not None:
+        audio = np.asarray(reference_audio, dtype=np.float32).reshape(-1)
+        if audio.size == 0:
+            raise InvalidConfigError("Dia reference_audio is empty")
+        if reference_text is None or not reference_text.strip():
+            raise InvalidConfigError(
+                "Dia voice cloning requires reference_text for the reference_audio prompt."
+            )
+        inputs = processor(
+            text=[_dia_text_with_reference(text, reference_text)],
+            audio=audio,
+            padding=True,
+            return_tensors="pt",
+        )
+        inputs = inputs.to(device) if hasattr(inputs, "to") else inputs
+        prompt_len = processor.get_audio_prompt_len(inputs["decoder_attention_mask"])
+        return inputs, prompt_len
+
+    inputs = processor(text=[text], padding=True, return_tensors="pt")
+    inputs = inputs.to(device) if hasattr(inputs, "to") else inputs
+    return inputs, None
 
 
 class DiaAdapter(TTSAdapter):
@@ -214,7 +256,7 @@ class DiaAdapter(TTSAdapter):
             default_sample_rate=DIA_SAMPLE_RATE,
             supported_formats=(ModelFormat.PYTORCH,),
             supports_streaming=False,
-            supports_voice_cloning=False,
+            supports_voice_cloning=True,
             supported_languages=("en",),
         )
 
@@ -275,10 +317,18 @@ class DiaAdapter(TTSAdapter):
         reference_text: str | None = None,
         params: dict[str, Any] | None = None,
     ) -> None:
-        if reference_audio is not None or reference_text is not None:
+        if reference_audio is not None:
+            audio = np.asarray(reference_audio, dtype=np.float32)
+            if audio.size == 0:
+                raise InvalidConfigError("Dia reference_audio is empty")
+            if reference_text is None or not reference_text.strip():
+                raise InvalidConfigError(
+                    "Dia voice cloning requires reference_text for the reference_audio prompt."
+                )
+            return
+        if reference_text is not None:
             raise InvalidConfigError(
-                "Dia transformers backend does not yet wire the audio-prompt voice cloning path. "
-                "Use the official nari-labs/dia runtime if you need reference-audio cloning."
+                "Dia reference_text can only be used together with reference_audio."
             )
 
     def synthesis_parameters(self) -> tuple[SynthesisParameterInfo, ...]:
@@ -339,17 +389,16 @@ class DiaAdapter(TTSAdapter):
         if not self._loaded or self._model is None or self._processor is None:
             raise RuntimeError("Dia model is not loaded — call load() first")
 
-        if reference_audio is not None or reference_text is not None:
-            raise NotImplementedError(
-                "Dia transformers backend does not yet wire the audio-prompt voice cloning path. "
-                "Use the official nari-labs/dia runtime if you need reference-audio cloning."
-            )
-
         if not text or not text.strip():
             return
 
-        inputs = self._processor(text=[text], padding=True, return_tensors="pt")
-        inputs = inputs.to(self._device) if hasattr(inputs, "to") else inputs
+        inputs, audio_prompt_len = _dia_inputs(
+            processor=self._processor,
+            text=text,
+            device=self._device,
+            reference_audio=reference_audio,
+            reference_text=reference_text,
+        )
         params = dict(params or {})
 
         temp_path: Path | None = None
@@ -362,6 +411,7 @@ class DiaAdapter(TTSAdapter):
                 model=self._model,
                 inputs=inputs,
                 temp_path=temp_path,
+                audio_prompt_len=audio_prompt_len,
                 max_new_tokens=int(params.get("max_new_tokens", _DEFAULT_MAX_NEW_TOKENS)),
                 guidance_scale=float(params.get("guidance_scale", _DEFAULT_GUIDANCE_SCALE)),
                 temperature=float(params.get("temperature", _DEFAULT_TEMPERATURE)),

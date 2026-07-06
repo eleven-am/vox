@@ -48,6 +48,11 @@ the input text, for example:
 [S1] This is Dia speaking. (laughs) [S2] Keep the tags sparse or artifacts can appear.
 ```
 
+The adapter supports Dia's audio-prompt voice cloning path when Vox resolves a
+stored cloned voice into both `reference_audio` and `reference_text`. Dia needs
+the reference transcript for the reference clip; requests with reference audio
+but no reference text are rejected clearly.
+
 The adapter also exposes Dia generation parameters through Vox synthesis
 `params`:
 
@@ -56,7 +61,3 @@ The adapter also exposes Dia generation parameters through Vox synthesis
 - `temperature` (number, default `1.8`, range `0..3`)
 - `top_p` (number, default `0.9`, range `0..1`)
 - `top_k` (integer, default `45`, range `0..200`)
-
-This adapter does not currently wire Dia's audio-prompt voice cloning path.
-Requests with `reference_audio` or `reference_text` are rejected clearly rather
-than silently ignored.

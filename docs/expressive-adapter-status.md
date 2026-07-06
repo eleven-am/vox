@@ -12,7 +12,7 @@ marking any unproven GPU-heavy adapter as production-ready.
 | Model | Adapter package | Packaging/runtime isolation | Runtime metadata | Smoke status |
 | --- | --- | --- | --- | --- |
 | `cosyvoice2-tts:0.5b` | `vox-cosyvoice==0.1.6` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/cosyvoice` | Linux x86_64 CUDA/Torch; registry requires `min_vram_gb=8`; CPU/ONNX and Spark/ARM NVIDIA not production-supported | Previously cluster-smoked successfully, but slow; retain as known baseline |
-| `dia-tts:1.6b` | `vox-dia==0.2.12` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/dia` | Linux x86_64 CUDA/Torch; registry requires `min_vram_gb=12`; CPU/ONNX and Spark/ARM NVIDIA not production-supported | Pending isolated GPU smoke |
+| `dia-tts:1.6b` | `vox-dia==0.2.13` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/dia`; wires Dia audio-prompt voice cloning when Vox supplies both `reference_audio` and `reference_text` | Linux x86_64 CUDA/Torch; registry requires `min_vram_gb=12`; CPU/ONNX and Spark/ARM NVIDIA not production-supported | Pending GPU smoke |
 | `orpheus-tts:medium-3b` | `vox-orpheus==0.1.6` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/orpheus` | Linux x86_64 CUDA/Torch; registry requires `min_vram_gb=10`; CPU and Spark/ARM NVIDIA not packaged | Pending isolated GPU smoke |
 | `indextts-tts:2` | `vox-indextts==0.1.18` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/indextts`; keeps process NumPy stable with the TensorBoard `np.bool8` compatibility alias; installs NumPy-2-compatible runtime wheels; patches upstream `torchaudio.save` to write file outputs through soundfile; purges sibling-runtime TensorBoard/Transformers modules, stale Torch/CUDA runtime packages, and stale NumPy/Matplotlib artifacts before import probes; selects constructor signatures without swallowing internal model-load failures; exposes IndexTTS2 emotion text/vector controls through Vox synthesis params | Linux x86_64 CUDA/Torch; registry requires `min_vram_gb=10`; CPU/ONNX and Spark/ARM NVIDIA not production-supported | Existing `vox` namespace smoke passed with Samantha voice: cold load/generate ~48s, warm generate ~6.8s for ~7.9s audio |
 
@@ -29,7 +29,9 @@ marking any unproven GPU-heavy adapter as production-ready.
   proves the isolated Transformers runtime can be bootstrapped without loading
   processors or model weights. Dia runtime verification also rejects
   Dia-capable Transformers modules loaded from the Vox app environment instead
-  of `$VOX_HOME/runtime/dia`.
+  of `$VOX_HOME/runtime/dia`. Dia clone-path tests prove incomplete clone
+  requests are rejected and complete reference-audio/reference-text requests use
+  Dia's `audio_prompt_len` decode path.
 - Orpheus stale-runtime repair is covered by `tests/test_orpheus_adapter.py`;
   the tests prove a stale `orpheus_tts` module missing `OrpheusModel` and a
   broken runtime import probe are repaired instead of accepted as valid.

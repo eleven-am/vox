@@ -21,7 +21,7 @@ def test_dia_package_metadata_keeps_torch_out_of_adapter_dependencies():
     data = tomllib.loads(pyproject.read_text())
 
     dependencies = data["project"]["dependencies"]
-    assert data["project"]["version"] == "0.2.12"
+    assert data["project"]["version"] == "0.2.13"
     assert not any(dep.startswith("torch") for dep in dependencies)
 
 
@@ -61,7 +61,7 @@ class TestDiaAdapterInfo:
             assert info.default_sample_rate == 44100
             assert ModelFormat.PYTORCH in info.supported_formats
             assert info.supports_streaming is False
-            assert info.supports_voice_cloning is False
+            assert info.supports_voice_cloning is True
             assert info.supported_languages == ("en",)
 
     def test_synthesis_parameters_expose_dia_generation_controls(self):
@@ -369,19 +369,24 @@ class TestDiaAdapterInfo:
             with pytest.raises(RuntimeError, match="not loaded"):
                 asyncio.run(_run())
 
-    def test_preflight_rejects_reference_audio_cloning(self):
+    def test_preflight_requires_reference_text_for_reference_audio(self):
         with patch.dict("sys.modules", {"torch": MagicMock()}):
             from vox_dia.adapter import DiaAdapter
 
             adapter = DiaAdapter()
 
-            with pytest.raises(InvalidConfigError, match="audio-prompt voice cloning path"):
+            with pytest.raises(InvalidConfigError, match="requires reference_text"):
                 adapter.validate_synthesis_request(reference_audio=np.zeros(10, dtype=np.float32))
 
-            with pytest.raises(InvalidConfigError, match="audio-prompt voice cloning path"):
+            with pytest.raises(InvalidConfigError, match="only be used together"):
                 adapter.validate_synthesis_request(reference_text="reference")
 
-    def test_synthesize_rejects_reference_audio_cloning(self):
+            adapter.validate_synthesis_request(
+                reference_audio=np.ones(10, dtype=np.float32),
+                reference_text="[S1] Reference speech.",
+            )
+
+    def test_synthesize_requires_reference_text_for_cloning(self):
         with patch.dict("sys.modules", {"torch": MagicMock()}):
             from vox_dia.adapter import DiaAdapter
 
@@ -397,7 +402,7 @@ class TestDiaAdapterInfo:
                 ):
                     pass
 
-            with pytest.raises(NotImplementedError, match="audio-prompt voice cloning path"):
+            with pytest.raises(InvalidConfigError, match="requires reference_text"):
                 asyncio.run(_run())
 
     def test_synthesize_streams_audio_from_saved_output(self):
@@ -451,6 +456,61 @@ class TestDiaAdapterInfo:
             assert chunks[0].sample_rate == 44100
             assert chunks[0].is_final is False
             assert chunks[1].is_final is True
+
+    def test_synthesize_uses_dia_audio_prompt_for_reference_audio(self):
+        torch = MagicMock()
+        sf = MagicMock()
+        sf.read.return_value = (np.array([0.2, -0.2], dtype=np.float32), 44100)
+
+        with patch.dict("sys.modules", {"torch": torch, "soundfile": sf}):
+            from vox_dia.adapter import DiaAdapter
+
+            inputs = {
+                "decoder_attention_mask": MagicMock(name="decoder_attention_mask"),
+                "input_ids": MagicMock(name="input_ids"),
+            }
+
+            class InputMap(dict):
+                def to(self, device: str):
+                    self["device"] = device
+                    return self
+
+            processor = MagicMock()
+            processor.return_value = InputMap(inputs)
+            processor.get_audio_prompt_len.return_value = 42
+            processor.batch_decode.return_value = ["decoded"]
+            processor.save_audio.return_value = None
+            model = MagicMock()
+            model.generate.return_value = MagicMock()
+
+            adapter = DiaAdapter()
+            adapter._loaded = True
+            adapter._processor = processor
+            adapter._model = model
+            adapter._device = "cuda"
+
+            async def _run() -> list:
+                chunks = []
+                async for chunk in adapter.synthesize(
+                    "[S1] target speech",
+                    reference_audio=np.ones(16, dtype=np.float32),
+                    reference_text="[S1] reference speech.",
+                ):
+                    chunks.append(chunk)
+                return chunks
+
+            chunks = asyncio.run(_run())
+
+            processor.assert_called_once()
+            call_kwargs = processor.call_args.kwargs
+            assert call_kwargs["text"] == ["[S1] reference speech. [S1] target speech"]
+            np.testing.assert_array_equal(call_kwargs["audio"], np.ones(16, dtype=np.float32))
+            assert call_kwargs["padding"] is True
+            assert call_kwargs["return_tensors"] == "pt"
+            processor.get_audio_prompt_len.assert_called_once_with(inputs["decoder_attention_mask"])
+            processor.batch_decode.assert_called_once_with(model.generate.return_value, audio_prompt_len=42)
+            assert chunks[0].sample_rate == 44100
+            assert chunks[-1].is_final is True
 
     def test_estimate_vram(self):
         with patch.dict("sys.modules", {"torch": MagicMock()}):
