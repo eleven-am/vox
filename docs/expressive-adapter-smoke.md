@@ -126,6 +126,7 @@ For each model, capture:
 
 - image tag and digest
 - adapter package version resolved from PyPI
+- target model's expected adapter package baseline from this runbook
 - registry entry used
 - requested variant or `auto`
 - accelerator request (`gpu` or `cpu-only`)
@@ -301,6 +302,7 @@ Voice:
 Image tag:
 Image digest:
 Adapter package:
+Expected adapter package:
 Registry entry:
 Runtime capability snapshot:
 

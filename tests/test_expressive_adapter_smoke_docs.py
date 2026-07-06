@@ -58,6 +58,11 @@ def test_expressive_adapter_smoke_script_refuses_production_and_requires_create(
     assert "allow_incompatible_normalized=" in script
     assert 'FAILED_STEPS+=("VOX_ALLOW_INCOMPATIBLE is enabled in the smoke pod")' in script
     assert "Used VOX_ALLOW_INCOMPATIBLE: $allow_incompatible_evidence" in script
+    assert "expected_adapter_package=" in script
+    assert "validate_adapter_package_baseline()" in script
+    assert "Expected adapter package: $expected_adapter_package" in script
+    assert 'validate_adapter_package_baseline "$packages"' in script
+    assert 'FAILED_STEPS+=("Expected adapter package baseline missing: $expected_adapter_package")' in script
     assert "verifies that it was created\nwith the requested image, PVC, and accelerator mode" in runbook
     assert "switching image tags, PVCs, or switching between GPU and\n`--cpu-only` validation" in runbook
     assert "VOX_ALLOW_INCOMPATIBLE=1" not in script
@@ -254,6 +259,7 @@ def test_expressive_adapter_smoke_runbook_lists_required_models_and_evidence():
     for evidence in (
         "image tag and digest",
         "adapter package version resolved from PyPI",
+        "target model's expected adapter package baseline from this runbook",
         "registry entry used",
         "accelerator request (`gpu` or `cpu-only`)",
         "voice id, voice path, or `none`",
@@ -382,6 +388,7 @@ def test_expressive_adapter_smoke_runbook_requires_durable_evidence_record():
         "Voice:",
         "Image digest:",
         "Adapter package:",
+        "Expected adapter package:",
         "Runtime capability snapshot:",
         "## Voice Reference",
         "Voice value:",
@@ -423,3 +430,12 @@ def test_expressive_adapter_smoke_runbook_requires_durable_evidence_record():
         "Exact error:",
     ):
         assert field in runbook
+
+
+def test_expressive_adapter_smoke_script_uses_current_adapter_package_baselines():
+    script = Path("scripts/expressive-adapter-smoke.sh").read_text()
+    runbook = Path("docs/expressive-adapter-smoke.md").read_text()
+
+    for package_spec in adapter_package_specs():
+        assert f'expected_adapter_package="{package_spec}"' in script
+        assert package_spec in runbook

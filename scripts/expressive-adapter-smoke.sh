@@ -153,6 +153,22 @@ if [[ "$GPU" == "0" ]]; then
   resources_json='{}'
 fi
 
+expected_adapter_package="not-tracked"
+case "$MODEL" in
+  cosyvoice2-tts:*)
+    expected_adapter_package="vox-cosyvoice==0.1.6"
+    ;;
+  dia-tts:*)
+    expected_adapter_package="vox-dia==0.2.12"
+    ;;
+  orpheus-tts:*)
+    expected_adapter_package="vox-orpheus==0.1.6"
+    ;;
+  indextts-tts:*)
+    expected_adapter_package="vox-indextts==0.1.14"
+    ;;
+esac
+
 if ! kubectl get namespace "$NS" >/dev/null 2>&1; then
   if [[ "$CREATE" != "1" ]]; then
     echo "namespace $NS does not exist; rerun with --create after approving disposable resources" >&2
@@ -276,6 +292,7 @@ Voice: ${VOICE:-none}
 Image tag: $IMAGE
 Image digest: $image_id
 Adapter package:
+Expected adapter package: $expected_adapter_package
 Registry entry:
 Runtime capability snapshot:
 $capabilities
@@ -655,6 +672,17 @@ validate_model_resolution() {
   fi
 }
 
+validate_adapter_package_baseline() {
+  local body="$1"
+  if [[ "$expected_adapter_package" == "not-tracked" ]]; then
+    return
+  fi
+  if ! grep -qxF "$expected_adapter_package" <<< "$body"; then
+    FAILED=1
+    FAILED_STEPS+=("Expected adapter package baseline missing: $expected_adapter_package")
+  fi
+}
+
 validate_timed_output() {
   local label="$1"
   local output="$2"
@@ -835,6 +863,7 @@ for package in ('vox-cosyvoice', 'vox-dia', 'vox-orpheus', 'vox-indextts'):
         print(f'{package}: not installed ({exc})')
 PY")"
 append_section "Adapter Packages" "$packages"
+validate_adapter_package_baseline "$packages"
 
 record_timed "Short Synthesis Output" \
   kubectl -n "$NS" exec "$POD" -- \
