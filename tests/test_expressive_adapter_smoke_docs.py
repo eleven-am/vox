@@ -49,6 +49,10 @@ def test_expressive_adapter_smoke_script_refuses_production_and_requires_create(
     assert "already exists with a GPU limit, but this run requested --cpu-only" in script
     assert "already exists without a GPU limit, but this run requested GPU validation" in script
     assert "exit 6" in script
+    assert "allow_incompatible=" in script
+    assert "allow_incompatible_normalized=" in script
+    assert 'FAILED_STEPS+=("VOX_ALLOW_INCOMPATIBLE is enabled in the smoke pod")' in script
+    assert "Used VOX_ALLOW_INCOMPATIBLE: $allow_incompatible_evidence" in script
     assert "verifies that it was created\nwith the requested image, PVC, and accelerator mode" in runbook
     assert "switching image tags, PVCs, or switching between GPU and\n`--cpu-only` validation" in runbook
     assert "VOX_ALLOW_INCOMPATIBLE=1" not in script

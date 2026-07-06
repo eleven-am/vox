@@ -220,6 +220,16 @@ from vox.core.runtime import detect_runtime_capabilities
 print(detect_runtime_capabilities())
 PY')"
 
+allow_incompatible="$(kubectl -n "$NS" exec "$POD" -- sh -lc 'printenv VOX_ALLOW_INCOMPATIBLE || true' 2>/dev/null || true)"
+allow_incompatible_normalized="$(printf '%s' "$allow_incompatible" | tr '[:upper:]' '[:lower:]')"
+case "$allow_incompatible_normalized" in
+  1|true|yes|on)
+    FAILED=1
+    FAILED_STEPS+=("VOX_ALLOW_INCOMPATIBLE is enabled in the smoke pod")
+    ;;
+esac
+allow_incompatible_evidence="${allow_incompatible:-no}"
+
 voice_path_check="not-applicable"
 voice_path_exists="not-applicable"
 if [[ -n "$VOICE" ]]; then
@@ -280,7 +290,7 @@ Command: $pull_command
 Exit status:
 Duration:
 Output summary:
-Used VOX_ALLOW_INCOMPATIBLE: no
+Used VOX_ALLOW_INCOMPATIBLE: $allow_incompatible_evidence
 
 ## Short Synthesis
 
