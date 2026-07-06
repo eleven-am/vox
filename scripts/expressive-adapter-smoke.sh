@@ -10,6 +10,7 @@ Required:
   --model MODEL              Model reference to smoke, e.g. dia-tts:1.6b
 
 Options:
+  --variant VARIANT          Force a pull-time variant such as onnx or cuda
   --create                   Create the disposable namespace/PVC if missing
   --namespace NAME           Disposable namespace (default: vox-adapter-smoke)
   --pvc NAME                 Disposable PVC (default: vox-adapter-smoke-data)
@@ -27,6 +28,7 @@ EOF
 }
 
 MODEL=""
+VARIANT=""
 CREATE=0
 NS="${VOX_SMOKE_NS:-vox-adapter-smoke}"
 PVC="${VOX_SMOKE_PVC:-vox-adapter-smoke-data}"
@@ -42,6 +44,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --model)
       MODEL="${2:-}"
+      shift 2
+      ;;
+    --variant)
+      VARIANT="${2:-}"
       shift 2
       ;;
     --create)
@@ -100,10 +106,17 @@ if [[ "$NS" == "vox" || "$PVC" == "vox-data" ]]; then
 fi
 
 safe_model="${MODEL//[:\/]/-}"
+if [[ -n "$VARIANT" ]]; then
+  safe_model="${safe_model}-${VARIANT//[:\/]/-}"
+fi
 mkdir -p "$OUTPUT_DIR"
 evidence="$OUTPUT_DIR/${safe_model}-evidence.md"
 short_wav="$OUTPUT_DIR/${safe_model}-short.wav"
 long_wav="$OUTPUT_DIR/${safe_model}-long.wav"
+pull_command="vox pull $MODEL"
+if [[ -n "$VARIANT" ]]; then
+  pull_command="$pull_command --variant $VARIANT"
+fi
 
 if ! kubectl get namespace "$NS" >/dev/null 2>&1; then
   if [[ "$CREATE" != "1" ]]; then
@@ -166,6 +179,7 @@ cat > "$evidence" <<EOF
 # Expressive Adapter Smoke Evidence
 
 Model: $MODEL
+Variant: ${VARIANT:-auto}
 Image tag: $IMAGE
 Image digest: $image_id
 Adapter package:
@@ -175,7 +189,7 @@ $capabilities
 
 ## Pull
 
-Command: vox pull $MODEL
+Command: $pull_command
 Exit status:
 Duration:
 Output summary:
@@ -248,9 +262,16 @@ record_timed() {
   fi
 }
 
-record_timed "Pull Output" kubectl -n "$NS" exec "$POD" -- sh -lc "vox pull '$MODEL'"
+record_timed "Pull Output" kubectl -n "$NS" exec "$POD" -- \
+  env MODEL_REF="$MODEL" VARIANT_REF="$VARIANT" sh -lc '
+    if [ -n "$VARIANT_REF" ]; then
+      vox pull "$MODEL_REF" --variant "$VARIANT_REF"
+    else
+      vox pull "$MODEL_REF"
+    fi
+  '
 
-model_resolution="$(kubectl -n "$NS" exec "$POD" -- sh -lc "MODEL_REF='$MODEL' python - <<'PY'
+model_resolution="$(kubectl -n "$NS" exec "$POD" -- env MODEL_REF="$MODEL" VARIANT_REF="$VARIANT" sh -lc "python - <<'PY'
 import json
 import os
 from pathlib import Path
@@ -265,8 +286,11 @@ from vox.operations.models import (
 
 store = BlobStore(Path(os.environ.get('VOX_HOME', str(Path.home() / '.vox'))))
 registry = ModelRegistry(store)
-request = ModelReferenceRequest(name=os.environ['MODEL_REF'])
-payload = {'requested': request.name}
+request = ModelReferenceRequest(
+    name=os.environ['MODEL_REF'],
+    variant=os.environ.get('VARIANT_REF') or None,
+)
+payload = {'requested': request.name, 'requested_variant': request.variant}
 
 try:
     resolved = resolve_model_reference(registry=registry, request=request)

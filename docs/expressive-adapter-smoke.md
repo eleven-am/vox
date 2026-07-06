@@ -72,10 +72,18 @@ The scripted path is:
 bash scripts/expressive-adapter-smoke.sh --model dia-tts:1.6b
 ```
 
+To force a pull-time hardware/backend variant for models that publish multiple
+variants, pass the same variant flag that `vox pull` accepts:
+
+```bash
+bash scripts/expressive-adapter-smoke.sh --model chatterbox-tts-turbo:0.1.7 --variant onnx
+```
+
 The equivalent Makefile entrypoint is:
 
 ```bash
 make smoke-expressive MODEL=dia-tts:1.6b
+make smoke-expressive MODEL=chatterbox-tts-turbo:0.1.7 SMOKE_VARIANT=onnx
 ```
 
 The script refuses the production `vox` namespace and `vox-data` PVC. It also
@@ -97,6 +105,7 @@ For each model, capture:
 - image tag and digest
 - adapter package version resolved from PyPI
 - registry entry used
+- requested variant or `auto`
 - runtime capability snapshot from the pod
 - `vox pull <model>` output
 - short synthesis wall time

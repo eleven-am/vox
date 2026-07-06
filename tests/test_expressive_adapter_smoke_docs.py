@@ -6,7 +6,12 @@ from pathlib import Path
 def test_expressive_adapter_smoke_script_refuses_production_and_requires_create():
     script = Path("scripts/expressive-adapter-smoke.sh").read_text()
     runbook = Path("docs/expressive-adapter-smoke.md").read_text()
+    makefile = Path("Makefile").read_text()
 
+    assert "--variant VARIANT" in script
+    assert "VARIANT=\"\"" in script
+    assert "pull_command=\"vox pull $MODEL\"" in script
+    assert 'vox pull "$MODEL_REF" --variant "$VARIANT_REF"' in script
     assert '[[ "$NS" == "vox" || "$PVC" == "vox-data" ]]' in script
     assert "refusing to use production Vox namespace/PVC" in script
     assert "namespace $NS does not exist; rerun with --create" in script
@@ -14,9 +19,13 @@ def test_expressive_adapter_smoke_script_refuses_production_and_requires_create(
     assert "pod $NS/$POD does not exist; rerun with --create" in script
     assert "VOX_ALLOW_INCOMPATIBLE=1" not in script
     assert "scripts/expressive-adapter-smoke.sh --model dia-tts:1.6b" in runbook
+    assert "scripts/expressive-adapter-smoke.sh --model chatterbox-tts-turbo:0.1.7 --variant onnx" in runbook
     assert "make smoke-expressive MODEL=dia-tts:1.6b" in runbook
+    assert "make smoke-expressive MODEL=chatterbox-tts-turbo:0.1.7 SMOKE_VARIANT=onnx" in runbook
     assert "make smoke-expressive MODEL=dia-tts:1.6b SMOKE_CREATE=1" in runbook
     assert "unless `--create` is\npassed explicitly after approval" in runbook
+    assert "SMOKE_VARIANT=onnx" in makefile
+    assert '--variant "$(SMOKE_VARIANT)"' in makefile
 
 
 def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures():
@@ -40,6 +49,8 @@ def test_expressive_adapter_smoke_script_records_model_resolution_evidence():
     assert "resolve_model_reference" in script
     assert "resolve_catalog_entry" in script
     assert "'registry_entry'" in script
+    assert "requested_variant" in script
+    assert "variant=os.environ.get('VARIANT_REF') or None" in script
     assert "'resolved_variant'" in script
     assert "'preferred_backend'" in script
     assert "'manifest_path'" in script
