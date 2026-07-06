@@ -23,7 +23,7 @@ def test_indextts_package_metadata_is_lightweight():
     data = tomllib.loads(pyproject.read_text())
 
     dependencies = data["project"]["dependencies"]
-    assert data["project"]["version"] == "0.1.14"
+    assert data["project"]["version"] == "0.1.18"
     assert not any(dep.startswith(("torch", "torchaudio", "indextts")) for dep in dependencies)
 
 
@@ -289,8 +289,8 @@ def test_indextts_bootstraps_runtime_when_missing(tmp_path):
     dependency_commands = " ".join(" ".join(call) for call in calls[1:])
     assert "torch" not in dependency_commands
     assert "torchaudio" not in dependency_commands
-    assert "numpy>=1.26,<2" in calls[1]
-    assert "matplotlib>=3.9,<3.10" in calls[1]
+    assert "numpy>=2.0,<2.4" in calls[1]
+    assert "matplotlib>=3.10,<3.11" in calls[1]
     assert "protobuf==3.19.6" in calls[1]
     assert "transformers==4.52.1" in calls[1]
 
@@ -324,7 +324,7 @@ def test_indextts_prepare_runtime_bootstraps_without_loading_model(tmp_path):
     assert "git+https://github.com/index-tts/index-tts.git" in calls[0]
     assert "--no-deps" in calls[0]
     assert "--upgrade" not in calls[0]
-    assert "numpy>=1.26,<2" in calls[1]
+    assert "numpy>=2.0,<2.4" in calls[1]
     assert "protobuf==3.19.6" in calls[1]
     assert "transformers==4.52.1" in calls[1]
 
@@ -396,23 +396,29 @@ def test_indextts_repairs_runtime_when_import_probe_is_broken(tmp_path):
 
 
 def test_indextts_clears_sibling_runtime_transformers_before_probe(tmp_path):
+    stale_audiotools = ModuleType("audiotools")
     stale_transformers = ModuleType("transformers")
     stale_cache_utils = ModuleType("transformers.cache_utils")
     stale_google = ModuleType("google")
     stale_protobuf = ModuleType("google.protobuf")
     stale_tensorboard = ModuleType("tensorboard")
+    stale_torch_utils_tensorboard = ModuleType("torch.utils.tensorboard")
+    sys.modules["audiotools"] = stale_audiotools
     sys.modules["transformers"] = stale_transformers
     sys.modules["transformers.cache_utils"] = stale_cache_utils
     sys.modules["google"] = stale_google
     sys.modules["google.protobuf"] = stale_protobuf
     sys.modules["tensorboard"] = stale_tensorboard
+    sys.modules["torch.utils.tensorboard"] = stale_torch_utils_tensorboard
 
     def fake_probe():
+        assert "audiotools" not in sys.modules
         assert "transformers" not in sys.modules
         assert "transformers.cache_utils" not in sys.modules
         assert "google" not in sys.modules
         assert "google.protobuf" not in sys.modules
         assert "tensorboard" not in sys.modules
+        assert "torch.utils.tensorboard" not in sys.modules
         return _FakeIndexTTS2
 
     with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
@@ -420,6 +426,38 @@ def test_indextts_clears_sibling_runtime_transformers_before_probe(tmp_path):
 
         with patch("vox_indextts.adapter._indextts_class_from_runtime", side_effect=fake_probe):
             assert _load_indextts_class() is _FakeIndexTTS2
+
+
+def test_indextts_numpy_compatibility_adds_bool8_alias(monkeypatch):
+    from vox_indextts import adapter
+
+    monkeypatch.delattr(adapter.np, "bool8", raising=False)
+
+    adapter._apply_numpy_compatibility()
+
+    assert adapter.np.bool8 is adapter.np.bool_
+
+
+def test_indextts_patches_torchaudio_save_to_soundfile(tmp_path, monkeypatch):
+    fake_torchaudio = ModuleType("torchaudio")
+
+    def broken_save(*args, **kwargs):
+        raise ImportError("torchcodec missing")
+
+    fake_torchaudio.save = broken_save
+    monkeypatch.setitem(sys.modules, "torchaudio", fake_torchaudio)
+
+    from vox_indextts import adapter
+
+    adapter._patch_torchaudio_save()
+
+    output = tmp_path / "out.wav"
+    fake_torchaudio.save(output, np.array([[0, 100, -100]], dtype=np.int16), 24_000)
+
+    audio, sample_rate = sf.read(output, dtype="int16", always_2d=False)
+    assert sample_rate == 24_000
+    assert audio.shape == (3,)
+    assert audio.tolist() == [0, 100, -100]
 
 
 def test_indextts_removes_forbidden_torch_runtime_packages_before_probe(tmp_path):
@@ -461,6 +499,9 @@ def test_indextts_removes_stale_matplotlib_before_runtime_repair(tmp_path):
         "matplotlib-3.8.2.dist-info",
         "matplotlib-3.9.4.dist-info",
         "matplotlib.libs",
+        "numpy",
+        "numpy-1.26.4.dist-info",
+        "numpy.libs",
     ):
         path = runtime / relative
         path.mkdir(parents=True)
@@ -491,6 +532,9 @@ def test_indextts_removes_stale_matplotlib_before_runtime_repair(tmp_path):
     assert not (runtime / "matplotlib-3.8.2.dist-info").exists()
     assert not (runtime / "matplotlib-3.9.4.dist-info").exists()
     assert not (runtime / "matplotlib.libs").exists()
+    assert not (runtime / "numpy").exists()
+    assert not (runtime / "numpy-1.26.4.dist-info").exists()
+    assert not (runtime / "numpy.libs").exists()
 
 
 def test_indextts_runtime_probe_rejects_app_env_indextts_module(tmp_path):

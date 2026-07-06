@@ -54,11 +54,11 @@ INDEXTTS_RUNTIME_DEPS = (
     "json5==0.10.0",
     "keras==2.9.0",
     "librosa==0.10.2.post1",
-    "matplotlib>=3.9,<3.10",
+    "matplotlib>=3.10,<3.11",
     "modelscope==1.27.0",
     "munch==4.0.0",
     "numba>=0.61,<0.63",
-    "numpy>=1.26,<2",
+    "numpy>=2.0,<2.4",
     "omegaconf>=2.3.0,<3",
     "opencv-python==4.9.0.80",
     "pandas==2.3.2",
@@ -91,6 +91,9 @@ _STALE_RUNTIME_REPAIR_GLOBS = (
     "matplotlib",
     "matplotlib-*.dist-info",
     "matplotlib.libs",
+    "numpy",
+    "numpy-*.dist-info",
+    "numpy.libs",
 )
 
 
@@ -102,7 +105,17 @@ def _ensure_runtime_path() -> str:
     runtime_dir = _runtime_root()
     runtime_dir.mkdir(parents=True, exist_ok=True)
     write_app_fallback_path(runtime_dir)
-    return activate_runtime_path(runtime_dir, root=runtime_dir.parent)
+    runtime_path = activate_runtime_path(runtime_dir, root=runtime_dir.parent)
+    _apply_numpy_compatibility()
+    return runtime_path
+
+
+def _apply_numpy_compatibility() -> None:
+    # TensorBoard 2.9 still references np.bool8. NumPy 2 removed that alias,
+    # and reloading a different target-runtime NumPy inside the server process
+    # can leave mixed submodules behind. Keep the active NumPy stable instead.
+    if not hasattr(np, "bool8"):
+        np.bool8 = np.bool_
 
 
 def _remove_forbidden_runtime_packages() -> None:
@@ -168,11 +181,13 @@ def _install_indextts_runtime() -> None:
 def _clear_indextts_modules() -> None:
     purge_runtime_modules((
         "indextts",
+        "audiotools",
         "transformers",
         "tokenizers",
         "accelerate",
         "modelscope",
         "tensorboard",
+        "torch.utils.tensorboard",
         "google",
     ))
 
@@ -282,6 +297,42 @@ def _audio_array(audio: Any) -> NDArray[np.float32]:
     if array.size == 0:
         raise RuntimeError("IndexTTS produced no audio.")
     return array
+
+
+def _audio_array_for_save(audio: Any) -> NDArray[Any]:
+    if hasattr(audio, "detach"):
+        audio = audio.detach()
+    if hasattr(audio, "cpu"):
+        audio = audio.cpu()
+    if hasattr(audio, "numpy"):
+        audio = audio.numpy()
+    array = np.asarray(audio)
+    if array.ndim == 2 and array.shape[0] <= 8:
+        array = array.T
+    return array
+
+
+def _patch_torchaudio_save() -> None:
+    try:
+        torchaudio = importlib.import_module("torchaudio")
+    except ModuleNotFoundError:
+        return
+    current_save = torchaudio.save
+    if getattr(current_save, "_vox_indextts_soundfile_patch", False):
+        return
+
+    original_save = current_save
+
+    def save_with_soundfile(uri: Any, src: Any, sample_rate: int, *args: Any, **kwargs: Any) -> Any:
+        if isinstance(uri, str | Path):
+            array = _audio_array_for_save(src)
+            subtype = "PCM_16" if array.dtype == np.int16 else None
+            sf.write(str(uri), array, int(sample_rate), subtype=subtype)
+            return None
+        return original_save(uri, src, sample_rate, *args, **kwargs)
+
+    save_with_soundfile._vox_indextts_soundfile_patch = True  # type: ignore[attr-defined]
+    torchaudio.save = save_with_soundfile
 
 
 def _require_cuda_device(device: str) -> None:
@@ -400,6 +451,7 @@ def _infer_to_file(
     *,
     params: dict[str, Any] | None = None,
 ) -> Any:
+    _patch_torchaudio_save()
     inference_kwargs = _inference_kwargs_from_params(params)
     attempts: list[Callable[[], Any]] = [
         lambda: model.infer(

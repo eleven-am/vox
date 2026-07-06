@@ -199,7 +199,7 @@ case "$MODEL" in
     expected_adapter_package="vox-orpheus==0.1.6"
     ;;
   indextts-tts:*)
-    expected_adapter_package="vox-indextts==0.1.14"
+    expected_adapter_package="vox-indextts==0.1.18"
     ;;
 esac
 
