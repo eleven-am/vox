@@ -77,6 +77,7 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert "record_timed()" in script
     assert "record_resources()" in script
     assert "record_artifact_stats()" in script
+    assert "record_voice_reference()" in script
     assert "record_audio_durations()" in script
     assert 'env MODEL_REF="$MODEL" TEXT_REF="$SHORT_TEXT"' in script
     assert 'env MODEL_REF="$MODEL" TEXT_REF="$LONG_TEXT"' in script
@@ -94,6 +95,10 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert 'record_resources "Resource Snapshot After Pull"' in script
     assert 'record_resources "Resource Snapshot After Short Synthesis"' in script
     assert 'record_resources "Resource Snapshot After Long Synthesis"' in script
+    assert "record_voice_reference" in script
+    assert 'kubectl -n "$NS" exec "$POD" -- test -f "$VOICE"' in script
+    assert "path_check=file" in script
+    assert "path_check=voice-id" in script
     assert "record_audio_durations" in script
     assert "short:/tmp/short.wav long:/tmp/long.wav" in script
     assert "printf \"%s=%s\\n\"" in script
@@ -148,6 +153,7 @@ def test_expressive_adapter_smoke_runbook_lists_required_models_and_evidence():
         "registry entry used",
         "accelerator request (`gpu` or `cpu-only`)",
         "voice id, voice path, or `none`",
+        "voice path existence inside the disposable pod when `--voice` is a file path",
         "runtime capability snapshot from the pod",
         "`vox pull <model>` output",
         "short synthesis wall time",
@@ -186,6 +192,7 @@ def test_expressive_adapter_smoke_runbook_preserves_runtime_and_artifact_boundar
         "Runtime dependencies are installed under `$VOX_HOME/runtime/<adapter>`",
         "Model files are stored in the model store, not in the adapter package or base image",
         "reference WAV copied into the disposable\nPVC or mounted as test-only data, then pass it with `--voice`",
+        "fails the run if that path does not exist\ninside the disposable pod",
         "The adapter is expected to reject\nrequests without reference audio or a voice-path prompt",
         "Do not delete or modify production voice data under `$VOX_HOME/voices`",
         "Failures, if any, are classified as Vox, adapter, dependency, upstream, or hardware",
@@ -263,6 +270,10 @@ def test_expressive_adapter_smoke_runbook_requires_durable_evidence_record():
         "Image digest:",
         "Adapter package:",
         "Runtime capability snapshot:",
+        "## Voice Reference",
+        "Voice value:",
+        "Voice path check:",
+        "Voice path exists:",
         "## Model Resolution",
         "Resolved variant:",
         "Preferred backend:",

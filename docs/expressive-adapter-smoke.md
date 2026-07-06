@@ -130,6 +130,7 @@ For each model, capture:
 - requested variant or `auto`
 - accelerator request (`gpu` or `cpu-only`)
 - voice id, voice path, or `none`
+- voice path existence inside the disposable pod when `--voice` is a file path
 - runtime capability snapshot from the pod
 - `vox pull <model>` output
 - short synthesis wall time
@@ -144,6 +145,10 @@ For each model, capture:
 Use a short text around one sentence and a longer text around one paragraph.
 For cloning adapters, provide a small reference WAV copied into the disposable
 PVC or mounted as test-only data, then pass it with `--voice`.
+When `--voice` looks like a file path, the scripted smoke runner records a
+voice-reference evidence section and fails the run if that path does not exist
+inside the disposable pod. Voice IDs are recorded without a file-existence
+check.
 
 ## Commands
 
@@ -291,6 +296,12 @@ Image digest:
 Adapter package:
 Registry entry:
 Runtime capability snapshot:
+
+## Voice Reference
+
+Voice value:
+Voice path check:
+Voice path exists:
 
 ## Model Resolution
 
