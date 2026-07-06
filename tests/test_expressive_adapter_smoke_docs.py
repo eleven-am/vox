@@ -11,6 +11,9 @@ def test_expressive_adapter_smoke_runbook_keeps_production_safety_boundary():
     assert "VOX_SMOKE_PVC=vox-adapter-smoke-data" in runbook
     assert "separate namespace and disposable PVC" in runbook
     assert "Do not mutate, clean, reinstall, restart, or scale" in runbook
+    assert "kubectl get namespace \"$VOX_SMOKE_NS\"" in runbook
+    assert "kubectl -n \"$VOX_SMOKE_NS\" get pvc \"$VOX_SMOKE_PVC\"" in runbook
+    assert "Never\nsubstitute `vox`, `vox-data`, or any production pod/PVC" in runbook
 
 
 def test_expressive_adapter_smoke_runbook_lists_required_models_and_evidence():

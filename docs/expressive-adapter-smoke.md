@@ -52,6 +52,20 @@ If the cluster does not already have an isolated namespace/PVC, stop and get
 approval before creating one. Do not mutate, clean, reinstall, restart, or scale
 the live deployment as part of adapter smoke testing.
 
+Before running any smoke command, do a read-only preflight against the exact
+disposable names:
+
+```bash
+kubectl get namespace "$VOX_SMOKE_NS"
+kubectl -n "$VOX_SMOKE_NS" get pvc "$VOX_SMOKE_PVC"
+kubectl -n "$VOX_SMOKE_NS" get pod vox-adapter-smoke
+```
+
+If the namespace or PVC is missing, stop and ask before creating it. Never
+substitute `vox`, `vox-data`, or any production pod/PVC to "just test quickly".
+The preflight is allowed to fail with `NotFound`; that means the isolated smoke
+environment does not exist yet.
+
 ## Required Evidence
 
 For each model, capture:
