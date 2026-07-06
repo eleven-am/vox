@@ -43,7 +43,7 @@ def test_expressive_adapter_smoke_runbook_pins_published_adapter_baseline():
     for package in (
         "vox-cosyvoice==0.1.4",
         "vox-dia==0.2.11",
-        "vox-orpheus==0.1.4",
+        "vox-orpheus==0.1.5",
         "vox-indextts==0.1.4",
     ):
         assert package in runbook
@@ -92,7 +92,7 @@ def test_expressive_adapter_status_names_local_regression_evidence():
         "`tests/test_dia_adapter.py`; the test\n  proves the isolated Transformers runtime",
         "without loading\n  processors or model weights",
         "`tests/test_orpheus_adapter.py`",
-        "a stale `orpheus_tts` module missing `OrpheusModel` is\n  repaired",
+        "a stale `orpheus_tts` module missing `OrpheusModel` and a\n  broken runtime import probe are repaired",
         "`tests/test_indextts_adapter.py`",
         "a stale `indextts.infer_v2` module missing `IndexTTS2` is\n  repaired",
     ):

@@ -21,7 +21,7 @@ def test_orpheus_package_metadata_is_lightweight():
     data = tomllib.loads(pyproject.read_text())
 
     dependencies = data["project"]["dependencies"]
-    assert data["project"]["version"] == "0.1.4"
+    assert data["project"]["version"] == "0.1.5"
     assert not any(dep.startswith(("torch", "vllm", "orpheus-speech", "snac")) for dep in dependencies)
 
 
@@ -213,6 +213,41 @@ def test_orpheus_repairs_runtime_when_symbol_is_missing(tmp_path):
 
         with (
             patch("vox_orpheus.adapter.subprocess.run", side_effect=fake_run),
+            patch("vox_orpheus.adapter._clear_orpheus_modules"),
+        ):
+            OrpheusAdapter().prepare_runtime()
+
+    assert calls
+    assert _FakeOrpheusModel.instances == []
+    assert "--target" in calls[0]
+    assert str(tmp_path / "vox-home" / "runtime" / "orpheus") in calls[0]
+
+
+def test_orpheus_repairs_runtime_when_import_probe_is_broken(tmp_path):
+    calls: list[list[str]] = []
+    _FakeOrpheusModel.instances.clear()
+
+    def fake_run(cmd, timeout):
+        calls.append(cmd)
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        return result
+
+    probe_results = [ValueError("broken runtime metadata"), _FakeOrpheusModel]
+
+    def fake_probe():
+        result = probe_results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        from vox_orpheus.adapter import OrpheusAdapter
+
+        with (
+            patch("vox_orpheus.adapter._run_install_command", side_effect=fake_run),
+            patch("vox_orpheus.adapter._orpheus_model_class_from_runtime", side_effect=fake_probe),
             patch("vox_orpheus.adapter._clear_orpheus_modules"),
         ):
             OrpheusAdapter().prepare_runtime()

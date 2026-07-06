@@ -27,6 +27,7 @@ ORPHEUS_SAMPLE_RATE = 24_000
 ORPHEUS_RUNTIME_DEPS = ("orpheus-speech==0.1.0",)
 DEFAULT_VOICE = "tara"
 ORPHEUS_VOICES = ("tara", "leah", "jess", "leo", "dan", "mia", "zoe", "zac")
+_RUNTIME_PROBE_ERRORS = (ImportError, ModuleNotFoundError, AttributeError, ValueError)
 
 
 def _runtime_root():
@@ -69,14 +70,19 @@ def _load_orpheus_model_class() -> type[Any]:
     _ensure_runtime_path()
     try:
         cls = _orpheus_model_class_from_runtime()
-    except ImportError:
+    except _RUNTIME_PROBE_ERRORS:
         cls = None
     if cls is not None:
         return cls
 
     _install_orpheus_runtime()
     _clear_orpheus_modules()
-    cls = _orpheus_model_class_from_runtime()
+    try:
+        cls = _orpheus_model_class_from_runtime()
+    except _RUNTIME_PROBE_ERRORS as exc:
+        raise RuntimeError(
+            "Orpheus runtime is installed, but orpheus_tts.OrpheusModel could not be imported."
+        ) from exc
     if cls is not None:
         return cls
 

@@ -13,7 +13,7 @@ marking any unproven GPU-heavy adapter as production-ready.
 | --- | --- | --- | --- | --- |
 | `cosyvoice2-tts:0.5b` | `vox-cosyvoice==0.1.4` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/cosyvoice` | Linux x86_64 CUDA/Torch; CPU/ONNX and Spark/ARM NVIDIA not production-supported | Previously cluster-smoked successfully, but slow; retain as known baseline |
 | `dia-tts:1.6b` | `vox-dia==0.2.11` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/dia` | Linux x86_64 CUDA/Torch; CPU/ONNX and Spark/ARM NVIDIA not production-supported | Pending isolated GPU smoke |
-| `orpheus-tts:medium-3b` | `vox-orpheus==0.1.4` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/orpheus` | Linux x86_64 CUDA/Torch; CPU and Spark/ARM NVIDIA not packaged | Pending isolated GPU smoke |
+| `orpheus-tts:medium-3b` | `vox-orpheus==0.1.5` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/orpheus` | Linux x86_64 CUDA/Torch; CPU and Spark/ARM NVIDIA not packaged | Pending isolated GPU smoke |
 | `indextts-tts:2` | `vox-indextts==0.1.4` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/indextts` | Linux x86_64 CUDA/Torch; CPU/ONNX and Spark/ARM NVIDIA not production-supported | Pending isolated GPU smoke |
 
 ## Evidence Already In The Repo
@@ -27,8 +27,8 @@ marking any unproven GPU-heavy adapter as production-ready.
   proves the isolated Transformers runtime can be bootstrapped without loading
   processors or model weights.
 - Orpheus stale-runtime repair is covered by `tests/test_orpheus_adapter.py`;
-  the test proves a stale `orpheus_tts` module missing `OrpheusModel` is
-  repaired instead of accepted as valid.
+  the tests prove a stale `orpheus_tts` module missing `OrpheusModel` and a
+  broken runtime import probe are repaired instead of accepted as valid.
 - IndexTTS stale-runtime repair is covered by `tests/test_indextts_adapter.py`;
   the test proves a stale `indextts.infer_v2` module missing `IndexTTS2` is
   repaired instead of accepted as valid.
