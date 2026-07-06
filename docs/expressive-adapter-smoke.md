@@ -152,6 +152,8 @@ When `--voice` looks like a file path, the scripted smoke runner records a
 voice-reference evidence section and fails the run if that path does not exist
 inside the disposable pod. Voice IDs are recorded without a file-existence
 check.
+`indextts-tts:*` smoke validation requires `--voice` and fails before touching
+Kubernetes resources when no disposable reference WAV or voice id is provided.
 
 ## Commands
 

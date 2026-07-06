@@ -28,9 +28,14 @@ def test_expressive_adapter_smoke_script_refuses_production_and_requires_create(
 
     assert "--variant VARIANT" in script
     assert "--voice VOICE" in script
+    assert "--voice VOICE              Voice id or WAV path to pass to vox run; required for indextts-tts" in script
     assert "--cpu-only" in script
     assert "VARIANT=\"\"" in script
     assert "VOICE=\"\"" in script
+    assert "requires_voice_reference()" in script
+    assert "indextts-tts:*)" in script
+    assert 'requires_voice_reference "$MODEL" && [[ -z "$VOICE" ]]' in script
+    assert "requires --voice with a disposable reference WAV or voice id" in script
     assert "GPU=\"${VOX_SMOKE_GPU:-1}\"" in script
     assert 'resources_json=\'{"limits": {"nvidia.com/gpu": "1"}}\'' in script
     assert "Accelerator request: $accelerator_request" in script
@@ -65,6 +70,8 @@ def test_expressive_adapter_smoke_script_refuses_production_and_requires_create(
     assert "make smoke-expressive MODEL=indextts-tts:2 SMOKE_VOICE=/home/vox/.vox/smoke-voices/reference.wav" in runbook
     assert "make smoke-expressive MODEL=dia-tts:1.6b SMOKE_CREATE=1" in runbook
     assert "unless `--create` is\npassed explicitly after approval" in runbook
+    assert "`indextts-tts:*` smoke validation requires `--voice`" in runbook
+    assert "fails before touching\nKubernetes resources" in runbook
     assert "SMOKE_VARIANT=onnx" in makefile
     assert "SMOKE_VOICE=/home/vox/.vox/smoke-voices/reference.wav" in makefile
     assert '$(if $(SMOKE_VOICE),--voice "$(SMOKE_VOICE)",)' in makefile

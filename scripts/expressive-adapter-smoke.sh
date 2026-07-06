@@ -20,7 +20,7 @@ Options:
   --output-dir DIR           Local evidence/artifact directory (default: /tmp/vox-adapter-smoke)
   --short TEXT               Short synthesis text
   --long TEXT                Long synthesis text
-  --voice VOICE              Voice id or WAV path to pass to vox run
+  --voice VOICE              Voice id or WAV path to pass to vox run; required for indextts-tts
   --help                     Show this help
 
 Safety:
@@ -44,6 +44,17 @@ VOICE=""
 POD="vox-adapter-smoke"
 FAILED=0
 FAILED_STEPS=()
+
+requires_voice_reference() {
+  case "$1" in
+    indextts-tts:*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -110,6 +121,11 @@ done
 if [[ -z "$MODEL" ]]; then
   echo "--model is required" >&2
   usage >&2
+  exit 2
+fi
+
+if requires_voice_reference "$MODEL" && [[ -z "$VOICE" ]]; then
+  echo "model $MODEL requires --voice with a disposable reference WAV or voice id for smoke validation" >&2
   exit 2
 fi
 
