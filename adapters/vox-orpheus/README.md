@@ -26,7 +26,44 @@ loading model weights. Model weights remain in the normal Vox model store.
 ```bash
 vox pull orpheus-tts:medium-3b
 vox run orpheus-tts:medium-3b "Hello from Orpheus" --voice tara
+vox run orpheus-tts:medium-3b "<happy>Hello from Orpheus.<laugh>" --voice tara
 ```
+
+Preset voices:
+
+- `tara`
+- `leah`
+- `jess`
+- `leo`
+- `dan`
+- `mia`
+- `zoe`
+- `zac`
+
+Orpheus supports expressive prompt markup in the text itself. Use tags
+sparingly; dense markup can create artifacts or unstable delivery.
+
+Non-verbal tags:
+
+- `<laugh>`
+- `<chuckle>`
+- `<sigh>`
+- `<cough>`
+- `<sniffle>`
+- `<groan>`
+- `<yawn>`
+- `<gasp>`
+
+Phrase-level emotion tags:
+
+- `<happy>`
+- `<sad>`
+- `<angry>`
+- `<excited>`
+- `<fearful>`
+- `<surprised>`
+- `<disgusted>`
+- `<neutral>`
 
 The current Orpheus backend is vLLM-based and is classified for Linux x86_64
 CUDA runtimes. CPU and Spark/ARM NVIDIA execution are not currently supported

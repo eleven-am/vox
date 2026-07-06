@@ -206,3 +206,31 @@ def test_voice_cloning_adapter_readmes_show_voice_path_examples():
         readme = ADAPTERS_ROOT / package_name / "README.md"
         content = readme.read_text()
         assert example in content, f"{readme} should show how to pass a voice reference path"
+
+
+def test_expressive_adapter_readmes_document_prompt_controls():
+    expected_control_phrases = {
+        "vox-dia": (
+            "[S1]",
+            "[S2]",
+            "(laughs)",
+            "temperature",
+            "top_p",
+        ),
+        "vox-orpheus": (
+            "<laugh>",
+            "<sigh>",
+            "<happy>",
+            "<neutral>",
+            "use tags",
+            "sparingly",
+            "`tara`",
+            "`zac`",
+        ),
+    }
+
+    for package_name, phrases in expected_control_phrases.items():
+        readme = ADAPTERS_ROOT / package_name / "README.md"
+        content = readme.read_text().lower()
+        for phrase in phrases:
+            assert phrase.lower() in content, f"{readme} should document expressive control: {phrase}"
