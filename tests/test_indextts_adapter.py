@@ -23,7 +23,7 @@ def test_indextts_package_metadata_is_lightweight():
     data = tomllib.loads(pyproject.read_text())
 
     dependencies = data["project"]["dependencies"]
-    assert data["project"]["version"] == "0.1.18"
+    assert data["project"]["version"] == "0.1.19"
     assert not any(dep.startswith(("torch", "torchaudio", "indextts")) for dep in dependencies)
 
 
@@ -108,6 +108,7 @@ def test_indextts_synthesis_parameters_expose_emotion_controls():
         "emo_alpha",
         "use_emo_text",
         "emo_text",
+        "emo_audio_prompt",
         "use_random",
         "emotion_happy",
         "emotion_angry",
@@ -122,6 +123,7 @@ def test_indextts_synthesis_parameters_expose_emotion_controls():
     assert params["emo_alpha"].max_value == 1.0
     assert params["use_emo_text"].type == "boolean"
     assert params["emo_text"].type == "string"
+    assert params["emo_audio_prompt"].type == "string"
     assert params["use_random"].default is False
     assert params["emotion_sad"].max_value == 1.0
 
@@ -151,6 +153,8 @@ def test_indextts_load_uses_config_and_synthesizes_with_reference_audio(tmp_path
     model_dir = tmp_path / "model"
     model_dir.mkdir()
     (model_dir / "config.yaml").write_text("fake: true\n")
+    emo_audio = tmp_path / "emotion.wav"
+    sf.write(emo_audio, np.array([0.0, 0.25, -0.25], dtype=np.float32), 24_000)
 
     with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
         _install_fake_indextts_modules()
@@ -168,6 +172,7 @@ def test_indextts_load_uses_config_and_synthesizes_with_reference_audio(tmp_path
                 params={
                     "emo_alpha": 0.6,
                     "emo_text": "calm but curious",
+                    "emo_audio_prompt": str(emo_audio),
                     "emotion_happy": 0.2,
                     "emotion_calm": 0.7,
                     "use_random": False,
@@ -184,6 +189,7 @@ def test_indextts_load_uses_config_and_synthesizes_with_reference_audio(tmp_path
     assert instance.infer_calls[0]["text"] == "Hello"
     assert instance.infer_calls[0]["emo_alpha"] == 0.6
     assert instance.infer_calls[0]["emo_text"] == "calm but curious"
+    assert instance.infer_calls[0]["emo_audio_prompt"] == str(emo_audio)
     assert instance.infer_calls[0]["use_emo_text"] is True
     assert instance.infer_calls[0]["emo_vector"] == [0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.7]
     assert instance.infer_calls[0]["use_random"] is False
@@ -254,6 +260,28 @@ def test_indextts_preflight_rejects_excessive_emotion_vector():
                 "emotion_calm": 0.6,
             },
         )
+
+
+def test_indextts_preflight_rejects_missing_emotion_audio_prompt(tmp_path):
+    from vox_indextts.adapter import IndexTTSAdapter
+
+    with pytest.raises(InvalidConfigError, match="emo_audio_prompt does not exist"):
+        IndexTTSAdapter().validate_synthesis_request(
+            reference_audio=np.ones(2400, dtype=np.float32),
+            params={"emo_audio_prompt": str(tmp_path / "missing.wav")},
+        )
+
+
+def test_indextts_preflight_accepts_emotion_audio_prompt(tmp_path):
+    from vox_indextts.adapter import IndexTTSAdapter
+
+    emo_audio = tmp_path / "emotion.wav"
+    sf.write(emo_audio, np.array([0.0, 0.25, -0.25], dtype=np.float32), 24_000)
+
+    IndexTTSAdapter().validate_synthesis_request(
+        reference_audio=np.ones(2400, dtype=np.float32),
+        params={"emo_audio_prompt": str(emo_audio)},
+    )
 
 
 def test_indextts_bootstraps_runtime_when_missing(tmp_path):

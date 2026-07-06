@@ -42,6 +42,8 @@ IndexTTS2 emotion controls are exposed through Vox synthesis `params`:
   from the synthesis text.
 - `emo_text` (string, optional) supplies separate emotion-description text and
   implies `use_emo_text=true`.
+- `emo_audio_prompt` (string, optional) supplies a server-side audio file path
+  used as the IndexTTS2 emotional reference prompt.
 - `use_random` (boolean, default `false`) enables stochastic emotion sampling;
   upstream notes that this may reduce voice-cloning fidelity.
 - `emotion_happy`, `emotion_angry`, `emotion_sad`, `emotion_afraid`,

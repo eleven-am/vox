@@ -423,6 +423,18 @@ def _emotion_vector_from_params(params: dict[str, Any] | None) -> list[float] | 
     return vector
 
 
+def _emo_audio_prompt_from_params(params: dict[str, Any] | None) -> str | None:
+    if not params or "emo_audio_prompt" not in params:
+        return None
+    path_value = str(params["emo_audio_prompt"]).strip()
+    if not path_value:
+        raise InvalidConfigError("IndexTTS emo_audio_prompt must be a non-empty audio file path")
+    path = Path(path_value).expanduser()
+    if not path.is_file():
+        raise InvalidConfigError(f"IndexTTS emo_audio_prompt does not exist or is not a file: {path_value}")
+    return str(path)
+
+
 def _inference_kwargs_from_params(params: dict[str, Any] | None) -> dict[str, Any]:
     if not params:
         return {}
@@ -431,6 +443,9 @@ def _inference_kwargs_from_params(params: dict[str, Any] | None) -> dict[str, An
     emotion_vector = _emotion_vector_from_params(params)
     if emotion_vector is not None:
         kwargs["emo_vector"] = emotion_vector
+    emo_audio_prompt = _emo_audio_prompt_from_params(params)
+    if emo_audio_prompt is not None:
+        kwargs["emo_audio_prompt"] = emo_audio_prompt
     if "emo_alpha" in params:
         kwargs["emo_alpha"] = float(params["emo_alpha"])
     if "use_emo_text" in params:
@@ -538,6 +553,7 @@ class IndexTTSAdapter(TTSAdapter):
         params: dict[str, Any] | None = None,
     ) -> None:
         _emotion_vector_from_params(params)
+        _emo_audio_prompt_from_params(params)
         if reference_audio is not None:
             if np.asarray(reference_audio, dtype=np.float32).size == 0:
                 raise InvalidConfigError("IndexTTS reference_audio is empty")
@@ -567,6 +583,12 @@ class IndexTTSAdapter(TTSAdapter):
                 type="string",
                 default=None,
                 description="Separate emotion description text; implies use_emo_text=true.",
+            ),
+            SynthesisParameterInfo(
+                name="emo_audio_prompt",
+                type="string",
+                default=None,
+                description="Server-side audio file path used as the IndexTTS2 emotional reference prompt.",
             ),
             SynthesisParameterInfo(
                 name="use_random",
