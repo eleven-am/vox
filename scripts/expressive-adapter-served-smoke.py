@@ -266,6 +266,22 @@ def _run_case(
     )
 
 
+def _write_evidence(evidence: dict[str, Any], output_dir: Path) -> Path:
+    evidence_path = output_dir / "evidence.json"
+    evidence_path.write_text(json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8")
+    print(json.dumps(evidence, indent=2, sort_keys=True))
+    print(f"Evidence written to {evidence_path}", file=sys.stderr)
+    return evidence_path
+
+
+def _status_failed(evidence: dict[str, Any], keys: tuple[str, ...]) -> bool:
+    for key in keys:
+        value = evidence.get(key)
+        if isinstance(value, dict) and int(value.get("status", 0)) >= 400:
+            return True
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="Existing Vox HTTP base URL")
@@ -284,6 +300,11 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument("--output-dir", default="/tmp/vox-served-smoke")
     parser.add_argument("--audio-usable", choices=("yes", "no", "unchecked"), default="unchecked")
+    parser.add_argument(
+        "--inspect-only",
+        action="store_true",
+        help="Only collect read-only endpoint evidence; do not call /v1/audio/speech.",
+    )
     args = parser.parse_args()
 
     params = _parse_json_object(args.params_json, field_name="--params-json")
@@ -300,6 +321,7 @@ def main() -> int:
         "params": params,
         "api_key_provided": bool(args.api_key),
         "audio_usable": args.audio_usable,
+        "inspect_only": args.inspect_only,
         "output_dir": str(output_dir),
     }
 
@@ -327,6 +349,12 @@ def main() -> int:
     evidence["models"] = _response_evidence(models)
     evidence["model_detail"] = _response_evidence(model_detail)
     evidence["loaded_before"] = _response_evidence(loaded)
+
+    if args.inspect_only:
+        evidence["synthesis"] = []
+        evidence["synthesis_skipped"] = "inspect_only"
+        _write_evidence(evidence, output_dir)
+        return 1 if _status_failed(evidence, ("health", "models", "model_detail", "loaded_before")) else 0
 
     cases = [
         _run_case(
@@ -365,10 +393,7 @@ def main() -> int:
     )
     evidence["loaded_after"] = _response_evidence(loaded_after)
 
-    evidence_path = output_dir / "evidence.json"
-    evidence_path.write_text(json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8")
-    print(json.dumps(evidence, indent=2, sort_keys=True))
-    print(f"Evidence written to {evidence_path}", file=sys.stderr)
+    _write_evidence(evidence, output_dir)
 
     failed = False
     for case in cases:

@@ -121,6 +121,8 @@ def test_expressive_adapter_smoke_script_refuses_production_and_requires_create(
     assert "SMOKE_BASE_URL=http://127.0.0.1:8000" in makefile
     assert "SMOKE_API_KEY=..." in makefile
     assert "SMOKE_PARAMS_JSON='{}'" in makefile
+    assert "SMOKE_INSPECT_ONLY=1" in makefile
+    assert "--inspect-only" in makefile
 
 
 def test_expressive_adapter_served_smoke_script_uses_existing_server_only():
@@ -144,16 +146,24 @@ def test_expressive_adapter_served_smoke_script_uses_existing_server_only():
     assert "api_key_provided" in script
     assert "--params-json" in script
     assert "--audio-usable" in script
+    assert "--inspect-only" in script
+    assert "synthesis_skipped" in script
+    assert "inspect_only" in script
+    assert "/v1/audio/speech" in script
     assert "/tmp/vox-served-smoke" in script
     assert "kubectl" not in script
     assert "vox pull" not in script
     assert "Existing Server Smoke" in runbook
+    assert "For read-only inspection, use `--inspect-only`" in runbook
+    assert "stops before synthesis" in runbook
+    assert "SMOKE_INSPECT_ONLY=1" in runbook
     assert "do not create\na new namespace or PVC" in runbook
     assert "does not call `kubectl`, `vox pull`, or mutate adapter,\nruntime, model, or PVC contents" in runbook
     assert "`GET /v1/models/{model}` for the requested model" in runbook
     assert "`/v1/models/loaded` before synthesis" in runbook
     assert "`/v1/models/loaded` after synthesis" in runbook
-    assert "can change in-memory scheduler state and VRAM usage" in runbook
+    assert "Full existing-server smoke can change in-memory scheduler state and VRAM usage" in runbook
+    assert "Use `--inspect-only` for read-only checks" in runbook
     assert "not enough to mark an adapter fully production-ready" in runbook
     assert "never the key value" in runbook
     assert "SMOKE_API_KEY=..." in runbook
@@ -429,7 +439,9 @@ def test_expressive_adapter_status_tracks_all_goal_targets_and_smoke_gap():
     assert "requested model detail from\n`GET /v1/models/{model}`" in status
     assert "`/v1/models/loaded` before and after synthesis" in status
     assert "without creating namespaces, PVCs, or running `vox pull`" in status
-    assert "It can still change in-memory loaded model state and VRAM" in status
+    assert "Use `--inspect-only` when the goal is read-only inspection" in status
+    assert "skips\n`/v1/audio/speech` and records no synthesis cases" in status
+    assert "Full served smoke can still\nchange in-memory loaded model state and VRAM" in status
     assert "not sufficient to mark a model production-ready" in status
     assert "Do not create a new namespace or PVC just because a\nmodel needs testing" in status
     assert "vox pull` succeeds without `VOX_ALLOW_INCOMPATIBLE" in status

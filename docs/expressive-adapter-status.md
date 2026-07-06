@@ -85,8 +85,10 @@ checking the existing Vox service. It records short/long synthesis, timings,
 WAV metadata, SHA-256 digests, silence checks, the requested model detail from
 `GET /v1/models/{model}`, and `/v1/models/loaded` before and after synthesis
 without creating namespaces, PVCs, or running `vox pull`.
-It can still change in-memory loaded model state and VRAM while a request is in
-flight, so heavy synthesis against production should be intentional.
+Use `--inspect-only` when the goal is read-only inspection; it skips
+`/v1/audio/speech` and records no synthesis cases. Full served smoke can still
+change in-memory loaded model state and VRAM while a request is in flight, so
+heavy synthesis against production should be intentional.
 
 Existing-server smoke is not sufficient to mark a model production-ready because
 it cannot prove a clean model pull or clean runtime install.

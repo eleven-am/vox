@@ -43,6 +43,22 @@ When the goal is to test the Vox server that is already running, do not create
 a new namespace or PVC. Use the served-smoke helper against the existing HTTP
 endpoint and the existing Vox deployment:
 
+For read-only inspection, use `--inspect-only`. This records server/model
+state and stops before synthesis, so it should not load a TTS model or consume
+additional VRAM:
+
+```bash
+python scripts/expressive-adapter-served-smoke.py \
+  --base-url http://127.0.0.1:8000 \
+  --model dia-tts:1.6b \
+  --inspect-only
+
+make smoke-expressive-served MODEL=dia-tts:1.6b SMOKE_BASE_URL=http://127.0.0.1:8000 SMOKE_INSPECT_ONLY=1
+```
+
+For synthesis validation, run without `--inspect-only` and manually mark audio
+usability after listening to the generated files:
+
 ```bash
 python scripts/expressive-adapter-served-smoke.py \
   --base-url http://127.0.0.1:8000 \
@@ -84,10 +100,11 @@ short synthesis, long synthesis, wall times, WAV metadata, SHA-256 digests,
 and silence checks under
 `/tmp/vox-served-smoke` by default.
 
-Existing-server smoke can change in-memory scheduler state and VRAM usage while
-requests are in flight because synthesis can load models. It is storage-safe,
-not side-effect-free. Do not run heavy synthesis against a live deployment
-unless that is the requested test.
+Full existing-server smoke can change in-memory scheduler state and VRAM usage
+while requests are in flight because synthesis can load models. It is
+storage-safe, not side-effect-free. Use `--inspect-only` for read-only checks,
+and do not run heavy synthesis against a live deployment unless that is the
+requested test.
 
 Existing-server smoke is not enough to mark an adapter fully production-ready
 because it cannot prove a clean pull, clean runtime install, or clean model
