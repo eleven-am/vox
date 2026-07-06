@@ -208,6 +208,29 @@ def test_voice_cloning_adapter_readmes_show_voice_path_examples():
         assert example in content, f"{readme} should show how to pass a voice reference path"
 
 
+def test_non_cloning_expressive_adapter_readmes_document_reference_audio_limits():
+    expected_limit_phrases = {
+        "vox-dia": (
+            "does not currently wire Dia's audio-prompt voice cloning path",
+            "`reference_audio`",
+            "`reference_text`",
+            "rejected clearly",
+        ),
+        "vox-orpheus": (
+            "preset voices, not reference-audio voice cloning",
+            "`reference_audio`",
+            "`reference_text`",
+            "rejected clearly",
+        ),
+    }
+
+    for package_name, phrases in expected_limit_phrases.items():
+        readme = ADAPTERS_ROOT / package_name / "README.md"
+        content = readme.read_text()
+        for phrase in phrases:
+            assert phrase in content, f"{readme} should document reference-audio limit: {phrase}"
+
+
 def test_expressive_adapter_readmes_document_prompt_controls():
     expected_control_phrases = {
         "vox-dia": (

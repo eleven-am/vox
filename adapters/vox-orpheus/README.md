@@ -65,6 +65,10 @@ Phrase-level emotion tags:
 - `<disgusted>`
 - `<neutral>`
 
+This adapter supports Orpheus preset voices, not reference-audio voice cloning.
+Requests with `reference_audio` or `reference_text` are rejected clearly rather
+than silently ignored.
+
 The current Orpheus backend is vLLM-based and is classified for Linux x86_64
 CUDA runtimes. CPU and Spark/ARM NVIDIA execution are not currently supported
 by this adapter because the `orpheus-speech`/vLLM runtime is not packaged as a
