@@ -200,6 +200,20 @@ Registry entry:
 Runtime capability snapshot:
 $capabilities
 
+## Model Resolution
+
+Registry entry:
+Resolved variant:
+Preferred backend:
+Manifest path:
+Model store path:
+Runtime root:
+Manifest exists:
+
+## Adapter Packages
+
+Resolved packages:
+
 ## Pull
 
 Command: $pull_command
@@ -207,8 +221,6 @@ Exit status:
 Duration:
 Output summary:
 Used VOX_ALLOW_INCOMPATIBLE: no
-Runtime directory:
-Model store path:
 
 ## Short Synthesis
 
@@ -218,8 +230,6 @@ Wall time:
 Output path: $short_wav
 Output bytes:
 Audio duration:
-Peak pod memory:
-Peak GPU memory:
 Audio usable: yes/no
 
 ## Long Synthesis
@@ -230,9 +240,32 @@ Wall time:
 Output path: $long_wav
 Output bytes:
 Audio duration:
-Peak pod memory:
-Peak GPU memory:
 Audio usable: yes/no
+
+## Resource Snapshot After Pull
+
+Pod memory:
+GPU memory:
+
+## Resource Snapshot After Short Synthesis
+
+Pod memory:
+GPU memory:
+
+## Resource Snapshot After Long Synthesis
+
+Pod memory:
+GPU memory:
+
+## Audio Durations
+
+Short:
+Long:
+
+## Copied Artifact Stats
+
+Short WAV bytes:
+Long WAV bytes:
 
 ## Classification
 

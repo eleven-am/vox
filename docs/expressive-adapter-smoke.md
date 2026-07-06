@@ -251,11 +251,27 @@ cat > /tmp/vox-adapter-smoke/${MODEL//[:\/]/-}-evidence.md <<'EOF'
 # Expressive Adapter Smoke Evidence
 
 Model:
+Variant:
+Accelerator request:
 Image tag:
 Image digest:
 Adapter package:
 Registry entry:
 Runtime capability snapshot:
+
+## Model Resolution
+
+Registry entry:
+Resolved variant:
+Preferred backend:
+Manifest path:
+Model store path:
+Runtime root:
+Manifest exists:
+
+## Adapter Packages
+
+Resolved packages:
 
 ## Pull
 
@@ -264,8 +280,6 @@ Exit status:
 Duration:
 Output summary:
 Used VOX_ALLOW_INCOMPATIBLE: no
-Runtime directory:
-Model store path:
 
 ## Short Synthesis
 
@@ -275,8 +289,6 @@ Wall time:
 Output path:
 Output bytes:
 Audio duration:
-Peak pod memory:
-Peak GPU memory:
 Audio usable: yes/no
 
 ## Long Synthesis
@@ -287,9 +299,32 @@ Wall time:
 Output path:
 Output bytes:
 Audio duration:
-Peak pod memory:
-Peak GPU memory:
 Audio usable: yes/no
+
+## Resource Snapshot After Pull
+
+Pod memory:
+GPU memory:
+
+## Resource Snapshot After Short Synthesis
+
+Pod memory:
+GPU memory:
+
+## Resource Snapshot After Long Synthesis
+
+Pod memory:
+GPU memory:
+
+## Audio Durations
+
+Short:
+Long:
+
+## Copied Artifact Stats
+
+Short WAV bytes:
+Long WAV bytes:
 
 ## Classification
 
