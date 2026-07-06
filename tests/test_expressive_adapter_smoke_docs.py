@@ -116,6 +116,32 @@ def test_expressive_adapter_smoke_script_refuses_production_and_requires_create(
     assert '--failure-class "$(SMOKE_FAILURE_CLASS)"' in makefile
     assert '--variant "$(SMOKE_VARIANT)"' in makefile
     assert "--cpu-only" in makefile
+    assert "smoke-expressive-served" in makefile
+    assert "scripts/expressive-adapter-served-smoke.py" in makefile
+    assert "SMOKE_BASE_URL=http://127.0.0.1:8000" in makefile
+    assert "SMOKE_PARAMS_JSON='{}'" in makefile
+
+
+def test_expressive_adapter_served_smoke_script_uses_existing_server_only():
+    script = Path("scripts/expressive-adapter-served-smoke.py").read_text()
+    runbook = Path("docs/expressive-adapter-smoke.md").read_text()
+
+    assert "already-running Vox HTTP server" in script
+    assert "does not call Kubernetes" in script
+    assert "v1/audio/speech" in script
+    assert "v1/health" in script
+    assert "v1/models/loaded" in script
+    assert "--base-url" in script
+    assert "--params-json" in script
+    assert "--audio-usable" in script
+    assert "/tmp/vox-served-smoke" in script
+    assert "kubectl" not in script
+    assert "vox pull" not in script
+    assert "Existing Server Smoke" in runbook
+    assert "do not create\na new namespace or PVC" in runbook
+    assert "does not call `kubectl`, `vox pull`, or mutate adapter,\nruntime, model, or PVC contents" in runbook
+    assert "not enough to mark an adapter fully production-ready" in runbook
+    assert "make smoke-expressive-served MODEL=dia-tts:1.6b" in runbook
 
 
 def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures():

@@ -18,7 +18,7 @@ SPARK_TORCHAUDIO_WHEEL ?=
 SPARK_TORCH_INDEX_URL ?= https://download.pytorch.org/whl/cu129
 SPARK_TORCH_EXTRA_INDEX_URL ?=
 
-.PHONY: build build-lean build-cpu build-spark build-local build-local-lean build-local-cpu build-local-spark push tag clean setup-buildx current-version bump-patch bump-minor bump-major test test-smoke-runner smoke-expressive proto
+.PHONY: build build-lean build-cpu build-spark build-local build-local-lean build-local-cpu build-local-spark push tag clean setup-buildx current-version bump-patch bump-minor bump-major test test-smoke-runner smoke-expressive smoke-expressive-served proto
 
 build:
 	@test "$(patsubst v%,%,$(VERSION))" = "$(APP_VERSION)" || \
@@ -197,6 +197,7 @@ test:
 
 test-smoke-runner:
 	bash -n scripts/expressive-adapter-smoke.sh
+	uv run python -m py_compile scripts/expressive-adapter-served-smoke.py
 	uv run python -m pytest tests/test_expressive_adapter_smoke_docs.py -q
 	@bash scripts/expressive-adapter-smoke.sh --model dia-tts:1.6b; \
 		rc=$$?; \
@@ -208,6 +209,10 @@ test-smoke-runner:
 smoke-expressive:
 	@test -n "$(MODEL)" || (echo "usage: make smoke-expressive MODEL=dia-tts:1.6b [SMOKE_VARIANT=onnx] [SMOKE_VOICE=/home/vox/.vox/smoke-voices/reference.wav] [SMOKE_CPU_ONLY=1] [SMOKE_CREATE=1] [SMOKE_AUDIO_USABLE=yes] [SMOKE_FAILURE_CLASS=dependency]"; exit 2)
 	bash scripts/expressive-adapter-smoke.sh --model "$(MODEL)" $(if $(SMOKE_VARIANT),--variant "$(SMOKE_VARIANT)",) $(if $(SMOKE_VOICE),--voice "$(SMOKE_VOICE)",) $(if $(SMOKE_CPU_ONLY),--cpu-only,) $(if $(SMOKE_CREATE),--create,) $(if $(SMOKE_AUDIO_USABLE),--audio-usable "$(SMOKE_AUDIO_USABLE)",) $(if $(SMOKE_FAILURE_CLASS),--failure-class "$(SMOKE_FAILURE_CLASS)",)
+
+smoke-expressive-served:
+	@test -n "$(MODEL)" || (echo "usage: make smoke-expressive-served MODEL=dia-tts:1.6b [SMOKE_BASE_URL=http://127.0.0.1:8000] [SMOKE_VOICE=voice-id] [SMOKE_PARAMS_JSON='{}'] [SMOKE_AUDIO_USABLE=yes]"; exit 2)
+	uv run python scripts/expressive-adapter-served-smoke.py --model "$(MODEL)" --base-url "$(or $(SMOKE_BASE_URL),http://127.0.0.1:8000)" $(if $(SMOKE_VOICE),--voice "$(SMOKE_VOICE)",) $(if $(SMOKE_PARAMS_JSON),--params-json '$(SMOKE_PARAMS_JSON)',) $(if $(SMOKE_AUDIO_USABLE),--audio-usable "$(SMOKE_AUDIO_USABLE)",)
 
 proto:
 	uv run python -m grpc_tools.protoc \

@@ -94,6 +94,42 @@ make smoke-expressive MODEL=chatterbox-tts-turbo:0.1.7 SMOKE_VARIANT=onnx SMOKE_
 make smoke-expressive MODEL=chatterbox-tts-turbo:0.1.7 SMOKE_VARIANT=onnx SMOKE_CPU_ONLY=1 SMOKE_AUDIO_USABLE=yes
 ```
 
+## Existing Server Smoke
+
+When the goal is to test the Vox server that is already running, do not create
+a new namespace or PVC just to run a smoke request. Use the served-smoke helper
+against the existing HTTP endpoint:
+
+```bash
+python scripts/expressive-adapter-served-smoke.py \
+  --base-url http://127.0.0.1:8000 \
+  --model dia-tts:1.6b \
+  --audio-usable yes
+
+make smoke-expressive-served MODEL=dia-tts:1.6b SMOKE_BASE_URL=http://127.0.0.1:8000 SMOKE_AUDIO_USABLE=yes
+```
+
+For adapters that require a voice or reference, pass the value the running
+server already knows how to resolve:
+
+```bash
+python scripts/expressive-adapter-served-smoke.py \
+  --base-url http://127.0.0.1:8000 \
+  --model indextts-tts:2 \
+  --voice samantha \
+  --audio-usable yes
+```
+
+This path intentionally does not call `kubectl`, `vox pull`, or mutate adapter,
+runtime, model, or PVC contents. It records `/v1/health`, `/v1/models`,
+`/v1/models/loaded`, short synthesis, long synthesis, wall times, WAV metadata,
+SHA-256 digests, and silence checks under `/tmp/vox-served-smoke` by default.
+
+Existing-server smoke is not enough to mark an adapter fully production-ready
+because it cannot prove a clean pull, clean runtime install, or clean model
+store. It is useful evidence that the currently running server can synthesize
+with the model without taking down or rebuilding the deployment.
+
 For cloning adapters, copy a small test-only reference WAV into the disposable
 PVC and pass it as the Vox voice path. Do not use production voice data:
 
