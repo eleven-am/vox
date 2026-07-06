@@ -198,7 +198,7 @@ test:
 test-smoke-runner:
 	bash -n scripts/expressive-adapter-smoke.sh
 	uv run python -m py_compile scripts/expressive-adapter-served-smoke.py
-	uv run python -m pytest tests/test_expressive_adapter_smoke_docs.py -q
+	uv run python -m pytest tests/test_expressive_adapter_smoke_docs.py tests/test_expressive_adapter_served_smoke.py -q
 	@bash scripts/expressive-adapter-smoke.sh --model dia-tts:1.6b; \
 		rc=$$?; \
 		if [ "$$rc" -ne 4 ]; then \
