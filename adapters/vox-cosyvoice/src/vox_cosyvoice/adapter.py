@@ -298,9 +298,37 @@ def _clear_cosyvoice_modules() -> None:
 
 
 def _cosyvoice_class_from_runtime() -> type[Any] | None:
+    runtime_path = _runtime_root().resolve()
     module = importlib.import_module("cosyvoice.cli.cosyvoice")
+    if not _module_loaded_from_runtime(module, runtime_path):
+        return None
     cls = getattr(module, "CosyVoice2", None)
     return cls if isinstance(cls, type) else None
+
+
+def _module_loaded_from_runtime(module: Any, runtime_path: Path) -> bool:
+    candidate_paths: list[Path] = []
+    module_file = getattr(module, "__file__", None)
+    if module_file:
+        candidate_paths.append(Path(module_file))
+
+    spec = getattr(module, "__spec__", None)
+    spec_origin = getattr(spec, "origin", None)
+    if spec_origin and spec_origin not in {"built-in", "frozen"}:
+        candidate_paths.append(Path(spec_origin))
+    search_locations = getattr(spec, "submodule_search_locations", None)
+    if search_locations:
+        candidate_paths.extend(Path(path) for path in search_locations)
+
+    return any(_is_relative_to(path, runtime_path) for path in candidate_paths)
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent)
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def _load_cosyvoice_class() -> type[Any]:

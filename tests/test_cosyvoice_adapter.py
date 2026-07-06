@@ -37,10 +37,18 @@ class _FakeCosyVoice2:
         yield {"tts_speech": np.array([0.0, 0.25, -0.25], dtype=np.float32)}
 
 
-def _install_fake_cosyvoice_modules() -> None:
+def _cosyvoice_runtime_file() -> str:
+    runtime_root = Path(os.environ.get("VOX_HOME", str(Path.home() / ".vox"))) / "runtime" / "cosyvoice"
+    return str(runtime_root / "CosyVoice" / "cosyvoice" / "cli" / "cosyvoice.py")
+
+
+def _install_fake_cosyvoice_modules(*, module_file: str | None = None) -> None:
     package = ModuleType("cosyvoice")
     cli = ModuleType("cosyvoice.cli")
     cosyvoice = ModuleType("cosyvoice.cli.cosyvoice")
+    package.__file__ = str(Path(module_file or _cosyvoice_runtime_file()).parents[1] / "__init__.py")
+    cli.__file__ = str(Path(module_file or _cosyvoice_runtime_file()).parent / "__init__.py")
+    cosyvoice.__file__ = module_file or _cosyvoice_runtime_file()
     cosyvoice.CosyVoice2 = _FakeCosyVoice2
     sys.modules["cosyvoice"] = package
     sys.modules["cosyvoice.cli"] = cli
@@ -75,7 +83,7 @@ def test_cosyvoice_package_metadata_version():
     pyproject = Path(__file__).parents[1] / "adapters" / "vox-cosyvoice" / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text())
 
-    assert data["project"]["version"] == "0.1.5"
+    assert data["project"]["version"] == "0.1.6"
 
 
 def test_cosyvoice_readme_uses_public_model_reference():
@@ -301,3 +309,20 @@ def test_cosyvoice_repairs_runtime_when_import_probe_is_broken(tmp_path):
     assert "--target" in install_call
     assert str(tmp_path / "vox-home" / "runtime" / "cosyvoice") in install_call
     assert "HyperPyYAML==1.2.3" in install_call
+
+
+def test_cosyvoice_runtime_probe_rejects_app_env_cosyvoice_module(tmp_path):
+    app_module_path = tmp_path / "app-env" / "cosyvoice" / "cli" / "cosyvoice.py"
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        _install_fake_cosyvoice_modules(module_file=str(app_module_path))
+        from vox_cosyvoice.adapter import _cosyvoice_class_from_runtime
+
+        assert _cosyvoice_class_from_runtime() is None
+
+
+def test_cosyvoice_runtime_probe_accepts_cosyvoice_module_from_runtime(tmp_path):
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        _install_fake_cosyvoice_modules()
+        from vox_cosyvoice.adapter import _cosyvoice_class_from_runtime
+
+        assert _cosyvoice_class_from_runtime() is _FakeCosyVoice2

@@ -44,7 +44,7 @@ def test_expressive_adapter_smoke_runbook_pins_published_adapter_baseline():
     runbook = Path("docs/expressive-adapter-smoke.md").read_text()
 
     for package in (
-        "vox-cosyvoice==0.1.5",
+        "vox-cosyvoice==0.1.6",
         "vox-dia==0.2.12",
         "vox-orpheus==0.1.6",
         "vox-indextts==0.1.6",
@@ -93,6 +93,7 @@ def test_expressive_adapter_status_names_local_regression_evidence():
     for evidence in (
         "`tests/test_cosyvoice_adapter.py`; the test proves `prepare_runtime()` can",
         "bootstrap the isolated runtime without loading model weights",
+        "rejects `cosyvoice.cli.cosyvoice` modules loaded\n  from outside `$VOX_HOME/runtime/cosyvoice`",
         "`tests/test_dia_adapter.py`; the test\n  proves the isolated Transformers runtime",
         "without loading\n  processors or model weights",
         "rejects\n  Dia-capable Transformers modules loaded from the Vox app environment",

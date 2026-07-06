@@ -27,7 +27,7 @@ versions before marking a model as smoke-tested:
 
 | Model | Expected adapter package |
 | --- | --- |
-| `cosyvoice2-tts:0.5b` | `vox-cosyvoice==0.1.5` |
+| `cosyvoice2-tts:0.5b` | `vox-cosyvoice==0.1.6` |
 | `dia-tts:1.6b` | `vox-dia==0.2.12` |
 | `orpheus-tts:medium-3b` | `vox-orpheus==0.1.6` |
 | `indextts-tts:2` | `vox-indextts==0.1.6` |
