@@ -25,6 +25,15 @@ def test_orpheus_package_metadata_is_lightweight():
     assert not any(dep.startswith(("torch", "vllm", "orpheus-speech", "snac")) for dep in dependencies)
 
 
+def test_orpheus_readme_uses_public_model_reference():
+    readme = Path(__file__).parents[1] / "adapters" / "vox-orpheus" / "README.md"
+    text = readme.read_text()
+
+    assert "vox pull orpheus-tts:medium-3b" in text
+    assert "vox run orpheus-tts:medium-3b" in text
+    assert "vox pull orpheus-tts-vllm:medium-3b" not in text
+
+
 class _FakeOrpheusModel:
     instances: list[_FakeOrpheusModel] = []
 

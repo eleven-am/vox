@@ -24,8 +24,8 @@ loading model weights. Model weights remain in the normal Vox model store.
 ## Use with Vox
 
 ```bash
-vox pull orpheus-tts-vllm:medium-3b
-vox run orpheus-tts-vllm:medium-3b "Hello from Orpheus" --voice tara
+vox pull orpheus-tts:medium-3b
+vox run orpheus-tts:medium-3b "Hello from Orpheus" --voice tara
 ```
 
 The current Orpheus backend is vLLM-based and is classified for Linux x86_64
