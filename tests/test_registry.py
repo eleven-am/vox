@@ -384,7 +384,7 @@ class TestAvailableModels:
         assert dia["source"] == "nari-labs/Dia-1.6B-0626"
         assert dia["runtime"]["required"]["accelerators"] == ["cuda"]
         assert dia["runtime"]["required"]["min_vram_gb"] == 10
-        assert "no CPU/ONNX path" in dia["runtime"]["required"]["notes"][0]
+        assert "CPU, ONNX, and Spark/ARM NVIDIA" in dia["runtime"]["required"]["notes"][0]
 
     def test_kokoro_logical_catalog_entry_keeps_concrete_variants(self):
         kokoro = CATALOG["kokoro-tts"]["v1.0"]

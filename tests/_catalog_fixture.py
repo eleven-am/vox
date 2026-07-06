@@ -436,9 +436,12 @@ FIXTURE_CATALOG: dict[str, dict[str, dict[str, Any]]] = {
                 "required": {
                     "python_modules": ["torch"],
                     "accelerators": ["cuda"],
+                    "systems": ["linux"],
+                    "machines": ["x86_64"],
                     "min_vram_gb": 10,
                     "notes": [
-                        "Dia Transformers backend is CUDA-only in Vox; no CPU/ONNX path is currently available."
+                        "Dia Transformers backend is CUDA-only in Vox; "
+                        "CPU, ONNX, and Spark/ARM NVIDIA paths are not currently production-supported."
                     ],
                 }
             },

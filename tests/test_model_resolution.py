@@ -109,9 +109,18 @@ def test_concrete_catalog_entry_resolves_as_single_entry():
     assert resolved.missing == ()
 
 
-def test_dia_concrete_entry_requires_cuda_and_declared_vram():
+def test_dia_concrete_entry_requires_linux_x86_cuda_and_declared_vram():
     entry = FIXTURE_CATALOG["dia-tts"]["1.6b"]
 
+    missing_machine = resolve_catalog_entry(
+        entry,
+        snapshot=_caps(
+            machine="aarch64",
+            torch_installed=True,
+            torch_cuda=True,
+            vram_gb=16.0,
+        ),
+    )
     missing_cuda = resolve_catalog_entry(
         entry,
         snapshot=_caps(torch_installed=True, torch_cuda=False, vram_gb=None),
@@ -126,6 +135,7 @@ def test_dia_concrete_entry_requires_cuda_and_declared_vram():
         ),
     )
 
+    assert any("machine" in reason for reason in missing_machine.missing)
     assert missing_cuda.missing
     assert "accelerators cuda" in missing_cuda.missing[0]
     assert available.missing == ()

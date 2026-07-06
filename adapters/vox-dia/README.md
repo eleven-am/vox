@@ -22,6 +22,11 @@ Torch. The current Dia backend uses Hugging Face Transformers and requires a
 Vox runtime/image that already provides PyTorch with CUDA. CPU execution is not
 supported by the official Dia Transformers runtime used by this adapter.
 
+The current Vox adapter is classified for Linux x86_64 CUDA/Torch runtimes.
+CPU, ONNX, and Spark/ARM NVIDIA paths are not currently production-supported by
+this adapter because Vox has not validated a portable CPU/ONNX backend or a
+clean Spark/ARM NVIDIA dependency stack for the Dia Transformers runtime.
+
 During `vox pull`, the adapter verifies or installs the Dia-capable
 Transformers runtime into `$VOX_HOME/runtime/dia`. Model weights remain in the
 normal Vox model store.
