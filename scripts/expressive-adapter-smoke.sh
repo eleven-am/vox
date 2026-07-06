@@ -327,11 +327,6 @@ Long:
 Short WAV bytes:
 Long WAV bytes:
 
-## Smoke Result
-
-Result:
-Failed steps:
-
 ## Classification
 
 Result: pass/fail

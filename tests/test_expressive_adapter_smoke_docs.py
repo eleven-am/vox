@@ -95,6 +95,8 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert 'record_timed "Long Synthesis Output"' in script
     assert 'FAILED_STEPS+=("$label")' in script
     assert 'append_section "Smoke Result"' in script
+    assert script.count("## Smoke Result") == 0
+    assert script.count('append_section "Smoke Result"') == 1
     assert "failed_steps=none" in script
     assert 'record_resources "Resource Snapshot After Pull"' in script
     assert 'record_resources "Resource Snapshot After Short Synthesis"' in script
