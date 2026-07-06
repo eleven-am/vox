@@ -14,6 +14,8 @@ def test_expressive_adapter_smoke_script_refuses_production_and_requires_create(
     assert "pod $NS/$POD does not exist; rerun with --create" in script
     assert "VOX_ALLOW_INCOMPATIBLE=1" not in script
     assert "scripts/expressive-adapter-smoke.sh --model dia-tts:1.6b" in runbook
+    assert "make smoke-expressive MODEL=dia-tts:1.6b" in runbook
+    assert "make smoke-expressive MODEL=dia-tts:1.6b SMOKE_CREATE=1" in runbook
     assert "unless `--create` is\npassed explicitly after approval" in runbook
 
 

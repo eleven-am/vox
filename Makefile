@@ -18,7 +18,7 @@ SPARK_TORCHAUDIO_WHEEL ?=
 SPARK_TORCH_INDEX_URL ?= https://download.pytorch.org/whl/cu129
 SPARK_TORCH_EXTRA_INDEX_URL ?=
 
-.PHONY: build build-lean build-cpu build-spark build-local build-local-lean build-local-cpu build-local-spark push tag clean setup-buildx current-version bump-patch bump-minor bump-major test proto
+.PHONY: build build-lean build-cpu build-spark build-local build-local-lean build-local-cpu build-local-spark push tag clean setup-buildx current-version bump-patch bump-minor bump-major test test-smoke-runner smoke-expressive proto
 
 build:
 	@test "$(patsubst v%,%,$(VERSION))" = "$(APP_VERSION)" || \
@@ -194,6 +194,20 @@ bump-major:
 
 test:
 	uv run python -m pytest tests/ -q
+
+test-smoke-runner:
+	bash -n scripts/expressive-adapter-smoke.sh
+	uv run python -m pytest tests/test_expressive_adapter_smoke_docs.py -q
+	@bash scripts/expressive-adapter-smoke.sh --model dia-tts:1.6b; \
+		rc=$$?; \
+		if [ "$$rc" -ne 4 ]; then \
+			echo "expected smoke runner to fail closed with exit 4 when the disposable namespace is missing, got $$rc"; \
+			exit 1; \
+		fi
+
+smoke-expressive:
+	@test -n "$(MODEL)" || (echo "usage: make smoke-expressive MODEL=dia-tts:1.6b [SMOKE_CREATE=1]"; exit 2)
+	bash scripts/expressive-adapter-smoke.sh --model "$(MODEL)" $(if $(SMOKE_CREATE),--create,)
 
 proto:
 	uv run python -m grpc_tools.protoc \

@@ -72,12 +72,19 @@ The scripted path is:
 bash scripts/expressive-adapter-smoke.sh --model dia-tts:1.6b
 ```
 
+The equivalent Makefile entrypoint is:
+
+```bash
+make smoke-expressive MODEL=dia-tts:1.6b
+```
+
 The script refuses the production `vox` namespace and `vox-data` PVC. It also
 refuses to create the disposable namespace, PVC, or pod unless `--create` is
 passed explicitly after approval:
 
 ```bash
 bash scripts/expressive-adapter-smoke.sh --model dia-tts:1.6b --create
+make smoke-expressive MODEL=dia-tts:1.6b SMOKE_CREATE=1
 ```
 
 Evidence and copied WAV files are written under `/tmp/vox-adapter-smoke` by
