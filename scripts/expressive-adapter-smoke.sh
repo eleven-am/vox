@@ -11,6 +11,7 @@ Required:
 
 Options:
   --variant VARIANT          Force a pull-time variant such as onnx or cuda
+  --cpu-only                 Create the disposable pod without requesting a GPU
   --create                   Create the disposable namespace/PVC if missing
   --namespace NAME           Disposable namespace (default: vox-adapter-smoke)
   --pvc NAME                 Disposable PVC (default: vox-adapter-smoke-data)
@@ -33,6 +34,7 @@ CREATE=0
 NS="${VOX_SMOKE_NS:-vox-adapter-smoke}"
 PVC="${VOX_SMOKE_PVC:-vox-adapter-smoke-data}"
 IMAGE="${VOX_SMOKE_IMAGE:-ghcr.io/eleven-am/vox:latest}"
+GPU="${VOX_SMOKE_GPU:-1}"
 STORAGE="${VOX_SMOKE_STORAGE:-40Gi}"
 OUTPUT_DIR="${VOX_SMOKE_OUTPUT_DIR:-/tmp/vox-adapter-smoke}"
 SHORT_TEXT="This is a short expressive smoke test."
@@ -49,6 +51,10 @@ while [[ $# -gt 0 ]]; do
     --variant)
       VARIANT="${2:-}"
       shift 2
+      ;;
+    --cpu-only)
+      GPU=0
+      shift
       ;;
     --create)
       CREATE=1
@@ -117,6 +123,12 @@ pull_command="vox pull $MODEL"
 if [[ -n "$VARIANT" ]]; then
   pull_command="$pull_command --variant $VARIANT"
 fi
+accelerator_request="gpu"
+resources_json='{"limits": {"nvidia.com/gpu": "1"}}'
+if [[ "$GPU" == "0" ]]; then
+  accelerator_request="cpu-only"
+  resources_json='{}'
+fi
 
 if ! kubectl get namespace "$NS" >/dev/null 2>&1; then
   if [[ "$CREATE" != "1" ]]; then
@@ -159,7 +171,7 @@ if ! kubectl -n "$NS" get pod "$POD" >/dev/null 2>&1; then
           "name": "vox-adapter-smoke",
           "image": "'"$IMAGE"'",
           "command": ["sleep", "infinity"],
-          "resources": {"limits": {"nvidia.com/gpu": "1"}},
+          "resources": '"$resources_json"',
           "volumeMounts": [{"name": "vox-home", "mountPath": "/home/vox/.vox"}]
         }],
         "volumes": [{"name": "vox-home", "persistentVolumeClaim": {"claimName": "'"$PVC"'"}}]
@@ -180,6 +192,7 @@ cat > "$evidence" <<EOF
 
 Model: $MODEL
 Variant: ${VARIANT:-auto}
+Accelerator request: $accelerator_request
 Image tag: $IMAGE
 Image digest: $image_id
 Adapter package:

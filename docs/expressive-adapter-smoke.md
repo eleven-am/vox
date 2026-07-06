@@ -79,11 +79,19 @@ variants, pass the same variant flag that `vox pull` accepts:
 bash scripts/expressive-adapter-smoke.sh --model chatterbox-tts-turbo:0.1.7 --variant onnx
 ```
 
+For CPU/ONNX validation, explicitly create the disposable pod without a GPU
+request so the result proves that the model can run without CUDA:
+
+```bash
+bash scripts/expressive-adapter-smoke.sh --model chatterbox-tts-turbo:0.1.7 --variant onnx --cpu-only
+```
+
 The equivalent Makefile entrypoint is:
 
 ```bash
 make smoke-expressive MODEL=dia-tts:1.6b
 make smoke-expressive MODEL=chatterbox-tts-turbo:0.1.7 SMOKE_VARIANT=onnx
+make smoke-expressive MODEL=chatterbox-tts-turbo:0.1.7 SMOKE_VARIANT=onnx SMOKE_CPU_ONLY=1
 ```
 
 The script refuses the production `vox` namespace and `vox-data` PVC. It also
@@ -106,6 +114,7 @@ For each model, capture:
 - adapter package version resolved from PyPI
 - registry entry used
 - requested variant or `auto`
+- accelerator request (`gpu` or `cpu-only`)
 - runtime capability snapshot from the pod
 - `vox pull <model>` output
 - short synthesis wall time
