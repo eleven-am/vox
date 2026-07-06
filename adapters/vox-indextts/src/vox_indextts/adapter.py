@@ -43,7 +43,7 @@ INDEXTTS_RUNTIME_DEPS = (
     "json5==0.10.0",
     "keras==2.9.0",
     "librosa==0.10.2.post1",
-    "matplotlib==3.8.2",
+    "matplotlib>=3.9,<3.10",
     "modelscope==1.27.0",
     "munch==4.0.0",
     "numba>=0.61,<0.63",
@@ -76,6 +76,11 @@ _FORBIDDEN_RUNTIME_PACKAGE_GLOBS = (
     "cuda",
     "cuda_*.dist-info",
 )
+_STALE_RUNTIME_REPAIR_GLOBS = (
+    "matplotlib",
+    "matplotlib-*.dist-info",
+    "matplotlib.libs",
+)
 
 
 def _runtime_root() -> Path:
@@ -104,12 +109,31 @@ def _remove_forbidden_runtime_packages() -> None:
                 logger.warning("Failed to remove stale IndexTTS runtime path %s: %s", path, exc)
 
 
+def _remove_stale_runtime_repair_targets() -> None:
+    runtime_dir = _runtime_root()
+    for pattern in _STALE_RUNTIME_REPAIR_GLOBS:
+        for path in runtime_dir.glob(pattern):
+            try:
+                if path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+                logger.info("Removed stale IndexTTS runtime path before repair: %s", path.name)
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                logger.warning("Failed to remove stale IndexTTS runtime path %s: %s", path, exc)
+
+
 def _run_install_command(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
 def _install_indextts_runtime() -> None:
     runtime_path = _ensure_runtime_path()
+    _remove_forbidden_runtime_packages()
+    _remove_stale_runtime_repair_targets()
+    _clear_indextts_modules()
     if not install_target_runtime_requirements(
         runtime_path,
         (INDEXTTS_RUNTIME_PACKAGE,),

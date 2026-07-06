@@ -23,7 +23,7 @@ def test_indextts_package_metadata_is_lightweight():
     data = tomllib.loads(pyproject.read_text())
 
     dependencies = data["project"]["dependencies"]
-    assert data["project"]["version"] == "0.1.12"
+    assert data["project"]["version"] == "0.1.13"
     assert not any(dep.startswith(("torch", "torchaudio", "indextts")) for dep in dependencies)
 
 
@@ -236,6 +236,7 @@ def test_indextts_bootstraps_runtime_when_missing(tmp_path):
     assert "torch" not in dependency_commands
     assert "torchaudio" not in dependency_commands
     assert "numpy>=1.26,<2" in calls[1]
+    assert "matplotlib>=3.9,<3.10" in calls[1]
     assert "protobuf==3.19.6" in calls[1]
     assert "transformers==4.52.1" in calls[1]
 
@@ -396,6 +397,46 @@ def test_indextts_removes_forbidden_torch_runtime_packages_before_probe(tmp_path
 
         with patch("vox_indextts.adapter._indextts_class_from_runtime", side_effect=fake_probe):
             assert _load_indextts_class() is _FakeIndexTTS2
+
+
+def test_indextts_removes_stale_matplotlib_before_runtime_repair(tmp_path):
+    vox_home = tmp_path / "vox-home"
+    runtime = vox_home / "runtime" / "indextts"
+    for relative in (
+        "matplotlib",
+        "matplotlib-3.8.2.dist-info",
+        "matplotlib-3.9.4.dist-info",
+        "matplotlib.libs",
+    ):
+        path = runtime / relative
+        path.mkdir(parents=True)
+        (path / "marker").write_text("stale", encoding="utf-8")
+
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if "transformers==4.52.1" in cmd:
+            _install_fake_indextts_modules()
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        return result
+
+    with patch.dict(os.environ, {"VOX_HOME": str(vox_home)}):
+        from vox_indextts.adapter import IndexTTSAdapter
+
+        with (
+            patch("vox_indextts.adapter.subprocess.run", side_effect=fake_run),
+            patch("vox_indextts.adapter._clear_indextts_modules"),
+        ):
+            IndexTTSAdapter().prepare_runtime()
+
+    assert calls
+    assert not (runtime / "matplotlib").exists()
+    assert not (runtime / "matplotlib-3.8.2.dist-info").exists()
+    assert not (runtime / "matplotlib-3.9.4.dist-info").exists()
+    assert not (runtime / "matplotlib.libs").exists()
 
 
 def test_indextts_runtime_probe_rejects_app_env_indextts_module(tmp_path):
