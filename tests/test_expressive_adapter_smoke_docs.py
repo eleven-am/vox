@@ -20,15 +20,35 @@ def test_expressive_adapter_smoke_runbook_lists_required_models_and_evidence():
         assert model in runbook
 
     for evidence in (
+        "image tag and digest",
+        "adapter package version resolved from PyPI",
+        "registry entry used",
+        "runtime capability snapshot from the pod",
         "`vox pull <model>` output",
         "short synthesis wall time",
         "long synthesis wall time",
         "generated audio duration",
+        "peak pod memory",
         "peak GPU memory",
         "output WAV artifact",
         "audio is usable",
+        "exact failure output",
     ):
         assert evidence in runbook
+
+
+def test_expressive_adapter_smoke_runbook_preserves_runtime_and_artifact_boundaries():
+    runbook = Path("docs/expressive-adapter-smoke.md").read_text()
+
+    for requirement in (
+        "Runtime dependencies are installed under `$VOX_HOME/runtime/<adapter>`",
+        "Model files are stored in the model store, not in the adapter package or base image",
+        "reference WAV copied into the disposable\nPVC or mounted as test-only data",
+        "The adapter is expected to reject\nrequests without reference audio or a voice-path prompt",
+        "Do not delete or modify production voice data under `$VOX_HOME/voices`",
+        "Failures, if any, are classified as Vox, adapter, dependency, upstream, or hardware",
+    ):
+        assert requirement in runbook
 
 
 def test_expressive_adapter_status_tracks_all_goal_targets_and_smoke_gap():
