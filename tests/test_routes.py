@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -91,6 +92,7 @@ class MockScheduler(FakeScheduler):
         self._enforce_error: Exception | None = None
         self._trim_idle_error: Exception | None = None
         self._unload_error: Exception | None = None
+        self._acquire_error: Exception | None = None
         self.preloaded: list[str] = []
         self.trimmed: list[str] = []
         self.enforced: list[int] = []
@@ -101,6 +103,14 @@ class MockScheduler(FakeScheduler):
     def set_enforce_error(self, error: Exception): self._enforce_error = error
     def set_trim_idle_error(self, error: Exception): self._trim_idle_error = error
     def set_unload_error(self, error: Exception): self._unload_error = error
+    def set_acquire_error(self, error: Exception): self._acquire_error = error
+
+    @asynccontextmanager
+    async def acquire(self, name: str):
+        if self._acquire_error is not None:
+            raise self._acquire_error
+        async with super().acquire(name) as adapter:
+            yield adapter
 
     async def unload(self, name: str) -> bool:
         if self._unload_error is not None:
@@ -552,6 +562,22 @@ class TestSynthesizeMapping:
             json={"model": "missing:latest", "input": "hello"},
         )
         assert resp.status_code == 404
+
+    def test_model_load_budget_failure_maps_to_507(self):
+        from vox.core.errors import ModelLoadError
+
+        scheduler = MockScheduler()
+        scheduler.register("test-tts:latest", FakeTTSAdapter())
+        scheduler.set_acquire_error(ModelLoadError("Cannot satisfy VRAM budget"))
+        client = TestClient(_build_app(scheduler=scheduler))
+
+        resp = client.post(
+            "/v1/audio/speech",
+            json={"model": "test-tts:latest", "input": "hello"},
+        )
+
+        assert resp.status_code == 507
+        assert "Cannot satisfy VRAM budget" in resp.json()["detail"]
 
     def test_wrong_model_type_maps_to_400(self):
         scheduler = MockScheduler()

@@ -14,12 +14,13 @@ from vox.audio.codecs import encode_pcm, encode_wav_stream_header
 from vox.audio.pipeline import get_content_type, prepare_for_output
 from vox.core.adapter import TTSAdapter
 from vox.core.async_iterators import iterate_off_event_loop
-from vox.core.errors import VoxError
+from vox.core.errors import ModelLoadError, VoxError
 from vox.core.types import SynthesizeChunk
 from vox.operations.defaults import resolve_requested_or_default_model
 from vox.operations.errors import (
     EmptyInputError,
     InvalidConfigError,
+    MemoryBudgetExceededError,
     NoAudioGeneratedError,
     WrongModelTypeError,
 )
@@ -193,23 +194,26 @@ async def _acquire_tts_synthesis_context(
     model: str,
     request: SynthesisRequest,
 ):
-    async with acquire_typed_adapter(
-        scheduler,
-        model=model,
-        adapter_type=TTSAdapter,
-        expected_type="TTS",
-    ) as adapter:
-        voice, language, reference_audio, reference_text = resolve_tts_voice_request(
-            adapter, store, request.voice, request.language
-        )
-        yield _TtsSynthesisContext(
-            adapter=adapter,
-            voice=voice,
-            language=language,
-            reference_audio=reference_audio,
-            reference_text=reference_text,
-            text_chunks=tuple(_split_for_adapter(request.input, adapter)),
-        )
+    try:
+        async with acquire_typed_adapter(
+            scheduler,
+            model=model,
+            adapter_type=TTSAdapter,
+            expected_type="TTS",
+        ) as adapter:
+            voice, language, reference_audio, reference_text = resolve_tts_voice_request(
+                adapter, store, request.voice, request.language
+            )
+            yield _TtsSynthesisContext(
+                adapter=adapter,
+                voice=voice,
+                language=language,
+                reference_audio=reference_audio,
+                reference_text=reference_text,
+                text_chunks=tuple(_split_for_adapter(request.input, adapter)),
+            )
+    except ModelLoadError as exc:
+        raise MemoryBudgetExceededError(str(exc)) from exc
 
 
 async def _iter_tts_synthesis_chunks(

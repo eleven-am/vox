@@ -13,6 +13,7 @@ from tests.fakes import FakeSTTAdapter as FakeSTT
 from vox.audio.codecs import encode_wav
 from vox.core.adapter import TTSAdapter
 from vox.core.cloned_voices import create_stored_voice
+from vox.core.errors import ModelLoadError
 from vox.core.store import BlobStore
 from vox.core.types import (
     AdapterInfo,
@@ -25,6 +26,7 @@ from vox.core.types import (
 from vox.operations.errors import (
     EmptyInputError,
     InvalidConfigError,
+    MemoryBudgetExceededError,
     NoAudioGeneratedError,
     NoDefaultModelError,
     StoredModelNotFoundError,
@@ -628,5 +630,24 @@ async def test_synthesize_preflight_translates_model_not_found_to_operation_erro
             registry=registry,
             store=store,
             request=SynthesisRequest(input="hello", model="missing:latest", response_format="wav"),
+            stream=False,
+        )
+
+
+@pytest.mark.asyncio
+async def test_synthesize_preflight_translates_model_load_failure_to_budget_error(tmp_path: Path):
+    class BudgetRejectedScheduler:
+        def acquire(self, _model):
+            raise ModelLoadError("Cannot satisfy VRAM budget")
+
+    store = BlobStore(root=tmp_path)
+    registry = MagicMock()
+
+    with pytest.raises(MemoryBudgetExceededError, match="Cannot satisfy VRAM budget"):
+        await synthesize_audio_response(
+            scheduler=BudgetRejectedScheduler(),
+            registry=registry,
+            store=store,
+            request=SynthesisRequest(input="hello", model="too-large:latest", response_format="wav"),
             stream=False,
         )
