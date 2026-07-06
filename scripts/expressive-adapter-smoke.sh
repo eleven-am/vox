@@ -418,6 +418,22 @@ validate_audio_durations() {
   done <<< "$body"
 }
 
+validate_model_resolution() {
+  local body="$1"
+  if grep -q '"error":' <<< "$body"; then
+    FAILED=1
+    FAILED_STEPS+=("Model resolution reported an error")
+  fi
+  if ! grep -q '"manifest_exists": true' <<< "$body"; then
+    FAILED=1
+    FAILED_STEPS+=("Model manifest missing after pull")
+  fi
+  if ! grep -q '"manifest_layers":' <<< "$body"; then
+    FAILED=1
+    FAILED_STEPS+=("Model manifest layers missing after pull")
+  fi
+}
+
 run_timed() {
   local label="$1"
   shift
@@ -531,6 +547,7 @@ except Exception as exc:
 print(json.dumps(payload, indent=2, sort_keys=True))
 PY" 2>&1 || true)"
 append_section "Model Resolution" "$model_resolution"
+validate_model_resolution "$model_resolution"
 
 packages="$(kubectl -n "$NS" exec "$POD" -- sh -lc "python - <<'PY'
 from importlib.metadata import version
