@@ -22,6 +22,12 @@ target runtime `$VOX_HOME/runtime/cosyvoice`.
 The shared Vox GPU stack remains owned by the base Vox environment; the adapter
 does not install its own Torch/CUDA/server runtime packages.
 
+The current Vox adapter is classified for Linux x86_64 CUDA/Torch runtimes.
+CPU, ONNX, and Spark/ARM NVIDIA paths are not currently production-supported by
+this adapter. Upstream CosyVoice 2 does not provide a Vox-validated ONNX backend
+for this package, and the Spark/ARM NVIDIA dependency stack has not been proven
+cleanly installable with the adapter runtime isolation contract.
+
 CosyVoice imports `whisper.log_mel_spectrogram` and
 `whisper.tokenizer.Tokenizer` for frontend features. Vox provides those narrow
 compatibility surfaces inside the isolated runtime instead of installing the

@@ -328,6 +328,19 @@ FIXTURE_CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "license": "Apache-2.0",
             "parameters": {"sample_rate": 24000},
             "adapter_package": "vox-cosyvoice",
+            "runtime": {
+                "required": {
+                    "python_modules": ["torch"],
+                    "accelerators": ["cuda"],
+                    "systems": ["linux"],
+                    "machines": ["x86_64"],
+                    "min_vram_gb": 8,
+                    "notes": [
+                        "CosyVoice2 uses a CUDA-oriented Torch runtime in Vox; "
+                        "CPU, ONNX, and Spark/ARM NVIDIA paths are not currently production-supported."
+                    ],
+                }
+            },
         },
     },
     "orpheus-tts": {

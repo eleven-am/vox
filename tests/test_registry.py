@@ -471,6 +471,11 @@ class TestAvailableModels:
         assert cosyvoice["adapter_package"] == "vox-cosyvoice"
         assert cosyvoice["adapter"] == "cosyvoice2-tts-torch"
         assert cosyvoice["parameters"]["sample_rate"] == 24_000
+        assert cosyvoice["runtime"]["required"]["systems"] == ["linux"]
+        assert cosyvoice["runtime"]["required"]["machines"] == ["x86_64"]
+        assert cosyvoice["runtime"]["required"]["accelerators"] == ["cuda"]
+        assert cosyvoice["runtime"]["required"]["min_vram_gb"] == 8
+        assert "Spark/ARM NVIDIA" in cosyvoice["runtime"]["required"]["notes"][0]
 
     def test_orpheus_catalog_entry_uses_orpheus_adapter_package(self):
         orpheus = CATALOG["orpheus-tts"]["medium-3b"]
