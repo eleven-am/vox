@@ -194,3 +194,15 @@ def test_expressive_adapter_readmes_document_hardware_classification():
         for phrase in phrases:
             phrase = re.sub(r"\s+", " ", phrase)
             assert phrase in content, f"{readme} should document: {phrase}"
+
+
+def test_voice_cloning_adapter_readmes_show_voice_path_examples():
+    expected_voice_path_examples = {
+        "vox-cosyvoice": "vox run cosyvoice2-tts:0.5b \"Hello with a reference voice\" --voice /path/to/reference.wav",
+        "vox-indextts": "vox run indextts-tts:2 \"Hello from IndexTTS\" --voice /path/to/reference.wav",
+    }
+
+    for package_name, example in expected_voice_path_examples.items():
+        readme = ADAPTERS_ROOT / package_name / "README.md"
+        content = readme.read_text()
+        assert example in content, f"{readme} should show how to pass a voice reference path"

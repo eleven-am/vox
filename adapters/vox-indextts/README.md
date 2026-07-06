@@ -28,7 +28,7 @@ adapter runtime. Curated non-Torch runtime dependencies live under
 
 ```bash
 vox pull indextts-tts:2
-vox run indextts-tts:2 "Hello from IndexTTS"
+vox run indextts-tts:2 "Hello from IndexTTS" --voice /path/to/reference.wav
 ```
 
 IndexTTS is a voice-cloning backend. Pass `reference_audio` through the Vox API

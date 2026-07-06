@@ -41,6 +41,7 @@ installing the full plotting stack.
 ```bash
 vox pull cosyvoice2-tts:0.5b
 vox run cosyvoice2-tts:0.5b "Hello from CosyVoice 2"
+vox run cosyvoice2-tts:0.5b "Hello with a reference voice" --voice /path/to/reference.wav
 ```
 
 CosyVoice 2 is best used with a reference voice. Pass `reference_audio` and
