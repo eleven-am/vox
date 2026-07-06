@@ -43,7 +43,7 @@ def test_expressive_adapter_smoke_runbook_pins_published_adapter_baseline():
     for package in (
         "vox-cosyvoice==0.1.5",
         "vox-dia==0.2.12",
-        "vox-orpheus==0.1.5",
+        "vox-orpheus==0.1.6",
         "vox-indextts==0.1.5",
     ):
         assert package in runbook
@@ -96,6 +96,7 @@ def test_expressive_adapter_status_names_local_regression_evidence():
         "Vox does not save a model\n  manifest when `prepare_runtime()` fails",
         "`tests/test_orpheus_adapter.py`",
         "a stale `orpheus_tts` module missing `OrpheusModel` and a\n  broken runtime import probe are repaired",
+        "rejects `orpheus_tts` modules loaded from\n  outside `$VOX_HOME/runtime/orpheus`",
         "`tests/test_indextts_adapter.py`",
         "a stale `indextts.infer_v2` module missing `IndexTTS2` and a\n  broken runtime import probe are repaired",
     ):

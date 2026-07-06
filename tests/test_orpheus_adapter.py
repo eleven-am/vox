@@ -21,7 +21,7 @@ def test_orpheus_package_metadata_is_lightweight():
     data = tomllib.loads(pyproject.read_text())
 
     dependencies = data["project"]["dependencies"]
-    assert data["project"]["version"] == "0.1.5"
+    assert data["project"]["version"] == "0.1.6"
     assert not any(dep.startswith(("torch", "vllm", "orpheus-speech", "snac")) for dep in dependencies)
 
 
@@ -48,14 +48,21 @@ class _FakeOrpheusModel:
         yield b"\x00\x00\x00@\x00\xc0"
 
 
-def _install_fake_orpheus_modules() -> None:
+def _orpheus_runtime_file() -> str:
+    runtime_root = Path(os.environ.get("VOX_HOME", str(Path.home() / ".vox"))) / "runtime" / "orpheus"
+    return str(runtime_root / "orpheus_tts" / "__init__.py")
+
+
+def _install_fake_orpheus_modules(*, module_file: str | None = None) -> None:
     module = ModuleType("orpheus_tts")
+    module.__file__ = module_file or _orpheus_runtime_file()
     module.OrpheusModel = _FakeOrpheusModel
     sys.modules["orpheus_tts"] = module
 
 
-def _install_stale_orpheus_module() -> None:
+def _install_stale_orpheus_module(*, module_file: str | None = None) -> None:
     module = ModuleType("orpheus_tts")
+    module.__file__ = module_file or _orpheus_runtime_file()
     sys.modules["orpheus_tts"] = module
 
 
@@ -103,19 +110,20 @@ def test_orpheus_load_rejects_cpu_before_runtime_install(tmp_path):
 
 
 def test_orpheus_load_and_synthesize(tmp_path):
-    _install_fake_orpheus_modules()
-    from vox_orpheus.adapter import OrpheusAdapter
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        _install_fake_orpheus_modules()
+        from vox_orpheus.adapter import OrpheusAdapter
 
-    adapter = OrpheusAdapter()
-    adapter.load(str(tmp_path), "cuda", _source="canopylabs/orpheus-tts-0.1-finetune-prod")
+        adapter = OrpheusAdapter()
+        adapter.load(str(tmp_path), "cuda", _source="canopylabs/orpheus-tts-0.1-finetune-prod")
 
-    async def run():
-        chunks = []
-        async for chunk in adapter.synthesize("Hello", voice="tara"):
-            chunks.append(chunk)
-        return chunks
+        async def run():
+            chunks = []
+            async for chunk in adapter.synthesize("Hello", voice="tara"):
+                chunks.append(chunk)
+            return chunks
 
-    chunks = asyncio.run(run())
+        chunks = asyncio.run(run())
     instance = _FakeOrpheusModel.instances[-1]
 
     assert instance.args[0] == "canopylabs/orpheus-tts-0.1-finetune-prod"
@@ -126,18 +134,19 @@ def test_orpheus_load_and_synthesize(tmp_path):
 
 
 def test_orpheus_rejects_reference_audio(tmp_path):
-    _install_fake_orpheus_modules()
-    from vox_orpheus.adapter import OrpheusAdapter
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        _install_fake_orpheus_modules()
+        from vox_orpheus.adapter import OrpheusAdapter
 
-    adapter = OrpheusAdapter()
-    adapter.load(str(tmp_path), "cuda")
+        adapter = OrpheusAdapter()
+        adapter.load(str(tmp_path), "cuda")
 
-    async def run():
-        async for _ in adapter.synthesize("Hello", reference_text="x"):
-            pass
+        async def run():
+            async for _ in adapter.synthesize("Hello", reference_text="x"):
+                pass
 
-    with pytest.raises(ValueError, match="reference_audio/reference_text"):
-        asyncio.run(run())
+        with pytest.raises(ValueError, match="reference_audio/reference_text"):
+            asyncio.run(run())
 
 
 def test_orpheus_preflight_rejects_reference_audio():
@@ -265,3 +274,20 @@ def test_orpheus_repairs_runtime_when_import_probe_is_broken(tmp_path):
     assert _FakeOrpheusModel.instances == []
     assert "--target" in calls[0]
     assert str(tmp_path / "vox-home" / "runtime" / "orpheus") in calls[0]
+
+
+def test_orpheus_runtime_probe_rejects_app_env_orpheus_module(tmp_path):
+    app_module_path = tmp_path / "app-env" / "orpheus_tts" / "__init__.py"
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        _install_fake_orpheus_modules(module_file=str(app_module_path))
+        from vox_orpheus.adapter import _orpheus_model_class_from_runtime
+
+        assert _orpheus_model_class_from_runtime() is None
+
+
+def test_orpheus_runtime_probe_accepts_orpheus_module_from_runtime(tmp_path):
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        _install_fake_orpheus_modules()
+        from vox_orpheus.adapter import _orpheus_model_class_from_runtime
+
+        assert _orpheus_model_class_from_runtime() is _FakeOrpheusModel
