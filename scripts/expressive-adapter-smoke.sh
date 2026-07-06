@@ -250,6 +250,76 @@ record_timed() {
 
 record_timed "Pull Output" kubectl -n "$NS" exec "$POD" -- sh -lc "vox pull '$MODEL'"
 
+model_resolution="$(kubectl -n "$NS" exec "$POD" -- sh -lc "MODEL_REF='$MODEL' python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+from vox.core.model_resolution import resolve_catalog_entry
+from vox.core.registry import ModelRegistry
+from vox.core.store import BlobStore
+from vox.operations.models import (
+    ModelReferenceRequest,
+    resolve_model_reference,
+)
+
+store = BlobStore(Path(os.environ.get('VOX_HOME', str(Path.home() / '.vox'))))
+registry = ModelRegistry(store)
+request = ModelReferenceRequest(name=os.environ['MODEL_REF'])
+payload = {'requested': request.name}
+
+try:
+    resolved = resolve_model_reference(registry=registry, request=request)
+    payload['resolved_reference'] = {
+        'parsed_name': resolved.parsed_name,
+        'parsed_tag': resolved.parsed_tag,
+        'resolved_name': resolved.resolved_name,
+        'resolved_tag': resolved.resolved_tag,
+        'explicit_tag': resolved.explicit_tag,
+        'requested_variant': resolved.requested_variant,
+    }
+
+    entry = registry.lookup(
+        resolved.parsed_name,
+        resolved.parsed_tag,
+        explicit_tag=resolved.explicit_tag,
+    )
+    payload['registry_entry'] = entry
+    if entry:
+        variant = resolve_catalog_entry(entry, forced_variant=resolved.requested_variant)
+        payload['resolved_variant'] = variant.variant_id
+        payload['preferred_backend'] = variant.preferred_backend
+        payload['variant_missing'] = list(variant.missing)
+        payload['variant_warnings'] = list(variant.warnings)
+        payload['concrete_entry'] = variant.entry
+
+    manifest = store.resolve_model(resolved.resolved_name, resolved.resolved_tag)
+    payload['manifest_path'] = str(
+        store.manifests_dir / resolved.resolved_name / resolved.resolved_tag
+    )
+    payload['model_link_path'] = str(
+        store.root / 'models' / 'links' / resolved.resolved_name / resolved.resolved_tag
+    )
+    payload['runtime_root'] = str(store.root / 'runtime')
+    payload['manifest_exists'] = manifest is not None
+    if manifest:
+        payload['manifest_config'] = manifest.config
+        payload['manifest_layers'] = [
+            {
+                'filename': layer.filename,
+                'size': layer.size,
+                'media_type': layer.media_type,
+                'digest': layer.digest,
+            }
+            for layer in manifest.layers
+        ]
+except Exception as exc:
+    payload['error'] = f'{type(exc).__name__}: {exc}'
+
+print(json.dumps(payload, indent=2, sort_keys=True))
+PY" 2>&1 || true)"
+append_section "Model Resolution" "$model_resolution"
+
 packages="$(kubectl -n "$NS" exec "$POD" -- sh -lc "python - <<'PY'
 from importlib.metadata import version
 for package in ('vox-cosyvoice', 'vox-dia', 'vox-orpheus', 'vox-indextts'):

@@ -33,6 +33,23 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert "exit 5" in script
 
 
+def test_expressive_adapter_smoke_script_records_model_resolution_evidence():
+    script = Path("scripts/expressive-adapter-smoke.sh").read_text()
+
+    assert 'append_section "Model Resolution"' in script
+    assert "resolve_model_reference" in script
+    assert "resolve_catalog_entry" in script
+    assert "'registry_entry'" in script
+    assert "'resolved_variant'" in script
+    assert "'preferred_backend'" in script
+    assert "'manifest_path'" in script
+    assert "'model_link_path'" in script
+    assert "'runtime_root'" in script
+    assert "'manifest_exists'" in script
+    assert "'manifest_config'" in script
+    assert "'manifest_layers'" in script
+
+
 def test_expressive_adapter_smoke_runbook_keeps_production_safety_boundary():
     runbook = Path("docs/expressive-adapter-smoke.md").read_text()
 
