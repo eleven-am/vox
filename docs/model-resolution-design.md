@@ -1,7 +1,9 @@
 # Vox Hardware-Aware Model Resolution (Design)
 
-Status: proposal, not yet implemented. This is the authoritative spec merging the
-initial variant-resolution design with the Codex review. Build from this.
+Status: partially implemented. This is the authoritative spec merging the
+initial variant-resolution design with the Codex review. Build from this, and
+keep the implemented ground truth below current as resolver/runtime behavior
+lands.
 
 ## Goal
 
@@ -21,9 +23,11 @@ override and debug escape hatches only, never the default source of truth.
   Registry entries may be concrete backends or logical models with `variants`.
 - `src/vox/operations/models.py::pull_model`: resolves the alias, looks up a
   catalog entry, runs the compatibility gate, installs the adapter package,
-  downloads HF files, writes a manifest. The gate runs before the adapter is
-  installed or imported, so pull-time compatibility must come from core Vox and
-  catalog metadata, not adapter code, unless we deliberately change that order.
+  downloads HF files, runs adapter `prepare_runtime()` when present, and writes
+  a manifest only after runtime preparation succeeds. The gate runs before the
+  adapter is installed or imported, so pull-time compatibility must come from
+  core Vox and catalog metadata, not adapter code, unless we deliberately change
+  that order.
 - `src/vox/core/capabilities.py`: current gate. Infers runtime needs from
   `format` and adapter naming. Lets `VOX_HAS_TORCH` / `VOX_HAS_ONNXRUNTIME`
   silently override reality (to be fixed).

@@ -6,6 +6,7 @@ from pathlib import Path
 def test_model_resolution_design_matches_current_variant_api():
     design = Path("docs/model-resolution-design.md").read_text(encoding="utf-8")
 
+    assert "Status: partially implemented." in design
     assert "remote registry at" in design
     assert "single\n  source of truth" in design
     assert "CLI `--variant` flag" in design
@@ -16,6 +17,15 @@ def test_model_resolution_design_matches_current_variant_api():
     assert "Grammar: `<name>[@<variant>][:<tag>]`" not in design
     assert "`@variant` / `--backend`" not in design
     assert "CLI `--backend` / `@variant`" not in design
+
+
+def test_model_resolution_design_documents_atomic_runtime_preparation():
+    design = Path("docs/model-resolution-design.md").read_text(encoding="utf-8")
+
+    assert "runs adapter `prepare_runtime()` when present" in design
+    assert "writes\n  a manifest only after runtime preparation succeeds" in design
+    assert "Run adapter `prepare_runtime()` when available." in design
+    assert "Write the manifest only after runtime preparation succeeds." in design
 
 
 def test_model_resolution_design_uses_public_qwen_model_name():
