@@ -360,10 +360,18 @@ append_section() {
 
 record_resources() {
   local label="$1"
+  local pod_metrics
+  local gpu_metrics
   local resources
-  resources="$(kubectl top pod -n "$NS" "$POD" 2>&1 || true; kubectl -n "$NS" exec "$POD" -- nvidia-smi 2>&1 || true)"
+  pod_metrics="$(kubectl top pod -n "$NS" "$POD" 2>&1 || true)"
+  gpu_metrics="$(kubectl -n "$NS" exec "$POD" -- nvidia-smi 2>&1 || true)"
+  resources="Pod metrics:"$'\n'"$pod_metrics"$'\n\n'"GPU metrics:"$'\n'"$gpu_metrics"
   append_section "$label" "$resources"
-  if [[ "$GPU" != "0" && "$resources" != *"NVIDIA-SMI"* ]]; then
+  if [[ "$pod_metrics" != *"$POD"* ]]; then
+    FAILED=1
+    FAILED_STEPS+=("$label missing pod memory telemetry")
+  fi
+  if [[ "$GPU" != "0" && "$gpu_metrics" != *"NVIDIA-SMI"* ]]; then
     FAILED=1
     FAILED_STEPS+=("$label missing GPU telemetry")
   fi

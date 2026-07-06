@@ -107,7 +107,13 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert 'record_resources "Resource Snapshot After Pull"' in script
     assert 'record_resources "Resource Snapshot After Short Synthesis"' in script
     assert 'record_resources "Resource Snapshot After Long Synthesis"' in script
-    assert '[[ "$GPU" != "0" && "$resources" != *"NVIDIA-SMI"* ]]' in script
+    assert "pod_metrics=" in script
+    assert "gpu_metrics=" in script
+    assert "Pod metrics:" in script
+    assert "GPU metrics:" in script
+    assert '[[ "$pod_metrics" != *"$POD"* ]]' in script
+    assert 'FAILED_STEPS+=("$label missing pod memory telemetry")' in script
+    assert '[[ "$GPU" != "0" && "$gpu_metrics" != *"NVIDIA-SMI"* ]]' in script
     assert 'FAILED_STEPS+=("$label missing GPU telemetry")' in script
     assert "voice_path_check=\"file\"" in script
     assert "voice_path_check=\"voice-id\"" in script
