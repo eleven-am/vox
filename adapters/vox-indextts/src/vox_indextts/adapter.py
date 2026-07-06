@@ -24,12 +24,23 @@ from vox.core.adapter_runtime import (
 from vox.core.adapter_runtime import (
     runtime_root as vox_runtime_root,
 )
-from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesisParameterInfo, SynthesizeChunk, VoiceInfo
 from vox.operations.errors import InvalidConfigError
 
 logger = logging.getLogger(__name__)
 
 INDEXTTS_SAMPLE_RATE = 24_000
+_EMOTION_PARAM_NAMES = (
+    "emotion_happy",
+    "emotion_angry",
+    "emotion_sad",
+    "emotion_afraid",
+    "emotion_disgusted",
+    "emotion_melancholic",
+    "emotion_surprised",
+    "emotion_calm",
+)
+_EMOTION_VECTOR_MAX_SUM = 1.5
 INDEXTTS_RUNTIME_PACKAGE = "git+https://github.com/index-tts/index-tts.git"
 INDEXTTS_RUNTIME_DEPS = (
     "accelerate==1.8.1",
@@ -348,13 +359,70 @@ def _construct_model(cls: type[Any], model_path: Path, device: str) -> Any:
     )
 
 
-def _infer_to_file(model: Any, text: str, reference_path: str, output_path: Path) -> Any:
+def _emotion_vector_from_params(params: dict[str, Any] | None) -> list[float] | None:
+    if not params or not any(name in params for name in _EMOTION_PARAM_NAMES):
+        return None
+    vector = [float(params.get(name, 0.0)) for name in _EMOTION_PARAM_NAMES]
+    total = sum(vector)
+    if total > _EMOTION_VECTOR_MAX_SUM:
+        raise InvalidConfigError(
+            "IndexTTS emotion_* parameters must sum to "
+            f"{_EMOTION_VECTOR_MAX_SUM} or less; got {total:.3f}"
+        )
+    return vector
+
+
+def _inference_kwargs_from_params(params: dict[str, Any] | None) -> dict[str, Any]:
+    if not params:
+        return {}
+
+    kwargs: dict[str, Any] = {}
+    emotion_vector = _emotion_vector_from_params(params)
+    if emotion_vector is not None:
+        kwargs["emo_vector"] = emotion_vector
+    if "emo_alpha" in params:
+        kwargs["emo_alpha"] = float(params["emo_alpha"])
+    if "use_emo_text" in params:
+        kwargs["use_emo_text"] = bool(params["use_emo_text"])
+    if "emo_text" in params:
+        kwargs["emo_text"] = str(params["emo_text"])
+        kwargs.setdefault("use_emo_text", True)
+    if "use_random" in params:
+        kwargs["use_random"] = bool(params["use_random"])
+    return kwargs
+
+
+def _infer_to_file(
+    model: Any,
+    text: str,
+    reference_path: str,
+    output_path: Path,
+    *,
+    params: dict[str, Any] | None = None,
+) -> Any:
+    inference_kwargs = _inference_kwargs_from_params(params)
     attempts: list[Callable[[], Any]] = [
-        lambda: model.infer(spk_audio_prompt=reference_path, text=text, output_path=str(output_path)),
-        lambda: model.infer(audio_prompt=reference_path, text=text, output_path=str(output_path)),
-        lambda: model.infer(text=text, audio_prompt=reference_path, output_path=str(output_path)),
-        lambda: model.infer(reference_path, text, str(output_path)),
+        lambda: model.infer(
+            spk_audio_prompt=reference_path,
+            text=text,
+            output_path=str(output_path),
+            **inference_kwargs,
+        ),
+        lambda: model.infer(
+            audio_prompt=reference_path,
+            text=text,
+            output_path=str(output_path),
+            **inference_kwargs,
+        ),
+        lambda: model.infer(
+            text=text,
+            audio_prompt=reference_path,
+            output_path=str(output_path),
+            **inference_kwargs,
+        ),
     ]
+    if not inference_kwargs:
+        attempts.append(lambda: model.infer(reference_path, text, str(output_path)))
     errors: list[str] = []
     for attempt in attempts:
         try:
@@ -415,7 +483,9 @@ class IndexTTSAdapter(TTSAdapter):
         language: str | None = None,
         reference_audio: NDArray[np.float32] | None = None,
         reference_text: str | None = None,
+        params: dict[str, Any] | None = None,
     ) -> None:
+        _emotion_vector_from_params(params)
         if reference_audio is not None:
             if np.asarray(reference_audio, dtype=np.float32).size == 0:
                 raise InvalidConfigError("IndexTTS reference_audio is empty")
@@ -423,6 +493,47 @@ class IndexTTSAdapter(TTSAdapter):
         if _voice_path(voice) is not None:
             return
         raise InvalidConfigError("IndexTTS requires reference_audio or a voice path for speaker cloning")
+
+    def synthesis_parameters(self) -> tuple[SynthesisParameterInfo, ...]:
+        return (
+            SynthesisParameterInfo(
+                name="emo_alpha",
+                type="number",
+                default=None,
+                min_value=0.0,
+                max_value=1.0,
+                description="IndexTTS2 emotion-conditioning strength. None uses the backend default.",
+            ),
+            SynthesisParameterInfo(
+                name="use_emo_text",
+                type="boolean",
+                default=False,
+                description="Infer emotion from the synthesis text when true.",
+            ),
+            SynthesisParameterInfo(
+                name="emo_text",
+                type="string",
+                default=None,
+                description="Separate emotion description text; implies use_emo_text=true.",
+            ),
+            SynthesisParameterInfo(
+                name="use_random",
+                type="boolean",
+                default=False,
+                description="Enable IndexTTS2 stochastic emotion sampling; may reduce cloning fidelity.",
+            ),
+            *(
+                SynthesisParameterInfo(
+                    name=name,
+                    type="number",
+                    default=0.0,
+                    min_value=0.0,
+                    max_value=1.0,
+                    description="IndexTTS2 emotion-vector dial; all emotion_* values must sum to 1.5 or less.",
+                )
+                for name in _EMOTION_PARAM_NAMES
+            ),
+        )
 
     async def synthesize(
         self,
@@ -433,6 +544,7 @@ class IndexTTSAdapter(TTSAdapter):
         language: str | None = None,
         reference_audio: NDArray[np.float32] | None = None,
         reference_text: str | None = None,
+        params: dict[str, Any] | None = None,
     ) -> AsyncIterator[SynthesizeChunk]:
         if self._model is None:
             raise RuntimeError("IndexTTS model is not loaded — call load() first")
@@ -454,7 +566,7 @@ class IndexTTSAdapter(TTSAdapter):
                 reference_path = voice_file
 
             output_path = tmpdir_path / "output.wav"
-            result = _infer_to_file(self._model, text, reference_path, output_path)
+            result = _infer_to_file(self._model, text, reference_path, output_path, params=params)
             audio, sample_rate = _audio_from_result(result, output_path)
 
         chunk_size = sample_rate * 2

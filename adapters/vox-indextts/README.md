@@ -34,6 +34,26 @@ vox run indextts-tts:2 "Hello from IndexTTS" --voice /path/to/reference.wav
 IndexTTS is a voice-cloning backend. Pass `reference_audio` through the Vox API
 or use a voice value that points to a local WAV file.
 
+IndexTTS2 emotion controls are exposed through Vox synthesis `params`:
+
+- `emo_alpha` (number, default backend value, range `0..1`) controls emotion
+  conditioning strength.
+- `use_emo_text` (boolean, default `false`) asks IndexTTS2 to infer emotion
+  from the synthesis text.
+- `emo_text` (string, optional) supplies separate emotion-description text and
+  implies `use_emo_text=true`.
+- `use_random` (boolean, default `false`) enables stochastic emotion sampling;
+  upstream notes that this may reduce voice-cloning fidelity.
+- `emotion_happy`, `emotion_angry`, `emotion_sad`, `emotion_afraid`,
+  `emotion_disgusted`, `emotion_melancholic`, `emotion_surprised`, and
+  `emotion_calm` (numbers, default `0`, range `0..1`) map to the IndexTTS2
+  eight-float `emo_vector` order. The adapter rejects vectors whose values sum
+  above `1.5`.
+
+Upstream IndexTTS2 describes duration control, but the current release notes say
+that functionality is not enabled. Vox therefore does not expose a duration
+parameter for this adapter yet.
+
 The current Vox adapter is classified for Linux x86_64 CUDA/Torch runtimes.
 CPU, ONNX, and Spark/ARM NVIDIA paths are not currently production-supported by
 this adapter. Upstream documents CPU-style constructor switches, but Vox has

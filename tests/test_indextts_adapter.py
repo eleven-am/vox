@@ -23,7 +23,7 @@ def test_indextts_package_metadata_is_lightweight():
     data = tomllib.loads(pyproject.read_text())
 
     dependencies = data["project"]["dependencies"]
-    assert data["project"]["version"] == "0.1.13"
+    assert data["project"]["version"] == "0.1.14"
     assert not any(dep.startswith(("torch", "torchaudio", "indextts")) for dep in dependencies)
 
 
@@ -99,6 +99,33 @@ def test_indextts_info_returns_correct_metadata():
     assert info.supports_voice_cloning is True
 
 
+def test_indextts_synthesis_parameters_expose_emotion_controls():
+    from vox_indextts.adapter import IndexTTSAdapter
+
+    params = {param.name: param for param in IndexTTSAdapter().synthesis_parameters()}
+
+    assert {
+        "emo_alpha",
+        "use_emo_text",
+        "emo_text",
+        "use_random",
+        "emotion_happy",
+        "emotion_angry",
+        "emotion_sad",
+        "emotion_afraid",
+        "emotion_disgusted",
+        "emotion_melancholic",
+        "emotion_surprised",
+        "emotion_calm",
+    } == set(params)
+    assert params["emo_alpha"].min_value == 0.0
+    assert params["emo_alpha"].max_value == 1.0
+    assert params["use_emo_text"].type == "boolean"
+    assert params["emo_text"].type == "string"
+    assert params["use_random"].default is False
+    assert params["emotion_sad"].max_value == 1.0
+
+
 def test_indextts_readme_uses_public_model_reference():
     readme = Path(__file__).parents[1] / "adapters" / "vox-indextts" / "README.md"
     text = readme.read_text(encoding="utf-8")
@@ -111,9 +138,11 @@ def test_indextts_readme_uses_public_model_reference():
 def test_indextts_load_rejects_cpu_before_runtime_install(tmp_path):
     from vox_indextts.adapter import IndexTTSAdapter
 
-    with patch("vox_indextts.adapter._load_indextts_class") as load_indextts_class:
-        with pytest.raises(RuntimeError, match="requires a Linux x86_64 CUDA runtime"):
-            IndexTTSAdapter().load(str(tmp_path), "cpu")
+    with (
+        patch("vox_indextts.adapter._load_indextts_class") as load_indextts_class,
+        pytest.raises(RuntimeError, match="requires a Linux x86_64 CUDA runtime"),
+    ):
+        IndexTTSAdapter().load(str(tmp_path), "cpu")
 
     load_indextts_class.assert_not_called()
 
@@ -136,6 +165,13 @@ def test_indextts_load_uses_config_and_synthesizes_with_reference_audio(tmp_path
             async for chunk in adapter.synthesize(
                 "Hello",
                 reference_audio=np.zeros(2400, dtype=np.float32),
+                params={
+                    "emo_alpha": 0.6,
+                    "emo_text": "calm but curious",
+                    "emotion_happy": 0.2,
+                    "emotion_calm": 0.7,
+                    "use_random": False,
+                },
             ):
                 chunks.append(chunk)
             return chunks
@@ -146,6 +182,11 @@ def test_indextts_load_uses_config_and_synthesizes_with_reference_audio(tmp_path
     assert instance.kwargs["cfg_path"].endswith("config.yaml")
     assert instance.kwargs["model_dir"] == str(model_dir)
     assert instance.infer_calls[0]["text"] == "Hello"
+    assert instance.infer_calls[0]["emo_alpha"] == 0.6
+    assert instance.infer_calls[0]["emo_text"] == "calm but curious"
+    assert instance.infer_calls[0]["use_emo_text"] is True
+    assert instance.infer_calls[0]["emo_vector"] == [0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.7]
+    assert instance.infer_calls[0]["use_random"] is False
     assert chunks[-1].is_final is True
     assert chunks[0].sample_rate == 24_000
 
@@ -200,6 +241,19 @@ def test_indextts_preflight_requires_reference_audio_or_voice_path():
 
     with pytest.raises(InvalidConfigError, match="reference_audio"):
         IndexTTSAdapter().validate_synthesis_request()
+
+
+def test_indextts_preflight_rejects_excessive_emotion_vector():
+    from vox_indextts.adapter import IndexTTSAdapter
+
+    with pytest.raises(InvalidConfigError, match="sum to 1.5"):
+        IndexTTSAdapter().validate_synthesis_request(
+            reference_audio=np.ones(2400, dtype=np.float32),
+            params={
+                "emotion_happy": 1.0,
+                "emotion_calm": 0.6,
+            },
+        )
 
 
 def test_indextts_bootstraps_runtime_when_missing(tmp_path):

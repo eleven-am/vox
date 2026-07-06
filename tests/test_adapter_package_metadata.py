@@ -227,6 +227,16 @@ def test_expressive_adapter_readmes_document_prompt_controls():
             "`tara`",
             "`zac`",
         ),
+        "vox-indextts": (
+            "emo_alpha",
+            "use_emo_text",
+            "emo_text",
+            "use_random",
+            "emotion_happy",
+            "emotion_calm",
+            "sum",
+            "1.5",
+        ),
     }
 
     for package_name, phrases in expected_control_phrases.items():
