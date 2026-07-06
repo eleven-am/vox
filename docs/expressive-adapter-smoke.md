@@ -8,6 +8,7 @@ live Vox deployment.
 
 Use this runbook for:
 
+- `cosyvoice2-tts:0.5b`
 - `dia-tts:1.6b`
 - `orpheus-tts:medium-3b`
 - `indextts-tts:2`
@@ -17,6 +18,22 @@ pull-time compatibility checks. They do not prove that a model can load,
 synthesize useful audio, or fit a specific GPU. A model is production-grade only
 after this smoke validation has evidence for `vox pull`, short synthesis, long
 synthesis, latency, output duration, RAM/VRAM behavior, and audio usability.
+
+## Published Adapter Baseline
+
+The isolated smoke pod must resolve adapter packages from PyPI, not from a
+local source tree or a patched live cluster directory. Verify the installed
+versions before marking a model as smoke-tested:
+
+| Model | Expected adapter package |
+| --- | --- |
+| `cosyvoice2-tts:0.5b` | `vox-cosyvoice==0.1.3` |
+| `dia-tts:1.6b` | `vox-dia==0.2.11` |
+| `orpheus-tts:medium-3b` | `vox-orpheus==0.1.3` |
+| `indextts-tts:2` | `vox-indextts==0.1.3` |
+
+If the registry points at a newer package, record that newer version in the
+smoke evidence and update this table with the same change.
 
 ## Safety Rules
 
@@ -130,6 +147,16 @@ kubectl -n "$VOX_SMOKE_NS" exec vox-adapter-smoke -- \
   sh -lc "time vox pull '$MODEL'"
 
 kubectl -n "$VOX_SMOKE_NS" exec vox-adapter-smoke -- \
+  sh -lc "python - <<'PY'
+from importlib.metadata import version
+for package in ('vox-cosyvoice', 'vox-dia', 'vox-orpheus', 'vox-indextts'):
+    try:
+        print(f'{package}=={version(package)}')
+    except Exception as exc:
+        print(f'{package}: not installed ({exc})')
+PY"
+
+kubectl -n "$VOX_SMOKE_NS" exec vox-adapter-smoke -- \
   sh -lc "time vox run '$MODEL' 'This is a short expressive smoke test.' --output /tmp/short.wav"
 
 kubectl -n "$VOX_SMOKE_NS" exec vox-adapter-smoke -- \
@@ -182,4 +209,3 @@ true:
 6. Peak memory and VRAM fit the documented registry limits.
 7. Audio is manually judged usable.
 8. Failures, if any, are classified as Vox, adapter, dependency, upstream, or hardware.
-

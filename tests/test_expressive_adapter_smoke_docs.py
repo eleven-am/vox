@@ -16,7 +16,7 @@ def test_expressive_adapter_smoke_runbook_keeps_production_safety_boundary():
 def test_expressive_adapter_smoke_runbook_lists_required_models_and_evidence():
     runbook = Path("docs/expressive-adapter-smoke.md").read_text()
 
-    for model in ("dia-tts:1.6b", "orpheus-tts:medium-3b", "indextts-tts:2"):
+    for model in ("cosyvoice2-tts:0.5b", "dia-tts:1.6b", "orpheus-tts:medium-3b", "indextts-tts:2"):
         assert model in runbook
 
     for evidence in (
@@ -35,6 +35,21 @@ def test_expressive_adapter_smoke_runbook_lists_required_models_and_evidence():
         "exact failure output",
     ):
         assert evidence in runbook
+
+
+def test_expressive_adapter_smoke_runbook_pins_published_adapter_baseline():
+    runbook = Path("docs/expressive-adapter-smoke.md").read_text()
+
+    for package in (
+        "vox-cosyvoice==0.1.3",
+        "vox-dia==0.2.11",
+        "vox-orpheus==0.1.3",
+        "vox-indextts==0.1.3",
+    ):
+        assert package in runbook
+
+    assert "resolve adapter packages from PyPI" in runbook
+    assert "not from a\nlocal source tree or a patched live cluster directory" in runbook
 
 
 def test_expressive_adapter_smoke_runbook_preserves_runtime_and_artifact_boundaries():
