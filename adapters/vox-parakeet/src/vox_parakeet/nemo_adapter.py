@@ -161,8 +161,18 @@ def _clear_nemo_modules() -> None:
             or name.startswith("matplotlib.")
             or name == "omegaconf"
             or name.startswith("omegaconf.")
+            or name == "hydra"
+            or name.startswith("hydra.")
+            or name == "hydra_plugins"
+            or name.startswith("hydra_plugins.")
             or name == "packaging"
             or name.startswith("packaging.")
+            or name == "fiddle"
+            or name.startswith("fiddle.")
+            or name == "transformers"
+            or name.startswith("transformers.")
+            or name == "nv_one_logger"
+            or name.startswith("nv_one_logger.")
         ):
             sys.modules.pop(name, None)
     importlib.invalidate_caches()
@@ -246,18 +256,17 @@ def _load_asr_model_class() -> Any:
 
 
 def _resolve_model_ref(model_path: str, source: str | None) -> tuple[str, Path | None]:
+    if source:
+        return source, None
+
     path = Path(model_path)
     if path.exists():
         if path.is_file():
-            model_ref = source or str(path)
-            return model_ref, path if path.suffix == ".nemo" else None
+            return str(path), path if path.suffix == ".nemo" else None
 
         nemo_files = sorted(path.rglob("*.nemo"))
         if nemo_files:
-            return source or str(path), nemo_files[0]
-
-    if source:
-        return source, None
+            return str(path), nemo_files[0]
 
     return model_path, None
 

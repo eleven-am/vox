@@ -162,6 +162,31 @@ def test_load_uses_pretrained_model_name_when_source_is_provided(monkeypatch: py
     assert fake_model.decoding.decoding.decoding_computer.use_cuda_graph_decoder is False
 
 
+def test_load_prefers_pretrained_source_over_pulled_local_nemo_checkpoint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fake_model = _FakeNemoModel()
+    fake_model_cls = _install_fake_nemo(model=fake_model)
+    _install_fake_torch(cuda_available=True)
+    sys.modules.pop("vox_parakeet", None)
+    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+
+    model_dir = tmp_path / "parakeet"
+    model_dir.mkdir()
+    checkpoint = model_dir / "parakeet-tdt-0.6b-v3.nemo"
+    checkpoint.write_bytes(b"fake-nemo")
+
+    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
+
+    adapter = ParakeetNemoAdapter()
+    adapter.load(str(model_dir), "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")
+
+    fake_model_cls.from_pretrained.assert_called_once_with(model_name="nvidia/parakeet-tdt-0.6b-v3")
+    fake_model_cls.restore_from.assert_not_called()
+    assert adapter.is_loaded is True
+    assert adapter._model_id == "nvidia/parakeet-tdt-0.6b-v3"
+
+
 def test_load_uses_restore_from_for_local_nemo_checkpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     fake_model_cls = _install_fake_nemo()
     _install_fake_torch(cuda_available=True)
@@ -454,17 +479,39 @@ def test_clear_nemo_modules_removes_partial_import_resolver_state():
 
     sys.modules["nemo"] = ModuleType("nemo")
     sys.modules["nemo.collections.asr"] = ModuleType("nemo.collections.asr")
+    sys.modules["hydra"] = ModuleType("hydra")
+    sys.modules["hydra._internal"] = ModuleType("hydra._internal")
+    sys.modules["hydra_plugins"] = ModuleType("hydra_plugins")
     sys.modules["omegaconf"] = ModuleType("omegaconf")
     sys.modules["omegaconf.omegaconf"] = ModuleType("omegaconf.omegaconf")
     sys.modules["matplotlib"] = ModuleType("matplotlib")
+    sys.modules["fiddle"] = ModuleType("fiddle")
+    sys.modules["fiddle._src.daglish"] = ModuleType("fiddle._src.daglish")
+    sys.modules["transformers"] = ModuleType("transformers")
+    sys.modules["transformers.models.auto.tokenization_auto"] = ModuleType(
+        "transformers.models.auto.tokenization_auto"
+    )
+    sys.modules["nv_one_logger"] = ModuleType("nv_one_logger")
+    sys.modules["nv_one_logger.training_telemetry.api.training_telemetry_provider"] = ModuleType(
+        "nv_one_logger.training_telemetry.api.training_telemetry_provider"
+    )
 
     module._clear_nemo_modules()
 
     assert "nemo" not in sys.modules
     assert "nemo.collections.asr" not in sys.modules
+    assert "hydra" not in sys.modules
+    assert "hydra._internal" not in sys.modules
+    assert "hydra_plugins" not in sys.modules
     assert "omegaconf" not in sys.modules
     assert "omegaconf.omegaconf" not in sys.modules
     assert "matplotlib" not in sys.modules
+    assert "fiddle" not in sys.modules
+    assert "fiddle._src.daglish" not in sys.modules
+    assert "transformers" not in sys.modules
+    assert "transformers.models.auto.tokenization_auto" not in sys.modules
+    assert "nv_one_logger" not in sys.modules
+    assert "nv_one_logger.training_telemetry.api.training_telemetry_provider" not in sys.modules
 
 
 def test_clear_nemo_modules_removes_modules_loaded_from_sibling_runtimes(
