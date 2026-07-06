@@ -83,6 +83,33 @@ class TestResolve:
         assert resolver.resolve("fake") is FakeAdapter
         assert str(package_dir) not in sys.path
 
+    def test_drops_stale_isolated_adapter_spec_when_path_is_missing(self, tmp_path: Path):
+        missing_dir = tmp_path / ADAPTERS_DIR / "vox-missing"
+        resolver = _make_resolver(tmp_path, adapters={})
+        resolver._installed_specs = {
+            "fake": AdapterInstallSpec(entry_point=MagicMock(), path=missing_dir),
+        }
+
+        with pytest.raises(AdapterNotFoundError):
+            resolver.resolve("fake")
+
+        assert "fake" not in resolver._installed_specs
+
+    def test_drops_broken_isolated_adapter_spec_when_import_fails(self, tmp_path: Path):
+        package_dir = tmp_path / ADAPTERS_DIR / "vox-broken"
+        package_dir.mkdir(parents=True)
+        entry_point = MagicMock()
+        entry_point.load.side_effect = ModuleNotFoundError("No module named 'vox_broken'")
+        resolver = _make_resolver(tmp_path, adapters={})
+        resolver._installed_specs = {
+            "fake": AdapterInstallSpec(entry_point=entry_point, path=package_dir),
+        }
+
+        with pytest.raises(AdapterNotFoundError):
+            resolver.resolve("fake")
+
+        assert "fake" not in resolver._installed_specs
+
     def test_caches_resolved_class(self, tmp_path: Path):
         class FakeAdapter:
             pass
@@ -118,6 +145,47 @@ class TestEnsure:
             assert resolver.ensure("fake", "vox-fake") is True
         assert rescan_mock.called
         assert runner.calls == []
+
+    def test_reinstalls_when_cached_spec_path_was_removed(self, tmp_path: Path):
+        missing_dir = tmp_path / ADAPTERS_DIR / "vox-fake"
+        runner = _FakeRunner()
+        resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
+        resolver._installed_specs = {
+            "fake": AdapterInstallSpec(entry_point=MagicMock(), path=missing_dir),
+        }
+
+        with patch.object(AdapterResolver, "_scan_install_specs", return_value={}):
+            assert resolver.ensure("fake", "vox-parakeet") is False
+
+        assert runner.calls != []
+        assert "fake" not in resolver._installed_specs
+
+    def test_reinstalls_when_cached_spec_import_is_broken(self, tmp_path: Path):
+        class FakeAdapter:
+            pass
+
+        package_dir = tmp_path / ADAPTERS_DIR / "vox-fake"
+        package_dir.mkdir(parents=True)
+        broken_ep = MagicMock()
+        broken_ep.load.side_effect = ModuleNotFoundError("No module named 'vox_fake'")
+        repaired_ep = MagicMock()
+        repaired_ep.load.return_value = FakeAdapter
+
+        runner = _FakeRunner()
+        resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
+        resolver._installed_specs = {
+            "fake": AdapterInstallSpec(entry_point=broken_ep, path=package_dir),
+        }
+
+        scan_results = [
+            {},
+            {"fake": AdapterInstallSpec(entry_point=repaired_ep, path=package_dir)},
+        ]
+        with patch.object(AdapterResolver, "_scan_install_specs", side_effect=scan_results):
+            assert resolver.ensure("fake", "vox-parakeet") is True
+
+        assert runner.calls != []
+        assert resolver.resolve("fake") is FakeAdapter
 
     def test_refuses_unverified_package_without_opt_in(self, tmp_path: Path, monkeypatch):
         monkeypatch.delenv("VOX_ALLOW_UNVERIFIED_ADAPTERS", raising=False)

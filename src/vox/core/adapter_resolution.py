@@ -106,15 +106,29 @@ class AdapterResolver:
         if cls is not None:
             return cls
 
-        spec = self._installed_specs.get(adapter_name)
+        spec = self._valid_installed_spec(adapter_name)
         if spec is None:
             self._refresh_installed_specs()
-            spec = self._installed_specs.get(adapter_name)
+            spec = self._valid_installed_spec(adapter_name)
         if spec is None:
             raise AdapterNotFoundError(adapter_name)
 
+        return self._load_installed_spec(adapter_name, spec)
+
+    def _load_installed_spec(self, adapter_name: str, spec: AdapterInstallSpec) -> type:
         with self._activated_path(spec.path):
-            cls = spec.entry_point.load()
+            try:
+                cls = spec.entry_point.load()
+            except Exception as exc:
+                logger.warning(
+                    "Dropping broken adapter install spec for '%s' at %s: %s",
+                    adapter_name,
+                    spec.path,
+                    exc,
+                )
+                self._installed_specs.pop(adapter_name, None)
+                self._adapters.pop(adapter_name, None)
+                raise AdapterNotFoundError(adapter_name) from exc
 
         self._adapters[adapter_name] = cls
         return cls
@@ -155,12 +169,12 @@ class AdapterResolver:
         return self._installed_version_at(package_dir, package_name=package_name)
 
     def ensure(self, adapter_name: str, package_name: str) -> bool:
-        if adapter_name in self._adapters or adapter_name in self._installed_specs:
+        if adapter_name in self._adapters or self._installed_spec_loads(adapter_name):
             return True
 
         self._sanitize_sys_path()
         self._refresh_installed_specs()
-        if adapter_name in self._adapters or adapter_name in self._installed_specs:
+        if adapter_name in self._adapters or self._installed_spec_loads(adapter_name):
             return True
 
         if not _adapter_package_allowed(package_name):
@@ -177,7 +191,7 @@ class AdapterResolver:
 
         self._sanitize_sys_path()
         self._refresh_installed_specs()
-        return adapter_name in self._adapters or adapter_name in self._installed_specs
+        return adapter_name in self._adapters or self._installed_spec_loads(adapter_name)
 
     def _refresh_global_adapters(self) -> None:
         adapters: dict[str, type] = {}
@@ -190,6 +204,31 @@ class AdapterResolver:
 
     def _refresh_installed_specs(self) -> None:
         self._installed_specs = self._scan_install_specs()
+
+    def _valid_installed_spec(self, adapter_name: str) -> AdapterInstallSpec | None:
+        spec = self._installed_specs.get(adapter_name)
+        if spec is None:
+            return None
+        if spec.path.is_dir():
+            return spec
+        logger.warning(
+            "Dropping stale adapter install spec for '%s': %s no longer exists",
+            adapter_name,
+            spec.path,
+        )
+        self._installed_specs.pop(adapter_name, None)
+        self._adapters.pop(adapter_name, None)
+        return None
+
+    def _installed_spec_loads(self, adapter_name: str) -> bool:
+        spec = self._valid_installed_spec(adapter_name)
+        if spec is None:
+            return False
+        try:
+            self._load_installed_spec(adapter_name, spec)
+        except AdapterNotFoundError:
+            return False
+        return True
 
     def _scan_install_specs(self) -> dict[str, AdapterInstallSpec]:
         adapters_root = self._ensure_adapters_root()
