@@ -69,37 +69,37 @@ environment does not exist yet.
 The scripted path is:
 
 ```bash
-bash scripts/expressive-adapter-smoke.sh --model dia-tts:1.6b
+bash scripts/expressive-adapter-smoke.sh --model dia-tts:1.6b --audio-usable yes
 ```
 
 To force a pull-time hardware/backend variant for models that publish multiple
 variants, pass the same variant flag that `vox pull` accepts:
 
 ```bash
-bash scripts/expressive-adapter-smoke.sh --model chatterbox-tts-turbo:0.1.7 --variant onnx
+bash scripts/expressive-adapter-smoke.sh --model chatterbox-tts-turbo:0.1.7 --variant onnx --audio-usable yes
 ```
 
 For CPU/ONNX validation, explicitly create the disposable pod without a GPU
 request so the result proves that the model can run without CUDA:
 
 ```bash
-bash scripts/expressive-adapter-smoke.sh --model chatterbox-tts-turbo:0.1.7 --variant onnx --cpu-only
+bash scripts/expressive-adapter-smoke.sh --model chatterbox-tts-turbo:0.1.7 --variant onnx --cpu-only --audio-usable yes
 ```
 
 The equivalent Makefile entrypoint is:
 
 ```bash
-make smoke-expressive MODEL=dia-tts:1.6b
-make smoke-expressive MODEL=chatterbox-tts-turbo:0.1.7 SMOKE_VARIANT=onnx
-make smoke-expressive MODEL=chatterbox-tts-turbo:0.1.7 SMOKE_VARIANT=onnx SMOKE_CPU_ONLY=1
+make smoke-expressive MODEL=dia-tts:1.6b SMOKE_AUDIO_USABLE=yes
+make smoke-expressive MODEL=chatterbox-tts-turbo:0.1.7 SMOKE_VARIANT=onnx SMOKE_AUDIO_USABLE=yes
+make smoke-expressive MODEL=chatterbox-tts-turbo:0.1.7 SMOKE_VARIANT=onnx SMOKE_CPU_ONLY=1 SMOKE_AUDIO_USABLE=yes
 ```
 
 For cloning adapters, copy a small test-only reference WAV into the disposable
 PVC and pass it as the Vox voice path. Do not use production voice data:
 
 ```bash
-bash scripts/expressive-adapter-smoke.sh --model indextts-tts:2 --voice /home/vox/.vox/smoke-voices/reference.wav
-make smoke-expressive MODEL=indextts-tts:2 SMOKE_VOICE=/home/vox/.vox/smoke-voices/reference.wav
+bash scripts/expressive-adapter-smoke.sh --model indextts-tts:2 --voice /home/vox/.vox/smoke-voices/reference.wav --audio-usable yes
+make smoke-expressive MODEL=indextts-tts:2 SMOKE_VOICE=/home/vox/.vox/smoke-voices/reference.wav SMOKE_AUDIO_USABLE=yes
 ```
 
 The script refuses the production `vox` namespace and `vox-data` PVC. It also
@@ -107,8 +107,8 @@ refuses to create the disposable namespace, PVC, or pod unless `--create` is
 passed explicitly after approval:
 
 ```bash
-bash scripts/expressive-adapter-smoke.sh --model dia-tts:1.6b --create
-make smoke-expressive MODEL=dia-tts:1.6b SMOKE_CREATE=1
+bash scripts/expressive-adapter-smoke.sh --model dia-tts:1.6b --create --audio-usable yes
+make smoke-expressive MODEL=dia-tts:1.6b SMOKE_CREATE=1 SMOKE_AUDIO_USABLE=yes
 ```
 
 Evidence and copied WAV files are written under `/tmp/vox-adapter-smoke` by
@@ -131,6 +131,7 @@ For each model, capture:
 - requested variant or `auto`
 - accelerator request (`gpu` or `cpu-only`)
 - voice id, voice path, or `none`
+- manual audio usability verdict (`--audio-usable yes` for a passing run)
 - voice path existence inside the disposable pod when `--voice` is a file path
 - runtime capability snapshot from the pod
 - `vox pull <model>` output
@@ -157,6 +158,9 @@ inside the disposable pod. Voice IDs are recorded without a file-existence
 check.
 `indextts-tts:*` smoke validation requires `--voice` and fails before touching
 Kubernetes resources when no disposable reference WAV or voice id is provided.
+The smoke runner writes copied WAV artifacts even on failure. Listen to those
+files and rerun with `--audio-usable yes` only when both short and long outputs
+are usable; `--audio-usable no` records a failed usability verdict.
 
 ## Commands
 
@@ -299,6 +303,7 @@ Model:
 Variant:
 Accelerator request:
 Voice:
+Manual audio usable:
 Image tag:
 Image digest:
 Adapter package:

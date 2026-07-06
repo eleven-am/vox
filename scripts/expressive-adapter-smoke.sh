@@ -21,6 +21,7 @@ Options:
   --short TEXT               Short synthesis text
   --long TEXT                Long synthesis text
   --voice VOICE              Voice id or WAV path to pass to vox run; required for indextts-tts
+  --audio-usable yes|no      Manual listening verdict for copied WAV artifacts
   --help                     Show this help
 
 Safety:
@@ -41,6 +42,8 @@ OUTPUT_DIR="${VOX_SMOKE_OUTPUT_DIR:-/tmp/vox-adapter-smoke}"
 SHORT_TEXT="This is a short expressive smoke test."
 LONG_TEXT="This is a longer smoke test. It should produce stable speech, preserve the requested voice behavior, and finish without leaking memory or exhausting the GPU."
 VOICE=""
+AUDIO_USABLE="unchecked"
+AUDIO_USABLE_PROVIDED=0
 POD="vox-adapter-smoke"
 FAILED=0
 FAILED_STEPS=()
@@ -106,6 +109,11 @@ while [[ $# -gt 0 ]]; do
       VOICE="${2:-}"
       shift 2
       ;;
+    --audio-usable)
+      AUDIO_USABLE="${2:-}"
+      AUDIO_USABLE_PROVIDED=1
+      shift 2
+      ;;
     --help|-h)
       usage
       exit 0
@@ -122,6 +130,17 @@ if [[ -z "$MODEL" ]]; then
   echo "--model is required" >&2
   usage >&2
   exit 2
+fi
+
+if [[ "$AUDIO_USABLE_PROVIDED" == "1" ]]; then
+  case "$AUDIO_USABLE" in
+    yes|no)
+      ;;
+    *)
+      echo "--audio-usable must be yes or no" >&2
+      exit 2
+      ;;
+  esac
 fi
 
 if requires_voice_reference "$MODEL" && [[ -z "$VOICE" ]]; then
@@ -289,6 +308,7 @@ Model: $MODEL
 Variant: ${VARIANT:-auto}
 Accelerator request: $accelerator_request
 Voice: ${VOICE:-none}
+Manual audio usable: $AUDIO_USABLE
 Image tag: $IMAGE
 Image digest: $image_id
 Adapter package:
@@ -494,6 +514,22 @@ validate_copied_artifacts() {
       FAILED_STEPS+=("Missing or empty copied artifact: $path")
     fi
   done
+}
+
+validate_audio_usability() {
+  case "$AUDIO_USABLE" in
+    yes)
+      return
+      ;;
+    no)
+      FAILED=1
+      FAILED_STEPS+=("Manual audio usability rejected")
+      ;;
+    *)
+      FAILED=1
+      FAILED_STEPS+=("Manual audio usability not confirmed")
+      ;;
+  esac
 }
 
 record_audio_durations() {
@@ -894,6 +930,7 @@ kubectl -n "$NS" cp "$POD:/tmp/short.wav" "$short_wav" >/dev/null 2>&1 || true
 kubectl -n "$NS" cp "$POD:/tmp/long.wav" "$long_wav" >/dev/null 2>&1 || true
 record_artifact_stats "Copied Artifact Stats" "$short_wav" "$long_wav"
 validate_copied_artifacts "$short_wav" "$long_wav"
+validate_audio_usability
 record_smoke_result
 
 echo "wrote evidence: $evidence"
