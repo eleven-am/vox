@@ -26,6 +26,10 @@ The current Vox adapter is classified for Linux x86_64 CUDA/Torch runtimes.
 CPU, ONNX, and Spark/ARM NVIDIA paths are not currently production-supported by
 this adapter because Vox has not validated a portable CPU/ONNX backend or a
 clean Spark/ARM NVIDIA dependency stack for the Dia Transformers runtime.
+Plan for at least 12GiB of usable VRAM budget: Vox budgets the adapter's 10GB
+model estimate plus the deployment's configured VRAM headroom, so a server
+started with `--max-vram 10GiB --vram-headroom 1GiB` will reject Dia at load
+time.
 
 During `vox pull`, the adapter verifies or installs the Dia-capable
 Transformers runtime into `$VOX_HOME/runtime/dia`. Model weights remain in the
@@ -34,7 +38,7 @@ normal Vox model store.
 ## Use with Vox
 
 ```bash
-vox pull dia-tts-torch:1.6b
+vox pull dia-tts:1.6b
 ```
 
 Dia prompt control is text-driven. Use speaker tags and non-verbal markers in
