@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import math
+import re
 import subprocess
 import sys
 import tempfile
@@ -34,12 +36,15 @@ _DEFAULT_GUIDANCE_SCALE = 3.0
 _DEFAULT_TEMPERATURE = 1.8
 _DEFAULT_TOP_P = 0.90
 _DEFAULT_TOP_K = 45
-_DIA_TRANSFORMERS_SPEC = "git+https://github.com/huggingface/transformers.git@main"
+_DEFAULT_REFERENCE_PROMPT_SECONDS = 5.0
+_DIA_TRANSFORMERS_SPEC = "transformers==4.57.6"
 _DIA_RUNTIME_IMPORT = "transformers.models.dia.modeling_dia"
 _DIA_RUNTIME_PACKAGES = (
+    _DIA_TRANSFORMERS_SPEC,
     "sentencepiece>=0.2.0,<0.3",
     "tiktoken>=0.9.0,<1",
 )
+_SPEAKER_TAG_RE = re.compile(r"\[S[12]\]")
 
 
 def _torch_module() -> Any:
@@ -89,30 +94,18 @@ def _clear_transformers_modules() -> None:
 
 def _install_transformers_runtime() -> None:
     runtime_path = _ensure_runtime_path()
-    install_groups = (
-        (
-            (_DIA_TRANSFORMERS_SPEC,),
-            True,
-        ),
-        (
-            _DIA_RUNTIME_PACKAGES,
-            False,
-        ),
-    )
-
-    for requirements, no_deps in install_groups:
-        if not install_target_runtime_requirements(
-            runtime_path,
-            requirements,
-            no_deps=no_deps,
-            upgrade=not no_deps,
-            timeout=900,
-            install_runner=_run_install_command,
-            context="Dia runtime install",
-        ):
-            raise RuntimeError(
-                "Failed to install Dia runtime from Hugging Face Transformers main branch."
-            ) from None
+    if not install_target_runtime_requirements(
+        runtime_path,
+        _DIA_RUNTIME_PACKAGES,
+        no_deps=False,
+        upgrade=True,
+        timeout=900,
+        install_runner=_run_install_command,
+        context="Dia runtime install",
+    ):
+        raise RuntimeError(
+            f"Failed to install Dia runtime package {_DIA_TRANSFORMERS_SPEC}."
+        ) from None
     _clear_transformers_modules()
     _ensure_runtime_path()
     if not _runtime_has_dia_support():
@@ -128,7 +121,8 @@ def _runtime_has_dia_support() -> bool:
     try:
         dia_module = importlib.import_module(_DIA_RUNTIME_IMPORT)
         transformers = importlib.import_module("transformers")
-    except (ImportError, ModuleNotFoundError, AttributeError, ValueError):
+    except Exception:
+        logger.debug("Dia runtime probe failed", exc_info=True)
         return False
     if not _module_loaded_from_runtime(transformers, runtime_path):
         return False
@@ -202,10 +196,68 @@ def _decode_dia_output(
 
 
 def _dia_text_with_reference(text: str, reference_text: str | None) -> str:
-    target = text.strip()
+    target = _ensure_speaker_tag(text.strip())
     if reference_text is None or not reference_text.strip():
         return target
-    return f"{reference_text.strip()} {target}".strip()
+    return f"{_ensure_speaker_tag(reference_text.strip())} {target}".strip()
+
+
+def _ensure_speaker_tag(text: str) -> str:
+    if not text:
+        return text
+    if _SPEAKER_TAG_RE.search(text):
+        return text
+    return f"[S1] {text}".strip()
+
+
+def _reference_prompt_limit_seconds(params: dict[str, Any] | None) -> float:
+    if not params:
+        return _DEFAULT_REFERENCE_PROMPT_SECONDS
+    raw = params.get("reference_prompt_seconds", _DEFAULT_REFERENCE_PROMPT_SECONDS)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_REFERENCE_PROMPT_SECONDS
+    return max(1.0, min(value, 12.0))
+
+
+def _trim_reference_text(reference_text: str | None, ratio: float) -> str | None:
+    if reference_text is None or not reference_text.strip():
+        return reference_text
+
+    text = reference_text.strip()
+    speaker_prefix = ""
+    if text.startswith("[S1]") or text.startswith("[S2]"):
+        speaker_prefix = text[:4]
+        text = text[4:].strip()
+
+    words = text.split()
+    if not words:
+        return speaker_prefix or reference_text
+    keep = max(1, min(len(words), int(math.ceil(len(words) * ratio))))
+    trimmed = " ".join(words[:keep]).strip()
+    if speaker_prefix:
+        return f"{speaker_prefix} {trimmed}".strip()
+    return trimmed
+
+
+def _trim_reference_prompt(
+    *,
+    reference_audio: NDArray[np.float32],
+    reference_text: str | None,
+    max_seconds: float,
+    sample_rate: int = DIA_SAMPLE_RATE,
+) -> tuple[NDArray[np.float32], str | None]:
+    audio = np.asarray(reference_audio, dtype=np.float32).reshape(-1)
+    if audio.size == 0:
+        return audio, reference_text
+
+    max_samples = max(1, int(sample_rate * max_seconds))
+    if audio.size <= max_samples:
+        return audio, reference_text
+
+    ratio = max_samples / float(audio.size)
+    return audio[:max_samples], _trim_reference_text(reference_text, ratio)
 
 
 def _dia_inputs(
@@ -215,6 +267,7 @@ def _dia_inputs(
     device: str,
     reference_audio: NDArray[np.float32] | None,
     reference_text: str | None,
+    params: dict[str, Any] | None = None,
 ) -> tuple[Any, Any | None]:
     if reference_audio is not None:
         audio = np.asarray(reference_audio, dtype=np.float32).reshape(-1)
@@ -224,6 +277,11 @@ def _dia_inputs(
             raise InvalidConfigError(
                 "Dia voice cloning requires reference_text for the reference_audio prompt."
             )
+        audio, reference_text = _trim_reference_prompt(
+            reference_audio=audio,
+            reference_text=reference_text,
+            max_seconds=_reference_prompt_limit_seconds(params),
+        )
         inputs = processor(
             text=[_dia_text_with_reference(text, reference_text)],
             audio=audio,
@@ -373,6 +431,14 @@ class DiaAdapter(TTSAdapter):
                 max_value=200,
                 description="Top-k sampling cutoff used by Dia generation.",
             ),
+            SynthesisParameterInfo(
+                name="reference_prompt_seconds",
+                type="number",
+                default=_DEFAULT_REFERENCE_PROMPT_SECONDS,
+                min_value=1.0,
+                max_value=12.0,
+                description="Maximum cloned reference audio seconds used as Dia conditioning prompt.",
+            ),
         )
 
     async def synthesize(
@@ -389,6 +455,14 @@ class DiaAdapter(TTSAdapter):
         if not self._loaded or self._model is None or self._processor is None:
             raise RuntimeError("Dia model is not loaded — call load() first")
 
+        self.validate_synthesis_request(
+            voice=voice,
+            language=language,
+            reference_audio=reference_audio,
+            reference_text=reference_text,
+            params=params,
+        )
+
         if not text or not text.strip():
             return
 
@@ -398,6 +472,7 @@ class DiaAdapter(TTSAdapter):
             device=self._device,
             reference_audio=reference_audio,
             reference_text=reference_text,
+            params=params,
         )
         params = dict(params or {})
 

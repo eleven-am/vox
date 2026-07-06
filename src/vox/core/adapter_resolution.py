@@ -53,6 +53,14 @@ KNOWN_ADAPTER_PACKAGES = frozenset({
 })
 
 
+def _path_is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def _adapter_package_allowed(package_name: str) -> bool:
     if package_name in KNOWN_ADAPTER_PACKAGES:
         return True
@@ -169,12 +177,12 @@ class AdapterResolver:
         return self._installed_version_at(package_dir, package_name=package_name)
 
     def ensure(self, adapter_name: str, package_name: str) -> bool:
-        if adapter_name in self._adapters or self._installed_spec_loads(adapter_name):
+        if self._cached_adapter_loads(adapter_name, package_name) or self._installed_spec_loads(adapter_name):
             return True
 
         self._sanitize_sys_path()
         self._refresh_installed_specs()
-        if adapter_name in self._adapters or self._installed_spec_loads(adapter_name):
+        if self._cached_adapter_loads(adapter_name, package_name) or self._installed_spec_loads(adapter_name):
             return True
 
         if not _adapter_package_allowed(package_name):
@@ -191,7 +199,7 @@ class AdapterResolver:
 
         self._sanitize_sys_path()
         self._refresh_installed_specs()
-        return adapter_name in self._adapters or self._installed_spec_loads(adapter_name)
+        return self._cached_adapter_loads(adapter_name, package_name) or self._installed_spec_loads(adapter_name)
 
     def _refresh_global_adapters(self) -> None:
         adapters: dict[str, type] = {}
@@ -228,6 +236,46 @@ class AdapterResolver:
             self._load_installed_spec(adapter_name, spec)
         except AdapterNotFoundError:
             return False
+        return True
+
+    def _cached_adapter_loads(self, adapter_name: str, package_name: str) -> bool:
+        cls = self._adapters.get(adapter_name)
+        if cls is None:
+            return False
+
+        module = sys.modules.get(getattr(cls, "__module__", ""))
+        module_file = getattr(module, "__file__", None)
+        if not module_file:
+            return True
+
+        try:
+            module_path = Path(module_file).resolve()
+            package_dir = self._adapter_install_dir(package_name).resolve()
+            adapters_root = self._ensure_adapters_root().resolve()
+        except OSError:
+            self._adapters.pop(adapter_name, None)
+            return False
+
+        if _path_is_relative_to(module_path, package_dir):
+            if package_dir.is_dir():
+                return True
+            logger.warning(
+                "Dropping stale cached adapter '%s': install dir %s no longer exists",
+                adapter_name,
+                package_dir,
+            )
+            self._adapters.pop(adapter_name, None)
+            return False
+
+        if _path_is_relative_to(module_path, adapters_root):
+            logger.warning(
+                "Dropping cached adapter '%s' loaded from unexpected install dir %s",
+                adapter_name,
+                module_path,
+            )
+            self._adapters.pop(adapter_name, None)
+            return False
+
         return True
 
     def _scan_install_specs(self) -> dict[str, AdapterInstallSpec]:

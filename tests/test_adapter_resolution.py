@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -159,6 +160,35 @@ class TestEnsure:
 
         assert runner.calls != []
         assert "fake" not in resolver._installed_specs
+
+    def test_reinstalls_when_cached_adapter_install_dir_was_removed(self, tmp_path: Path):
+        package_dir = tmp_path / ADAPTERS_DIR / "vox-fake"
+        module_name = "_vox_fake_cached_adapter"
+        module = types.ModuleType(module_name)
+        module.__file__ = str(package_dir / "vox_fake" / "adapter.py")
+
+        class FakeAdapter:
+            pass
+
+        FakeAdapter.__module__ = module_name
+
+        runner = _FakeRunner()
+        resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
+        resolver._adapters["fake"] = FakeAdapter
+
+        original = sys.modules.get(module_name)
+        sys.modules[module_name] = module
+        try:
+            with patch.object(AdapterResolver, "_scan_install_specs", return_value={}):
+                assert resolver.ensure("fake", "vox-parakeet") is False
+        finally:
+            if original is None:
+                sys.modules.pop(module_name, None)
+            else:
+                sys.modules[module_name] = original
+
+        assert runner.calls != []
+        assert "fake" not in resolver._adapters
 
     def test_reinstalls_when_cached_spec_import_is_broken(self, tmp_path: Path):
         class FakeAdapter:

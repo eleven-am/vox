@@ -21,7 +21,7 @@ def test_dia_package_metadata_keeps_torch_out_of_adapter_dependencies():
     data = tomllib.loads(pyproject.read_text())
 
     dependencies = data["project"]["dependencies"]
-    assert data["project"]["version"] == "0.2.13"
+    assert data["project"]["version"] == "0.2.15"
     assert not any(dep.startswith("torch") for dep in dependencies)
 
 
@@ -70,13 +70,21 @@ class TestDiaAdapterInfo:
 
             params = {param.name: param for param in DiaAdapter().synthesis_parameters()}
 
-            assert set(params) == {"max_new_tokens", "guidance_scale", "temperature", "top_p", "top_k"}
+            assert set(params) == {
+                "max_new_tokens",
+                "guidance_scale",
+                "temperature",
+                "top_p",
+                "top_k",
+                "reference_prompt_seconds",
+            }
             assert params["max_new_tokens"].type == "integer"
             assert params["max_new_tokens"].default == 3072
             assert params["guidance_scale"].default == 3.0
             assert params["temperature"].default == 1.8
             assert params["top_p"].max_value == 1.0
             assert params["top_k"].type == "integer"
+            assert params["reference_prompt_seconds"].default == 5.0
 
     def test_is_loaded_initially_false(self):
         with patch.dict("sys.modules", {"torch": MagicMock()}):
@@ -94,7 +102,7 @@ class TestDiaAdapterInfo:
             with pytest.raises(RuntimeError, match="CUDA-capable GPU"):
                 adapter.load("nari-labs/Dia-1.6B", "cpu")
 
-    def test_load_requires_transformers_main_branch(self):
+    def test_load_requires_dia_capable_transformers_runtime(self):
         torch = MagicMock()
         with patch.dict("sys.modules", {"torch": torch}):
             from vox_dia.adapter import DiaAdapter
@@ -121,7 +129,7 @@ class TestDiaAdapterInfo:
 
         def fake_run(cmd: list[str], timeout: int):
             calls.append(cmd)
-            if any(str(part).startswith("git+https://github.com/huggingface/transformers.git") for part in cmd):
+            if "transformers==4.57.6" in cmd:
                 runtime = tmp_path / "vox-home" / "runtime" / "dia"
                 (runtime / "transformers" / "models" / "dia").mkdir(parents=True)
                 (runtime / "transformers" / "__init__.py").write_text(
@@ -150,24 +158,22 @@ class TestDiaAdapterInfo:
         with patch("vox_dia.adapter._run_install_command", side_effect=fake_run):
             DiaAdapter().prepare_runtime()
 
-        source_call = next(
-            call for call in calls
-            if any(str(part).startswith("git+https://github.com/huggingface/transformers.git") for part in call)
-        )
-        deps_call = next(call for call in calls if "sentencepiece>=0.2.0,<0.3" in call)
+        install_call = next(call for call in calls if "transformers==4.57.6" in call)
 
-        assert "--target" in source_call
-        assert str(tmp_path / "vox-home" / "runtime" / "dia") in source_call
-        assert "--no-deps" in source_call
-        assert "--upgrade" not in source_call
-        assert "--upgrade" in deps_call
+        assert "--target" in install_call
+        assert str(tmp_path / "vox-home" / "runtime" / "dia") in install_call
+        assert "--no-deps" not in install_call
+        assert "--upgrade" in install_call
+        assert "sentencepiece>=0.2.0,<0.3" in install_call
+        assert "tiktoken>=0.9.0,<1" in install_call
+        assert not any(str(part).startswith("torch") for part in install_call)
 
-    def test_runtime_install_does_not_upgrade_moving_transformers_source(self, tmp_path: Path, monkeypatch):
+    def test_runtime_install_uses_released_transformers_pin(self, tmp_path: Path, monkeypatch):
         calls: list[list[str]] = []
 
         def fake_run(cmd: list[str], timeout: int):
             calls.append(cmd)
-            if any(str(part).startswith("git+https://github.com/huggingface/transformers.git") for part in cmd):
+            if "transformers==4.57.6" in cmd:
                 runtime = tmp_path / "vox-home" / "runtime" / "dia"
                 (runtime / "transformers" / "models" / "dia").mkdir(parents=True)
                 (runtime / "transformers" / "__init__.py").write_text(
@@ -185,16 +191,14 @@ class TestDiaAdapterInfo:
             with patch("vox_dia.adapter._run_install_command", side_effect=fake_run):
                 _install_transformers_runtime()
 
-        source_call = next(
-            call for call in calls
-            if any(str(part).startswith("git+https://github.com/huggingface/transformers.git") for part in call)
-        )
-        deps_call = next(call for call in calls if "sentencepiece>=0.2.0,<0.3" in call)
+        install_call = next(call for call in calls if "transformers==4.57.6" in call)
 
-        assert "--no-deps" in source_call
-        assert "--upgrade" not in source_call
-        assert "--upgrade" in deps_call
-        assert "tiktoken>=0.9.0,<1" in deps_call
+        assert "git+https://github.com/huggingface/transformers.git@main" not in install_call
+        assert "--no-deps" not in install_call
+        assert "--upgrade" in install_call
+        assert "sentencepiece>=0.2.0,<0.3" in install_call
+        assert "tiktoken>=0.9.0,<1" in install_call
+        assert not any(str(part).startswith("torch") for part in install_call)
 
     def test_runtime_probe_rejects_app_env_transformers_as_dia_runtime(self, tmp_path: Path, monkeypatch):
         monkeypatch.setenv("VOX_HOME", str(tmp_path / "vox-home"))
@@ -221,6 +225,17 @@ class TestDiaAdapterInfo:
         ):
             from vox_dia.adapter import _runtime_has_dia_support
 
+            assert _runtime_has_dia_support() is False
+
+    def test_runtime_probe_treats_broken_transformers_runtime_as_missing(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("VOX_HOME", str(tmp_path / "vox-home"))
+        for name in list(sys.modules):
+            if name == "transformers" or name.startswith("transformers."):
+                sys.modules.pop(name, None)
+
+        from vox_dia.adapter import _runtime_has_dia_support
+
+        with patch("vox_dia.adapter.importlib.import_module", side_effect=RuntimeError("broken metadata")):
             assert _runtime_has_dia_support() is False
 
     def test_runtime_probe_accepts_transformers_from_dia_runtime(self, tmp_path: Path, monkeypatch):
@@ -405,6 +420,25 @@ class TestDiaAdapterInfo:
             with pytest.raises(InvalidConfigError, match="requires reference_text"):
                 asyncio.run(_run())
 
+    def test_synthesize_rejects_reference_text_without_reference_audio(self):
+        with patch.dict("sys.modules", {"torch": MagicMock()}):
+            from vox_dia.adapter import DiaAdapter
+
+            adapter = DiaAdapter()
+            adapter._loaded = True
+            adapter._processor = MagicMock()
+            adapter._model = MagicMock()
+
+            async def _run() -> None:
+                async for _chunk in adapter.synthesize(
+                    "hello",
+                    reference_text="[S1] reference speech.",
+                ):
+                    pass
+
+            with pytest.raises(InvalidConfigError, match="only be used together"):
+                asyncio.run(_run())
+
     def test_synthesize_streams_audio_from_saved_output(self):
         torch = MagicMock()
         sf = MagicMock()
@@ -511,6 +545,100 @@ class TestDiaAdapterInfo:
             processor.batch_decode.assert_called_once_with(model.generate.return_value, audio_prompt_len=42)
             assert chunks[0].sample_rate == 44100
             assert chunks[-1].is_final is True
+
+    def test_synthesize_trims_long_dia_reference_prompt(self):
+        torch = MagicMock()
+        sf = MagicMock()
+        sf.read.return_value = (np.array([0.2, -0.2], dtype=np.float32), 44100)
+
+        with patch.dict("sys.modules", {"torch": torch, "soundfile": sf}):
+            from vox_dia.adapter import DiaAdapter
+
+            inputs = {"decoder_attention_mask": MagicMock(name="decoder_attention_mask")}
+
+            class InputMap(dict):
+                def to(self, device: str):
+                    self["device"] = device
+                    return self
+
+            processor = MagicMock()
+            processor.return_value = InputMap(inputs)
+            processor.get_audio_prompt_len.return_value = 42
+            processor.batch_decode.return_value = ["decoded"]
+            processor.save_audio.return_value = None
+            model = MagicMock()
+            model.generate.return_value = MagicMock()
+
+            adapter = DiaAdapter()
+            adapter._loaded = True
+            adapter._processor = processor
+            adapter._model = model
+            adapter._device = "cuda"
+
+            reference_audio = np.ones(44100 * 20, dtype=np.float32)
+            reference_text = (
+                "Tonight after you were gone I thought a lot about you "
+                "and how you have been treating me"
+            )
+
+            async def _run() -> list:
+                chunks = []
+                async for chunk in adapter.synthesize(
+                    "target speech",
+                    reference_audio=reference_audio,
+                    reference_text=reference_text,
+                ):
+                    chunks.append(chunk)
+                return chunks
+
+            chunks = asyncio.run(_run())
+
+            call_kwargs = processor.call_args.kwargs
+            assert call_kwargs["text"] == [
+                "[S1] Tonight after you were gone [S1] target speech"
+            ]
+            assert call_kwargs["audio"].shape == (44100 * 5,)
+            assert chunks[-1].is_final is True
+
+    def test_synthesize_allows_reference_prompt_seconds_override(self):
+        torch = MagicMock()
+        sf = MagicMock()
+        sf.read.return_value = (np.array([0.2, -0.2], dtype=np.float32), 44100)
+
+        with patch.dict("sys.modules", {"torch": torch, "soundfile": sf}):
+            from vox_dia.adapter import DiaAdapter
+
+            class InputMap(dict):
+                def to(self, device: str):
+                    return self
+
+            processor = MagicMock()
+            processor.return_value = InputMap({"decoder_attention_mask": MagicMock()})
+            processor.get_audio_prompt_len.return_value = 42
+            processor.batch_decode.return_value = ["decoded"]
+            processor.save_audio.return_value = None
+            model = MagicMock()
+            model.generate.return_value = MagicMock()
+
+            adapter = DiaAdapter()
+            adapter._loaded = True
+            adapter._processor = processor
+            adapter._model = model
+            adapter._device = "cuda"
+
+            async def _run() -> None:
+                async for _ in adapter.synthesize(
+                    "[S1] target speech",
+                    reference_audio=np.ones(44100 * 20, dtype=np.float32),
+                    reference_text="[S1] one two three four five six seven eight",
+                    params={"reference_prompt_seconds": 3},
+                ):
+                    pass
+
+            asyncio.run(_run())
+
+            assert processor.call_args.kwargs["text"] == ["[S1] one two [S1] target speech"]
+            assert processor.call_args.kwargs["audio"].shape == (44100 * 3,)
 
     def test_estimate_vram(self):
         with patch.dict("sys.modules", {"torch": MagicMock()}):
