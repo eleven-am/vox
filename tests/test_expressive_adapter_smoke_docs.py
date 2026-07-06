@@ -119,6 +119,7 @@ def test_expressive_adapter_smoke_script_refuses_production_and_requires_create(
     assert "smoke-expressive-served" in makefile
     assert "scripts/expressive-adapter-served-smoke.py" in makefile
     assert "SMOKE_BASE_URL=http://127.0.0.1:8000" in makefile
+    assert "SMOKE_API_KEY=..." in makefile
     assert "SMOKE_PARAMS_JSON='{}'" in makefile
 
 
@@ -132,6 +133,10 @@ def test_expressive_adapter_served_smoke_script_uses_existing_server_only():
     assert "v1/health" in script
     assert "v1/models/loaded" in script
     assert "--base-url" in script
+    assert "--api-key" in script
+    assert "VOX_API_KEY" in script
+    assert "\"x-api-key\"" in script
+    assert "api_key_provided" in script
     assert "--params-json" in script
     assert "--audio-usable" in script
     assert "/tmp/vox-served-smoke" in script
@@ -141,6 +146,8 @@ def test_expressive_adapter_served_smoke_script_uses_existing_server_only():
     assert "do not create\na new namespace or PVC" in runbook
     assert "does not call `kubectl`, `vox pull`, or mutate adapter,\nruntime, model, or PVC contents" in runbook
     assert "not enough to mark an adapter fully production-ready" in runbook
+    assert "never the key value" in runbook
+    assert "SMOKE_API_KEY=..." in runbook
     assert "make smoke-expressive-served MODEL=dia-tts:1.6b" in runbook
 
 
@@ -406,7 +413,10 @@ def test_expressive_adapter_status_tracks_all_goal_targets_and_smoke_gap():
     assert "registry requires `min_vram_gb=8`" in status
     assert "registry requires `min_vram_gb=12`" in status
     assert status.count("registry requires `min_vram_gb=10`") == 2
-    assert "Do not run these against the production `vox` namespace or `vox-data` PVC" in status
+    assert "Existing-server smoke is available for the currently running Vox endpoint" in status
+    assert "without creating namespaces, PVCs, or running `vox pull`" in status
+    assert "not sufficient\nto mark a model production-ready" in status
+    assert "unless the user explicitly asks to test the already-running Vox deployment" in status
     assert "vox pull` succeeds without `VOX_ALLOW_INCOMPATIBLE" in status
     assert "Model files are stored in the model store and storage usage is recorded" in status
     assert "Adapter package, runtime, manifest, and blob storage usage is recorded" in status

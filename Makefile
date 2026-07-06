@@ -211,8 +211,8 @@ smoke-expressive:
 	bash scripts/expressive-adapter-smoke.sh --model "$(MODEL)" $(if $(SMOKE_VARIANT),--variant "$(SMOKE_VARIANT)",) $(if $(SMOKE_VOICE),--voice "$(SMOKE_VOICE)",) $(if $(SMOKE_CPU_ONLY),--cpu-only,) $(if $(SMOKE_CREATE),--create,) $(if $(SMOKE_AUDIO_USABLE),--audio-usable "$(SMOKE_AUDIO_USABLE)",) $(if $(SMOKE_FAILURE_CLASS),--failure-class "$(SMOKE_FAILURE_CLASS)",)
 
 smoke-expressive-served:
-	@test -n "$(MODEL)" || (echo "usage: make smoke-expressive-served MODEL=dia-tts:1.6b [SMOKE_BASE_URL=http://127.0.0.1:8000] [SMOKE_VOICE=voice-id] [SMOKE_PARAMS_JSON='{}'] [SMOKE_AUDIO_USABLE=yes]"; exit 2)
-	uv run python scripts/expressive-adapter-served-smoke.py --model "$(MODEL)" --base-url "$(or $(SMOKE_BASE_URL),http://127.0.0.1:8000)" $(if $(SMOKE_VOICE),--voice "$(SMOKE_VOICE)",) $(if $(SMOKE_PARAMS_JSON),--params-json '$(SMOKE_PARAMS_JSON)',) $(if $(SMOKE_AUDIO_USABLE),--audio-usable "$(SMOKE_AUDIO_USABLE)",)
+	@test -n "$(MODEL)" || (echo "usage: make smoke-expressive-served MODEL=dia-tts:1.6b [SMOKE_BASE_URL=http://127.0.0.1:8000] [SMOKE_API_KEY=...] [SMOKE_VOICE=voice-id] [SMOKE_PARAMS_JSON='{}'] [SMOKE_AUDIO_USABLE=yes]"; exit 2)
+	uv run python scripts/expressive-adapter-served-smoke.py --model "$(MODEL)" --base-url "$(or $(SMOKE_BASE_URL),http://127.0.0.1:8000)" $(if $(SMOKE_API_KEY),--api-key "$(SMOKE_API_KEY)",) $(if $(SMOKE_VOICE),--voice "$(SMOKE_VOICE)",) $(if $(SMOKE_PARAMS_JSON),--params-json '$(SMOKE_PARAMS_JSON)',) $(if $(SMOKE_AUDIO_USABLE),--audio-usable "$(SMOKE_AUDIO_USABLE)",)
 
 proto:
 	uv run python -m grpc_tools.protoc \

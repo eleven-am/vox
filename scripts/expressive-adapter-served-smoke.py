@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import sys
 import time
 import urllib.error
@@ -74,8 +75,14 @@ def _parse_json_object(value: str, *, field_name: str) -> dict[str, Any]:
     return parsed
 
 
-def _request_json(url: str, *, timeout: float) -> HttpResult:
-    req = urllib.request.Request(url, method="GET")
+def _auth_headers(api_key: str | None) -> dict[str, str]:
+    if not api_key:
+        return {}
+    return {"x-api-key": api_key}
+
+
+def _request_json(url: str, *, timeout: float, api_key: str | None) -> HttpResult:
+    req = urllib.request.Request(url, headers=_auth_headers(api_key), method="GET")
     started = time.perf_counter()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -89,12 +96,12 @@ def _request_json(url: str, *, timeout: float) -> HttpResult:
     return HttpResult(status=status, headers=headers, body=body, elapsed_s=time.perf_counter() - started)
 
 
-def _post_json(url: str, payload: dict[str, Any], *, timeout: float) -> HttpResult:
+def _post_json(url: str, payload: dict[str, Any], *, timeout: float, api_key: str | None) -> HttpResult:
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **_auth_headers(api_key)},
         method="POST",
     )
     started = time.perf_counter()
@@ -200,6 +207,7 @@ def _run_case(
     speed: float,
     params: dict[str, Any],
     timeout: float,
+    api_key: str | None,
     output_dir: Path,
 ) -> SynthesisEvidence:
     result = _post_json(
@@ -213,6 +221,7 @@ def _run_case(
             params=params,
         ),
         timeout=timeout,
+        api_key=api_key,
     )
     suffix = response_format.lower().lstrip(".") or "wav"
     output_path = output_dir / f"{name}.{suffix}"
@@ -241,6 +250,11 @@ def _run_case(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="Existing Vox HTTP base URL")
+    parser.add_argument(
+        "--api-key",
+        default=os.environ.get("VOX_API_KEY", ""),
+        help="Vox API key. Defaults to VOX_API_KEY. The value is not written to evidence.",
+    )
     parser.add_argument("--model", required=True, help="Model reference already available to the server")
     parser.add_argument("--voice", default=None, help="Voice id or server-side voice/reference path")
     parser.add_argument("--params-json", default="{}", help="Synthesis params JSON object")
@@ -265,13 +279,26 @@ def main() -> int:
         "response_format": args.response_format,
         "speed": args.speed,
         "params": params,
+        "api_key_provided": bool(args.api_key),
         "audio_usable": args.audio_usable,
         "output_dir": str(output_dir),
     }
 
-    health = _request_json(f"{args.base_url.rstrip('/')}/v1/health", timeout=min(args.timeout, 30.0))
-    models = _request_json(f"{args.base_url.rstrip('/')}/v1/models", timeout=min(args.timeout, 30.0))
-    loaded = _request_json(f"{args.base_url.rstrip('/')}/v1/models/loaded", timeout=min(args.timeout, 30.0))
+    health = _request_json(
+        f"{args.base_url.rstrip('/')}/v1/health",
+        timeout=min(args.timeout, 30.0),
+        api_key=args.api_key,
+    )
+    models = _request_json(
+        f"{args.base_url.rstrip('/')}/v1/models",
+        timeout=min(args.timeout, 30.0),
+        api_key=args.api_key,
+    )
+    loaded = _request_json(
+        f"{args.base_url.rstrip('/')}/v1/models/loaded",
+        timeout=min(args.timeout, 30.0),
+        api_key=args.api_key,
+    )
     evidence["health"] = {"status": health.status, "elapsed_s": health.elapsed_s}
     evidence["models"] = {"status": models.status, "elapsed_s": models.elapsed_s}
     evidence["loaded_before"] = {"status": loaded.status, "elapsed_s": loaded.elapsed_s}
@@ -287,6 +314,7 @@ def main() -> int:
             speed=args.speed,
             params=params,
             timeout=args.timeout,
+            api_key=args.api_key,
             output_dir=output_dir,
         ),
         _run_case(
@@ -299,6 +327,7 @@ def main() -> int:
             speed=args.speed,
             params=params,
             timeout=args.timeout,
+            api_key=args.api_key,
             output_dir=output_dir,
         ),
     ]

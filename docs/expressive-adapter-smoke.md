@@ -109,6 +109,19 @@ python scripts/expressive-adapter-served-smoke.py \
 make smoke-expressive-served MODEL=dia-tts:1.6b SMOKE_BASE_URL=http://127.0.0.1:8000 SMOKE_AUDIO_USABLE=yes
 ```
 
+If the existing server requires `VOX_API_KEY`, pass it through the environment
+or `SMOKE_API_KEY`. The served-smoke evidence records only whether a key was
+provided, never the key value:
+
+```bash
+VOX_API_KEY=... python scripts/expressive-adapter-served-smoke.py \
+  --base-url https://vox.example \
+  --model dia-tts:1.6b \
+  --audio-usable yes
+
+make smoke-expressive-served MODEL=dia-tts:1.6b SMOKE_BASE_URL=https://vox.example SMOKE_API_KEY=... SMOKE_AUDIO_USABLE=yes
+```
+
 For adapters that require a voice or reference, pass the value the running
 server already knows how to resolve:
 
@@ -121,9 +134,10 @@ python scripts/expressive-adapter-served-smoke.py \
 ```
 
 This path intentionally does not call `kubectl`, `vox pull`, or mutate adapter,
-runtime, model, or PVC contents. It records `/v1/health`, `/v1/models`,
-`/v1/models/loaded`, short synthesis, long synthesis, wall times, WAV metadata,
-SHA-256 digests, and silence checks under `/tmp/vox-served-smoke` by default.
+runtime, model, or PVC contents. It records whether an API key was provided,
+`/v1/health`, `/v1/models`, `/v1/models/loaded`, short synthesis, long
+synthesis, wall times, WAV metadata, SHA-256 digests, and silence checks under
+`/tmp/vox-served-smoke` by default.
 
 Existing-server smoke is not enough to mark an adapter fully production-ready
 because it cannot prove a clean pull, clean runtime install, or clean model

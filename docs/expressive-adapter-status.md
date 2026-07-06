@@ -79,9 +79,17 @@ The remaining production-readiness gap is runtime smoke evidence for:
 - `orpheus-tts:medium-3b`
 - `indextts-tts:2`
 
-Do not run these against the production `vox` namespace or `vox-data` PVC.
-Use a disposable namespace and PVC as described in
-[the smoke runbook](expressive-adapter-smoke.md). The required proof is:
+Existing-server smoke is available for the currently running Vox endpoint via
+`scripts/expressive-adapter-served-smoke.py`. That path is useful for checking
+short/long synthesis, timings, WAV metadata, SHA-256 digests, and silence
+without creating namespaces, PVCs, or running `vox pull`. It is not sufficient
+to mark a model production-ready because it cannot prove a clean model pull or
+clean runtime install.
+
+Full production-readiness still requires clean-pull smoke. Use a disposable
+namespace and PVC as described in [the smoke runbook](expressive-adapter-smoke.md)
+unless the user explicitly asks to test the already-running Vox deployment. The
+required proof is:
 
 1. `vox pull` succeeds without `VOX_ALLOW_INCOMPATIBLE`.
 2. The pre-pull clean-state probe proves the target manifest, model link, and
