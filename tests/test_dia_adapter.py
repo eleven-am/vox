@@ -21,7 +21,7 @@ def test_dia_package_metadata_keeps_torch_out_of_adapter_dependencies():
     data = tomllib.loads(pyproject.read_text())
 
     dependencies = data["project"]["dependencies"]
-    assert data["project"]["version"] == "0.2.10"
+    assert data["project"]["version"] == "0.2.11"
     assert not any(dep.startswith("torch") for dep in dependencies)
 
 

@@ -23,7 +23,7 @@ def test_indextts_package_metadata_is_lightweight():
     data = tomllib.loads(pyproject.read_text())
 
     dependencies = data["project"]["dependencies"]
-    assert data["project"]["version"] == "0.1.2"
+    assert data["project"]["version"] == "0.1.3"
     assert not any(dep.startswith(("torch", "torchaudio", "indextts")) for dep in dependencies)
 
 

@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import os
 import sys
+import tomllib
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
@@ -68,6 +69,13 @@ def test_cosyvoice_info_returns_correct_metadata():
     assert ModelFormat.PYTORCH in info.supported_formats
     assert info.supports_streaming is True
     assert info.supports_voice_cloning is True
+
+
+def test_cosyvoice_package_metadata_version():
+    pyproject = Path(__file__).parents[1] / "adapters" / "vox-cosyvoice" / "pyproject.toml"
+    data = tomllib.loads(pyproject.read_text())
+
+    assert data["project"]["version"] == "0.1.3"
 
 
 def test_cosyvoice_load_rejects_cpu_before_runtime_install(tmp_path):
