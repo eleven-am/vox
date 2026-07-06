@@ -23,7 +23,7 @@ def test_indextts_package_metadata_is_lightweight():
     data = tomllib.loads(pyproject.read_text())
 
     dependencies = data["project"]["dependencies"]
-    assert data["project"]["version"] == "0.1.4"
+    assert data["project"]["version"] == "0.1.5"
     assert not any(dep.startswith(("torch", "torchaudio", "indextts")) for dep in dependencies)
 
 
@@ -240,6 +240,42 @@ def test_indextts_repairs_runtime_when_symbol_is_missing(tmp_path):
 
         with (
             patch("vox_indextts.adapter.subprocess.run", side_effect=fake_run),
+            patch("vox_indextts.adapter._clear_indextts_modules"),
+        ):
+            IndexTTSAdapter().prepare_runtime()
+
+    assert calls
+    assert _FakeIndexTTS2.instances == []
+    assert "git+https://github.com/index-tts/index-tts.git" in calls[0]
+    assert "--no-deps" in calls[0]
+    assert "transformers==4.52.1" in calls[1]
+
+
+def test_indextts_repairs_runtime_when_import_probe_is_broken(tmp_path):
+    calls: list[list[str]] = []
+    _FakeIndexTTS2.instances.clear()
+
+    def fake_run(cmd, timeout):
+        calls.append(cmd)
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        return result
+
+    probe_results = [ValueError("broken runtime metadata"), _FakeIndexTTS2]
+
+    def fake_probe():
+        result = probe_results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        from vox_indextts.adapter import IndexTTSAdapter
+
+        with (
+            patch("vox_indextts.adapter._run_install_command", side_effect=fake_run),
+            patch("vox_indextts.adapter._indextts_class_from_runtime", side_effect=fake_probe),
             patch("vox_indextts.adapter._clear_indextts_modules"),
         ):
             IndexTTSAdapter().prepare_runtime()

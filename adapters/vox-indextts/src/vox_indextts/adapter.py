@@ -57,6 +57,7 @@ INDEXTTS_RUNTIME_DEPS = (
     "wetext>=0.0.9; sys_platform != 'linux'",
     "WeTextProcessing; sys_platform == 'linux'",
 )
+_RUNTIME_PROBE_ERRORS = (ImportError, ModuleNotFoundError, AttributeError, ValueError)
 
 
 def _runtime_root() -> Path:
@@ -110,14 +111,19 @@ def _load_indextts_class() -> type[Any]:
     _ensure_runtime_path()
     try:
         cls = _indextts_class_from_runtime()
-    except ImportError:
+    except _RUNTIME_PROBE_ERRORS:
         cls = None
     if cls is not None:
         return cls
 
     _install_indextts_runtime()
     _clear_indextts_modules()
-    cls = _indextts_class_from_runtime()
+    try:
+        cls = _indextts_class_from_runtime()
+    except _RUNTIME_PROBE_ERRORS as exc:
+        raise RuntimeError(
+            "IndexTTS runtime is installed, but indextts.infer_v2.IndexTTS2 could not be imported."
+        ) from exc
     if cls is not None:
         return cls
 
