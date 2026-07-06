@@ -75,7 +75,7 @@ def test_cosyvoice_package_metadata_version():
     pyproject = Path(__file__).parents[1] / "adapters" / "vox-cosyvoice" / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text())
 
-    assert data["project"]["version"] == "0.1.3"
+    assert data["project"]["version"] == "0.1.4"
 
 
 def test_cosyvoice_load_rejects_cpu_before_runtime_install(tmp_path):
@@ -217,3 +217,43 @@ def test_cosyvoice_bootstraps_runtime_when_missing(tmp_path):
     assert "def use" in matplotlib_init_text
     matplotlib_pylab = tmp_path / "vox-home" / "runtime" / "cosyvoice" / "matplotlib" / "pylab.py"
     assert "from .pyplot import *" in matplotlib_pylab.read_text()
+
+
+def test_cosyvoice_prepare_runtime_bootstraps_without_loading_model(tmp_path):
+    calls: list[list[str]] = []
+    _FakeCosyVoice2.instances.clear()
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:2] == ["git", "clone"]:
+            source_root = Path(cmd[-1])
+            (source_root / "cosyvoice" / "cli").mkdir(parents=True)
+            (source_root / "cosyvoice" / "__init__.py").write_text("")
+            (source_root / "cosyvoice" / "cli" / "__init__.py").write_text("")
+            (source_root / "cosyvoice" / "cli" / "cosyvoice.py").write_text("")
+            (source_root / "third_party" / "Matcha-TTS" / "matcha").mkdir(parents=True)
+        _install_fake_cosyvoice_modules()
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        return result
+
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        sys.modules.pop("cosyvoice", None)
+        sys.modules.pop("cosyvoice.cli", None)
+        sys.modules.pop("cosyvoice.cli.cosyvoice", None)
+        from vox_cosyvoice.adapter import CosyVoice2Adapter
+
+        with (
+            patch("vox_cosyvoice.adapter.subprocess.run", side_effect=fake_run),
+            patch("vox_cosyvoice.adapter._clear_cosyvoice_modules"),
+        ):
+            CosyVoice2Adapter().prepare_runtime()
+
+    assert calls
+    assert _FakeCosyVoice2.instances == []
+    assert calls[0][:2] == ["git", "clone"]
+    install_call = next(call for call in calls if call[:2] == ["uv", "pip"])
+    assert "--target" in install_call
+    assert str(tmp_path / "vox-home" / "runtime" / "cosyvoice") in install_call
+    assert "HyperPyYAML==1.2.3" in install_call

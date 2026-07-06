@@ -296,19 +296,28 @@ def _clear_cosyvoice_modules() -> None:
     purge_runtime_modules(("cosyvoice", "matcha", "wetext"))
 
 
+def _cosyvoice_class_from_runtime() -> type[Any] | None:
+    module = importlib.import_module("cosyvoice.cli.cosyvoice")
+    cls = getattr(module, "CosyVoice2", None)
+    return cls if isinstance(cls, type) else None
+
+
 def _load_cosyvoice_class() -> type[Any]:
     _ensure_runtime_path()
     try:
-        module = importlib.import_module("cosyvoice.cli.cosyvoice")
+        cls = _cosyvoice_class_from_runtime()
     except ImportError:
-        _install_cosyvoice_runtime()
-        _clear_cosyvoice_modules()
-        module = importlib.import_module("cosyvoice.cli.cosyvoice")
+        cls = None
+    if cls is not None:
+        return cls
 
-    cls = getattr(module, "CosyVoice2", None)
-    if cls is None:
-        raise RuntimeError("CosyVoice runtime is installed, but cosyvoice.cli.cosyvoice.CosyVoice2 was not found.")
-    return cls
+    _install_cosyvoice_runtime()
+    _clear_cosyvoice_modules()
+    cls = _cosyvoice_class_from_runtime()
+    if cls is not None:
+        return cls
+
+    raise RuntimeError("CosyVoice runtime is installed, but cosyvoice.cli.cosyvoice.CosyVoice2 was not found.")
 
 
 def _patch_torchaudio_soundfile_loader() -> None:
@@ -447,6 +456,9 @@ class CosyVoice2Adapter(TTSAdapter):
     @property
     def is_loaded(self) -> bool:
         return self._model is not None
+
+    def prepare_runtime(self) -> None:
+        _load_cosyvoice_class()
 
     def validate_synthesis_request(
         self,
