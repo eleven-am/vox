@@ -30,3 +30,19 @@ def test_expressive_adapter_smoke_runbook_lists_required_models_and_evidence():
     ):
         assert evidence in runbook
 
+
+def test_expressive_adapter_status_tracks_all_goal_targets_and_smoke_gap():
+    status = Path("docs/expressive-adapter-status.md").read_text()
+
+    for model in (
+        "cosyvoice2-tts:0.5b",
+        "dia-tts:1.6b",
+        "orpheus-tts:medium-3b",
+        "indextts-tts:2",
+    ):
+        assert model in status
+
+    assert "Previously cluster-smoked successfully, but slow" in status
+    assert "Pending isolated GPU smoke" in status
+    assert "Do not run these against the production `vox` namespace or `vox-data` PVC" in status
+    assert "vox pull` succeeds without `VOX_ALLOW_INCOMPATIBLE" in status
