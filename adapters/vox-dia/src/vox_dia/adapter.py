@@ -124,13 +124,42 @@ def _run_install_command(cmd: list[str], timeout: int) -> subprocess.CompletedPr
 
 
 def _runtime_has_dia_support() -> bool:
-    _ensure_runtime_path()
+    runtime_path = Path(_ensure_runtime_path()).resolve()
     try:
-        importlib.import_module(_DIA_RUNTIME_IMPORT)
+        dia_module = importlib.import_module(_DIA_RUNTIME_IMPORT)
         transformers = importlib.import_module("transformers")
     except (ImportError, ModuleNotFoundError, AttributeError, ValueError):
         return False
+    if not _module_loaded_from_runtime(transformers, runtime_path):
+        return False
+    if not _module_loaded_from_runtime(dia_module, runtime_path):
+        return False
     return hasattr(transformers, "DiaForConditionalGeneration") and hasattr(transformers, "AutoProcessor")
+
+
+def _module_loaded_from_runtime(module: Any, runtime_path: Path) -> bool:
+    candidate_paths: list[Path] = []
+    module_file = getattr(module, "__file__", None)
+    if module_file:
+        candidate_paths.append(Path(module_file))
+
+    spec = getattr(module, "__spec__", None)
+    spec_origin = getattr(spec, "origin", None)
+    if spec_origin and spec_origin not in {"built-in", "frozen"}:
+        candidate_paths.append(Path(spec_origin))
+    search_locations = getattr(spec, "submodule_search_locations", None)
+    if search_locations:
+        candidate_paths.extend(Path(path) for path in search_locations)
+
+    return any(_is_relative_to(path, runtime_path) for path in candidate_paths)
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent)
+    except (OSError, ValueError):
+        return False
+    return True
 
 
 def _decode_dia_output(

@@ -12,7 +12,7 @@ marking any unproven GPU-heavy adapter as production-ready.
 | Model | Adapter package | Packaging/runtime isolation | Runtime metadata | Smoke status |
 | --- | --- | --- | --- | --- |
 | `cosyvoice2-tts:0.5b` | `vox-cosyvoice==0.1.5` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/cosyvoice` | Linux x86_64 CUDA/Torch; CPU/ONNX and Spark/ARM NVIDIA not production-supported | Previously cluster-smoked successfully, but slow; retain as known baseline |
-| `dia-tts:1.6b` | `vox-dia==0.2.11` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/dia` | Linux x86_64 CUDA/Torch; CPU/ONNX and Spark/ARM NVIDIA not production-supported | Pending isolated GPU smoke |
+| `dia-tts:1.6b` | `vox-dia==0.2.12` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/dia` | Linux x86_64 CUDA/Torch; CPU/ONNX and Spark/ARM NVIDIA not production-supported | Pending isolated GPU smoke |
 | `orpheus-tts:medium-3b` | `vox-orpheus==0.1.5` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/orpheus` | Linux x86_64 CUDA/Torch; CPU and Spark/ARM NVIDIA not packaged | Pending isolated GPU smoke |
 | `indextts-tts:2` | `vox-indextts==0.1.5` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/indextts` | Linux x86_64 CUDA/Torch; CPU/ONNX and Spark/ARM NVIDIA not production-supported | Pending isolated GPU smoke |
 
@@ -25,7 +25,9 @@ marking any unproven GPU-heavy adapter as production-ready.
   bootstrap the isolated runtime without loading model weights.
 - Dia pull-time preparation is covered by `tests/test_dia_adapter.py`; the test
   proves the isolated Transformers runtime can be bootstrapped without loading
-  processors or model weights.
+  processors or model weights. Dia runtime verification also rejects
+  Dia-capable Transformers modules loaded from the Vox app environment instead
+  of `$VOX_HOME/runtime/dia`.
 - Orpheus stale-runtime repair is covered by `tests/test_orpheus_adapter.py`;
   the tests prove a stale `orpheus_tts` module missing `OrpheusModel` and a
   broken runtime import probe are repaired instead of accepted as valid.

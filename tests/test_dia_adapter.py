@@ -21,7 +21,7 @@ def test_dia_package_metadata_keeps_torch_out_of_adapter_dependencies():
     data = tomllib.loads(pyproject.read_text())
 
     dependencies = data["project"]["dependencies"]
-    assert data["project"]["version"] == "0.2.11"
+    assert data["project"]["version"] == "0.2.12"
     assert not any(dep.startswith("torch") for dep in dependencies)
 
 
@@ -195,6 +195,62 @@ class TestDiaAdapterInfo:
         assert "--upgrade" not in source_call
         assert "--upgrade" in deps_call
         assert "tiktoken>=0.9.0,<1" in deps_call
+
+    def test_runtime_probe_rejects_app_env_transformers_as_dia_runtime(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("VOX_HOME", str(tmp_path / "vox-home"))
+        for name in list(sys.modules):
+            if name == "transformers" or name.startswith("transformers."):
+                sys.modules.pop(name, None)
+
+        transformers = ModuleType("transformers")
+        transformers.__file__ = str(tmp_path / "app-env" / "transformers" / "__init__.py")
+        transformers.AutoProcessor = object  # type: ignore[attr-defined]
+        transformers.DiaForConditionalGeneration = object  # type: ignore[attr-defined]
+        dia_modeling = ModuleType("transformers.models.dia.modeling_dia")
+        dia_modeling.__file__ = str(tmp_path / "app-env" / "transformers" / "models" / "dia" / "modeling_dia.py")
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "torch": MagicMock(),
+                "transformers": transformers,
+                "transformers.models": ModuleType("transformers.models"),
+                "transformers.models.dia": ModuleType("transformers.models.dia"),
+                "transformers.models.dia.modeling_dia": dia_modeling,
+            },
+        ):
+            from vox_dia.adapter import _runtime_has_dia_support
+
+            assert _runtime_has_dia_support() is False
+
+    def test_runtime_probe_accepts_transformers_from_dia_runtime(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("VOX_HOME", str(tmp_path / "vox-home"))
+        runtime = tmp_path / "vox-home" / "runtime" / "dia"
+        runtime.mkdir(parents=True)
+        for name in list(sys.modules):
+            if name == "transformers" or name.startswith("transformers."):
+                sys.modules.pop(name, None)
+
+        transformers = ModuleType("transformers")
+        transformers.__file__ = str(runtime / "transformers" / "__init__.py")
+        transformers.AutoProcessor = object  # type: ignore[attr-defined]
+        transformers.DiaForConditionalGeneration = object  # type: ignore[attr-defined]
+        dia_modeling = ModuleType("transformers.models.dia.modeling_dia")
+        dia_modeling.__file__ = str(runtime / "transformers" / "models" / "dia" / "modeling_dia.py")
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "torch": MagicMock(),
+                "transformers": transformers,
+                "transformers.models": ModuleType("transformers.models"),
+                "transformers.models.dia": ModuleType("transformers.models.dia"),
+                "transformers.models.dia.modeling_dia": dia_modeling,
+            },
+        ):
+            from vox_dia.adapter import _runtime_has_dia_support
+
+            assert _runtime_has_dia_support() is True
 
     def test_load_bootstraps_transformers_when_dia_symbol_is_missing(self):
         torch = MagicMock()

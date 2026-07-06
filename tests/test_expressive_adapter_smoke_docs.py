@@ -42,7 +42,7 @@ def test_expressive_adapter_smoke_runbook_pins_published_adapter_baseline():
 
     for package in (
         "vox-cosyvoice==0.1.5",
-        "vox-dia==0.2.11",
+        "vox-dia==0.2.12",
         "vox-orpheus==0.1.5",
         "vox-indextts==0.1.5",
     ):
@@ -91,6 +91,7 @@ def test_expressive_adapter_status_names_local_regression_evidence():
         "bootstrap the isolated runtime without loading model weights",
         "`tests/test_dia_adapter.py`; the test\n  proves the isolated Transformers runtime",
         "without loading\n  processors or model weights",
+        "rejects\n  Dia-capable Transformers modules loaded from the Vox app environment",
         "Pull atomicity across adapter runtime preparation is covered by",
         "Vox does not save a model\n  manifest when `prepare_runtime()` fails",
         "`tests/test_orpheus_adapter.py`",
