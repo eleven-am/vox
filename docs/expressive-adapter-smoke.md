@@ -1,8 +1,10 @@
 # Expressive Adapter Smoke Validation
 
-This runbook is the final verification gate for expressive TTS adapters that
-need GPU-backed runtime dependencies. It is intentionally separate from the
-live Vox deployment.
+This runbook is the verification gate for expressive TTS adapters that need
+GPU-backed runtime dependencies. The default operational path is to test the
+already-running Vox HTTP endpoint. Clean-pull Kubernetes smoke is a separate
+mode and must be explicitly approved before creating or using any nonstandard
+namespace or PVC.
 
 ## Scope
 
@@ -21,9 +23,9 @@ synthesis, latency, output duration, RAM/VRAM behavior, and audio usability.
 
 ## Published Adapter Baseline
 
-The isolated smoke pod must resolve adapter packages from PyPI, not from a
-local source tree or a patched live cluster directory. Verify the installed
-versions before marking a model as smoke-tested:
+Smoke validation must resolve adapter packages from PyPI, not from a local
+source tree or a patched live cluster directory. Verify the installed versions
+before marking a model as smoke-tested:
 
 | Model | Expected adapter package |
 | --- | --- |
@@ -35,70 +37,11 @@ versions before marking a model as smoke-tested:
 If the registry points at a newer package, record that newer version in the
 smoke evidence and update this table with the same change.
 
-## Safety Rules
-
-Do not use the production `vox` namespace or production `vox-data` PVC for this
-work.
-
-Create a separate namespace and disposable PVC:
-
-```bash
-export VOX_SMOKE_NS=vox-adapter-smoke
-export VOX_SMOKE_PVC=vox-adapter-smoke-data
-export VOX_SMOKE_IMAGE=ghcr.io/eleven-am/vox:latest
-```
-
-If the cluster does not already have an isolated namespace/PVC, stop and get
-approval before creating one. Do not mutate, clean, reinstall, restart, or scale
-the live deployment as part of adapter smoke testing.
-
-Before running any smoke command, do a read-only preflight against the exact
-disposable names:
-
-```bash
-kubectl get namespace "$VOX_SMOKE_NS"
-kubectl -n "$VOX_SMOKE_NS" get pvc "$VOX_SMOKE_PVC"
-kubectl -n "$VOX_SMOKE_NS" get pod vox-adapter-smoke
-```
-
-If the namespace or PVC is missing, stop and ask before creating it. Never
-substitute `vox`, `vox-data`, or any production pod/PVC to "just test quickly".
-The preflight is allowed to fail with `NotFound`; that means the isolated smoke
-environment does not exist yet.
-
-The scripted path is:
-
-```bash
-bash scripts/expressive-adapter-smoke.sh --model dia-tts:1.6b --audio-usable yes
-```
-
-To force a pull-time hardware/backend variant for models that publish multiple
-variants, pass the same variant flag that `vox pull` accepts:
-
-```bash
-bash scripts/expressive-adapter-smoke.sh --model chatterbox-tts-turbo:0.1.7 --variant onnx --audio-usable yes
-```
-
-For CPU/ONNX validation, explicitly create the disposable pod without a GPU
-request so the result proves that the model can run without CUDA:
-
-```bash
-bash scripts/expressive-adapter-smoke.sh --model chatterbox-tts-turbo:0.1.7 --variant onnx --cpu-only --audio-usable yes
-```
-
-The equivalent Makefile entrypoint is:
-
-```bash
-make smoke-expressive MODEL=dia-tts:1.6b SMOKE_AUDIO_USABLE=yes
-make smoke-expressive MODEL=chatterbox-tts-turbo:0.1.7 SMOKE_VARIANT=onnx SMOKE_AUDIO_USABLE=yes
-make smoke-expressive MODEL=chatterbox-tts-turbo:0.1.7 SMOKE_VARIANT=onnx SMOKE_CPU_ONLY=1 SMOKE_AUDIO_USABLE=yes
-```
-
 ## Existing Server Smoke
 
 When the goal is to test the Vox server that is already running, do not create
-a new namespace or PVC just to run a smoke request. Use the served-smoke helper
-against the existing HTTP endpoint:
+a new namespace or PVC. Use the served-smoke helper against the existing HTTP
+endpoint and the existing Vox deployment:
 
 ```bash
 python scripts/expressive-adapter-served-smoke.py \
@@ -135,14 +78,80 @@ python scripts/expressive-adapter-served-smoke.py \
 
 This path intentionally does not call `kubectl`, `vox pull`, or mutate adapter,
 runtime, model, or PVC contents. It records whether an API key was provided,
-`/v1/health`, `/v1/models`, `/v1/models/loaded`, short synthesis, long
-synthesis, wall times, WAV metadata, SHA-256 digests, and silence checks under
+`/v1/health`, `/v1/models`, `/v1/models/loaded` before synthesis,
+`/v1/models/loaded` after synthesis, short synthesis, long synthesis, wall
+times, WAV metadata, SHA-256 digests, and silence checks under
 `/tmp/vox-served-smoke` by default.
+
+Existing-server smoke can change in-memory scheduler state and VRAM usage while
+requests are in flight because synthesis can load models. It is storage-safe,
+not side-effect-free. Do not run heavy synthesis against a live deployment
+unless that is the requested test.
 
 Existing-server smoke is not enough to mark an adapter fully production-ready
 because it cannot prove a clean pull, clean runtime install, or clean model
 store. It is useful evidence that the currently running server can synthesize
 with the model without taking down or rebuilding the deployment.
+
+## Clean-Pull Kubernetes Smoke
+
+Use this mode only when clean-pull evidence is explicitly requested and an
+approved test environment already exists. Do not create a namespace or PVC just
+because a model needs testing.
+
+The historical disposable defaults are:
+
+```bash
+export VOX_SMOKE_NS=vox-adapter-smoke
+export VOX_SMOKE_PVC=vox-adapter-smoke-data
+export VOX_SMOKE_IMAGE=ghcr.io/eleven-am/vox:latest
+```
+
+If the approved namespace or PVC is missing, stop and get approval before
+creating one. Do not mutate, clean, reinstall, restart, or scale the live
+deployment as part of clean-pull adapter smoke testing.
+
+Before running any smoke command, do a read-only preflight against the exact
+disposable names:
+
+```bash
+kubectl get namespace "$VOX_SMOKE_NS"
+kubectl -n "$VOX_SMOKE_NS" get pvc "$VOX_SMOKE_PVC"
+kubectl -n "$VOX_SMOKE_NS" get pod vox-adapter-smoke
+```
+
+If the namespace or PVC is missing, stop and ask before creating it. Do not
+invent new namespace/PVC names, and do not mutate production storage to get a
+quick result. The preflight is allowed to fail with `NotFound`; that means the
+clean-pull smoke environment does not exist yet.
+
+The scripted path is:
+
+```bash
+bash scripts/expressive-adapter-smoke.sh --model dia-tts:1.6b --audio-usable yes
+```
+
+To force a pull-time hardware/backend variant for models that publish multiple
+variants, pass the same variant flag that `vox pull` accepts:
+
+```bash
+bash scripts/expressive-adapter-smoke.sh --model chatterbox-tts-turbo:0.1.7 --variant onnx --audio-usable yes
+```
+
+For CPU/ONNX validation, explicitly create the disposable pod without a GPU
+request so the result proves that the model can run without CUDA:
+
+```bash
+bash scripts/expressive-adapter-smoke.sh --model chatterbox-tts-turbo:0.1.7 --variant onnx --cpu-only --audio-usable yes
+```
+
+The equivalent Makefile entrypoint is:
+
+```bash
+make smoke-expressive MODEL=dia-tts:1.6b SMOKE_AUDIO_USABLE=yes
+make smoke-expressive MODEL=chatterbox-tts-turbo:0.1.7 SMOKE_VARIANT=onnx SMOKE_AUDIO_USABLE=yes
+make smoke-expressive MODEL=chatterbox-tts-turbo:0.1.7 SMOKE_VARIANT=onnx SMOKE_CPU_ONLY=1 SMOKE_AUDIO_USABLE=yes
+```
 
 For cloning adapters, copy a small test-only reference WAV into the disposable
 PVC and pass it as the Vox voice path. Do not use production voice data:

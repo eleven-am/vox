@@ -80,16 +80,19 @@ The remaining production-readiness gap is runtime smoke evidence for:
 - `indextts-tts:2`
 
 Existing-server smoke is available for the currently running Vox endpoint via
-`scripts/expressive-adapter-served-smoke.py`. That path is useful for checking
-short/long synthesis, timings, WAV metadata, SHA-256 digests, and silence
-without creating namespaces, PVCs, or running `vox pull`. It is not sufficient
-to mark a model production-ready because it cannot prove a clean model pull or
-clean runtime install.
+`scripts/expressive-adapter-served-smoke.py`. That path is the default for
+checking the existing Vox service. It records short/long synthesis, timings,
+WAV metadata, SHA-256 digests, silence checks, and `/v1/models/loaded` before
+and after synthesis without creating namespaces, PVCs, or running `vox pull`.
+It can still change in-memory loaded model state and VRAM while a request is in
+flight, so heavy synthesis against production should be intentional.
 
-Full production-readiness still requires clean-pull smoke. Use a disposable
-namespace and PVC as described in [the smoke runbook](expressive-adapter-smoke.md)
-unless the user explicitly asks to test the already-running Vox deployment. The
-required proof is:
+Existing-server smoke is not sufficient to mark a model production-ready because
+it cannot prove a clean model pull or clean runtime install.
+
+Full production-readiness still requires clean-pull smoke in an explicitly
+approved test environment. Do not create a new namespace or PVC just because a
+model needs testing. The required proof is:
 
 1. `vox pull` succeeds without `VOX_ALLOW_INCOMPATIBLE`.
 2. The pre-pull clean-state probe proves the target manifest, model link, and

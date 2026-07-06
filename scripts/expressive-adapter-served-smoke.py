@@ -117,6 +117,24 @@ def _post_json(url: str, payload: dict[str, Any], *, timeout: float, api_key: st
     return HttpResult(status=status, headers=headers, body=response_body, elapsed_s=time.perf_counter() - started)
 
 
+def _response_evidence(result: HttpResult, *, max_chars: int = 12_000) -> dict[str, Any]:
+    raw_text = result.body.decode("utf-8", errors="replace")
+    payload: dict[str, Any] = {
+        "status": result.status,
+        "elapsed_s": result.elapsed_s,
+    }
+
+    if raw_text:
+        try:
+            payload["json"] = json.loads(raw_text)
+        except json.JSONDecodeError:
+            payload["text"] = raw_text[:max_chars]
+            if len(raw_text) > max_chars:
+                payload["truncated"] = True
+
+    return payload
+
+
 def _pcm_stats(frames: bytes, *, sample_width: int) -> tuple[float | None, float | None]:
     if not frames or sample_width not in {1, 2, 4}:
         return None, None
@@ -299,9 +317,9 @@ def main() -> int:
         timeout=min(args.timeout, 30.0),
         api_key=args.api_key,
     )
-    evidence["health"] = {"status": health.status, "elapsed_s": health.elapsed_s}
-    evidence["models"] = {"status": models.status, "elapsed_s": models.elapsed_s}
-    evidence["loaded_before"] = {"status": loaded.status, "elapsed_s": loaded.elapsed_s}
+    evidence["health"] = _response_evidence(health)
+    evidence["models"] = _response_evidence(models)
+    evidence["loaded_before"] = _response_evidence(loaded)
 
     cases = [
         _run_case(
@@ -332,6 +350,13 @@ def main() -> int:
         ),
     ]
     evidence["synthesis"] = [asdict(case) for case in cases]
+
+    loaded_after = _request_json(
+        f"{args.base_url.rstrip('/')}/v1/models/loaded",
+        timeout=min(args.timeout, 30.0),
+        api_key=args.api_key,
+    )
+    evidence["loaded_after"] = _response_evidence(loaded_after)
 
     evidence_path = output_dir / "evidence.json"
     evidence_path.write_text(json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8")

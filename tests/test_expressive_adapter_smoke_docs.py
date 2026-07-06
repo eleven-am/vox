@@ -132,6 +132,9 @@ def test_expressive_adapter_served_smoke_script_uses_existing_server_only():
     assert "v1/audio/speech" in script
     assert "v1/health" in script
     assert "v1/models/loaded" in script
+    assert "_response_evidence" in script
+    assert "loaded_before" in script
+    assert "loaded_after" in script
     assert "--base-url" in script
     assert "--api-key" in script
     assert "VOX_API_KEY" in script
@@ -145,6 +148,9 @@ def test_expressive_adapter_served_smoke_script_uses_existing_server_only():
     assert "Existing Server Smoke" in runbook
     assert "do not create\na new namespace or PVC" in runbook
     assert "does not call `kubectl`, `vox pull`, or mutate adapter,\nruntime, model, or PVC contents" in runbook
+    assert "`/v1/models/loaded` before synthesis" in runbook
+    assert "`/v1/models/loaded` after synthesis" in runbook
+    assert "can change in-memory scheduler state and VRAM usage" in runbook
     assert "not enough to mark an adapter fully production-ready" in runbook
     assert "never the key value" in runbook
     assert "SMOKE_API_KEY=..." in runbook
@@ -319,14 +325,16 @@ def test_expressive_adapter_smoke_script_records_model_resolution_evidence():
 def test_expressive_adapter_smoke_runbook_keeps_production_safety_boundary():
     runbook = Path("docs/expressive-adapter-smoke.md").read_text()
 
-    assert "Do not use the production `vox` namespace or production `vox-data` PVC" in runbook
+    assert "The default operational path is to test the\nalready-running Vox HTTP endpoint" in runbook
+    assert "Clean-pull Kubernetes smoke" in runbook
+    assert "must be explicitly approved before creating or using any nonstandard\nnamespace or PVC" in runbook
     assert "VOX_SMOKE_NS=vox-adapter-smoke" in runbook
     assert "VOX_SMOKE_PVC=vox-adapter-smoke-data" in runbook
-    assert "separate namespace and disposable PVC" in runbook
+    assert "Do not create a namespace or PVC just\nbecause a model needs testing" in runbook
     assert "Do not mutate, clean, reinstall, restart, or scale" in runbook
     assert "kubectl get namespace \"$VOX_SMOKE_NS\"" in runbook
     assert "kubectl -n \"$VOX_SMOKE_NS\" get pvc \"$VOX_SMOKE_PVC\"" in runbook
-    assert "Never\nsubstitute `vox`, `vox-data`, or any production pod/PVC" in runbook
+    assert "Do not\ninvent new namespace/PVC names" in runbook
 
 
 def test_expressive_adapter_smoke_runbook_lists_required_models_and_evidence():
@@ -372,7 +380,7 @@ def test_expressive_adapter_smoke_runbook_pins_published_adapter_baseline():
         assert package in runbook
 
     assert "resolve adapter packages from PyPI" in runbook
-    assert "not from a\nlocal source tree or a patched live cluster directory" in runbook
+    assert "not from a local\nsource tree or a patched live cluster directory" in runbook
 
 
 def test_expressive_adapter_status_uses_current_adapter_package_versions():
@@ -414,9 +422,12 @@ def test_expressive_adapter_status_tracks_all_goal_targets_and_smoke_gap():
     assert "registry requires `min_vram_gb=12`" in status
     assert status.count("registry requires `min_vram_gb=10`") == 2
     assert "Existing-server smoke is available for the currently running Vox endpoint" in status
+    assert "That path is the default for\nchecking the existing Vox service" in status
+    assert "`/v1/models/loaded` before\nand after synthesis" in status
     assert "without creating namespaces, PVCs, or running `vox pull`" in status
-    assert "not sufficient\nto mark a model production-ready" in status
-    assert "unless the user explicitly asks to test the already-running Vox deployment" in status
+    assert "It can still change in-memory loaded model state and VRAM" in status
+    assert "not sufficient to mark a model production-ready" in status
+    assert "Do not create a new namespace or PVC just because a\nmodel needs testing" in status
     assert "vox pull` succeeds without `VOX_ALLOW_INCOMPATIBLE" in status
     assert "Model files are stored in the model store and storage usage is recorded" in status
     assert "Adapter package, runtime, manifest, and blob storage usage is recorded" in status
