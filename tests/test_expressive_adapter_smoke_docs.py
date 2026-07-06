@@ -43,6 +43,12 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert "record_timed()" in script
     assert "record_resources()" in script
     assert "record_artifact_stats()" in script
+    assert 'env MODEL_REF="$MODEL" TEXT_REF="$SHORT_TEXT"' in script
+    assert 'env MODEL_REF="$MODEL" TEXT_REF="$LONG_TEXT"' in script
+    assert 'vox run "$MODEL_REF" "$TEXT_REF" --output /tmp/short.wav' in script
+    assert 'vox run "$MODEL_REF" "$TEXT_REF" --output /tmp/long.wav' in script
+    assert "vox run '$MODEL' '$SHORT_TEXT'" not in script
+    assert "vox run '$MODEL' '$LONG_TEXT'" not in script
     assert 'FAILED=1' in script
     assert 'record_timed "Pull Output"' in script
     assert 'record_timed "Short Synthesis Output"' in script

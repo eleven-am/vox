@@ -424,10 +424,12 @@ PY")"
 append_section "Adapter Packages" "$packages"
 
 record_timed "Short Synthesis Output" \
-  kubectl -n "$NS" exec "$POD" -- sh -lc "vox run '$MODEL' '$SHORT_TEXT' --output /tmp/short.wav"
+  kubectl -n "$NS" exec "$POD" -- \
+    env MODEL_REF="$MODEL" TEXT_REF="$SHORT_TEXT" sh -lc 'vox run "$MODEL_REF" "$TEXT_REF" --output /tmp/short.wav'
 record_resources "Resource Snapshot After Short Synthesis"
 record_timed "Long Synthesis Output" \
-  kubectl -n "$NS" exec "$POD" -- sh -lc "vox run '$MODEL' '$LONG_TEXT' --output /tmp/long.wav"
+  kubectl -n "$NS" exec "$POD" -- \
+    env MODEL_REF="$MODEL" TEXT_REF="$LONG_TEXT" sh -lc 'vox run "$MODEL_REF" "$TEXT_REF" --output /tmp/long.wav'
 record_resources "Resource Snapshot After Long Synthesis"
 
 durations="$(kubectl -n "$NS" exec "$POD" -- sh -lc 'ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 /tmp/short.wav /tmp/long.wav' 2>&1 || true)"
