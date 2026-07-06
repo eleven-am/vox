@@ -23,7 +23,7 @@ def test_indextts_package_metadata_is_lightweight():
     data = tomllib.loads(pyproject.read_text())
 
     dependencies = data["project"]["dependencies"]
-    assert data["project"]["version"] == "0.1.6"
+    assert data["project"]["version"] == "0.1.7"
     assert not any(dep.startswith(("torch", "torchaudio", "indextts")) for dep in dependencies)
 
 
@@ -128,7 +128,8 @@ def test_indextts_load_uses_config_and_synthesizes_with_reference_audio(tmp_path
         from vox_indextts.adapter import IndexTTSAdapter
 
         adapter = IndexTTSAdapter()
-        adapter.load(str(model_dir), "cuda")
+        with patch("vox_indextts.adapter._clear_indextts_modules"):
+            adapter.load(str(model_dir), "cuda")
 
         async def run():
             chunks = []
@@ -155,7 +156,8 @@ def test_indextts_requires_reference_audio_or_voice_path(tmp_path):
         from vox_indextts.adapter import IndexTTSAdapter
 
         adapter = IndexTTSAdapter()
-        adapter.load(str(tmp_path), "cuda")
+        with patch("vox_indextts.adapter._clear_indextts_modules"):
+            adapter.load(str(tmp_path), "cuda")
 
         async def run():
             async for _ in adapter.synthesize("Hello"):
@@ -304,6 +306,24 @@ def test_indextts_repairs_runtime_when_import_probe_is_broken(tmp_path):
     assert "git+https://github.com/index-tts/index-tts.git" in calls[0]
     assert "--no-deps" in calls[0]
     assert "transformers==4.52.1" in calls[1]
+
+
+def test_indextts_clears_sibling_runtime_transformers_before_probe(tmp_path):
+    stale_transformers = ModuleType("transformers")
+    stale_cache_utils = ModuleType("transformers.cache_utils")
+    sys.modules["transformers"] = stale_transformers
+    sys.modules["transformers.cache_utils"] = stale_cache_utils
+
+    def fake_probe():
+        assert "transformers" not in sys.modules
+        assert "transformers.cache_utils" not in sys.modules
+        return _FakeIndexTTS2
+
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        from vox_indextts.adapter import _load_indextts_class
+
+        with patch("vox_indextts.adapter._indextts_class_from_runtime", side_effect=fake_probe):
+            assert _load_indextts_class() is _FakeIndexTTS2
 
 
 def test_indextts_runtime_probe_rejects_app_env_indextts_module(tmp_path):

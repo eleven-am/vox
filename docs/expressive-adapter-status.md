@@ -14,7 +14,7 @@ marking any unproven GPU-heavy adapter as production-ready.
 | `cosyvoice2-tts:0.5b` | `vox-cosyvoice==0.1.6` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/cosyvoice` | Linux x86_64 CUDA/Torch; CPU/ONNX and Spark/ARM NVIDIA not production-supported | Previously cluster-smoked successfully, but slow; retain as known baseline |
 | `dia-tts:1.6b` | `vox-dia==0.2.12` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/dia` | Linux x86_64 CUDA/Torch; registry requires `min_vram_gb=12`; CPU/ONNX and Spark/ARM NVIDIA not production-supported | Pending isolated GPU smoke |
 | `orpheus-tts:medium-3b` | `vox-orpheus==0.1.6` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/orpheus` | Linux x86_64 CUDA/Torch; CPU and Spark/ARM NVIDIA not packaged | Pending isolated GPU smoke |
-| `indextts-tts:2` | `vox-indextts==0.1.6` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/indextts` | Linux x86_64 CUDA/Torch; CPU/ONNX and Spark/ARM NVIDIA not production-supported | Pending isolated GPU smoke |
+| `indextts-tts:2` | `vox-indextts==0.1.7` | Covered by adapter tests; runtime under `$VOX_HOME/runtime/indextts`; purges sibling-runtime Transformers modules before import probes | Linux x86_64 CUDA/Torch; CPU/ONNX and Spark/ARM NVIDIA not production-supported | Pending isolated GPU smoke |
 
 ## Evidence Already In The Repo
 

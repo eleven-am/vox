@@ -47,7 +47,7 @@ def test_expressive_adapter_smoke_runbook_pins_published_adapter_baseline():
         "vox-cosyvoice==0.1.6",
         "vox-dia==0.2.12",
         "vox-orpheus==0.1.6",
-        "vox-indextts==0.1.6",
+        "vox-indextts==0.1.7",
     ):
         assert package in runbook
 

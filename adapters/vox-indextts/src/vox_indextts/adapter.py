@@ -98,7 +98,13 @@ def _install_indextts_runtime() -> None:
 
 
 def _clear_indextts_modules() -> None:
-    purge_runtime_modules(("indextts",))
+    purge_runtime_modules((
+        "indextts",
+        "transformers",
+        "tokenizers",
+        "accelerate",
+        "modelscope",
+    ))
 
 
 def _indextts_class_from_runtime() -> type[Any] | None:
@@ -137,6 +143,7 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
 
 def _load_indextts_class() -> type[Any]:
     _ensure_runtime_path()
+    _clear_indextts_modules()
     try:
         cls = _indextts_class_from_runtime()
     except _RUNTIME_PROBE_ERRORS:
