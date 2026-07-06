@@ -185,6 +185,10 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     )
     assert disallowed_multi_probe not in script
     assert 'record_artifact_stats "Copied Artifact Stats"' in script
+    assert "artifact_sha256()" in script
+    assert "sha256sum" in script
+    assert "shasum -a 256" in script
+    assert "sha256=$digest" in script
     assert 'validate_copied_artifacts "$short_wav" "$long_wav"' in script
     assert 'FAILED_STEPS+=("Missing or empty copied artifact: $path")' in script
     assert 'one or more smoke steps failed; inspect evidence' in script
@@ -260,7 +264,7 @@ def test_expressive_adapter_smoke_runbook_lists_required_models_and_evidence():
         "generated audio signal stats proving the WAV is not silent",
         "pod memory and GPU memory snapshots after pull, short synthesis, and long synthesis",
         "output WAV artifact",
-        "copied WAV byte size",
+        "copied WAV byte size and SHA-256 digest",
         "smoke result and failed-step summary",
         "audio is usable",
         "exact failure output",
@@ -404,7 +408,9 @@ def test_expressive_adapter_smoke_runbook_requires_durable_evidence_record():
         "## Audio Signal Stats",
         "## Copied Artifact Stats",
         "Short WAV bytes:",
+        "Short WAV sha256:",
         "Long WAV bytes:",
+        "Long WAV sha256:",
         "## Smoke Result",
         "Result:",
         "Failed steps:",

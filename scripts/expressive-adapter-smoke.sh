@@ -370,7 +370,9 @@ Long:
 ## Copied Artifact Stats
 
 Short WAV bytes:
+Short WAV sha256:
 Long WAV bytes:
+Long WAV sha256:
 
 ## Classification
 
@@ -439,14 +441,27 @@ record_storage_usage() {
   validate_storage_usage "$body"
 }
 
+artifact_sha256() {
+  local path="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" | awk '{print $1}'
+  else
+    shasum -a 256 "$path" | awk '{print $1}'
+  fi
+}
+
 record_artifact_stats() {
   local label="$1"
   shift
   local body=""
   local path
+  local bytes
+  local digest
   for path in "$@"; do
     if [[ -f "$path" ]]; then
-      body+="$path bytes=$(stat -f%z "$path" 2>/dev/null || stat -c%s "$path" 2>/dev/null || echo unknown)"$'\n'
+      bytes="$(stat -f%z "$path" 2>/dev/null || stat -c%s "$path" 2>/dev/null || echo unknown)"
+      digest="$(artifact_sha256 "$path" 2>/dev/null || echo unknown)"
+      body+="$path bytes=$bytes sha256=$digest"$'\n'
     else
       body+="$path missing"$'\n'
     fi

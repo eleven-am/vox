@@ -141,7 +141,7 @@ For each model, capture:
 - generated audio signal stats proving the WAV is not silent
 - pod memory and GPU memory snapshots after pull, short synthesis, and long synthesis
 - output WAV artifact
-- copied WAV byte size
+- copied WAV byte size and SHA-256 digest
 - smoke result and failed-step summary
 - whether the audio is usable
 - exact failure output if any step fails
@@ -393,7 +393,9 @@ Long:
 ## Copied Artifact Stats
 
 Short WAV bytes:
+Short WAV sha256:
 Long WAV bytes:
+Long WAV sha256:
 
 ## Smoke Result
 
