@@ -1,6 +1,25 @@
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
+
+
+ADAPTER_PACKAGE_DIRS = {
+    "vox-cosyvoice": Path("adapters/vox-cosyvoice"),
+    "vox-dia": Path("adapters/vox-dia"),
+    "vox-orpheus": Path("adapters/vox-orpheus"),
+    "vox-indextts": Path("adapters/vox-indextts"),
+}
+
+
+def adapter_package_specs() -> tuple[str, ...]:
+    specs: list[str] = []
+    for package_name, package_dir in ADAPTER_PACKAGE_DIRS.items():
+        pyproject = tomllib.loads((package_dir / "pyproject.toml").read_text())
+        project = pyproject["project"]
+        assert project["name"] == package_name
+        specs.append(f"{package_name}=={project['version']}")
+    return tuple(specs)
 
 
 def test_expressive_adapter_smoke_script_refuses_production_and_requires_create():
@@ -137,16 +156,18 @@ def test_expressive_adapter_smoke_runbook_lists_required_models_and_evidence():
 def test_expressive_adapter_smoke_runbook_pins_published_adapter_baseline():
     runbook = Path("docs/expressive-adapter-smoke.md").read_text()
 
-    for package in (
-        "vox-cosyvoice==0.1.6",
-        "vox-dia==0.2.12",
-        "vox-orpheus==0.1.6",
-        "vox-indextts==0.1.13",
-    ):
+    for package in adapter_package_specs():
         assert package in runbook
 
     assert "resolve adapter packages from PyPI" in runbook
     assert "not from a\nlocal source tree or a patched live cluster directory" in runbook
+
+
+def test_expressive_adapter_status_uses_current_adapter_package_versions():
+    status = Path("docs/expressive-adapter-status.md").read_text()
+
+    for package in adapter_package_specs():
+        assert package in status
 
 
 def test_expressive_adapter_smoke_runbook_preserves_runtime_and_artifact_boundaries():
