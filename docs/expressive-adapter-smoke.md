@@ -134,6 +134,7 @@ For each model, capture:
 - manual audio usability verdict (`--audio-usable yes` for a passing run)
 - voice path existence inside the disposable pod when `--voice` is a file path
 - runtime capability snapshot from the pod
+- pre-pull clean-state probe proving the target manifest, model link, and adapter runtime are not already present
 - `vox pull <model>` output
 - machine-readable `real` durations for pull, short synthesis, and long synthesis
 - adapter, runtime, model, manifest, and blob storage usage after pull
@@ -333,6 +334,15 @@ Manifest exists:
 ## Adapter Packages
 
 Resolved packages:
+
+## Pre-Pull Clean State
+
+Manifest path:
+Manifest exists:
+Model store path:
+Model store path exists:
+Runtime paths:
+Dirty:
 
 ## Pull
 

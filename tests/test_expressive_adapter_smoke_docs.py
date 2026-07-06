@@ -220,6 +220,15 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert 'FAILED_STEPS+=("Resolved adapter package is not installed")' in script
     assert 'FAILED_STEPS+=("Expected adapter runtime path is missing after pull")' in script
     assert 'FAILED_STEPS+=("Expected adapter runtime path has no adapter-owned contents")' in script
+    assert "validate_pre_pull_clean_state()" in script
+    assert 'append_section "Pre-Pull Clean State"' in script
+    assert 'validate_pre_pull_clean_state "$pre_pull_state"' in script
+    assert 'FAILED_STEPS+=("Pre-pull clean-state probe reported an error")' in script
+    assert 'FAILED_STEPS+=("Pre-pull target model/runtime state is not clean")' in script
+    assert "'dirty'" in script
+    assert "'manifest_exists'" in script
+    assert "'model_link_exists'" in script
+    assert "meaningful_entry_count" in script
     assert "short:/tmp/short.wav long:/tmp/long.wav" in script
     assert "printf \"%s=%s\\n\"" in script
     assert "printf \"%s=missing\\n\"" in script
@@ -303,6 +312,8 @@ def test_expressive_adapter_smoke_runbook_lists_required_models_and_evidence():
         "manual audio usability verdict (`--audio-usable yes` for a passing run)",
         "voice path existence inside the disposable pod when `--voice` is a file path",
         "runtime capability snapshot from the pod",
+        "pre-pull clean-state probe proving the target manifest, model link, "
+        "and adapter runtime are not already present",
         "`vox pull <model>` output",
         "machine-readable `real` durations for pull, short synthesis, and long synthesis",
         "adapter, runtime, model, manifest, and blob storage usage after pull",
@@ -373,6 +384,7 @@ def test_expressive_adapter_status_tracks_all_goal_targets_and_smoke_gap():
     assert "vox pull` succeeds without `VOX_ALLOW_INCOMPATIBLE" in status
     assert "Model files are stored in the model store and storage usage is recorded" in status
     assert "Adapter package, runtime, manifest, and blob storage usage is recorded" in status
+    assert "pre-pull clean-state probe proves the target manifest, model link" in status
 
 
 def test_expressive_adapter_status_names_local_regression_evidence():
@@ -429,6 +441,7 @@ def test_expressive_adapter_smoke_runbook_requires_durable_evidence_record():
         "Adapter package:",
         "Expected adapter package:",
         "Runtime capability snapshot:",
+        "## Pre-Pull Clean State",
         "## Voice Reference",
         "Voice value:",
         "Voice path check:",
@@ -438,8 +451,11 @@ def test_expressive_adapter_smoke_runbook_requires_durable_evidence_record():
         "Preferred backend:",
         "Manifest path:",
         "Model store path:",
+        "Model store path exists:",
         "Runtime root:",
+        "Runtime paths:",
         "Manifest exists:",
+        "Dirty:",
         "## Adapter Packages",
         "Used VOX_ALLOW_INCOMPATIBLE: no",
         "## Resource Snapshot After Pull",

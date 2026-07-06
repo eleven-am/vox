@@ -352,6 +352,15 @@ Manifest exists:
 
 Resolved packages:
 
+## Pre-Pull Clean State
+
+Manifest path:
+Manifest exists:
+Model store path:
+Model store path exists:
+Runtime paths:
+Dirty:
+
 ## Pull
 
 Command: $pull_command
@@ -746,6 +755,18 @@ validate_adapter_package_baseline() {
   fi
 }
 
+validate_pre_pull_clean_state() {
+  local body="$1"
+  if grep -q '"error":' <<< "$body"; then
+    FAILED=1
+    FAILED_STEPS+=("Pre-pull clean-state probe reported an error")
+  fi
+  if grep -q '"dirty": true' <<< "$body"; then
+    FAILED=1
+    FAILED_STEPS+=("Pre-pull target model/runtime state is not clean")
+  fi
+}
+
 validate_timed_output() {
   local label="$1"
   local output="$2"
@@ -786,6 +807,82 @@ record_smoke_result() {
   fi
   append_section "Smoke Result" "$body"
 }
+
+pre_pull_state="$(kubectl -n "$NS" exec "$POD" -- env MODEL_REF="$MODEL" VARIANT_REF="$VARIANT" sh -lc "python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+from vox.core.model_resolution import resolve_catalog_entry
+from vox.core.registry import ModelRegistry
+from vox.core.store import BlobStore
+from vox.operations.models import ModelReferenceRequest, resolve_model_reference
+
+store = BlobStore(Path(os.environ.get('VOX_HOME', str(Path.home() / '.vox'))))
+registry = ModelRegistry(store)
+request = ModelReferenceRequest(
+    name=os.environ['MODEL_REF'],
+    variant=os.environ.get('VARIANT_REF') or None,
+)
+payload = {'requested': request.name, 'requested_variant': request.variant}
+
+try:
+    resolved = resolve_model_reference(registry=registry, request=request)
+    entry = registry.lookup(
+        resolved.parsed_name,
+        resolved.parsed_tag,
+        explicit_tag=resolved.explicit_tag,
+    )
+    variant = resolve_catalog_entry(entry, forced_variant=resolved.requested_variant) if entry else None
+    concrete_entry = variant.entry if variant else {}
+    adapter_package = concrete_entry.get('adapter_package') or ''
+    runtime_names = {
+        'vox-cosyvoice': ['cosyvoice'],
+        'vox-dia': ['dia'],
+        'vox-orpheus': ['orpheus'],
+        'vox-indextts': ['indextts'],
+    }.get(adapter_package, [])
+
+    manifest_path = store.manifests_dir / resolved.resolved_name / resolved.resolved_tag
+    model_link_path = store.root / 'models' / 'links' / resolved.resolved_name / resolved.resolved_tag
+    runtime_checks = []
+    for runtime_name in runtime_names:
+        runtime_path = store.root / 'runtime' / runtime_name
+        meaningful_entries = [
+            path.name
+            for path in runtime_path.iterdir()
+            if path.name != '_vox_runtime_fallback_paths.pth'
+        ] if runtime_path.is_dir() else []
+        runtime_checks.append({
+            'name': runtime_name,
+            'path': str(runtime_path),
+            'exists': runtime_path.is_dir(),
+            'meaningful_entry_count': len(meaningful_entries),
+        })
+
+    payload.update({
+        'resolved_name': resolved.resolved_name,
+        'resolved_tag': resolved.resolved_tag,
+        'adapter_package': adapter_package,
+        'manifest_path': str(manifest_path),
+        'manifest_exists': manifest_path.exists(),
+        'model_link_path': str(model_link_path),
+        'model_link_exists': model_link_path.exists(),
+        'adapter_runtime_paths': runtime_checks,
+    })
+    payload['dirty'] = bool(
+        payload['manifest_exists']
+        or payload['model_link_exists']
+        or any(check['meaningful_entry_count'] > 0 for check in runtime_checks)
+    )
+except Exception as exc:
+    payload['error'] = f'{type(exc).__name__}: {exc}'
+    payload['dirty'] = True
+
+print(json.dumps(payload, indent=2, sort_keys=True))
+PY" 2>&1 || true)"
+append_section "Pre-Pull Clean State" "$pre_pull_state"
+validate_pre_pull_clean_state "$pre_pull_state"
 
 record_timed "Pull Output" kubectl -n "$NS" exec "$POD" -- \
   env MODEL_REF="$MODEL" VARIANT_REF="$VARIANT" sh -lc '

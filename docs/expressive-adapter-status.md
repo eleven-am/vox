@@ -82,13 +82,15 @@ Use a disposable namespace and PVC as described in
 [the smoke runbook](expressive-adapter-smoke.md). The required proof is:
 
 1. `vox pull` succeeds without `VOX_ALLOW_INCOMPATIBLE`.
-2. Runtime dependencies are installed under `$VOX_HOME/runtime/<adapter>`.
-3. Model files are stored in the model store and storage usage is recorded.
-4. Adapter package, runtime, manifest, and blob storage usage is recorded.
-5. Short and long synthesis return non-empty WAV files.
-6. Output durations are plausible.
-7. Audio stream metadata has a valid codec, sample rate, and channel count.
-8. Audio signal stats prove the output is not silent.
-9. Peak RAM and VRAM fit the documented limits.
-10. Audio is manually judged usable.
-11. Any failure is classified as Vox, adapter, dependency, upstream, or hardware.
+2. The pre-pull clean-state probe proves the target manifest, model link, and
+   adapter runtime were not already present.
+3. Runtime dependencies are installed under `$VOX_HOME/runtime/<adapter>`.
+4. Model files are stored in the model store and storage usage is recorded.
+5. Adapter package, runtime, manifest, and blob storage usage is recorded.
+6. Short and long synthesis return non-empty WAV files.
+7. Output durations are plausible.
+8. Audio stream metadata has a valid codec, sample rate, and channel count.
+9. Audio signal stats prove the output is not silent.
+10. Peak RAM and VRAM fit the documented limits.
+11. Audio is manually judged usable.
+12. Any failure is classified as Vox, adapter, dependency, upstream, or hardware.
