@@ -43,8 +43,8 @@ def test_expressive_adapter_smoke_runbook_pins_published_adapter_baseline():
     for package in (
         "vox-cosyvoice==0.1.4",
         "vox-dia==0.2.11",
-        "vox-orpheus==0.1.3",
-        "vox-indextts==0.1.3",
+        "vox-orpheus==0.1.4",
+        "vox-indextts==0.1.4",
     ):
         assert package in runbook
 

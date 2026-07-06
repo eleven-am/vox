@@ -59,19 +59,28 @@ def _clear_orpheus_modules() -> None:
     purge_runtime_modules(("orpheus_tts", "snac", "vllm"))
 
 
+def _orpheus_model_class_from_runtime() -> type[Any] | None:
+    module = importlib.import_module("orpheus_tts")
+    cls = getattr(module, "OrpheusModel", None)
+    return cls if isinstance(cls, type) else None
+
+
 def _load_orpheus_model_class() -> type[Any]:
     _ensure_runtime_path()
     try:
-        module = importlib.import_module("orpheus_tts")
+        cls = _orpheus_model_class_from_runtime()
     except ImportError:
-        _install_orpheus_runtime()
-        _clear_orpheus_modules()
-        module = importlib.import_module("orpheus_tts")
+        cls = None
+    if cls is not None:
+        return cls
 
-    cls = getattr(module, "OrpheusModel", None)
-    if cls is None:
-        raise RuntimeError("Orpheus runtime is installed, but orpheus_tts.OrpheusModel was not found.")
-    return cls
+    _install_orpheus_runtime()
+    _clear_orpheus_modules()
+    cls = _orpheus_model_class_from_runtime()
+    if cls is not None:
+        return cls
+
+    raise RuntimeError("Orpheus runtime is installed, but orpheus_tts.OrpheusModel was not found.")
 
 
 def _select_dtype(device: str) -> Any:

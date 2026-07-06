@@ -21,7 +21,7 @@ def test_orpheus_package_metadata_is_lightweight():
     data = tomllib.loads(pyproject.read_text())
 
     dependencies = data["project"]["dependencies"]
-    assert data["project"]["version"] == "0.1.3"
+    assert data["project"]["version"] == "0.1.4"
     assert not any(dep.startswith(("torch", "vllm", "orpheus-speech", "snac")) for dep in dependencies)
 
 
@@ -42,6 +42,11 @@ class _FakeOrpheusModel:
 def _install_fake_orpheus_modules() -> None:
     module = ModuleType("orpheus_tts")
     module.OrpheusModel = _FakeOrpheusModel
+    sys.modules["orpheus_tts"] = module
+
+
+def _install_stale_orpheus_module() -> None:
+    module = ModuleType("orpheus_tts")
     sys.modules["orpheus_tts"] = module
 
 
@@ -188,3 +193,31 @@ def test_orpheus_prepare_runtime_bootstraps_without_loading_model(tmp_path):
     assert "--target" in calls[0]
     assert str(tmp_path / "vox-home" / "runtime" / "orpheus") in calls[0]
     assert "orpheus-speech==0.1.0" in calls[0]
+
+
+def test_orpheus_repairs_runtime_when_symbol_is_missing(tmp_path):
+    calls: list[list[str]] = []
+    _FakeOrpheusModel.instances.clear()
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        _install_fake_orpheus_modules()
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        return result
+
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        _install_stale_orpheus_module()
+        from vox_orpheus.adapter import OrpheusAdapter
+
+        with (
+            patch("vox_orpheus.adapter.subprocess.run", side_effect=fake_run),
+            patch("vox_orpheus.adapter._clear_orpheus_modules"),
+        ):
+            OrpheusAdapter().prepare_runtime()
+
+    assert calls
+    assert _FakeOrpheusModel.instances == []
+    assert "--target" in calls[0]
+    assert str(tmp_path / "vox-home" / "runtime" / "orpheus") in calls[0]

@@ -23,7 +23,7 @@ def test_indextts_package_metadata_is_lightweight():
     data = tomllib.loads(pyproject.read_text())
 
     dependencies = data["project"]["dependencies"]
-    assert data["project"]["version"] == "0.1.3"
+    assert data["project"]["version"] == "0.1.4"
     assert not any(dep.startswith(("torch", "torchaudio", "indextts")) for dep in dependencies)
 
 
@@ -47,6 +47,13 @@ def _install_fake_indextts_modules() -> None:
     package = ModuleType("indextts")
     infer_v2 = ModuleType("indextts.infer_v2")
     infer_v2.IndexTTS2 = _FakeIndexTTS2
+    sys.modules["indextts"] = package
+    sys.modules["indextts.infer_v2"] = infer_v2
+
+
+def _install_stale_indextts_modules() -> None:
+    package = ModuleType("indextts")
+    infer_v2 = ModuleType("indextts.infer_v2")
     sys.modules["indextts"] = package
     sys.modules["indextts.infer_v2"] = infer_v2
 
@@ -211,4 +218,34 @@ def test_indextts_prepare_runtime_bootstraps_without_loading_model(tmp_path):
     assert "git+https://github.com/index-tts/index-tts.git" in calls[0]
     assert "--no-deps" in calls[0]
     assert "--upgrade" not in calls[0]
+    assert "transformers==4.52.1" in calls[1]
+
+
+def test_indextts_repairs_runtime_when_symbol_is_missing(tmp_path):
+    calls: list[list[str]] = []
+    _FakeIndexTTS2.instances.clear()
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if "transformers==4.52.1" in cmd:
+            _install_fake_indextts_modules()
+        result = MagicMock()
+        result.returncode = 0
+        result.stderr = ""
+        return result
+
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        _install_stale_indextts_modules()
+        from vox_indextts.adapter import IndexTTSAdapter
+
+        with (
+            patch("vox_indextts.adapter.subprocess.run", side_effect=fake_run),
+            patch("vox_indextts.adapter._clear_indextts_modules"),
+        ):
+            IndexTTSAdapter().prepare_runtime()
+
+    assert calls
+    assert _FakeIndexTTS2.instances == []
+    assert "git+https://github.com/index-tts/index-tts.git" in calls[0]
+    assert "--no-deps" in calls[0]
     assert "transformers==4.52.1" in calls[1]

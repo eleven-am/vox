@@ -100,19 +100,28 @@ def _clear_indextts_modules() -> None:
     purge_runtime_modules(("indextts",))
 
 
+def _indextts_class_from_runtime() -> type[Any] | None:
+    module = importlib.import_module("indextts.infer_v2")
+    cls = getattr(module, "IndexTTS2", None)
+    return cls if isinstance(cls, type) else None
+
+
 def _load_indextts_class() -> type[Any]:
     _ensure_runtime_path()
     try:
-        module = importlib.import_module("indextts.infer_v2")
+        cls = _indextts_class_from_runtime()
     except ImportError:
-        _install_indextts_runtime()
-        _clear_indextts_modules()
-        module = importlib.import_module("indextts.infer_v2")
+        cls = None
+    if cls is not None:
+        return cls
 
-    cls = getattr(module, "IndexTTS2", None)
-    if cls is None:
-        raise RuntimeError("IndexTTS runtime is installed, but indextts.infer_v2.IndexTTS2 was not found.")
-    return cls
+    _install_indextts_runtime()
+    _clear_indextts_modules()
+    cls = _indextts_class_from_runtime()
+    if cls is not None:
+        return cls
+
+    raise RuntimeError("IndexTTS runtime is installed, but indextts.infer_v2.IndexTTS2 was not found.")
 
 
 def _voice_path(voice: str | None) -> str | None:
