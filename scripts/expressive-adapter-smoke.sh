@@ -395,6 +395,27 @@ record_audio_durations() {
     done
   ' 2>&1 || true)"
   append_section "Audio Durations" "$body"
+  validate_audio_durations "$body"
+}
+
+validate_audio_durations() {
+  local body="$1"
+  local label duration
+  while IFS='=' read -r label duration; do
+    case "$label" in
+      short|long)
+        if [[ "$duration" == missing || "$duration" == error:* ]]; then
+          FAILED=1
+          FAILED_STEPS+=("Missing or invalid $label audio duration: $duration")
+          continue
+        fi
+        if [[ ! "$duration" =~ ^[0-9]+([.][0-9]+)?$ ]] || ! awk "BEGIN { exit !($duration > 0) }"; then
+          FAILED=1
+          FAILED_STEPS+=("Non-positive $label audio duration: $duration")
+        fi
+        ;;
+    esac
+  done <<< "$body"
 }
 
 run_timed() {

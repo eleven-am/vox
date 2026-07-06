@@ -79,6 +79,7 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert "record_artifact_stats()" in script
     assert "validate_copied_artifacts()" in script
     assert "record_audio_durations()" in script
+    assert "validate_audio_durations()" in script
     assert "record_smoke_result()" in script
     assert 'env MODEL_REF="$MODEL" TEXT_REF="$SHORT_TEXT"' in script
     assert 'env MODEL_REF="$MODEL" TEXT_REF="$LONG_TEXT"' in script
@@ -108,6 +109,9 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert 'FAILED_STEPS+=("Voice reference path missing: $VOICE")' in script
     assert 'kubectl -n "$NS" exec "$POD" -- test -f "$VOICE"' in script
     assert "record_audio_durations" in script
+    assert 'validate_audio_durations "$body"' in script
+    assert 'FAILED_STEPS+=("Missing or invalid $label audio duration: $duration")' in script
+    assert 'FAILED_STEPS+=("Non-positive $label audio duration: $duration")' in script
     assert "short:/tmp/short.wav long:/tmp/long.wav" in script
     assert "printf \"%s=%s\\n\"" in script
     assert "printf \"%s=missing\\n\"" in script
