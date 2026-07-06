@@ -77,7 +77,6 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert "record_timed()" in script
     assert "record_resources()" in script
     assert "record_artifact_stats()" in script
-    assert "record_voice_reference()" in script
     assert "record_audio_durations()" in script
     assert 'env MODEL_REF="$MODEL" TEXT_REF="$SHORT_TEXT"' in script
     assert 'env MODEL_REF="$MODEL" TEXT_REF="$LONG_TEXT"' in script
@@ -95,10 +94,11 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert 'record_resources "Resource Snapshot After Pull"' in script
     assert 'record_resources "Resource Snapshot After Short Synthesis"' in script
     assert 'record_resources "Resource Snapshot After Long Synthesis"' in script
-    assert "record_voice_reference" in script
+    assert "voice_path_check=\"file\"" in script
+    assert "voice_path_check=\"voice-id\"" in script
+    assert "voice_path_exists=\"yes\"" in script
+    assert "voice_path_exists=\"no\"" in script
     assert 'kubectl -n "$NS" exec "$POD" -- test -f "$VOICE"' in script
-    assert "path_check=file" in script
-    assert "path_check=voice-id" in script
     assert "record_audio_durations" in script
     assert "short:/tmp/short.wav long:/tmp/long.wav" in script
     assert "printf \"%s=%s\\n\"" in script

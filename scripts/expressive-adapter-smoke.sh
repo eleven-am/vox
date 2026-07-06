@@ -219,6 +219,25 @@ from vox.core.runtime import detect_runtime_capabilities
 print(detect_runtime_capabilities())
 PY')"
 
+voice_path_check="not-applicable"
+voice_path_exists="not-applicable"
+if [[ -n "$VOICE" ]]; then
+  case "$VOICE" in
+    /*|./*|../*|*/*)
+      voice_path_check="file"
+      if kubectl -n "$NS" exec "$POD" -- test -f "$VOICE" >/dev/null 2>&1; then
+        voice_path_exists="yes"
+      else
+        voice_path_exists="no"
+        FAILED=1
+      fi
+      ;;
+    *)
+      voice_path_check="voice-id"
+      ;;
+  esac
+fi
+
 cat > "$evidence" <<EOF
 # Expressive Adapter Smoke Evidence
 
@@ -236,8 +255,8 @@ $capabilities
 ## Voice Reference
 
 Voice value: ${VOICE:-none}
-Voice path check: not-applicable
-Voice path exists: not-applicable
+Voice path check: $voice_path_check
+Voice path exists: $voice_path_exists
 
 ## Model Resolution
 
@@ -347,29 +366,6 @@ record_artifact_stats() {
     fi
   done
   append_section "$label" "$body"
-}
-
-record_voice_reference() {
-  local body
-  if [[ -z "$VOICE" ]]; then
-    append_section "Voice Reference" "voice=none"$'\n'"path_check=not-applicable"$'\n'"exists=not-applicable"
-    return
-  fi
-
-  case "$VOICE" in
-    /*|./*|../*|*/*)
-      if kubectl -n "$NS" exec "$POD" -- test -f "$VOICE" >/dev/null 2>&1; then
-        body="voice=$VOICE"$'\n'"path_check=file"$'\n'"exists=yes"
-      else
-        body="voice=$VOICE"$'\n'"path_check=file"$'\n'"exists=no"
-        FAILED=1
-      fi
-      ;;
-    *)
-      body="voice=$VOICE"$'\n'"path_check=voice-id"$'\n'"exists=not-applicable"
-      ;;
-  esac
-  append_section "Voice Reference" "$body"
 }
 
 record_audio_durations() {
@@ -501,8 +497,6 @@ for package in ('vox-cosyvoice', 'vox-dia', 'vox-orpheus', 'vox-indextts'):
         print(f'{package}: not installed ({exc})')
 PY")"
 append_section "Adapter Packages" "$packages"
-
-record_voice_reference
 
 record_timed "Short Synthesis Output" \
   kubectl -n "$NS" exec "$POD" -- \
