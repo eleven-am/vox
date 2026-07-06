@@ -44,7 +44,7 @@ def test_expressive_adapter_smoke_runbook_pins_published_adapter_baseline():
         "vox-cosyvoice==0.1.5",
         "vox-dia==0.2.12",
         "vox-orpheus==0.1.6",
-        "vox-indextts==0.1.5",
+        "vox-indextts==0.1.6",
     ):
         assert package in runbook
 
@@ -99,6 +99,7 @@ def test_expressive_adapter_status_names_local_regression_evidence():
         "rejects `orpheus_tts` modules loaded from\n  outside `$VOX_HOME/runtime/orpheus`",
         "`tests/test_indextts_adapter.py`",
         "a stale `indextts.infer_v2` module missing `IndexTTS2` and a\n  broken runtime import probe are repaired",
+        "rejects `indextts.infer_v2` modules loaded\n  from outside `$VOX_HOME/runtime/indextts`",
     ):
         assert evidence in status
 

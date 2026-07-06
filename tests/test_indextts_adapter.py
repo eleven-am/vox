@@ -23,7 +23,7 @@ def test_indextts_package_metadata_is_lightweight():
     data = tomllib.loads(pyproject.read_text())
 
     dependencies = data["project"]["dependencies"]
-    assert data["project"]["version"] == "0.1.5"
+    assert data["project"]["version"] == "0.1.6"
     assert not any(dep.startswith(("torch", "torchaudio", "indextts")) for dep in dependencies)
 
 
@@ -43,17 +43,26 @@ class _FakeIndexTTS2:
         return str(output_path)
 
 
-def _install_fake_indextts_modules() -> None:
+def _indextts_runtime_file() -> str:
+    runtime_root = Path(os.environ.get("VOX_HOME", str(Path.home() / ".vox"))) / "runtime" / "indextts"
+    return str(runtime_root / "indextts" / "infer_v2.py")
+
+
+def _install_fake_indextts_modules(*, module_file: str | None = None) -> None:
     package = ModuleType("indextts")
     infer_v2 = ModuleType("indextts.infer_v2")
+    package.__file__ = str(Path(module_file or _indextts_runtime_file()).parent / "__init__.py")
+    infer_v2.__file__ = module_file or _indextts_runtime_file()
     infer_v2.IndexTTS2 = _FakeIndexTTS2
     sys.modules["indextts"] = package
     sys.modules["indextts.infer_v2"] = infer_v2
 
 
-def _install_stale_indextts_modules() -> None:
+def _install_stale_indextts_modules(*, module_file: str | None = None) -> None:
     package = ModuleType("indextts")
     infer_v2 = ModuleType("indextts.infer_v2")
+    package.__file__ = str(Path(module_file or _indextts_runtime_file()).parent / "__init__.py")
+    infer_v2.__file__ = module_file or _indextts_runtime_file()
     sys.modules["indextts"] = package
     sys.modules["indextts.infer_v2"] = infer_v2
 
@@ -110,12 +119,12 @@ def test_indextts_load_rejects_cpu_before_runtime_install(tmp_path):
 
 
 def test_indextts_load_uses_config_and_synthesizes_with_reference_audio(tmp_path):
-    _install_fake_indextts_modules()
     model_dir = tmp_path / "model"
     model_dir.mkdir()
     (model_dir / "config.yaml").write_text("fake: true\n")
 
     with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        _install_fake_indextts_modules()
         from vox_indextts.adapter import IndexTTSAdapter
 
         adapter = IndexTTSAdapter()
@@ -141,18 +150,19 @@ def test_indextts_load_uses_config_and_synthesizes_with_reference_audio(tmp_path
 
 
 def test_indextts_requires_reference_audio_or_voice_path(tmp_path):
-    _install_fake_indextts_modules()
-    from vox_indextts.adapter import IndexTTSAdapter
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        _install_fake_indextts_modules()
+        from vox_indextts.adapter import IndexTTSAdapter
 
-    adapter = IndexTTSAdapter()
-    adapter.load(str(tmp_path), "cuda")
+        adapter = IndexTTSAdapter()
+        adapter.load(str(tmp_path), "cuda")
 
-    async def run():
-        async for _ in adapter.synthesize("Hello"):
-            pass
+        async def run():
+            async for _ in adapter.synthesize("Hello"):
+                pass
 
-    with pytest.raises(ValueError, match="reference_audio or a voice path"):
-        asyncio.run(run())
+        with pytest.raises(ValueError, match="reference_audio or a voice path"):
+            asyncio.run(run())
 
 
 def test_indextts_preflight_requires_reference_audio_or_voice_path():
@@ -294,3 +304,20 @@ def test_indextts_repairs_runtime_when_import_probe_is_broken(tmp_path):
     assert "git+https://github.com/index-tts/index-tts.git" in calls[0]
     assert "--no-deps" in calls[0]
     assert "transformers==4.52.1" in calls[1]
+
+
+def test_indextts_runtime_probe_rejects_app_env_indextts_module(tmp_path):
+    app_module_path = tmp_path / "app-env" / "indextts" / "infer_v2.py"
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        _install_fake_indextts_modules(module_file=str(app_module_path))
+        from vox_indextts.adapter import _indextts_class_from_runtime
+
+        assert _indextts_class_from_runtime() is None
+
+
+def test_indextts_runtime_probe_accepts_indextts_module_from_runtime(tmp_path):
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        _install_fake_indextts_modules()
+        from vox_indextts.adapter import _indextts_class_from_runtime
+
+        assert _indextts_class_from_runtime() is _FakeIndexTTS2
