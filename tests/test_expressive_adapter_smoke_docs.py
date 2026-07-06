@@ -87,6 +87,8 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert "FAILED_STEPS=()" in script
     assert "record_timed()" in script
     assert "record_resources()" in script
+    assert "record_storage_usage()" in script
+    assert "validate_storage_usage()" in script
     assert "record_artifact_stats()" in script
     assert "validate_copied_artifacts()" in script
     assert "record_audio_durations()" in script
@@ -126,6 +128,18 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert 'FAILED_STEPS+=("$label missing pod memory telemetry")' in script
     assert '[[ "$GPU" != "0" && "$gpu_metrics" != *"NVIDIA-SMI"* ]]' in script
     assert 'FAILED_STEPS+=("$label missing GPU telemetry")' in script
+    assert 'append_section "Storage Snapshot After Pull"' in script
+    assert 'record_storage_usage' in script
+    assert 'df -h "$vox_home"' in script
+    assert 'du -sh "$path"' in script
+    assert '"adapters:$vox_home/adapters"' in script
+    assert '"runtime:$vox_home/runtime"' in script
+    assert '"models:$vox_home/models"' in script
+    assert '"manifests:$vox_home/manifests"' in script
+    assert '"blobs:$vox_home/blobs"' in script
+    assert 'FAILED_STEPS+=("Storage snapshot missing filesystem usage")' in script
+    assert 'FAILED_STEPS+=("Storage snapshot missing $label usage")' in script
+    assert 'record_storage_usage' in script
     assert "voice_path_check=\"file\"" in script
     assert "voice_path_check=\"voice-id\"" in script
     assert "voice_path_exists=\"yes\"" in script
@@ -238,6 +252,7 @@ def test_expressive_adapter_smoke_runbook_lists_required_models_and_evidence():
         "voice path existence inside the disposable pod when `--voice` is a file path",
         "runtime capability snapshot from the pod",
         "`vox pull <model>` output",
+        "adapter, runtime, model, manifest, and blob storage usage after pull",
         "short synthesis wall time",
         "long synthesis wall time",
         "generated audio duration",
@@ -303,6 +318,8 @@ def test_expressive_adapter_status_tracks_all_goal_targets_and_smoke_gap():
     assert status.count("registry requires `min_vram_gb=10`") == 2
     assert "Do not run these against the production `vox` namespace or `vox-data` PVC" in status
     assert "vox pull` succeeds without `VOX_ALLOW_INCOMPATIBLE" in status
+    assert "Model files are stored in the model store and storage usage is recorded" in status
+    assert "Adapter package, runtime, manifest, and blob storage usage is recorded" in status
 
 
 def test_expressive_adapter_status_names_local_regression_evidence():
@@ -371,6 +388,13 @@ def test_expressive_adapter_smoke_runbook_requires_durable_evidence_record():
         "## Adapter Packages",
         "Used VOX_ALLOW_INCOMPATIBLE: no",
         "## Resource Snapshot After Pull",
+        "## Storage Snapshot After Pull",
+        "Filesystem:",
+        "Adapter package storage:",
+        "Runtime storage:",
+        "Model storage:",
+        "Manifest storage:",
+        "Blob storage:",
         "## Resource Snapshot After Short Synthesis",
         "## Resource Snapshot After Long Synthesis",
         "Pod memory:",

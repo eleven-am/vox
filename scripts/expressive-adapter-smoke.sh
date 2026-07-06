@@ -333,6 +333,15 @@ Audio usable: yes/no
 Pod memory:
 GPU memory:
 
+## Storage Snapshot After Pull
+
+Filesystem:
+Adapter package storage:
+Runtime storage:
+Model storage:
+Manifest storage:
+Blob storage:
+
 ## Resource Snapshot After Short Synthesis
 
 Pod memory:
@@ -401,6 +410,33 @@ record_resources() {
     FAILED=1
     FAILED_STEPS+=("$label missing GPU telemetry")
   fi
+}
+
+record_storage_usage() {
+  local body
+  body="$(kubectl -n "$NS" exec "$POD" -- sh -lc '
+    vox_home="${VOX_HOME:-$HOME/.vox}"
+    echo "Filesystem:"
+    df -h "$vox_home" 2>&1 || true
+    echo
+    for item in \
+      "adapters:$vox_home/adapters" \
+      "runtime:$vox_home/runtime" \
+      "models:$vox_home/models" \
+      "manifests:$vox_home/manifests" \
+      "blobs:$vox_home/blobs"; do
+      label="${item%%:*}"
+      path="${item#*:}"
+      if [ -e "$path" ]; then
+        printf "%s " "$label"
+        du -sh "$path" 2>&1 || true
+      else
+        printf "%s missing %s\n" "$label" "$path"
+      fi
+    done
+  ' 2>&1 || true)"
+  append_section "Storage Snapshot After Pull" "$body"
+  validate_storage_usage "$body"
 }
 
 record_artifact_stats() {
@@ -557,6 +593,21 @@ validate_audio_signal() {
   done
 }
 
+validate_storage_usage() {
+  local body="$1"
+  local label
+  if [[ "$body" != *"Filesystem:"* ]]; then
+    FAILED=1
+    FAILED_STEPS+=("Storage snapshot missing filesystem usage")
+  fi
+  for label in adapters runtime models manifests blobs; do
+    if ! grep -q "^$label " <<< "$body"; then
+      FAILED=1
+      FAILED_STEPS+=("Storage snapshot missing $label usage")
+    fi
+  done
+}
+
 validate_model_resolution() {
   local body="$1"
   if grep -q '"error":' <<< "$body"; then
@@ -629,6 +680,7 @@ record_timed "Pull Output" kubectl -n "$NS" exec "$POD" -- \
     fi
   '
 record_resources "Resource Snapshot After Pull"
+record_storage_usage
 
 model_resolution="$(kubectl -n "$NS" exec "$POD" -- env MODEL_REF="$MODEL" VARIANT_REF="$VARIANT" sh -lc "python - <<'PY'
 import json
