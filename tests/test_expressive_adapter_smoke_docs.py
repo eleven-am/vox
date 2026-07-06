@@ -74,10 +74,12 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     script = Path("scripts/expressive-adapter-smoke.sh").read_text()
 
     assert "FAILED=0" in script
+    assert "FAILED_STEPS=()" in script
     assert "record_timed()" in script
     assert "record_resources()" in script
     assert "record_artifact_stats()" in script
     assert "record_audio_durations()" in script
+    assert "record_smoke_result()" in script
     assert 'env MODEL_REF="$MODEL" TEXT_REF="$SHORT_TEXT"' in script
     assert 'env MODEL_REF="$MODEL" TEXT_REF="$LONG_TEXT"' in script
     assert 'VOICE_REF="$VOICE"' in script
@@ -91,6 +93,9 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert 'record_timed "Pull Output"' in script
     assert 'record_timed "Short Synthesis Output"' in script
     assert 'record_timed "Long Synthesis Output"' in script
+    assert 'FAILED_STEPS+=("$label")' in script
+    assert 'append_section "Smoke Result"' in script
+    assert "failed_steps=none" in script
     assert 'record_resources "Resource Snapshot After Pull"' in script
     assert 'record_resources "Resource Snapshot After Short Synthesis"' in script
     assert 'record_resources "Resource Snapshot After Long Synthesis"' in script
@@ -98,6 +103,7 @@ def test_expressive_adapter_smoke_script_preserves_evidence_after_step_failures(
     assert "voice_path_check=\"voice-id\"" in script
     assert "voice_path_exists=\"yes\"" in script
     assert "voice_path_exists=\"no\"" in script
+    assert 'FAILED_STEPS+=("Voice reference path missing: $VOICE")' in script
     assert 'kubectl -n "$NS" exec "$POD" -- test -f "$VOICE"' in script
     assert "record_audio_durations" in script
     assert "short:/tmp/short.wav long:/tmp/long.wav" in script
@@ -162,6 +168,7 @@ def test_expressive_adapter_smoke_runbook_lists_required_models_and_evidence():
         "pod memory and GPU memory snapshots after pull, short synthesis, and long synthesis",
         "output WAV artifact",
         "copied WAV byte size",
+        "smoke result and failed-step summary",
         "audio is usable",
         "exact failure output",
     ):
@@ -292,6 +299,9 @@ def test_expressive_adapter_smoke_runbook_requires_durable_evidence_record():
         "## Copied Artifact Stats",
         "Short WAV bytes:",
         "Long WAV bytes:",
+        "## Smoke Result",
+        "Result:",
+        "Failed steps:",
         "Failure class: Vox / adapter / dependency / upstream / hardware / none",
         "Exact error:",
     ):

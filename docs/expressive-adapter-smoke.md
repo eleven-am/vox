@@ -139,6 +139,7 @@ For each model, capture:
 - pod memory and GPU memory snapshots after pull, short synthesis, and long synthesis
 - output WAV artifact
 - copied WAV byte size
+- smoke result and failed-step summary
 - whether the audio is usable
 - exact failure output if any step fails
 
@@ -369,6 +370,11 @@ Long:
 
 Short WAV bytes:
 Long WAV bytes:
+
+## Smoke Result
+
+Result:
+Failed steps:
 
 ## Classification
 

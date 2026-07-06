@@ -43,6 +43,7 @@ LONG_TEXT="This is a longer smoke test. It should produce stable speech, preserv
 VOICE=""
 POD="vox-adapter-smoke"
 FAILED=0
+FAILED_STEPS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -230,6 +231,7 @@ if [[ -n "$VOICE" ]]; then
       else
         voice_path_exists="no"
         FAILED=1
+        FAILED_STEPS+=("Voice reference path missing: $VOICE")
       fi
       ;;
     *)
@@ -325,6 +327,11 @@ Long:
 Short WAV bytes:
 Long WAV bytes:
 
+## Smoke Result
+
+Result:
+Failed steps:
+
 ## Classification
 
 Result: pass/fail
@@ -402,7 +409,18 @@ record_timed() {
   shift
   if ! run_timed "$label" "$@"; then
     FAILED=1
+    FAILED_STEPS+=("$label")
   fi
+}
+
+record_smoke_result() {
+  local body
+  if [[ "$FAILED" == "0" ]]; then
+    body="result=pass"$'\n'"failed_steps=none"
+  else
+    body="result=fail"$'\n'"failed_steps:"$'\n'"$(printf '%s\n' "${FAILED_STEPS[@]}")"
+  fi
+  append_section "Smoke Result" "$body"
 }
 
 record_timed "Pull Output" kubectl -n "$NS" exec "$POD" -- \
@@ -524,6 +542,7 @@ record_audio_durations
 kubectl -n "$NS" cp "$POD:/tmp/short.wav" "$short_wav" >/dev/null 2>&1 || true
 kubectl -n "$NS" cp "$POD:/tmp/long.wav" "$long_wav" >/dev/null 2>&1 || true
 record_artifact_stats "Copied Artifact Stats" "$short_wav" "$long_wav"
+record_smoke_result
 
 echo "wrote evidence: $evidence"
 echo "copied artifacts when available:"
