@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
+import soundfile as sf
 
 from vox.core.types import ModelFormat, ModelType
 from vox.operations.errors import InvalidConfigError
@@ -26,11 +27,21 @@ class _FakeCosyVoice2:
         _FakeCosyVoice2.instances.append(self)
 
     def inference_zero_shot(self, tts_text, prompt_text, prompt_wav, **kwargs):
+        prompt_frames = None
+        prompt_sample_rate = None
+        prompt_shape = tuple(prompt_wav.shape) if hasattr(prompt_wav, "shape") else None
+        if isinstance(prompt_wav, str) and prompt_wav:
+            info = sf.info(prompt_wav)
+            prompt_frames = info.frames
+            prompt_sample_rate = info.samplerate
         self.calls.append(
             {
                 "tts_text": tts_text,
                 "prompt_text": prompt_text,
                 "prompt_wav": prompt_wav,
+                "prompt_frames": prompt_frames,
+                "prompt_sample_rate": prompt_sample_rate,
+                "prompt_shape": prompt_shape,
                 **kwargs,
             }
         )
@@ -83,7 +94,7 @@ def test_cosyvoice_package_metadata_version():
     pyproject = Path(__file__).parents[1] / "adapters" / "vox-cosyvoice" / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text())
 
-    assert data["project"]["version"] == "0.1.6"
+    assert data["project"]["version"] == "0.1.10"
 
 
 def test_cosyvoice_readme_uses_public_model_reference():
@@ -126,14 +137,105 @@ def test_cosyvoice_load_and_synthesize_with_reference_audio(tmp_path):
     chunks = asyncio.run(run())
     instance = _FakeCosyVoice2.instances[-1]
 
-    assert instance.kwargs["fp16"] is True
+    assert instance.kwargs["fp16"] is False
     assert instance.calls[0]["tts_text"] == "Hello"
     assert instance.calls[0]["prompt_text"] == "Reference"
-    assert instance.calls[0]["prompt_wav"].endswith("reference.wav")
-    assert instance.calls[0]["stream"] is True
+    assert instance.calls[0]["prompt_shape"] == (1, 1600)
+    assert instance.calls[0]["stream"] is False
+    assert instance.calls[0]["text_frontend"] is False
     assert instance.calls[0]["speed"] == 1.2
     assert chunks[-1].is_final is True
     assert chunks[0].sample_rate == 24_000
+
+
+def test_cosyvoice_trims_long_reference_prompt_by_default(tmp_path):
+    _install_fake_cosyvoice_modules()
+    from vox_cosyvoice.adapter import CosyVoice2Adapter
+
+    adapter = CosyVoice2Adapter()
+    adapter.load(str(tmp_path), "cuda")
+
+    reference_audio = np.zeros(240_000, dtype=np.float32)
+    reference_text = "one two three four five six seven eight nine ten"
+
+    async def run():
+        chunks = []
+        async for chunk in adapter.synthesize(
+            "Hello",
+            reference_audio=reference_audio,
+            reference_text=reference_text,
+        ):
+            chunks.append(chunk)
+        return chunks
+
+    asyncio.run(run())
+    call = _FakeCosyVoice2.instances[-1].calls[0]
+
+    assert call["prompt_shape"] == (1, 80_000)
+    assert call["prompt_text"] == "one two three four five"
+
+
+def test_cosyvoice_synthesis_parameters_expose_generation_controls():
+    from vox_cosyvoice.adapter import CosyVoice2Adapter
+
+    params = {param.name: param for param in CosyVoice2Adapter().synthesis_parameters()}
+
+    assert params["reference_prompt_seconds"].default == 5.0
+    assert params["reference_prompt_seconds"].min_value == 1.0
+    assert params["reference_prompt_seconds"].max_value == 12.0
+    assert params["text_frontend"].type == "boolean"
+    assert params["text_frontend"].default is False
+    assert params["stream"].type == "boolean"
+    assert params["stream"].default is False
+
+
+def test_cosyvoice_forwards_text_frontend_and_stream_params(tmp_path):
+    _install_fake_cosyvoice_modules()
+    from vox_cosyvoice.adapter import CosyVoice2Adapter
+
+    adapter = CosyVoice2Adapter()
+    adapter.load(str(tmp_path), "cuda")
+
+    async def run():
+        async for _ in adapter.synthesize(
+            "Hello",
+            reference_audio=np.zeros(2400, dtype=np.float32),
+            reference_text="Reference",
+            params={"text_frontend": True, "stream": True},
+        ):
+            pass
+
+    asyncio.run(run())
+    call = _FakeCosyVoice2.instances[-1].calls[0]
+
+    assert call["text_frontend"] is True
+    assert call["stream"] is True
+
+
+def test_cosyvoice_allows_reference_prompt_seconds_override(tmp_path):
+    _install_fake_cosyvoice_modules()
+    from vox_cosyvoice.adapter import CosyVoice2Adapter
+
+    adapter = CosyVoice2Adapter()
+    adapter.load(str(tmp_path), "cuda")
+
+    reference_audio = np.zeros(240_000, dtype=np.float32)
+    reference_text = "one two three four five six seven eight nine ten"
+
+    async def run():
+        async for _ in adapter.synthesize(
+            "Hello",
+            reference_audio=reference_audio,
+            reference_text=reference_text,
+            params={"reference_prompt_seconds": 2},
+        ):
+            pass
+
+    asyncio.run(run())
+    call = _FakeCosyVoice2.instances[-1].calls[0]
+
+    assert call["prompt_shape"] == (1, 32_000)
+    assert call["prompt_text"] == "one two"
 
 
 def test_cosyvoice_requires_reference_or_saved_speaker(tmp_path):
@@ -207,6 +309,8 @@ def test_cosyvoice_bootstraps_runtime_when_missing(tmp_path):
 
     assert calls
     assert calls[0][:2] == ["git", "clone"]
+    assert "--branch" in calls[0]
+    assert "v2.0" in calls[0]
     assert "--recurse-submodules" in calls[0]
     assert "https://github.com/FunAudioLLM/CosyVoice.git" in calls[0]
     install_call = next(call for call in calls if call[:2] == ["uv", "pip"])
@@ -270,6 +374,8 @@ def test_cosyvoice_prepare_runtime_bootstraps_without_loading_model(tmp_path):
     assert calls
     assert _FakeCosyVoice2.instances == []
     assert calls[0][:2] == ["git", "clone"]
+    assert "--branch" in calls[0]
+    assert "v2.0" in calls[0]
     install_call = next(call for call in calls if call[:2] == ["uv", "pip"])
     assert "--target" in install_call
     assert str(tmp_path / "vox-home" / "runtime" / "cosyvoice") in install_call

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import math
 import shutil
 import subprocess
 import sys
@@ -14,6 +15,7 @@ import numpy as np
 import soundfile as sf
 from numpy.typing import NDArray
 
+from vox.audio.resampler import resample
 from vox.core.adapter import TTSAdapter
 from vox.core.adapter_runtime import (
     activate_runtime_path,
@@ -23,14 +25,19 @@ from vox.core.adapter_runtime import (
 from vox.core.adapter_runtime import (
     runtime_root as vox_runtime_root,
 )
-from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesisParameterInfo, SynthesizeChunk, VoiceInfo
 from vox.operations.errors import InvalidConfigError
 
 logger = logging.getLogger(__name__)
 
 COSYVOICE_SAMPLE_RATE = 24_000
 COSYVOICE_REPO = "https://github.com/FunAudioLLM/CosyVoice.git"
+COSYVOICE_SOURCE_REF = "v2.0"
 COSYVOICE_SOURCE_DIR = "CosyVoice"
+_DEFAULT_REFERENCE_PROMPT_SECONDS = 5.0
+_DEFAULT_TEXT_FRONTEND = False
+_DEFAULT_STREAM = False
+_DEFAULT_FP16 = False
 COSYVOICE_REQUIRED_PATHS = (
     Path("cosyvoice") / "cli" / "cosyvoice.py",
     Path("third_party") / "Matcha-TTS" / "matcha",
@@ -242,9 +249,22 @@ def _source_checkout_complete(source_dir: Path | None = None) -> bool:
     return all((root / path).exists() for path in COSYVOICE_REQUIRED_PATHS)
 
 
+def _source_checkout_matches_ref(source_dir: Path | None = None) -> bool:
+    root = source_dir or _source_root()
+    if not _source_checkout_complete(root):
+        return False
+    if not (root / ".git").exists():
+        return False
+    result = _run_install_command(
+        ["git", "-C", str(root), "describe", "--tags", "--exact-match", "HEAD"],
+        30,
+    )
+    return result.returncode == 0 and result.stdout.strip() == COSYVOICE_SOURCE_REF
+
+
 def _clone_cosyvoice_source() -> None:
     source_dir = _source_root()
-    if _source_checkout_complete(source_dir):
+    if _source_checkout_matches_ref(source_dir):
         return
 
     source_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -257,6 +277,8 @@ def _clone_cosyvoice_source() -> None:
             "clone",
             "--depth",
             "1",
+            "--branch",
+            COSYVOICE_SOURCE_REF,
             "--recurse-submodules",
             "--shallow-submodules",
             COSYVOICE_REPO,
@@ -416,6 +438,72 @@ def _write_reference_audio(path: Path, reference_audio: NDArray[np.float32], sam
     sf.write(path, np.asarray(reference_audio, dtype=np.float32), sample_rate)
 
 
+def _reference_speech_16k(reference_audio: NDArray[np.float32]) -> Any:
+    torch = importlib.import_module("torch")
+    audio = np.asarray(reference_audio, dtype=np.float32).reshape(-1)
+    if audio.size == 0:
+        return torch.zeros((1, 0), dtype=torch.float32)
+    audio_16k = resample(audio, COSYVOICE_SAMPLE_RATE, 16_000)
+    return torch.from_numpy(np.asarray(audio_16k, dtype=np.float32)).reshape(1, -1)
+
+
+def _load_voice_file_16k(path: Path) -> Any:
+    audio, sample_rate = sf.read(str(path), dtype="float32")
+    audio = np.asarray(audio, dtype=np.float32)
+    if audio.ndim > 1:
+        audio = audio.mean(axis=1)
+    if sample_rate != COSYVOICE_SAMPLE_RATE:
+        audio = resample(audio, int(sample_rate), COSYVOICE_SAMPLE_RATE)
+    return _reference_speech_16k(audio)
+
+
+def _reference_prompt_limit_seconds(params: dict[str, Any] | None) -> float:
+    if not params:
+        return _DEFAULT_REFERENCE_PROMPT_SECONDS
+    raw = params.get("reference_prompt_seconds", _DEFAULT_REFERENCE_PROMPT_SECONDS)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return _DEFAULT_REFERENCE_PROMPT_SECONDS
+    return max(1.0, min(value, 12.0))
+
+
+def _bool_param(params: dict[str, Any] | None, name: str, default: bool) -> bool:
+    if not params or name not in params:
+        return default
+    return bool(params[name])
+
+
+def _trim_reference_text(reference_text: str | None, ratio: float) -> str | None:
+    if reference_text is None or not reference_text.strip():
+        return reference_text
+
+    words = reference_text.strip().split()
+    if not words:
+        return reference_text
+    keep = max(1, min(len(words), int(math.ceil(len(words) * ratio))))
+    return " ".join(words[:keep]).strip()
+
+
+def _trim_reference_prompt(
+    *,
+    reference_audio: NDArray[np.float32],
+    reference_text: str | None,
+    max_seconds: float,
+    sample_rate: int = COSYVOICE_SAMPLE_RATE,
+) -> tuple[NDArray[np.float32], str | None]:
+    audio = np.asarray(reference_audio, dtype=np.float32).reshape(-1)
+    if audio.size == 0:
+        return audio, reference_text
+
+    max_samples = max(1, int(sample_rate * max_seconds))
+    if audio.size <= max_samples:
+        return audio, reference_text
+
+    ratio = max_samples / float(audio.size)
+    return audio[:max_samples], _trim_reference_text(reference_text, ratio)
+
+
 def _extract_audio(output: Any) -> NDArray[np.float32]:
     if isinstance(output, dict):
         for key in ("tts_speech", "audio", "wav", "waveform"):
@@ -478,7 +566,7 @@ class CosyVoice2Adapter(TTSAdapter):
 
         logger.info("Loading CosyVoice2 model from %s (device=%s)", model_path, self._device)
         try:
-            self._model = cls(model_path, load_jit=False, load_trt=False, load_vllm=False, fp16=device == "cuda")
+            self._model = cls(model_path, load_jit=False, load_trt=False, load_vllm=False, fp16=_DEFAULT_FP16)
         except TypeError:
             self._model = cls(model_path)
 
@@ -501,6 +589,7 @@ class CosyVoice2Adapter(TTSAdapter):
         language: str | None = None,
         reference_audio: NDArray[np.float32] | None = None,
         reference_text: str | None = None,
+        params: dict[str, Any] | None = None,
     ) -> None:
         if reference_audio is not None:
             if np.asarray(reference_audio, dtype=np.float32).size == 0:
@@ -512,6 +601,30 @@ class CosyVoice2Adapter(TTSAdapter):
             return
         raise InvalidConfigError("CosyVoice2 requires reference_audio, a voice path, or a zero_shot_spk_id voice value")
 
+    def synthesis_parameters(self) -> tuple[SynthesisParameterInfo, ...]:
+        return (
+            SynthesisParameterInfo(
+                name="reference_prompt_seconds",
+                type="number",
+                default=_DEFAULT_REFERENCE_PROMPT_SECONDS,
+                min_value=1.0,
+                max_value=12.0,
+                description="Maximum cloned reference audio seconds used as CosyVoice2 zero-shot prompt.",
+            ),
+            SynthesisParameterInfo(
+                name="text_frontend",
+                type="boolean",
+                default=_DEFAULT_TEXT_FRONTEND,
+                description="Enable CosyVoice text normalization. Defaults off to match the upstream reproducibility guidance.",
+            ),
+            SynthesisParameterInfo(
+                name="stream",
+                type="boolean",
+                default=_DEFAULT_STREAM,
+                description="Use CosyVoice internal streaming generation. Defaults off for more stable one-shot synthesis.",
+            ),
+        )
+
     async def synthesize(
         self,
         text: str,
@@ -521,6 +634,7 @@ class CosyVoice2Adapter(TTSAdapter):
         language: str | None = None,
         reference_audio: NDArray[np.float32] | None = None,
         reference_text: str | None = None,
+        params: dict[str, Any] | None = None,
     ) -> AsyncIterator[SynthesizeChunk]:
         if self._model is None:
             raise RuntimeError("CosyVoice2 model is not loaded — call load() first")
@@ -533,21 +647,27 @@ class CosyVoice2Adapter(TTSAdapter):
             raise ValueError("CosyVoice2 requires reference_audio, a voice path, or a zero_shot_spk_id voice value.")
 
         with tempfile.TemporaryDirectory(prefix="vox-cosyvoice-") as tmpdir:
-            prompt_wav = ""
+            prompt_speech: Any = ""
             if reference_audio is not None:
                 ref_path = Path(tmpdir) / "reference.wav"
+                reference_audio, reference_text = _trim_reference_prompt(
+                    reference_audio=reference_audio,
+                    reference_text=reference_text,
+                    max_seconds=_reference_prompt_limit_seconds(params),
+                )
                 _write_reference_audio(ref_path, reference_audio, COSYVOICE_SAMPLE_RATE)
-                prompt_wav = str(ref_path)
+                prompt_speech = _reference_speech_16k(reference_audio)
             elif voice_file is not None:
-                prompt_wav = str(voice_file)
+                prompt_speech = _load_voice_file_16k(voice_file)
 
             outputs = self._model.inference_zero_shot(
                 text,
                 reference_text or "",
-                prompt_wav,
+                prompt_speech,
                 zero_shot_spk_id=zero_shot_spk_id,
-                stream=True,
+                stream=_bool_param(params, "stream", _DEFAULT_STREAM),
                 speed=speed,
+                text_frontend=_bool_param(params, "text_frontend", _DEFAULT_TEXT_FRONTEND),
             )
 
             yielded = False
