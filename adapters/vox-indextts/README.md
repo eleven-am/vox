@@ -36,6 +36,20 @@ or use a voice value that points to a local WAV file.
 
 IndexTTS2 emotion controls are exposed through Vox synthesis `params`:
 
+- `do_sample` (boolean, default `true`) enables GPT sampling.
+- `temperature` (number, default `0.8`, range `0.1..2`) controls sampling
+  temperature.
+- `top_p` (number, default `0.8`, range `0..1`) controls nucleus sampling.
+- `top_k` (integer, default `30`, range `0..100`) controls top-k sampling.
+- `num_beams` (integer, default `3`, range `1..10`) controls beam count.
+- `repetition_penalty` (number, default `10.0`, range `0.1..20`) controls
+  repetition penalty.
+- `length_penalty` (number, default `0.0`, range `-2..2`) controls generation
+  length penalty.
+- `max_mel_tokens` (integer, default `1500`, range `50..4096`) controls the
+  generated mel-token budget.
+- `max_text_tokens_per_segment` (integer, default `120`, range `20..512`)
+  controls upstream internal text segmentation.
 - `emo_alpha` (number, default backend value, range `0..1`) controls emotion
   conditioning strength.
 - `use_emo_text` (boolean, default `false`) asks IndexTTS2 to infer emotion
@@ -51,6 +65,10 @@ IndexTTS2 emotion controls are exposed through Vox synthesis `params`:
   `emotion_calm` (numbers, default `0`, range `0..1`) map to the IndexTTS2
   eight-float `emo_vector` order. The adapter rejects vectors whose values sum
   above `1.5`.
+
+Boolean params accept JSON booleans, `0`/`1`, and string forms
+`true`/`false`, `yes`/`no`, and `on`/`off`. Ambiguous boolean values are
+rejected instead of being coerced with Python truthiness.
 
 Upstream IndexTTS2 describes duration control, but the current release notes say
 that functionality is not enabled. Vox therefore does not expose a duration

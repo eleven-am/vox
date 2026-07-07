@@ -24,16 +24,19 @@ supported by the official Dia Transformers runtime used by this adapter.
 
 The current Vox adapter is classified for Linux x86_64 CUDA/Torch runtimes.
 CPU, ONNX, and Spark/ARM NVIDIA paths are not currently production-supported by
-this adapter because Vox has not validated a portable CPU/ONNX backend or a
-clean Spark/ARM NVIDIA dependency stack for the Dia Transformers runtime.
-Plan for at least 12GiB of usable VRAM budget: Vox budgets the adapter's 10GB
-model estimate plus the deployment's configured VRAM headroom, so a server
-started with `--max-vram 10GiB --vram-headroom 1GiB` will reject Dia at load
-time.
+this adapter. Upstream Dia 1.6B documentation says the model has only been
+tested on GPUs with PyTorch/CUDA and that CPU support is future work:
+https://github.com/nari-labs/dia#hardware-and-inference-speed
+
+Plan for at least 12GiB of usable VRAM budget: upstream reports that the full
+Dia 1.6B model requires around 10GB of VRAM, and Vox budgets the adapter's 10GB
+model estimate plus the deployment's configured VRAM headroom. A server started
+with `--max-vram 10GiB --vram-headroom 1GiB` will reject Dia at load time.
 
 During `vox pull`, the adapter verifies or installs the Dia-capable
-Transformers runtime into `$VOX_HOME/runtime/dia`. Model weights remain in the
-normal Vox model store.
+Transformers runtime into `$VOX_HOME/runtime/dia`. It uses the released
+`transformers==4.57.6` runtime rather than a moving source checkout, so clean
+pulls are reproducible. Model weights remain in the normal Vox model store.
 
 ## Use with Vox
 

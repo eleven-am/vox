@@ -14,6 +14,7 @@ import json
 import math
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -28,6 +29,11 @@ DEFAULT_LONG_TEXT = (
     "This is a longer expressive adapter smoke test. It should produce usable speech, "
     "keep a stable voice, and avoid silence or obvious truncation while the existing "
     "Vox server handles the request."
+)
+FAILURE_CLASSES = ("none", "Vox", "adapter", "dependency", "upstream", "hardware")
+EVIDENCE_SCHEMA_VERSION = 1
+NOT_CLEAN_PULL_BLOCKER = (
+    "existing-server smoke cannot prove a clean model pull or clean adapter runtime install"
 )
 
 
@@ -61,6 +67,7 @@ class SynthesisEvidence:
     content_type: str
     output_path: str
     audio: AudioStats
+    memory_samples: dict[str, Any] | None = None
     error: str | None = None
 
 
@@ -134,6 +141,66 @@ def _response_evidence(result: HttpResult, *, max_chars: int = 12_000) -> dict[s
                 payload["truncated"] = True
 
     return payload
+
+
+def _walk_numbers(value: Any, keys: set[str]) -> list[float]:
+    matches: list[float] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key in keys and isinstance(child, int | float):
+                matches.append(float(child))
+            matches.extend(_walk_numbers(child, keys))
+    elif isinstance(value, list):
+        for child in value:
+            matches.extend(_walk_numbers(child, keys))
+    return matches
+
+
+def _peak_from_samples(samples: list[dict[str, Any]], keys: set[str]) -> float | None:
+    values: list[float] = []
+    for sample in samples:
+        values.extend(_walk_numbers(sample.get("json", {}), keys))
+    return max(values) if values else None
+
+
+def _memory_sample_summary(samples: list[dict[str, Any]], *, interval_s: float) -> dict[str, Any]:
+    return {
+        "interval_s": interval_s,
+        "count": len(samples),
+        "samples": samples,
+        "peak_ram_used_bytes": _peak_from_samples(samples, {"used_bytes", "ram_used_bytes"}),
+        "peak_gpu_memory_used_mib": _peak_from_samples(
+            samples,
+            {"memory_used_mib", "gpu_memory_used_mib", "used_mib"},
+        ),
+    }
+
+
+def _collect_memory_sample(
+    *,
+    samples: list[dict[str, Any]],
+    base_url: str,
+    timeout: float,
+    api_key: str | None,
+) -> None:
+    memory_url = f"{base_url.rstrip('/')}/v1/system/memory"
+    result = _request_json(memory_url, timeout=min(timeout, 30.0), api_key=api_key)
+    samples.append(_response_evidence(result))
+
+
+def _sample_memory_until(
+    *,
+    stop: threading.Event,
+    samples: list[dict[str, Any]],
+    base_url: str,
+    timeout: float,
+    api_key: str | None,
+    interval_s: float,
+) -> None:
+    while not stop.is_set():
+        _collect_memory_sample(samples=samples, base_url=base_url, timeout=timeout, api_key=api_key)
+        if stop.wait(interval_s):
+            break
 
 
 def _pcm_stats(frames: bytes, *, sample_width: int) -> tuple[float | None, float | None]:
@@ -228,7 +295,26 @@ def _run_case(
     timeout: float,
     api_key: str | None,
     output_dir: Path,
+    memory_sample_interval: float,
 ) -> SynthesisEvidence:
+    memory_samples: list[dict[str, Any]] = []
+    stop_sampling = threading.Event()
+    sampler: threading.Thread | None = None
+    if memory_sample_interval > 0:
+        _collect_memory_sample(samples=memory_samples, base_url=base_url, timeout=timeout, api_key=api_key)
+        sampler = threading.Thread(
+            target=_sample_memory_until,
+            kwargs={
+                "stop": stop_sampling,
+                "samples": memory_samples,
+                "base_url": base_url,
+                "timeout": timeout,
+                "api_key": api_key,
+                "interval_s": memory_sample_interval,
+            },
+            daemon=True,
+        )
+        sampler.start()
     result = _post_json(
         f"{base_url.rstrip('/')}/v1/audio/speech",
         _speech_payload(
@@ -242,6 +328,9 @@ def _run_case(
         timeout=timeout,
         api_key=api_key,
     )
+    if sampler is not None:
+        stop_sampling.set()
+        sampler.join(timeout=min(memory_sample_interval + 5.0, 30.0))
     suffix = response_format.lower().lstrip(".") or "wav"
     output_path = output_dir / f"{name}.{suffix}"
     output_path.write_bytes(result.body)
@@ -262,6 +351,7 @@ def _run_case(
         content_type=content_type,
         output_path=str(output_path),
         audio=_audio_stats(output_path),
+        memory_samples=_memory_sample_summary(memory_samples, interval_s=memory_sample_interval),
         error=error,
     )
 
@@ -282,6 +372,65 @@ def _status_failed(evidence: dict[str, Any], keys: tuple[str, ...]) -> bool:
     return False
 
 
+def _read_failure_reasons(evidence: dict[str, Any], keys: tuple[str, ...]) -> list[str]:
+    reasons: list[str] = []
+    for key in keys:
+        value = evidence.get(key)
+        if isinstance(value, dict) and int(value.get("status", 0)) >= 400:
+            reasons.append(f"{key} returned HTTP {value['status']}")
+    return reasons
+
+
+def _synthesis_failure_reasons(cases: list[SynthesisEvidence], audio_usable: str) -> list[str]:
+    reasons: list[str] = []
+    for case in cases:
+        if case.status >= 400:
+            reasons.append(f"{case.name} synthesis returned HTTP {case.status}")
+        if case.error:
+            reasons.append(f"{case.name} synthesis error: {case.error}")
+        if case.status >= 400:
+            continue
+        if case.audio.bytes <= 0:
+            reasons.append(f"{case.name} synthesis returned empty audio")
+        elif case.audio.duration_s is None:
+            reasons.append(f"{case.name} synthesis has no readable WAV duration")
+        elif case.audio.duration_s <= 0:
+            reasons.append(f"{case.name} synthesis has non-positive duration")
+        if case.audio.silent:
+            reasons.append(f"{case.name} synthesis returned silent audio")
+    durations = {case.name: case.audio.duration_s for case in cases if case.audio.bytes > 0}
+    short_duration = durations.get("short")
+    long_duration = durations.get("long")
+    if short_duration is not None and long_duration is not None and long_duration < short_duration:
+        reasons.append(
+            f"long synthesis duration {long_duration:.3f}s is shorter than short synthesis duration "
+            f"{short_duration:.3f}s"
+        )
+    if audio_usable != "yes":
+        reasons.append(f"manual audio usability verdict is {audio_usable}")
+    return reasons
+
+
+def _failure_classification_reasons(
+    *,
+    failure_reasons: list[str],
+    failure_class: str,
+    failure_note: str,
+) -> list[str]:
+    if failure_reasons and failure_class == "none":
+        return [
+            "failing smoke run must set --failure-class to one of "
+            "Vox, adapter, dependency, upstream, or hardware"
+        ]
+    if failure_reasons and failure_class != "none" and not failure_note.strip():
+        return ["classified failing smoke run must include --failure-note"]
+    if not failure_reasons and failure_class != "none":
+        return ["passing smoke run must use --failure-class none"]
+    if not failure_reasons and failure_note.strip():
+        return ["passing smoke run must not set --failure-note"]
+    return []
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default="http://127.0.0.1:8000", help="Existing Vox HTTP base URL")
@@ -298,8 +447,31 @@ def main() -> int:
     parser.add_argument("--response-format", default="wav")
     parser.add_argument("--speed", type=float, default=1.0)
     parser.add_argument("--timeout", type=float, default=600.0)
+    parser.add_argument(
+        "--memory-sample-interval",
+        type=float,
+        default=1.0,
+        help=(
+            "Seconds between /v1/system/memory samples during each synthesis request. "
+            "Use 0 to disable per-request memory sampling."
+        ),
+    )
     parser.add_argument("--output-dir", default="/tmp/vox-served-smoke")
     parser.add_argument("--audio-usable", choices=("yes", "no", "unchecked"), default="unchecked")
+    parser.add_argument(
+        "--failure-class",
+        choices=FAILURE_CLASSES,
+        default="none",
+        help=(
+            "Failure owner for non-passing evidence. Use none only for passing runs; "
+            "otherwise choose Vox, adapter, dependency, upstream, or hardware."
+        ),
+    )
+    parser.add_argument(
+        "--failure-note",
+        default="",
+        help="Required with --failure-class on failing runs. Describe the concrete cause or next fix.",
+    )
     parser.add_argument(
         "--inspect-only",
         action="store_true",
@@ -312,7 +484,10 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     evidence: dict[str, Any] = {
+        "evidence_schema_version": EVIDENCE_SCHEMA_VERSION,
         "mode": "existing-server",
+        "clean_pull_proof": False,
+        "clean_pull_blockers": [NOT_CLEAN_PULL_BLOCKER],
         "base_url": args.base_url,
         "model": args.model,
         "voice": args.voice or None,
@@ -321,6 +496,9 @@ def main() -> int:
         "params": params,
         "api_key_provided": bool(args.api_key),
         "audio_usable": args.audio_usable,
+        "memory_sample_interval_s": args.memory_sample_interval,
+        "failure_class": args.failure_class,
+        "failure_note": args.failure_note,
         "inspect_only": args.inspect_only,
         "output_dir": str(output_dir),
     }
@@ -345,16 +523,34 @@ def main() -> int:
         timeout=min(args.timeout, 30.0),
         api_key=args.api_key,
     )
+    memory = _request_json(
+        f"{args.base_url.rstrip('/')}/v1/system/memory",
+        timeout=min(args.timeout, 30.0),
+        api_key=args.api_key,
+    )
     evidence["health"] = _response_evidence(health)
     evidence["models"] = _response_evidence(models)
     evidence["model_detail"] = _response_evidence(model_detail)
     evidence["loaded_before"] = _response_evidence(loaded)
+    evidence["memory_before"] = _response_evidence(memory)
 
     if args.inspect_only:
         evidence["synthesis"] = []
         evidence["synthesis_skipped"] = "inspect_only"
+        failure_reasons = _read_failure_reasons(
+            evidence,
+            ("health", "models", "model_detail", "loaded_before", "memory_before"),
+        )
+        evidence["failure_reasons"] = [
+            *failure_reasons,
+            *_failure_classification_reasons(
+                failure_reasons=failure_reasons,
+                failure_class=args.failure_class,
+                failure_note=args.failure_note,
+            ),
+        ]
         _write_evidence(evidence, output_dir)
-        return 1 if _status_failed(evidence, ("health", "models", "model_detail", "loaded_before")) else 0
+        return 1 if evidence["failure_reasons"] else 0
 
     cases = [
         _run_case(
@@ -369,6 +565,7 @@ def main() -> int:
             timeout=args.timeout,
             api_key=args.api_key,
             output_dir=output_dir,
+            memory_sample_interval=args.memory_sample_interval,
         ),
         _run_case(
             name="long",
@@ -382,6 +579,7 @@ def main() -> int:
             timeout=args.timeout,
             api_key=args.api_key,
             output_dir=output_dir,
+            memory_sample_interval=args.memory_sample_interval,
         ),
     ]
     evidence["synthesis"] = [asdict(case) for case in cases]
@@ -391,19 +589,40 @@ def main() -> int:
         timeout=min(args.timeout, 30.0),
         api_key=args.api_key,
     )
+    memory_after = _request_json(
+        f"{args.base_url.rstrip('/')}/v1/system/memory",
+        timeout=min(args.timeout, 30.0),
+        api_key=args.api_key,
+    )
     evidence["loaded_after"] = _response_evidence(loaded_after)
+    evidence["memory_after"] = _response_evidence(memory_after)
+    failure_reasons = [
+        *_read_failure_reasons(
+            evidence,
+            (
+                "health",
+                "models",
+                "model_detail",
+                "loaded_before",
+                "memory_before",
+                "loaded_after",
+                "memory_after",
+            ),
+        ),
+        *_synthesis_failure_reasons(cases, args.audio_usable),
+    ]
+    evidence["failure_reasons"] = [
+        *failure_reasons,
+        *_failure_classification_reasons(
+            failure_reasons=failure_reasons,
+            failure_class=args.failure_class,
+            failure_note=args.failure_note,
+        ),
+    ]
 
     _write_evidence(evidence, output_dir)
 
-    failed = False
-    for case in cases:
-        if case.status >= 400 or case.error:
-            failed = True
-        if case.audio.bytes <= 0 or case.audio.silent:
-            failed = True
-    if args.audio_usable != "yes":
-        failed = True
-    return 1 if failed else 0
+    return 1 if evidence["failure_reasons"] else 0
 
 
 if __name__ == "__main__":

@@ -23,7 +23,7 @@ def test_indextts_package_metadata_is_lightweight():
     data = tomllib.loads(pyproject.read_text())
 
     dependencies = data["project"]["dependencies"]
-    assert data["project"]["version"] == "0.1.19"
+    assert data["project"]["version"] == "0.1.21"
     assert not any(dep.startswith(("torch", "torchaudio", "indextts")) for dep in dependencies)
 
 
@@ -105,6 +105,15 @@ def test_indextts_synthesis_parameters_expose_emotion_controls():
     params = {param.name: param for param in IndexTTSAdapter().synthesis_parameters()}
 
     assert {
+        "do_sample",
+        "temperature",
+        "top_p",
+        "top_k",
+        "num_beams",
+        "repetition_penalty",
+        "length_penalty",
+        "max_mel_tokens",
+        "max_text_tokens_per_segment",
         "emo_alpha",
         "use_emo_text",
         "emo_text",
@@ -119,6 +128,15 @@ def test_indextts_synthesis_parameters_expose_emotion_controls():
         "emotion_surprised",
         "emotion_calm",
     } == set(params)
+    assert params["do_sample"].type == "boolean"
+    assert params["temperature"].default == 0.8
+    assert params["top_p"].max_value == 1.0
+    assert params["top_k"].type == "integer"
+    assert params["num_beams"].max_value == 10
+    assert params["repetition_penalty"].max_value == 20.0
+    assert params["length_penalty"].min_value == -2.0
+    assert params["max_mel_tokens"].default == 1500
+    assert params["max_text_tokens_per_segment"].default == 120
     assert params["emo_alpha"].min_value == 0.0
     assert params["emo_alpha"].max_value == 1.0
     assert params["use_emo_text"].type == "boolean"
@@ -176,6 +194,15 @@ def test_indextts_load_uses_config_and_synthesizes_with_reference_audio(tmp_path
                     "emotion_happy": 0.2,
                     "emotion_calm": 0.7,
                     "use_random": False,
+                    "do_sample": True,
+                    "temperature": 0.7,
+                    "top_p": 0.85,
+                    "top_k": 40,
+                    "num_beams": 2,
+                    "repetition_penalty": 8.5,
+                    "length_penalty": -0.1,
+                    "max_mel_tokens": 1200,
+                    "max_text_tokens_per_segment": 96,
                 },
             ):
                 chunks.append(chunk)
@@ -193,8 +220,78 @@ def test_indextts_load_uses_config_and_synthesizes_with_reference_audio(tmp_path
     assert instance.infer_calls[0]["use_emo_text"] is True
     assert instance.infer_calls[0]["emo_vector"] == [0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.7]
     assert instance.infer_calls[0]["use_random"] is False
+    assert instance.infer_calls[0]["do_sample"] is True
+    assert instance.infer_calls[0]["temperature"] == 0.7
+    assert instance.infer_calls[0]["top_p"] == 0.85
+    assert instance.infer_calls[0]["top_k"] == 40
+    assert instance.infer_calls[0]["num_beams"] == 2
+    assert instance.infer_calls[0]["repetition_penalty"] == 8.5
+    assert instance.infer_calls[0]["length_penalty"] == -0.1
+    assert instance.infer_calls[0]["max_mel_tokens"] == 1200
+    assert instance.infer_calls[0]["max_text_tokens_per_segment"] == 96
     assert chunks[-1].is_final is True
     assert chunks[0].sample_rate == 24_000
+
+
+def test_indextts_boolean_params_parse_common_string_values(tmp_path):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "config.yaml").write_text("fake: true\n")
+
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        _install_fake_indextts_modules()
+        from vox_indextts.adapter import IndexTTSAdapter
+
+        adapter = IndexTTSAdapter()
+        with patch("vox_indextts.adapter._clear_indextts_modules"):
+            adapter.load(str(model_dir), "cuda")
+
+        async def run():
+            chunks = []
+            async for chunk in adapter.synthesize(
+                "Hello",
+                reference_audio=np.zeros(2400, dtype=np.float32),
+                params={
+                    "use_emo_text": "false",
+                    "use_random": "0",
+                    "do_sample": "no",
+                },
+            ):
+                chunks.append(chunk)
+            return chunks
+
+        chunks = asyncio.run(run())
+
+    instance = _FakeIndexTTS2.instances[-1]
+    assert instance.infer_calls[0]["use_emo_text"] is False
+    assert instance.infer_calls[0]["use_random"] is False
+    assert instance.infer_calls[0]["do_sample"] is False
+    assert chunks[-1].is_final is True
+
+
+def test_indextts_boolean_params_reject_ambiguous_values(tmp_path):
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "config.yaml").write_text("fake: true\n")
+
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        _install_fake_indextts_modules()
+        from vox_indextts.adapter import IndexTTSAdapter
+
+        adapter = IndexTTSAdapter()
+        with patch("vox_indextts.adapter._clear_indextts_modules"):
+            adapter.load(str(model_dir), "cuda")
+
+        async def run() -> None:
+            async for _chunk in adapter.synthesize(
+                "Hello",
+                reference_audio=np.zeros(2400, dtype=np.float32),
+                params={"do_sample": "sometimes"},
+            ):
+                pass
+
+        with pytest.raises(InvalidConfigError, match="do_sample must be a boolean"):
+            asyncio.run(run())
 
 
 def test_indextts_constructor_does_not_swallow_internal_type_error(tmp_path):

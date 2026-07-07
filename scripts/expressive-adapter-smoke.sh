@@ -6,6 +6,12 @@ usage() {
 Usage:
   expressive-adapter-smoke.sh --model MODEL [options]
 
+This legacy disposable Kubernetes runner is disabled by default. Vox cluster
+testing should normally use scripts/expressive-adapter-served-smoke.py against
+the already-running Vox endpoint. Set VOX_ENABLE_DISPOSABLE_K8S_SMOKE=1 only
+for an approved non-production lab that is explicitly allowed to use disposable
+Kubernetes resources.
+
 Required:
   --model MODEL              Model reference to smoke, e.g. dia-tts:1.6b
 
@@ -26,6 +32,7 @@ Options:
   --help                     Show this help
 
 Safety:
+  Default behavior is fail-closed before any kubectl call.
   This script refuses the production namespace/PVC names: vox and vox-data.
   It only creates Kubernetes resources when --create is passed explicitly.
 EOF
@@ -163,6 +170,19 @@ if requires_voice_reference "$MODEL" && [[ -z "$VOICE" ]]; then
   exit 2
 fi
 
+if [[ "${VOX_ENABLE_DISPOSABLE_K8S_SMOKE:-0}" != "1" ]]; then
+  cat >&2 <<'EOF'
+disposable Kubernetes smoke is disabled by default.
+Use scripts/expressive-adapter-served-smoke.py, or:
+  make smoke-expressive-served MODEL=<model> SMOKE_BASE_URL=<existing Vox URL>
+
+This runner creates/uses a separate namespace/PVC and is only for an approved
+non-production lab. Set VOX_ENABLE_DISPOSABLE_K8S_SMOKE=1 only when that is
+explicitly intended.
+EOF
+  exit 4
+fi
+
 if [[ "$NS" == "vox" || "$PVC" == "vox-data" ]]; then
   echo "refusing to use production Vox namespace/PVC: namespace=$NS pvc=$PVC" >&2
   exit 3
@@ -190,16 +210,16 @@ fi
 expected_adapter_package="not-tracked"
 case "$MODEL" in
   cosyvoice2-tts:*)
-    expected_adapter_package="vox-cosyvoice==0.1.6"
+    expected_adapter_package="vox-cosyvoice==0.1.10"
     ;;
   dia-tts:*)
-    expected_adapter_package="vox-dia==0.2.13"
+    expected_adapter_package="vox-dia==0.2.15"
     ;;
   orpheus-tts:*)
     expected_adapter_package="vox-orpheus==0.1.7"
     ;;
   indextts-tts:*)
-    expected_adapter_package="vox-indextts==0.1.19"
+    expected_adapter_package="vox-indextts==0.1.21"
     ;;
 esac
 

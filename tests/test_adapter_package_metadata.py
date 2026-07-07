@@ -139,7 +139,7 @@ def test_all_adapter_packages_have_valid_vox_entry_points_and_wheel_packages():
 def test_externalized_adapter_runtime_dependencies_are_not_package_dependencies():
     expected_absent = {
         "vox-cosyvoice": ("cosyvoice", "torch", "torchaudio", "transformers", "matplotlib", "openai-whisper"),
-        "vox-dia": ("transformers", "sentencepiece"),
+        "vox-dia": ("transformers", "sentencepiece", "tiktoken"),
         "vox-indextts": ("indextts", "torch", "torchaudio", "transformers"),
         "vox-neutts": ("neutts", "torch", "transformers"),
         "vox-orpheus": ("orpheus-speech", "vllm", "torch", "snac"),
@@ -172,8 +172,9 @@ def test_expressive_adapter_readmes_document_hardware_classification():
         "vox-dia": (
             "Linux x86_64 CUDA/Torch",
             "CPU, ONNX, and Spark/ARM NVIDIA paths are not currently production-supported",
-            "portable CPU/ONNX backend",
-            "Spark/ARM NVIDIA dependency stack",
+            "only been tested on GPUs with PyTorch/CUDA",
+            "CPU support is future work",
+            "transformers==4.57.6",
             "12GiB of usable VRAM budget",
         ),
         "vox-indextts": (
@@ -242,6 +243,19 @@ def test_dia_readme_documents_reference_audio_transcript_requirement():
         assert phrase in content
 
 
+def test_dia_readme_documents_upstream_hardware_limits():
+    content = (ADAPTERS_ROOT / "vox-dia" / "README.md").read_text()
+
+    for phrase in (
+        "only been\ntested on GPUs with PyTorch/CUDA",
+        "CPU support is future work",
+        "https://github.com/nari-labs/dia#hardware-and-inference-speed",
+        "requires around 10GB of VRAM",
+        "`--max-vram 10GiB --vram-headroom 1GiB` will reject Dia",
+    ):
+        assert phrase in content
+
+
 def test_expressive_adapter_readmes_document_prompt_controls():
     expected_control_phrases = {
         "vox-dia": (
@@ -262,6 +276,10 @@ def test_expressive_adapter_readmes_document_prompt_controls():
             "`zac`",
         ),
         "vox-indextts": (
+            "do_sample",
+            "temperature",
+            "top_p",
+            "max_mel_tokens",
             "emo_alpha",
             "use_emo_text",
             "emo_text",
@@ -270,6 +288,8 @@ def test_expressive_adapter_readmes_document_prompt_controls():
             "emotion_calm",
             "sum",
             "1.5",
+            "true`/`false",
+            "rejected instead of being coerced",
         ),
     }
 

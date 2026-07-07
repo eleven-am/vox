@@ -41,6 +41,17 @@ _EMOTION_PARAM_NAMES = (
     "emotion_calm",
 )
 _EMOTION_VECTOR_MAX_SUM = 1.5
+_GENERATION_PARAM_CASTS = {
+    "do_sample": lambda value: _coerce_bool("do_sample", value),
+    "temperature": float,
+    "top_p": float,
+    "top_k": int,
+    "num_beams": int,
+    "repetition_penalty": float,
+    "length_penalty": float,
+    "max_mel_tokens": int,
+    "max_text_tokens_per_segment": int,
+}
 INDEXTTS_RUNTIME_PACKAGE = "git+https://github.com/index-tts/index-tts.git"
 INDEXTTS_RUNTIME_DEPS = (
     "accelerate==1.8.1",
@@ -435,6 +446,20 @@ def _emo_audio_prompt_from_params(params: dict[str, Any] | None) -> str | None:
     return str(path)
 
 
+def _coerce_bool(name: str, value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    raise InvalidConfigError(f"IndexTTS {name} must be a boolean")
+
+
 def _inference_kwargs_from_params(params: dict[str, Any] | None) -> dict[str, Any]:
     if not params:
         return {}
@@ -449,12 +474,15 @@ def _inference_kwargs_from_params(params: dict[str, Any] | None) -> dict[str, An
     if "emo_alpha" in params:
         kwargs["emo_alpha"] = float(params["emo_alpha"])
     if "use_emo_text" in params:
-        kwargs["use_emo_text"] = bool(params["use_emo_text"])
+        kwargs["use_emo_text"] = _coerce_bool("use_emo_text", params["use_emo_text"])
     if "emo_text" in params:
         kwargs["emo_text"] = str(params["emo_text"])
         kwargs.setdefault("use_emo_text", True)
     if "use_random" in params:
-        kwargs["use_random"] = bool(params["use_random"])
+        kwargs["use_random"] = _coerce_bool("use_random", params["use_random"])
+    for name, caster in _GENERATION_PARAM_CASTS.items():
+        if name in params:
+            kwargs[name] = caster(params[name])
     return kwargs
 
 
@@ -564,6 +592,76 @@ class IndexTTSAdapter(TTSAdapter):
 
     def synthesis_parameters(self) -> tuple[SynthesisParameterInfo, ...]:
         return (
+            SynthesisParameterInfo(
+                name="do_sample",
+                type="boolean",
+                default=True,
+                description="Enable IndexTTS2 GPT sampling.",
+            ),
+            SynthesisParameterInfo(
+                name="temperature",
+                type="number",
+                default=0.8,
+                min_value=0.1,
+                max_value=2.0,
+                description="IndexTTS2 GPT sampling temperature.",
+            ),
+            SynthesisParameterInfo(
+                name="top_p",
+                type="number",
+                default=0.8,
+                min_value=0.0,
+                max_value=1.0,
+                description="IndexTTS2 nucleus sampling probability.",
+            ),
+            SynthesisParameterInfo(
+                name="top_k",
+                type="integer",
+                default=30,
+                min_value=0,
+                max_value=100,
+                description="IndexTTS2 top-k sampling cutoff.",
+            ),
+            SynthesisParameterInfo(
+                name="num_beams",
+                type="integer",
+                default=3,
+                min_value=1,
+                max_value=10,
+                description="IndexTTS2 beam count for generation.",
+            ),
+            SynthesisParameterInfo(
+                name="repetition_penalty",
+                type="number",
+                default=10.0,
+                min_value=0.1,
+                max_value=20.0,
+                description="IndexTTS2 repetition penalty.",
+            ),
+            SynthesisParameterInfo(
+                name="length_penalty",
+                type="number",
+                default=0.0,
+                min_value=-2.0,
+                max_value=2.0,
+                description="IndexTTS2 generation length penalty.",
+            ),
+            SynthesisParameterInfo(
+                name="max_mel_tokens",
+                type="integer",
+                default=1500,
+                min_value=50,
+                max_value=4096,
+                description="IndexTTS2 maximum generated mel-token budget.",
+            ),
+            SynthesisParameterInfo(
+                name="max_text_tokens_per_segment",
+                type="integer",
+                default=120,
+                min_value=20,
+                max_value=512,
+                description="IndexTTS2 maximum text tokens per internal segment.",
+            ),
             SynthesisParameterInfo(
                 name="emo_alpha",
                 type="number",

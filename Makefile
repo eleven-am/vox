@@ -18,7 +18,7 @@ SPARK_TORCHAUDIO_WHEEL ?=
 SPARK_TORCH_INDEX_URL ?= https://download.pytorch.org/whl/cu129
 SPARK_TORCH_EXTRA_INDEX_URL ?=
 
-.PHONY: build build-lean build-cpu build-spark build-local build-local-lean build-local-cpu build-local-spark push tag clean setup-buildx current-version bump-patch bump-minor bump-major test test-smoke-runner smoke-expressive smoke-expressive-served proto
+.PHONY: build build-lean build-cpu build-spark build-local build-local-lean build-local-cpu build-local-spark push tag clean setup-buildx current-version bump-patch bump-minor bump-major test test-smoke-runner smoke-expressive smoke-expressive-served smoke-expressive-local proto
 
 build:
 	@test "$(patsubst v%,%,$(VERSION))" = "$(APP_VERSION)" || \
@@ -198,21 +198,31 @@ test:
 test-smoke-runner:
 	bash -n scripts/expressive-adapter-smoke.sh
 	uv run python -m py_compile scripts/expressive-adapter-served-smoke.py
-	uv run python -m pytest tests/test_expressive_adapter_smoke_docs.py tests/test_expressive_adapter_served_smoke.py -q
+	uv run python -m py_compile scripts/expressive-adapter-local-smoke.py
+	uv run python -m py_compile scripts/verify-expressive-adapter-evidence.py
+	uv run python -m pytest tests/test_expressive_adapter_smoke_docs.py tests/test_expressive_adapter_served_smoke.py tests/test_expressive_adapter_local_smoke.py -q
 	@bash scripts/expressive-adapter-smoke.sh --model dia-tts:1.6b; \
 		rc=$$?; \
 		if [ "$$rc" -ne 4 ]; then \
-			echo "expected smoke runner to fail closed with exit 4 when the disposable namespace is missing, got $$rc"; \
+			echo "expected legacy Kubernetes smoke runner to fail closed with exit 4 when not explicitly enabled, got $$rc"; \
 			exit 1; \
 		fi
 
 smoke-expressive:
-	@test -n "$(MODEL)" || (echo "usage: make smoke-expressive MODEL=dia-tts:1.6b [SMOKE_VARIANT=onnx] [SMOKE_VOICE=/home/vox/.vox/smoke-voices/reference.wav] [SMOKE_CPU_ONLY=1] [SMOKE_CREATE=1] [SMOKE_AUDIO_USABLE=yes] [SMOKE_FAILURE_CLASS=dependency]"; exit 2)
+	@test -n "$(MODEL)" || (echo "legacy disposable Kubernetes runner; use make smoke-expressive-served for existing Vox. Usage only for approved non-production labs: VOX_ENABLE_DISPOSABLE_K8S_SMOKE=1 make smoke-expressive MODEL=dia-tts:1.6b [SMOKE_VARIANT=onnx] [SMOKE_VOICE=/home/vox/.vox/smoke-voices/reference.wav] [SMOKE_CPU_ONLY=1] [SMOKE_CREATE=1] [SMOKE_AUDIO_USABLE=yes] [SMOKE_FAILURE_CLASS=dependency]"; exit 2)
 	bash scripts/expressive-adapter-smoke.sh --model "$(MODEL)" $(if $(SMOKE_VARIANT),--variant "$(SMOKE_VARIANT)",) $(if $(SMOKE_VOICE),--voice "$(SMOKE_VOICE)",) $(if $(SMOKE_CPU_ONLY),--cpu-only,) $(if $(SMOKE_CREATE),--create,) $(if $(SMOKE_AUDIO_USABLE),--audio-usable "$(SMOKE_AUDIO_USABLE)",) $(if $(SMOKE_FAILURE_CLASS),--failure-class "$(SMOKE_FAILURE_CLASS)",)
 
 smoke-expressive-served:
-	@test -n "$(MODEL)" || (echo "usage: make smoke-expressive-served MODEL=dia-tts:1.6b [SMOKE_BASE_URL=http://127.0.0.1:8000] [SMOKE_API_KEY=...] [SMOKE_VOICE=voice-id] [SMOKE_PARAMS_JSON='{}'] [SMOKE_AUDIO_USABLE=yes] [SMOKE_INSPECT_ONLY=1]"; exit 2)
-	uv run python scripts/expressive-adapter-served-smoke.py --model "$(MODEL)" --base-url "$(or $(SMOKE_BASE_URL),http://127.0.0.1:8000)" $(if $(SMOKE_API_KEY),--api-key "$(SMOKE_API_KEY)",) $(if $(SMOKE_VOICE),--voice "$(SMOKE_VOICE)",) $(if $(SMOKE_PARAMS_JSON),--params-json '$(SMOKE_PARAMS_JSON)',) $(if $(SMOKE_AUDIO_USABLE),--audio-usable "$(SMOKE_AUDIO_USABLE)",) $(if $(SMOKE_INSPECT_ONLY),--inspect-only,)
+	@test -n "$(MODEL)" || (echo "usage: make smoke-expressive-served MODEL=dia-tts:1.6b [SMOKE_BASE_URL=http://127.0.0.1:8000] [SMOKE_API_KEY=...] [SMOKE_VOICE=voice-id] [SMOKE_PARAMS_JSON='{}'] [SMOKE_MEMORY_SAMPLE_INTERVAL=1.0] [SMOKE_AUDIO_USABLE=yes] [SMOKE_FAILURE_CLASS=dependency] [SMOKE_FAILURE_NOTE='missing runtime package'] [SMOKE_INSPECT_ONLY=1]"; exit 2)
+	uv run python scripts/expressive-adapter-served-smoke.py --model "$(MODEL)" --base-url "$(or $(SMOKE_BASE_URL),http://127.0.0.1:8000)" $(if $(SMOKE_API_KEY),--api-key "$(SMOKE_API_KEY)",) $(if $(SMOKE_VOICE),--voice "$(SMOKE_VOICE)",) $(if $(SMOKE_PARAMS_JSON),--params-json '$(SMOKE_PARAMS_JSON)',) $(if $(SMOKE_MEMORY_SAMPLE_INTERVAL),--memory-sample-interval "$(SMOKE_MEMORY_SAMPLE_INTERVAL)",) $(if $(SMOKE_AUDIO_USABLE),--audio-usable "$(SMOKE_AUDIO_USABLE)",) $(if $(SMOKE_FAILURE_CLASS),--failure-class "$(SMOKE_FAILURE_CLASS)",) $(if $(SMOKE_FAILURE_NOTE),--failure-note "$(SMOKE_FAILURE_NOTE)",) $(if $(SMOKE_INSPECT_ONLY),--inspect-only,)
+
+smoke-expressive-local:
+	@test -n "$(MODEL)$(SMOKE_PROOF_TARGET)" || (echo "usage: make smoke-expressive-local MODEL=<model> or SMOKE_PROOF_TARGET=cosyvoice|dia|orpheus|indextts [SMOKE_IMAGE=ghcr.io/eleven-am/vox:lean] [SMOKE_VARIANT=onnx] [SMOKE_SCRATCH_ROOT=/tmp/vox-adapter-lab] [SMOKE_EXPECT_ADAPTER=vox-dia] [SMOKE_EXPECT_ADAPTER_PACKAGE=vox-dia==0.2.15] [SMOKE_EXPECT_RUNTIME=dia] [SMOKE_EXPECT_MODEL_LINK=dia-tts] [SMOKE_RESOURCE_SAMPLE_INTERVAL=1.0] [SMOKE_MAX_DOWNLOAD_GB=20] [SMOKE_ESTIMATE_ONLY=1] [SMOKE_ALLOW_DOWNLOAD=1] [SMOKE_ALLOW_LARGE_DOWNLOAD=1] [SMOKE_AUDIO_USABLE=yes] [SMOKE_FAILURE_CLASS=dependency] [SMOKE_FAILURE_NOTE='missing runtime package'] [SMOKE_CLEANUP=1]"; exit 2)
+	uv run python scripts/expressive-adapter-local-smoke.py $(if $(MODEL),--model "$(MODEL)",) $(if $(SMOKE_PROOF_TARGET),--proof-target "$(SMOKE_PROOF_TARGET)",) $(if $(SMOKE_IMAGE),--image "$(SMOKE_IMAGE)",) $(if $(SMOKE_VARIANT),--variant "$(SMOKE_VARIANT)",) $(if $(SMOKE_SCRATCH_ROOT),--scratch-root "$(SMOKE_SCRATCH_ROOT)",) $(if $(SMOKE_EXPECT_ADAPTER),--expect-adapter "$(SMOKE_EXPECT_ADAPTER)",) $(if $(SMOKE_EXPECT_ADAPTER_PACKAGE),--expect-adapter-package "$(SMOKE_EXPECT_ADAPTER_PACKAGE)",) $(if $(SMOKE_EXPECT_RUNTIME),--expect-runtime "$(SMOKE_EXPECT_RUNTIME)",) $(if $(SMOKE_EXPECT_MODEL_LINK),--expect-model-link "$(SMOKE_EXPECT_MODEL_LINK)",) $(if $(SMOKE_RESOURCE_SAMPLE_INTERVAL),--resource-sample-interval "$(SMOKE_RESOURCE_SAMPLE_INTERVAL)",) $(if $(SMOKE_MAX_DOWNLOAD_GB),--max-download-gb "$(SMOKE_MAX_DOWNLOAD_GB)",) $(if $(SMOKE_ESTIMATE_ONLY),--estimate-only,) $(if $(SMOKE_ALLOW_DOWNLOAD),--allow-download,) $(if $(SMOKE_ALLOW_LARGE_DOWNLOAD),--allow-large-download,) $(if $(SMOKE_AUDIO_USABLE),--audio-usable "$(SMOKE_AUDIO_USABLE)",) $(if $(SMOKE_FAILURE_CLASS),--failure-class "$(SMOKE_FAILURE_CLASS)",) $(if $(SMOKE_FAILURE_NOTE),--failure-note "$(SMOKE_FAILURE_NOTE)",) $(if $(SMOKE_CLEANUP),--cleanup,)
+
+verify-expressive-local-evidence:
+	@test -n "$(EVIDENCE)" || (echo "usage: make verify-expressive-local-evidence EVIDENCE=/path/to/local-smoke-evidence.json [VERIFY_MODEL=dia-tts:1.6b] [VERIFY_PROOF_TARGET=dia]"; exit 2)
+	uv run python scripts/verify-expressive-adapter-evidence.py $(if $(VERIFY_MODEL),--expect-model "$(VERIFY_MODEL)",) $(if $(VERIFY_PROOF_TARGET),--expect-proof-target "$(VERIFY_PROOF_TARGET)",) $(EVIDENCE)
 
 proto:
 	uv run python -m grpc_tools.protoc \

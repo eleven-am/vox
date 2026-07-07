@@ -382,6 +382,7 @@ class TestAvailableModels:
         assert dia["adapter_package"] == "vox-dia"
         assert dia["adapter"] == "dia-tts-torch"
         assert dia["source"] == "nari-labs/Dia-1.6B-0626"
+        assert dia["parameters"]["sample_rate"] == 44100
         assert dia["runtime"]["required"]["accelerators"] == ["cuda"]
         assert dia["runtime"]["required"]["min_vram_gb"] == 12
         assert "CPU, ONNX, and Spark/ARM NVIDIA" in dia["runtime"]["required"]["notes"][0]

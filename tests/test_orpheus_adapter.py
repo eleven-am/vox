@@ -34,6 +34,16 @@ def test_orpheus_readme_uses_public_model_reference():
     assert "vox pull orpheus-tts-vllm:medium-3b" not in text
 
 
+def test_orpheus_readme_documents_gated_source_and_unwired_cloning():
+    readme = Path(__file__).parents[1] / "adapters" / "vox-orpheus" / "README.md"
+    text = readme.read_text()
+
+    assert "gated on Hugging Face" in text
+    assert "Upstream Orpheus advertises zero-shot voice cloning" in text
+    assert "does not currently map\nVox `reference_audio` / `reference_text`" in text
+    assert "not production-verified until clean-pull smoke proves" in text
+
+
 class _FakeOrpheusModel:
     instances: list[_FakeOrpheusModel] = []
 

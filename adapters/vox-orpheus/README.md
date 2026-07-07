@@ -20,6 +20,8 @@ target runtime `$VOX_HOME/runtime/orpheus`.
 
 During `vox pull`, the adapter verifies or installs the Orpheus runtime without
 loading model weights. Model weights remain in the normal Vox model store.
+The upstream Orpheus model repository is gated on Hugging Face, so pulls need
+normal Hugging Face access/terms acceptance for the configured model source.
 
 ## Use with Vox
 
@@ -65,9 +67,12 @@ Phrase-level emotion tags:
 - `<disgusted>`
 - `<neutral>`
 
-This adapter supports Orpheus preset voices, not reference-audio voice cloning.
-Requests with `reference_audio` or `reference_text` are rejected clearly rather
-than silently ignored.
+Upstream Orpheus advertises zero-shot voice cloning, but this Vox adapter
+supports Orpheus preset voices, not reference-audio voice cloning. It only
+wires the preset-voice `orpheus-speech` path today and does not currently map
+Vox `reference_audio` / `reference_text` into an Orpheus cloning flow. Requests
+with `reference_audio` or `reference_text` are rejected clearly rather than
+silently ignored.
 
 The adapter exposes Orpheus generation parameters through Vox synthesis
 `params`:
@@ -82,3 +87,6 @@ CUDA runtimes. CPU and Spark/ARM NVIDIA execution are not currently supported
 by this adapter because the `orpheus-speech`/vLLM runtime is not packaged as a
 portable CPU or ARM NVIDIA backend.
 Plan for at least 10GiB of usable VRAM budget before deployment headroom.
+This adapter is not production-verified until clean-pull smoke proves
+`vox pull`, runtime preparation, short synthesis, long synthesis, RAM/VRAM
+sampling, and manual audio usability in an approved non-production environment.

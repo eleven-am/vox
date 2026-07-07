@@ -430,7 +430,7 @@ FIXTURE_CATALOG: dict[str, dict[str, dict[str, Any]]] = {
             "format": "pytorch",
             "description": "Dia 1.6B (0626) — multi-speaker dialogue TTS with non-verbal sounds",
             "license": "Apache-2.0",
-            "parameters": {"sample_rate": 44000},
+            "parameters": {"sample_rate": 44100},
             "adapter_package": "vox-dia",
             "runtime": {
                 "required": {
