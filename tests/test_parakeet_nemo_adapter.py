@@ -338,7 +338,10 @@ def test_install_nemo_runtime_uses_python312_compatible_pins(tmp_path: Path, mon
     assert (tmp_path / "runtime" / ".vox-parakeet-nemo-runtime-ready").is_file()
 
 
-def test_install_nemo_runtime_removes_base_framework_shadows(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_install_nemo_runtime_removes_base_framework_shadows_but_keeps_runtime_triton(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
     sys.modules.pop("vox_parakeet", None)
     sys.modules.pop("vox_parakeet.nemo_adapter", None)
 
@@ -380,8 +383,8 @@ def test_install_nemo_runtime_removes_base_framework_shadows(tmp_path: Path, mon
 
     assert not (runtime_dir / "torch").exists()
     assert not (runtime_dir / "torch-2.9.1.dist-info").exists()
-    assert not (runtime_dir / "triton").exists()
-    assert not (runtime_dir / "triton-3.5.1.dist-info").exists()
+    assert (runtime_dir / "triton").exists()
+    assert (runtime_dir / "triton-3.5.1.dist-info").exists()
     assert not (runtime_dir / "nvidia").exists()
     assert not (runtime_dir / "nvidia_cublas_cu12-12.8.4.1.dist-info").exists()
     assert (runtime_dir / ".vox-parakeet-nemo-runtime-ready").is_file()

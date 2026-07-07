@@ -52,8 +52,6 @@ _BASE_FRAMEWORK_RUNTIME_GLOBS = (
     "torchaudio-*.dist-info",
     "torchvision",
     "torchvision-*.dist-info",
-    "triton",
-    "triton-*.dist-info",
     "nvidia",
     "nvidia_*.dist-info",
 )
