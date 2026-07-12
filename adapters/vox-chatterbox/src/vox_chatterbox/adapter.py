@@ -53,7 +53,14 @@ CHATTERBOX_RUNTIME_DEPS = (
     "pyloudnorm",
     "omegaconf",
 )
-CHATTERBOX_APP_RUNTIME_PACKAGES = ("torch", "torchgen", "torchaudio", "nvidia")
+CHATTERBOX_APP_RUNTIME_PACKAGES = (
+    "torch",
+    "torchgen",
+    "torchaudio",
+    "nvidia",
+    "cffi",
+    "_cffi_backend",
+)
 START_SPEECH_TOKEN = 6561
 STOP_SPEECH_TOKEN = 6562
 SILENCE_TOKEN = 4299

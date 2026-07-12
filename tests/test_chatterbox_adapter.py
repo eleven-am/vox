@@ -481,7 +481,7 @@ def test_chatterbox_turbo_onnx_preflight_accepts_reference_audio():
     adapter.validate_synthesis_request(reference_audio=np.ones(24_000, dtype=np.float32))
 
 
-def test_chatterbox_removes_stale_torch_runtime_packages(tmp_path):
+def test_chatterbox_removes_stale_app_runtime_packages(tmp_path):
     from vox_chatterbox.adapter import _purge_chatterbox_app_runtime_packages
 
     runtime_dir = tmp_path / "runtime"
@@ -490,14 +490,19 @@ def test_chatterbox_removes_stale_torch_runtime_packages(tmp_path):
         runtime_dir / "torchgen",
         runtime_dir / "torchaudio",
         runtime_dir / "nvidia",
+        runtime_dir / "cffi",
         runtime_dir / "torch-2.6.0.dist-info",
         runtime_dir / "torchaudio-2.6.0.dist-info",
+        runtime_dir / "cffi-2.1.0.dist-info",
     ]
     for path in stale_dirs:
         path.mkdir(parents=True)
+    stale_extension = runtime_dir / "_cffi_backend.cpython-312-x86_64-linux-gnu.so"
+    stale_extension.write_bytes(b"runtime-owned extension")
     (runtime_dir / "chatterbox").mkdir()
 
     _purge_chatterbox_app_runtime_packages(runtime_dir)
 
     assert not any(path.exists() for path in stale_dirs)
+    assert not stale_extension.exists()
     assert (runtime_dir / "chatterbox").is_dir()
