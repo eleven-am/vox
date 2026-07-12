@@ -26,6 +26,7 @@ from vox_kokoro.common import (
     pipeline_lang_code,
     voice_info,
 )
+from vox_kokoro.phonemizer_compat import patch_espeak_compat
 
 logger = logging.getLogger(__name__)
 
@@ -298,6 +299,7 @@ class KokoroTorchAdapter(TTSAdapter):
             return pipeline
 
         kokoro = self._import_runtime()
+        patch_espeak_compat()
         pipeline_cls = getattr(kokoro, "KPipeline", None)
         if pipeline_cls is None:
             raise RuntimeError("kokoro runtime does not expose KPipeline")

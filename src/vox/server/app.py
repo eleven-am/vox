@@ -11,6 +11,7 @@ from vox.core.hf_runtime import configure_hf_runtime
 from vox.core.registry import ModelRegistry
 from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
+from vox.core.temp_storage import prune_stale_temp_dirs
 from vox.logging_config import configure_logging
 from vox.server.app_services import app_rtc_registry, app_services
 from vox.server.middleware import ApiKeyAuthMiddleware, RequestIdMiddleware
@@ -31,6 +32,7 @@ async def lifespan(app: FastAPI):
     grpc_server = None
     services = app_services(app)
     rtc_registry = app_rtc_registry(app)
+    prune_stale_temp_dirs(services.store.root / "tmp")
     await services.scheduler.start()
     try:
         merged = merged_preload_models(

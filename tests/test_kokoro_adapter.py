@@ -588,12 +588,23 @@ def test_kokoro_float_speed_prefers_named_audio_output(tmp_path: Path):
     assert result_audio.tolist() == [0.0, 0.25, -0.25]
 
 
-def test_kokoro_load_patches_phonemizer_cleanup_and_logging(tmp_path: Path):
+def test_kokoro_load_patches_phonemizer_cleanup_and_logging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
     _install_fake_modules()
     fake_phonemizer, fake_espeak_api, fake_words_mismatch, finalize_calls = _install_fake_phonemizer()
     sys.modules.pop("vox_kokoro", None)
     sys.modules.pop("vox_kokoro.adapter", None)
     sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    from vox_kokoro import phonemizer_compat
+
+    monkeypatch.setattr(
+        phonemizer_compat,
+        "_schedule_tempdir_cleanup",
+        lambda tempdir: shutil.rmtree(tempdir, ignore_errors=True),
+    )
 
     model_dir = tmp_path / "kokoro"
     (model_dir / "onnx").mkdir(parents=True)
@@ -611,9 +622,9 @@ def test_kokoro_load_patches_phonemizer_cleanup_and_logging(tmp_path: Path):
     fake_espeak_api._delete(None, str(tempdir))
 
     assert tempdir.exists() is False
-    assert fake_espeak_api._delete.__name__ == "_delete_quietly"
+    assert fake_espeak_api._delete.__name__ == "_delete_nfs_safe"
     fake_espeak_api()
-    assert finalize_calls[-1][0].__name__ == "_delete_quietly"
+    assert finalize_calls[-1][0].__name__ == "_delete_nfs_safe"
 
     tokenizer = adapter._kokoro.tokenizer
     assert tokenizer.phonemize("  abc  ") == "ab c"
@@ -621,6 +632,68 @@ def test_kokoro_load_patches_phonemizer_cleanup_and_logging(tmp_path: Path):
     assert kwargs["logger"].name == "phonemizer"
     assert kwargs["logger"].level == 40
     assert fake_words_mismatch()._resume(["a"], 1) is None
+
+
+def test_phonemizer_cleanup_retries_nfs_busy_errors(monkeypatch: pytest.MonkeyPatch):
+    from vox_kokoro import phonemizer_compat
+
+    calls = 0
+
+    def fake_rmtree(path):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError(errno.ENOTEMPTY, "Directory not empty")
+        if calls == 2:
+            raise OSError(errno.EBUSY, "Resource busy")
+
+    monkeypatch.setattr(phonemizer_compat.shutil, "rmtree", fake_rmtree)
+    monkeypatch.setattr(phonemizer_compat.time, "sleep", lambda _delay: None)
+
+    phonemizer_compat._remove_tempdir_with_retries(
+        "/tmp/vox-kokoro-test",
+        retry_delays=(0.0, 0.0, 0.0),
+    )
+
+    assert calls == 3
+
+
+def test_kokoro_torch_applies_nfs_safe_phonemizer_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _, fake_espeak_api, _, finalize_calls = _install_fake_phonemizer()
+    fake_kokoro = _install_fake_native_modules()
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    from vox_kokoro import phonemizer_compat
+
+    monkeypatch.setattr(
+        phonemizer_compat,
+        "_schedule_tempdir_cleanup",
+        lambda tempdir: shutil.rmtree(tempdir, ignore_errors=True),
+    )
+
+    model_dir = tmp_path / "kokoro"
+    model_dir.mkdir()
+    (model_dir / "model.pth").write_bytes(b"weights")
+
+    from vox_kokoro.torch_adapter import KokoroTorchAdapter
+
+    adapter = KokoroTorchAdapter()
+    with patch.object(KokoroTorchAdapter, "_import_runtime", return_value=fake_kokoro):
+        adapter.load(str(model_dir), "cpu")
+
+    tempdir = tmp_path / "torch-espeak-temp"
+    tempdir.mkdir()
+    fake_espeak_api._delete(None, str(tempdir))
+    fake_espeak_api()
+
+    assert tempdir.exists() is False
+    assert fake_espeak_api._delete.__name__ == "_delete_nfs_safe"
+    assert finalize_calls[-1][0].__name__ == "_delete_nfs_safe"
 
 
 def test_kokoro_rejects_cuda_when_no_gpu_provider_is_available(tmp_path: Path):

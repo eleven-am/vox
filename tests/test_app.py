@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,7 +14,7 @@ from vox.server.app import lifespan
 def _make_app(*, grpc_port: int | None) -> FastAPI:
     app = FastAPI()
     app.state.scheduler = MagicMock(start=AsyncMock(), stop=AsyncMock())
-    app.state.store = MagicMock()
+    app.state.store = MagicMock(root=Path("/path/that/does/not/exist"))
     app.state.registry = MagicMock()
     app.state.grpc_port = grpc_port
     return app
@@ -34,6 +35,19 @@ async def test_lifespan_stops_scheduler_if_grpc_start_fails():
 
     app.state.scheduler.start.assert_awaited_once()
     app.state.scheduler.stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_lifespan_prunes_stale_temp_directories_before_scheduler_start(tmp_path: Path):
+    app = _make_app(grpc_port=None)
+    app.state.store.root = tmp_path
+
+    with patch("vox.server.app.prune_stale_temp_dirs") as prune:
+        async with lifespan(app):
+            pass
+
+    prune.assert_called_once_with(tmp_path / "tmp")
+    app.state.scheduler.start.assert_awaited_once()
 
 
 @pytest.mark.asyncio

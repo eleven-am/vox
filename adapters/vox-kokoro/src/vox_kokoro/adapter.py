@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import errno
 import importlib
 import logging
 import platform
 import re
-import shutil
 import subprocess
 import threading
 from collections.abc import AsyncIterator
@@ -34,13 +32,12 @@ from vox.core.types import (
     VoiceInfo,
 )
 from vox_kokoro.common import SAMPLE_RATE, SUPPORTED_LANGUAGES, voice_info, voice_lang_tag
+from vox_kokoro.phonemizer_compat import PHONEMIZER_LOGGER, patch_espeak_compat
 
 if TYPE_CHECKING:
     from kokoro_onnx import Kokoro
 
 logger = logging.getLogger(__name__)
-_PHONEMIZER_LOGGER = logging.getLogger("phonemizer")
-_PHONEMIZER_LOGGER.setLevel(logging.ERROR)
 _KOKORO_DEFAULT_MAX_PHONEMES = 510
 _KOKORO_SAFE_PHONEME_LIMIT = 480
 _KOKORO_PUNCTUATION = ".,!?;:。！？；，、"
@@ -241,69 +238,13 @@ def _split_phonemes_safely(phonemes: str, *, max_phonemes: int | None = None) ->
 
 
 def _patch_phonemizer_compat() -> None:
+    if not patch_espeak_compat():
+        return
     try:
         import phonemizer
-        from phonemizer.backend.espeak import api as espeak_api
-        from phonemizer.backend.espeak.api import EspeakAPI
-        from phonemizer.backend.espeak.words_mismatch import BaseWordsMismatch
+        from kokoro_onnx import Tokenizer
     except ImportError:
         return
-
-    original_delete = getattr(EspeakAPI, "_delete", None)
-    if original_delete is not None and not getattr(original_delete, "_vox_patched", False):
-        def _delete_quietly(library, tempdir):
-            try:
-                original_delete(library, tempdir)
-            except FileNotFoundError:
-                return
-            except OSError as exc:
-                if exc.errno != errno.ENOTEMPTY:
-                    raise
-                shutil.rmtree(tempdir, ignore_errors=True)
-
-        _delete_quietly._vox_patched = True
-        EspeakAPI._delete = staticmethod(_delete_quietly)
-        if hasattr(espeak_api, "_delete"):
-            espeak_api._delete = _delete_quietly
-
-        original_init = getattr(EspeakAPI, "__init__", None)
-        if original_init is not None and not getattr(original_init, "_vox_patched", False):
-            def _init_quietly(self, *args, **kwargs):
-                finalize = espeak_api.weakref.finalize
-
-                def _finalize_override(obj, func, *f_args, **f_kwargs):
-                    if getattr(func, "__name__", None) == "_delete":
-                        func = _delete_quietly
-                    return finalize(obj, func, *f_args, **f_kwargs)
-
-                espeak_api.weakref.finalize = _finalize_override
-                try:
-                    return original_init(self, *args, **kwargs)
-                finally:
-                    espeak_api.weakref.finalize = finalize
-
-            _init_quietly._vox_patched = True
-            EspeakAPI.__init__ = _init_quietly
-
-        original_finalize = getattr(espeak_api.weakref, "finalize", None)
-        if original_finalize is not None and not getattr(original_finalize, "_vox_patched", False):
-            def _finalize_quietly(obj, func, *args, **kwargs):
-                if getattr(func, "__name__", None) == "_delete":
-                    func = _delete_quietly
-                return original_finalize(obj, func, *args, **kwargs)
-
-            _finalize_quietly._vox_patched = True
-            espeak_api.weakref.finalize = _finalize_quietly
-
-    original_resume = getattr(BaseWordsMismatch, "_resume", None)
-    if original_resume is not None and not getattr(original_resume, "_vox_patched", False):
-        def _resume_quietly(self, lines, num_mismatches):
-            return None
-
-        _resume_quietly._vox_patched = True
-        BaseWordsMismatch._resume = _resume_quietly
-
-    from kokoro_onnx import Tokenizer
 
     original_phonemize = getattr(Tokenizer, "phonemize", None)
     if original_phonemize is not None and not getattr(original_phonemize, "_vox_patched", False):
@@ -315,7 +256,7 @@ def _patch_phonemizer_compat() -> None:
                 lang,
                 preserve_punctuation=True,
                 with_stress=True,
-                logger=_PHONEMIZER_LOGGER,
+                logger=PHONEMIZER_LOGGER,
             )
             phonemes = "".join(filter(lambda p: p in self.vocab, phonemes))
             return phonemes.strip()
