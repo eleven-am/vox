@@ -311,7 +311,10 @@ class TestInstallCommand:
             ]
         ]
 
-    @pytest.mark.parametrize("package_name", ["vox-sesame", "vox-whisper"])
+    @pytest.mark.parametrize(
+        "package_name",
+        ["vox-chatterbox", "vox-sesame", "vox-whisper"],
+    )
     def test_skip_dependencies_for_torch_backed_target_runtime_packages(
         self, tmp_path: Path, package_name: str
     ):
