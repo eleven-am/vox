@@ -230,10 +230,10 @@ def _run_install_command(cmd: list[str], timeout: int) -> subprocess.CompletedPr
 
 
 def _load_asr_model_class() -> Any:
-    _prime_lightning_imports()
     try:
         nemo_asr = importlib.import_module("nemo.collections.asr")
     except Exception:
+        _clear_nemo_modules()
         _ensure_runtime_target_on_path()
         _install_nemo_runtime()
         _clear_nemo_modules()

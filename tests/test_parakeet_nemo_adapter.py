@@ -246,14 +246,22 @@ def test_load_asr_model_class_bootstraps_missing_nemo_runtime(monkeypatch: pytes
         return real_import_module(name)
 
     install_mock = MagicMock(side_effect=lambda: _install_fake_nemo())
+    calls: list[str] = []
     monkeypatch.setattr(module.importlib, "import_module", fake_import_module)
+    monkeypatch.setattr(
+        module,
+        "_ensure_runtime_target_on_path",
+        lambda: calls.append("ensure_runtime"),
+    )
     monkeypatch.setattr(module, "_install_nemo_runtime", install_mock)
-    monkeypatch.setattr(module, "_clear_nemo_modules", lambda: None)
+    monkeypatch.setattr(module, "_clear_nemo_modules", lambda: calls.append("clear"))
+    monkeypatch.setattr(module, "_prime_lightning_imports", lambda: calls.append("prime"))
 
     loaded_model_cls = module._load_asr_model_class()
     assert loaded_model_cls.__name__ == fake_model_cls.__name__
     assert hasattr(loaded_model_cls, "from_pretrained")
     install_mock.assert_called_once()
+    assert calls == ["clear", "ensure_runtime", "clear", "prime"]
 
 
 def test_load_asr_model_class_prefers_global_nemo_before_local_runtime(monkeypatch: pytest.MonkeyPatch):
