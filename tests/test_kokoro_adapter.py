@@ -5,6 +5,7 @@ import errno
 import shutil
 import sys
 import threading
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -656,6 +657,18 @@ def test_phonemizer_cleanup_retries_nfs_busy_errors(monkeypatch: pytest.MonkeyPa
     )
 
     assert calls == 3
+
+
+def test_phonemizer_patch_does_not_replace_stdlib_weakref_finalize():
+    _install_fake_phonemizer()
+    fake_api = sys.modules["phonemizer.backend.espeak.api"]
+    fake_api.weakref = weakref
+    original_finalize = weakref.finalize
+
+    from vox_kokoro.phonemizer_compat import patch_espeak_compat
+
+    assert patch_espeak_compat() is True
+    assert weakref.finalize is original_finalize
 
 
 def test_kokoro_torch_applies_nfs_safe_phonemizer_cleanup(

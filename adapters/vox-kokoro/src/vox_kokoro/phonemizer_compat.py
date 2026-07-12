@@ -72,37 +72,6 @@ def patch_espeak_compat() -> bool:
         if hasattr(espeak_api, "_delete"):
             espeak_api._delete = _delete_nfs_safe
 
-        original_init = getattr(EspeakAPI, "__init__", None)
-        if original_init is not None and not getattr(original_init, "_vox_patched", False):
-
-            def _init_nfs_safe(self: Any, *args: Any, **kwargs: Any) -> None:
-                finalize = espeak_api.weakref.finalize
-
-                def _finalize_override(obj: Any, func: Any, *f_args: Any, **f_kwargs: Any) -> Any:
-                    if getattr(func, "__name__", None) == "_delete":
-                        func = _delete_nfs_safe
-                    return finalize(obj, func, *f_args, **f_kwargs)
-
-                espeak_api.weakref.finalize = _finalize_override
-                try:
-                    original_init(self, *args, **kwargs)
-                finally:
-                    espeak_api.weakref.finalize = finalize
-
-            _init_nfs_safe._vox_patched = True  # type: ignore[attr-defined]
-            EspeakAPI.__init__ = _init_nfs_safe
-
-        original_finalize = getattr(espeak_api.weakref, "finalize", None)
-        if original_finalize is not None and not getattr(original_finalize, "_vox_patched", False):
-
-            def _finalize_nfs_safe(obj: Any, func: Any, *args: Any, **kwargs: Any) -> Any:
-                if getattr(func, "__name__", None) == "_delete":
-                    func = _delete_nfs_safe
-                return original_finalize(obj, func, *args, **kwargs)
-
-            _finalize_nfs_safe._vox_patched = True  # type: ignore[attr-defined]
-            espeak_api.weakref.finalize = _finalize_nfs_safe
-
     original_resume = getattr(BaseWordsMismatch, "_resume", None)
     if original_resume is not None and not getattr(original_resume, "_vox_patched", False):
 
