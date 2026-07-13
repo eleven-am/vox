@@ -1,6 +1,6 @@
 [project]
 name = "vox-runtime"
-version = "0.2.92"
+version = "0.2.93"
 description = "Universal local runtime for STT and TTS models"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
@@ -27,9 +27,10 @@ dependencies = [
     "opuslib>=3.0.1",
     "aiortc>=1.14.0",
     "pondsocket-common>=0.0.1,<0.1.0",
-    "pondsocket>=0.0.1,<0.1.0",
+    "pondsocket>=0.0.7,<0.1.0",
     "pondsocket-asgi>=0.0.1,<0.1.0",
     "onnxruntime>=1.27.0",
+    "transformers>=4.57.6,<4.58",
 ]
 
 [project.scripts]

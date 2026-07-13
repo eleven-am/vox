@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from vox.core.adapter import STTAdapter, TTSAdapter
+from vox.core.adapter import STTAdapter, TTSAdapter, TurnDetectorAdapter
 from vox.core.device_placement import (
     LoadedModelView,
     Placement,
@@ -23,7 +23,7 @@ from vox.core.types import DeviceMemoryInfo, LoadedModelInfo, ModelInfo, VramPol
 
 logger = logging.getLogger(__name__)
 
-Adapter = STTAdapter | TTSAdapter
+Adapter = STTAdapter | TTSAdapter | TurnDetectorAdapter
 
 
 def _detect_device() -> str:

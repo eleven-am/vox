@@ -14,6 +14,7 @@ from vox.server.preload import (
     merged_preload_models,
     parse_preload_list,
     preload_models,
+    preload_turn_detector,
     preload_vad,
     should_preload_vad,
 )
@@ -144,6 +145,29 @@ class TestPreloadVAD:
         assert any("Failed to preload VAD" in r.message for r in caplog.records)
 
 
+class TestPreloadTurnDetector:
+    @pytest.mark.asyncio
+    async def test_preloads_selected_detector(self):
+        detector = MagicMock()
+        detector.preload = MagicMock(return_value=None)
+
+        with patch("vox.streaming.eou.create_turn_detector", return_value=detector) as factory:
+            await preload_turn_detector(MagicMock(), "livekit")
+
+        factory.assert_called_once()
+        detector.preload.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_failure_is_logged_not_raised(self, caplog):
+        with patch(
+            "vox.streaming.eou.create_turn_detector",
+            side_effect=RuntimeError("unavailable"),
+        ):
+            await preload_turn_detector(MagicMock(), "livekit")
+
+        assert any("Failed to preload turn detector livekit" in r.message for r in caplog.records)
+
+
 class TestCreateAppWiring:
     def test_preload_kwargs_stored_on_app_state(self, tmp_path: Path):
         app = create_app(
@@ -158,6 +182,7 @@ class TestCreateAppWiring:
         app = create_app(vox_home=tmp_path)
         assert app.state.preload_models == []
         assert app.state.preload_vad is False
+        assert app.state.preload_turn_detector is None
 
 
 class TestLifespanIntegration:
@@ -223,3 +248,4 @@ class TestCLISignature:
         opt_names = {p.name for p in serve.params}
         assert "preload_models" in opt_names
         assert "preload_vad" in opt_names
+        assert "preload_turn_detector" in opt_names

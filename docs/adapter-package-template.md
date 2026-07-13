@@ -78,7 +78,7 @@ Allowed `runtime-policy` values:
 `runtime-names` must list every runtime directory owned by the adapter. Use an
 empty list only for `package-runtime` adapters.
 
-`adapter-types` must contain `stt`, `tts`, or both.
+`adapter-types` must contain one or more of `stt`, `tts`, or `turn`.
 
 If `runtime-policy = "venv-exception"`, add:
 

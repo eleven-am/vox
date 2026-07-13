@@ -7,7 +7,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 ADAPTERS_ROOT = REPO_ROOT / "adapters"
 VALID_RUNTIME_POLICIES = {"target-runtime", "package-runtime", "mixed", "venv-exception"}
-VALID_ADAPTER_TYPES = {"stt", "tts"}
+VALID_ADAPTER_TYPES = {"stt", "tts", "turn"}
 
 
 def _adapter_pyprojects() -> list[Path]:
@@ -99,7 +99,7 @@ def test_all_adapter_packages_declare_vox_adapter_metadata():
             f"{pyproject_path} should declare adapter-types"
         )
         assert set(adapter_types) <= VALID_ADAPTER_TYPES, (
-            f"{pyproject_path} adapter-types must be stt, tts, or both"
+            f"{pyproject_path} adapter-types must contain supported adapter types"
         )
 
         if runtime_policy == "venv-exception":

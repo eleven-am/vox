@@ -66,7 +66,7 @@ from vox.core.scheduler import Scheduler
 from vox.core.tasks import reap_task
 from vox.streaming.annotation import enrich_transcript
 from vox.streaming.codecs import StreamResampler, float32_to_pcm16, pcm16_to_float32, resample_audio
-from vox.streaming.eou import EOUConfig
+from vox.streaming.eou import DEFAULT_TURN_DETECTOR, EOUConfig
 from vox.streaming.partials import PartialTranscriptService
 from vox.streaming.pipeline import StreamPipeline, StreamPipelineConfig
 from vox.streaming.session import SpeechSession
@@ -115,7 +115,7 @@ class ConversationConfig:
     policy: TurnPolicy = None  # type: ignore[assignment]
     turn_profile: str = DEFAULT_TURN_PROFILE
     vad_backend: str = "silero"
-    turn_detector: str = "livekit"
+    turn_detector: str = DEFAULT_TURN_DETECTOR
     include_word_timestamps: bool = False
 
     interrupt_classifier: InterruptClassifier | None = None

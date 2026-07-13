@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import threading
 import time
@@ -59,6 +60,7 @@ def _segments_and_words(result: TranscribeResult) -> tuple[list[dict] | None, li
 logger = logging.getLogger(__name__)
 
 _EOU_FAILURE_LIMIT = 3
+_EOU_AUDIO_LIMIT_SAMPLES = TARGET_SAMPLE_RATE * 8
 
 INTERNAL_SILENCE_SPLIT_MIN_AUDIO_MS = 2_500
 INTERNAL_SILENCE_FRAME_MS = 40
@@ -177,10 +179,14 @@ class StreamPipeline:
         self._scheduler = scheduler
         self._config = config or StreamPipelineConfig()
         self._vad = VADProcessor(config=self._config.vad_config)
-        self._eou_model = create_turn_detector(self._config.eou_config.model)
+        self._eou_model = create_turn_detector(
+            self._config.eou_config.model,
+            scheduler=scheduler,
+        )
         self._conversation_history: list[ConversationTurn] = []
         self._history_lock = threading.Lock()
         self._pending_user_text = ""
+        self._pending_user_audio = np.array([], dtype=np.float32)
         self._low_eou_streak = 0
         self._eou_failure_streak = 0
         self._eou_disabled = False
@@ -193,6 +199,7 @@ class StreamPipeline:
         with self._history_lock:
             self._conversation_history.clear()
         self._pending_user_text = ""
+        self._pending_user_audio = np.array([], dtype=np.float32)
         self._low_eou_streak = 0
 
     def _history_limit(self) -> int:
@@ -209,6 +216,7 @@ class StreamPipeline:
     def reset(self) -> None:
         self._vad.reset()
         self._pending_user_text = ""
+        self._pending_user_audio = np.array([], dtype=np.float32)
         self._low_eou_streak = 0
 
     async def process_audio(self, audio: NDArray[np.float32]) -> AsyncIterator[StreamEvent]:
@@ -229,9 +237,8 @@ class StreamPipeline:
                 transcript = await self._transcribe_segment(segment)
                 if not transcript.text or not transcript.text.strip():
                     return
-                transcript = await loop.run_in_executor(
-                    self._executor, self._add_eou_probability, transcript
-                )
+                self._append_pending_user_audio(segment.audio)
+                transcript = await self._add_eou_probability(transcript)
                 yield transcript
 
     async def _transcribe_segment(self, segment: SpeechSegment) -> StreamTranscript:
@@ -412,7 +419,24 @@ class StreamPipeline:
             executor=self._executor,
         )
 
-    def _add_eou_probability(self, transcript: StreamTranscript) -> StreamTranscript:
+    def _append_pending_user_audio(self, audio: NDArray[np.float32]) -> None:
+        if audio.size == 0:
+            return
+        pieces: list[NDArray[np.float32]] = []
+        if self._pending_user_audio.size:
+            silence_samples = int(
+                max(0, self._config.vad_config.min_silence_duration_ms)
+                * TARGET_SAMPLE_RATE
+                / 1000
+            )
+            if silence_samples:
+                pieces.append(np.zeros(silence_samples, dtype=np.float32))
+        pieces.append(np.asarray(audio, dtype=np.float32))
+        self._pending_user_audio = np.concatenate(
+            [self._pending_user_audio, *pieces]
+        )[-_EOU_AUDIO_LIMIT_SAMPLES:]
+
+    async def _add_eou_probability(self, transcript: StreamTranscript) -> StreamTranscript:
         self._pending_user_text = (self._pending_user_text + " " + transcript.text).strip()
 
         if self._eou_disabled:
@@ -425,10 +449,13 @@ class StreamPipeline:
         history_with_current.append(ConversationTurn(role="user", content=self._pending_user_text))
 
         try:
-            eou_probability = self._eou_model.predict(
+            prediction = self._eou_model.predict(
                 history_with_current,
+                audio=self._pending_user_audio,
+                sample_rate=TARGET_SAMPLE_RATE,
                 max_context_turns=self._history_limit(),
             )
+            eou_probability = await prediction if inspect.isawaitable(prediction) else prediction
             self._eou_failure_streak = 0
             transcript.eou_probability = eou_probability
 
@@ -462,6 +489,7 @@ class StreamPipeline:
     def _flush_pending_user_text(self) -> None:
         if not self._pending_user_text:
             self._low_eou_streak = 0
+            self._pending_user_audio = np.array([], dtype=np.float32)
             return
 
         with self._history_lock:
@@ -473,6 +501,7 @@ class StreamPipeline:
                 self._conversation_history = self._conversation_history[-history_limit:]
 
         self._pending_user_text = ""
+        self._pending_user_audio = np.array([], dtype=np.float32)
         self._low_eou_streak = 0
 
     def shutdown(self) -> None:

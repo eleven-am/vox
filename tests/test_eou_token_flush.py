@@ -3,6 +3,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 
 from vox.streaming.eou import ConversationTurn, EOUConfig, EOUModel
 from vox.streaming.pipeline import StreamPipeline, StreamPipelineConfig
@@ -124,6 +125,23 @@ class TestEOUContextWindow:
             add_special_tokens=False,
         )
 
+    def test_predict_preserves_livekit_scalar_probability(self):
+        fake_tokenizer = MagicMock()
+        fake_tokenizer.apply_chat_template.return_value = "prompt"
+        fake_tokenizer.return_value = {"input_ids": np.array([[1, 2, 3]], dtype=np.int64)}
+        fake_session = MagicMock()
+        fake_session.run.return_value = [np.array([[0.00054339]], dtype=np.float32)]
+
+        model = EOUModel()
+        with (
+            patch.object(EOUModel, "_ensure_loaded"),
+            patch.object(EOUModel, "_tokenizer", fake_tokenizer),
+            patch.object(EOUModel, "_session", fake_session),
+        ):
+            probability = model.predict([ConversationTurn(role="user", content="My address is")])
+
+        assert probability == pytest.approx(0.00054339)
+
     def test_pipeline_history_trim_respects_configured_context_window(self):
         pipeline = StreamPipeline(
             scheduler=MagicMock(),
@@ -142,12 +160,15 @@ class TestEOUContextWindow:
 
 
 class TestEOUFailureFallback:
-    def test_pipeline_flushes_on_predict_failure_without_immediate_disable(self):
+    @pytest.mark.asyncio
+    async def test_pipeline_flushes_on_predict_failure_without_immediate_disable(self):
         pipeline = StreamPipeline(scheduler=MagicMock())
         pipeline._eou_model = MagicMock()
         pipeline._eou_model.predict.side_effect = RuntimeError("broken eou backend")
 
-        transcript = pipeline._add_eou_probability(type("T", (), {"text": "hello world", "eou_probability": 0.9})())
+        transcript = await pipeline._add_eou_probability(
+            type("T", (), {"text": "hello world", "eou_probability": 0.9})()
+        )
 
         assert transcript.eou_probability is None
         assert pipeline._eou_disabled is False
@@ -155,26 +176,28 @@ class TestEOUFailureFallback:
         assert pipeline._pending_user_text == ""
         assert [turn.content for turn in pipeline._conversation_history] == ["hello world"]
 
-    def test_pipeline_disables_eou_after_consecutive_predict_failures(self):
+    @pytest.mark.asyncio
+    async def test_pipeline_disables_eou_after_consecutive_predict_failures(self):
         pipeline = StreamPipeline(scheduler=MagicMock())
         pipeline._eou_model = MagicMock()
         pipeline._eou_model.predict.side_effect = RuntimeError("broken eou backend")
 
         for idx in range(3):
-            pipeline._add_eou_probability(type("T", (), {"text": f"turn {idx}", "eou_probability": 0.9})())
+            await pipeline._add_eou_probability(type("T", (), {"text": f"turn {idx}", "eou_probability": 0.9})())
 
         assert pipeline._eou_disabled is True
 
-    def test_pipeline_eou_failure_streak_resets_on_success(self):
+    @pytest.mark.asyncio
+    async def test_pipeline_eou_failure_streak_resets_on_success(self):
         pipeline = StreamPipeline(scheduler=MagicMock())
         pipeline._eou_model = MagicMock()
         pipeline._eou_model.predict.side_effect = [RuntimeError("transient"), 0.95]
         pipeline._eou_model.token_count.return_value = 1
 
-        pipeline._add_eou_probability(type("T", (), {"text": "first", "eou_probability": None})())
+        await pipeline._add_eou_probability(type("T", (), {"text": "first", "eou_probability": None})())
         assert pipeline._eou_failure_streak == 1
 
-        transcript = pipeline._add_eou_probability(type("T", (), {"text": "second", "eou_probability": None})())
+        transcript = await pipeline._add_eou_probability(type("T", (), {"text": "second", "eou_probability": None})())
         assert pipeline._eou_failure_streak == 0
         assert pipeline._eou_disabled is False
         assert transcript.eou_probability == 0.95

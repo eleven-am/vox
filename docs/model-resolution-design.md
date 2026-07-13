@@ -21,6 +21,8 @@ override and debug escape hatches only, never the default source of truth.
   `https://raw.githubusercontent.com/eleven-am/vox-registry/main` is the single
   source of truth. Fetched entries are cached in-memory for the process.
   Registry entries may be concrete backends or logical models with `variants`.
+  Model types include `stt`, `tts`, and `turn`; turn-detection models use the
+  same pull-time resolution and persistent model store as speech models.
 - `src/vox/operations/models.py::pull_model`: resolves the alias, looks up a
   catalog entry, runs the compatibility gate, installs the adapter package,
   downloads HF files, runs adapter `prepare_runtime()` when present, and writes

@@ -64,3 +64,25 @@ async def test_lifespan_stops_grpc_server_and_scheduler_on_shutdown():
     app.state.scheduler.start.assert_awaited_once()
     grpc_server.stop.assert_awaited_once_with(grace=5)
     app.state.scheduler.stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_lifespan_closes_pondsocket_before_stopping_scheduler():
+    app = _make_app(grpc_port=None)
+    shutdown_order: list[str] = []
+
+    async def close_pondsocket() -> None:
+        shutdown_order.append("pondsocket")
+
+    async def stop_scheduler() -> None:
+        shutdown_order.append("scheduler")
+
+    app.state.pondsocket = MagicMock(close=AsyncMock(side_effect=close_pondsocket))
+    app.state.scheduler.stop.side_effect = stop_scheduler
+
+    async with lifespan(app):
+        pass
+
+    app.state.pondsocket.close.assert_awaited_once()
+    app.state.scheduler.stop.assert_awaited_once()
+    assert shutdown_order == ["pondsocket", "scheduler"]

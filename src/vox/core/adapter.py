@@ -115,3 +115,13 @@ class TTSAdapter(BaseAdapter):
     def synthesis_parameters(self) -> tuple[SynthesisParameterInfo, ...]:
         """Return adapter-specific JSON parameters accepted by synthesize(..., params=...)."""
         return ()
+
+
+class TurnDetectorAdapter(BaseAdapter):
+    @abstractmethod
+    def predict(
+        self,
+        audio: NDArray[np.float32],
+        *,
+        sample_rate: int,
+    ) -> float: ...

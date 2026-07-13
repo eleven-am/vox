@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import os
 from typing import Any
@@ -51,3 +52,19 @@ async def preload_vad() -> None:
         logger.info("Preloaded Silero VAD")
     except Exception as exc:
         logger.warning("Failed to preload VAD: %s", exc)
+
+
+async def preload_turn_detector(scheduler: Any, model: str) -> None:
+    try:
+        from vox.streaming.eou import create_turn_detector
+
+        detector = create_turn_detector(model, scheduler=scheduler)
+        preload = getattr(detector, "preload", None)
+        if preload is None:
+            raise RuntimeError(f"turn detector {model!r} does not support preload")
+        result = preload()
+        if inspect.isawaitable(result):
+            await result
+        logger.info("Preloaded turn detector: %s", model)
+    except Exception as exc:
+        logger.warning("Failed to preload turn detector %s: %s", model, exc)

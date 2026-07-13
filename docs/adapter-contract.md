@@ -33,7 +33,7 @@ For canonical model references and compatibility aliases, see
 - CLI commands and server startup.
 - HTTP, WebSocket, PondSocket, and gRPC transports.
 - OpenAI-compatible route shapes.
-- Core adapter interfaces: `STTAdapter`, `TTSAdapter`, common event and result
+- Core adapter interfaces: `STTAdapter`, `TTSAdapter`, `TurnDetectorAdapter`, common event and result
   types, scheduler integration, model store, registry resolution, voice storage,
   audio codecs, resampling, and conversation orchestration.
 - Generic infrastructure for installing and isolating adapter packages.
@@ -54,7 +54,7 @@ An adapter package owns one model family or one closely related backend family.
 It must include:
 
 - One or more `vox.adapters` entry points.
-- Adapter classes implementing `STTAdapter` or `TTSAdapter`.
+- Adapter classes implementing `STTAdapter`, `TTSAdapter`, or `TurnDetectorAdapter`.
 - Model-family load, unload, inference, voice, timestamp, and language handling.
 - Small metadata needed to expose capabilities through `AdapterInfo`.
 - Lightweight Python dependencies needed to import the adapter package itself.

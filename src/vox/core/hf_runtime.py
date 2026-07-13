@@ -13,11 +13,10 @@ def configure_hf_runtime() -> None:
     override this explicitly via environment.
     """
 
-    hf_home = Path(os.environ.setdefault("HF_HOME", str(Path.home() / ".cache" / "huggingface")))
+    vox_home = Path(os.environ.get("VOX_HOME", str(Path.home() / ".vox")))
+    hf_home = Path(os.environ.setdefault("HF_HOME", str(vox_home / "cache" / "huggingface")))
     hub_cache = Path(os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(hf_home / "hub")))
     xet_cache = Path(os.environ.setdefault("HF_XET_CACHE", str(hf_home / "xet")))
-    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
-
     for path in (
         hf_home,
         hub_cache,

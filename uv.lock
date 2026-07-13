@@ -1478,14 +1478,14 @@ wheels = [
 
 [[package]]
 name = "pondsocket"
-version = "0.0.5"
+version = "0.0.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pondsocket-common" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/51/fd/bdb81fe51c02424231b630faf5f957eb62e6874e261ba26b4785ab311562/pondsocket-0.0.5.tar.gz", hash = "sha256:10d8b50876857eb8b6a14bddd667dc7f5a882c32131b397863be3969f2170a84", size = 44271, upload-time = "2026-07-03T08:25:25.658Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/27/ef/99c63867fb1578799800b0f6fcb13d95650255a4737d3cedc81361e94e6f/pondsocket-0.0.7.tar.gz", hash = "sha256:2063b71052ec4461462c7a34da3c732cd3611d4ad5c9b0af72a90aa6bb4d1624", size = 48401, upload-time = "2026-07-13T22:26:39.135Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/73/27/232318d362f4b54e359d269f602c6b8ff03208ceb0b334dfd74bc6d4a2e5/pondsocket-0.0.5-py3-none-any.whl", hash = "sha256:60d6b473b5aa84585dcb788e80c51589440631f971805c72ab81e8a0f271fb8f", size = 41457, upload-time = "2026-07-03T08:25:24.439Z" },
+    { url = "https://files.pythonhosted.org/packages/79/b4/cc0198d01444f9dc10a8dc1028e49ad964193d8b66699628aec7b70f8cdd/pondsocket-0.0.7-py3-none-any.whl", hash = "sha256:3bf240a5ba04fb97e1acb051856ac67d8033317abc262538c40c4621a3009ed8", size = 41777, upload-time = "2026-07-13T22:26:37.867Z" },
 ]
 
 [[package]]
@@ -1503,14 +1503,14 @@ wheels = [
 
 [[package]]
 name = "pondsocket-common"
-version = "0.0.5"
+version = "0.0.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/74/47/a5a33983febe538c0dfbc1fab99008b7ed723d1d3dc9639dc162e89a42a5/pondsocket_common-0.0.5.tar.gz", hash = "sha256:9cb0e17dec373e6c24503b39b6997cfbbca92dfee157ac0ecac168551ab5bdbb", size = 12087, upload-time = "2026-07-03T08:25:05.09Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3e/20/bd616f5a2818cbb364cb023eb6bbd97f89ebf2d390645d74ad536e7966a8/pondsocket_common-0.0.6.tar.gz", hash = "sha256:b257b8d109787baf076029c979df4e47d9c97db55270ecf2e0757e8fc4840459", size = 12110, upload-time = "2026-07-09T22:03:50.371Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b2/b7/6e5ac12ee9233e1a36877fd46b4dd65709c231b348c0c17c2643be31f53a/pondsocket_common-0.0.5-py3-none-any.whl", hash = "sha256:b7d0935247c168144eb51ff4196abfdd01f05bd37db26bcbd09ba660ec1ddeb3", size = 10520, upload-time = "2026-07-03T08:25:04.045Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/e4/a460a3a827cd90e63ef99c0ac0ae9437a3895b69da1b71223edb5c7a2d78/pondsocket_common-0.0.6-py3-none-any.whl", hash = "sha256:559a868042017faf23959298041fb22291f19b5c4456090b09b309fc26c151a4", size = 10523, upload-time = "2026-07-09T22:03:49.38Z" },
 ]
 
 [[package]]
@@ -2564,7 +2564,7 @@ wheels = [
 
 [[package]]
 name = "vox-runtime"
-version = "0.2.92"
+version = "0.2.93"
 source = { editable = "." }
 dependencies = [
     { name = "aiortc" },
@@ -2589,6 +2589,7 @@ dependencies = [
     { name = "soundfile" },
     { name = "soxr" },
     { name = "spacy" },
+    { name = "transformers" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "websockets" },
 ]
@@ -2629,7 +2630,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=1.26.0,<2.4" },
     { name = "onnxruntime", specifier = ">=1.27.0" },
     { name = "opuslib", specifier = ">=3.0.1" },
-    { name = "pondsocket", specifier = ">=0.0.1,<0.1.0" },
+    { name = "pondsocket", specifier = ">=0.0.7,<0.1.0" },
     { name = "pondsocket-asgi", specifier = ">=0.0.1,<0.1.0" },
     { name = "pondsocket-common", specifier = ">=0.0.1,<0.1.0" },
     { name = "protobuf", specifier = ">=4.25.0" },
@@ -2642,6 +2643,7 @@ requires-dist = [
     { name = "ten-vad", marker = "extra == 'turn-research'", specifier = ">=1.0.6" },
     { name = "torch", marker = "extra == 'ten-turn'", specifier = ">=2.0.0" },
     { name = "torch", marker = "extra == 'turn-research'", specifier = ">=2.0.0" },
+    { name = "transformers", specifier = ">=4.57.6,<4.58" },
     { name = "transformers", marker = "extra == 'ten-turn'", specifier = ">=4.45.0" },
     { name = "transformers", marker = "extra == 'turn-research'", specifier = ">=4.45.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },

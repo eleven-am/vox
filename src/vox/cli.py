@@ -404,11 +404,18 @@ def cli(ctx, host: str):
     "--preload-vad", is_flag=True, envvar="VOX_PRELOAD_VAD",
     help="Warm the Silero VAD model at startup",
 )
+@click.option(
+    "--preload-turn-detector",
+    default=None,
+    envvar="VOX_PRELOAD_TURN_DETECTOR",
+    help="Warm a turn detector at startup, such as livekit",
+)
 def serve(
     port: int, grpc_port: int, bind_host: str, device: str,
     max_loaded: int, ttl: int, max_vram: str | None, vram_headroom: str,
     idle_trim_ttl: int, memory_over_budget: str,
     preload_models: tuple[str, ...], preload_vad: bool,
+    preload_turn_detector: str | None,
 ):
     """Start the Vox server."""
     import uvicorn
@@ -429,6 +436,7 @@ def serve(
         grpc_port=grpc_port if grpc_port > 0 else None,
         preload_models=list(preload_models),
         preload_vad=preload_vad,
+        preload_turn_detector=preload_turn_detector,
     )
     uvicorn.run(app, host=bind_host, port=port, log_config=None)
 

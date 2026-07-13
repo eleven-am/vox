@@ -31,6 +31,7 @@ def parse_model_name(name: str) -> tuple[str, str]:
 class ModelType(str, Enum):  # noqa: UP042
     STT = "stt"
     TTS = "tts"
+    TURN = "turn"
 
 class ModelFormat(str, Enum):  # noqa: UP042
     ONNX = "onnx"

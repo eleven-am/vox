@@ -121,7 +121,7 @@ class TestVADBackends:
 
 class TestTurnDetectorBackends:
     def test_unknown_turn_detector_fails_fast(self):
-        with pytest.raises(ValueError, match="unknown turn detector"):
+        with pytest.raises(ValueError, match="requires a scheduler"):
             create_turn_detector("missing")
 
     def test_ten_turn_detector_requires_optional_dependencies(self, monkeypatch):
@@ -147,7 +147,7 @@ class TestPipelineBackendConfig:
         )
         monkeypatch.setattr(
             "vox.streaming.pipeline.create_turn_detector",
-            lambda name: fake_detector if name == "fake-turn" else None,
+            lambda name, **_kwargs: fake_detector if name == "fake-turn" else None,
         )
 
         pipeline = StreamPipeline(

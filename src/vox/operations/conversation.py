@@ -38,6 +38,7 @@ from vox.operations.errors import (
     SessionAlreadyConfiguredError,
     SessionNotConfiguredError,
 )
+from vox.streaming.eou import DEFAULT_TURN_DETECTOR
 from vox.streaming.types import TARGET_SAMPLE_RATE
 
 logger = logging.getLogger(__name__)
@@ -103,7 +104,7 @@ class ConversationSessionConfig:
     sample_rate: int = TARGET_SAMPLE_RATE
     turn_profile: str = DEFAULT_TURN_PROFILE
     vad_backend: str = "silero"
-    turn_detector: str = "livekit"
+    turn_detector: str = DEFAULT_TURN_DETECTOR
     policy: TurnPolicy | None = None
     include_word_timestamps: bool = False
 

@@ -13,9 +13,15 @@ from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.core.temp_storage import prune_stale_temp_dirs
 from vox.logging_config import configure_logging
-from vox.server.app_services import app_rtc_registry, app_services
+from vox.server.app_services import app_pondsocket, app_rtc_registry, app_services
 from vox.server.middleware import ApiKeyAuthMiddleware, RequestIdMiddleware
-from vox.server.preload import merged_preload_models, preload_models, preload_vad, should_preload_vad
+from vox.server.preload import (
+    merged_preload_models,
+    preload_models,
+    preload_turn_detector,
+    preload_vad,
+    should_preload_vad,
+)
 from vox.server.rtc_registry import RtcSessionRegistry
 
 logger = logging.getLogger(__name__)
@@ -45,6 +51,10 @@ async def lifespan(app: FastAPI):
         if should_preload_vad(getattr(app.state, "preload_vad", False)):
             await preload_vad()
 
+        turn_detector = getattr(app.state, "preload_turn_detector", None)
+        if turn_detector:
+            await preload_turn_detector(services.scheduler, turn_detector)
+
         grpc_port = getattr(app.state, "grpc_port", None)
         if grpc_port:
             from vox.grpc.server import start_grpc_server
@@ -65,8 +75,14 @@ async def lifespan(app: FastAPI):
                 await grpc_server.stop(grace=5)
                 logger.info("gRPC server stopped")
         finally:
-            await services.scheduler.stop()
-            logger.info("Vox server stopped")
+            try:
+                pond = app_pondsocket(app)
+                if pond is not None:
+                    await pond.close()
+                    logger.info("PondSocket server stopped")
+            finally:
+                await services.scheduler.stop()
+                logger.info("Vox server stopped")
 
 
 def create_app(
@@ -82,6 +98,7 @@ def create_app(
     grpc_port: int | None = None,
     preload_models: list[str] | None = None,
     preload_vad: bool = False,
+    preload_turn_detector: str | None = None,
 ) -> FastAPI:
     configure_logging()
     configure_hf_runtime()
@@ -124,6 +141,7 @@ def create_app(
     app.state.grpc_port = grpc_port
     app.state.preload_models = list(preload_models or [])
     app.state.preload_vad = preload_vad
+    app.state.preload_turn_detector = preload_turn_detector
 
     from vox.server.pondsocket_gateway import install_pondsocket_gateway
     from vox.server.routes import bidi, health, models, rtc, stream, synthesize, system, transcribe, voices
