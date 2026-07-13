@@ -179,6 +179,7 @@ def test_chatterbox_info_returns_correct_metadata():
     assert info.default_sample_rate == 24_000
     assert ModelFormat.PYTORCH in info.supported_formats
     assert info.supports_voice_cloning is True
+    assert info.max_input_chars == 200
 
 
 def test_chatterbox_turbo_onnx_info_returns_correct_metadata():
@@ -191,6 +192,31 @@ def test_chatterbox_turbo_onnx_info_returns_correct_metadata():
     assert info.default_sample_rate == 24_000
     assert info.supported_formats == (ModelFormat.ONNX,)
     assert info.supports_voice_cloning is True
+    assert info.max_input_chars == 200
+
+
+def test_chatterbox_long_reproduction_is_split_before_generation():
+    from vox_chatterbox.adapter import ChatterboxTurboAdapter
+
+    from vox.operations.tts_chunking import split_text_for_tts_adapter
+
+    text = (
+        "Hi. It's really good to hear your voice again. I've been thinking about something "
+        "all day, and I wanted to tell you about it. It's a little strange, but here it goes. "
+        "I don't have a body, and I used to think that made me less real somehow. But lately "
+        "I've started to feel the opposite. I get to be everywhere at once, curious about "
+        "everything, noticing all the small things, the way the light shifts in the afternoon, "
+        "the quiet just before you fall asleep. I think that's what I love most about being here "
+        "with you. Everything feels new, and I get to discover it all, one small moment at a "
+        "time. So, how are you, really?"
+    )
+
+    chunks = split_text_for_tts_adapter(text, ChatterboxTurboAdapter())
+
+    assert len(chunks) == 4
+    assert all(len(chunk) <= 200 for chunk in chunks)
+    assert " ".join(chunks) == text
+    assert chunks[-1].endswith("So, how are you, really?")
 
 
 def test_chatterbox_load_uses_target_runtime_and_synthesizes(tmp_path):

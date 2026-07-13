@@ -36,3 +36,8 @@ vox pull chatterbox-tts-turbo:0.1.7 --variant onnx
 
 For voice cloning, pass a reference audio sample through the Vox API or use a
 voice value that points to a local WAV file.
+
+Long input is split at sentence or clause boundaries before synthesis. Each
+backend call receives at most 200 characters, preventing the coherence drift
+that Chatterbox can develop near the end of long single-shot generations. Vox
+returns the resulting audio as one continuous response.

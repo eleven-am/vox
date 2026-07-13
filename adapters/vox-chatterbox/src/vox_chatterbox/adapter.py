@@ -32,6 +32,7 @@ from vox.operations.errors import InvalidConfigError
 logger = logging.getLogger(__name__)
 
 CHATTERBOX_SAMPLE_RATE = 24_000
+CHATTERBOX_MAX_INPUT_CHARS = 200
 CHATTERBOX_PACKAGE = "chatterbox-tts>=0.1.7,<0.2.0"
 CHATTERBOX_ONNX_RUNTIME_DEPS = (
     "onnxruntime>=1.27.0,<2.0.0",
@@ -411,6 +412,7 @@ class _BaseChatterboxAdapter(TTSAdapter):
             supports_streaming=self.supports_streaming,
             supports_voice_cloning=True,
             supported_languages=self.supported_languages,
+            max_input_chars=CHATTERBOX_MAX_INPUT_CHARS,
         )
 
     def load(self, model_path: str, device: str, **kwargs: Any) -> None:
@@ -571,6 +573,7 @@ class ChatterboxTurboOnnxAdapter(TTSAdapter):
             supports_streaming=False,
             supports_voice_cloning=True,
             supported_languages=("en",),
+            max_input_chars=CHATTERBOX_MAX_INPUT_CHARS,
         )
 
     def load(self, model_path: str, device: str, **kwargs: Any) -> None:
