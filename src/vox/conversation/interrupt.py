@@ -1,43 +1,15 @@
-"""Pluggable barge-in classifier.
-
-Role: given signals that accumulated while the state machine is in PAUSED, decide
-(a) how long the PAUSED window should be before confirming an interrupt, and
-(b) whether the interrupt is "real" versus a backchannel / cough.
-
-The default `HeuristicInterruptClassifier` is rules-based: it uses the last
-user turn's EOU probability to shrink or grow the confirm window, but always
-confirms at window expiry. This matches the industry norm (naive duration) with
-a small efficiency win from EOU context.
-
-Future implementations can plug in an acoustic CNN for (b) to distinguish
-backchannels from real interrupts. The state machine and session layer don't
-need to change — only the classifier does.
-"""
+"""Pluggable acoustic evidence for WebRTC interruption candidates."""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 import numpy as np
 from numpy.typing import NDArray
 
-from vox.conversation.types import TurnPolicy
 from vox.streaming.types import StreamTranscript
-
-DEFAULT_INTERRUPT_KEYWORDS_BY_LANG: dict[str, frozenset[str]] = {
-    "en": frozenset({"stop", "wait", "hold on", "pause", "cancel", "nevermind", "never mind"}),
-    "fr": frozenset({"arrête", "arretez", "arrêtez", "attends", "attendez", "pause", "annule", "annulez"}),
-    "es": frozenset({"para", "pare", "espera", "alto", "pausa", "cancela", "cancele"}),
-    "de": frozenset({"stopp", "stop", "warte", "warten", "halt", "pause", "abbrechen"}),
-    "it": frozenset({"ferma", "fermati", "fermo", "aspetta", "pausa", "annulla"}),
-    "pt": frozenset({"para", "pare", "espera", "pausa", "cancela", "cancele"}),
-    "nl": frozenset({"stop", "wacht", "pauze", "annuleer"}),
-    "ar": frozenset({"توقف", "انتظر", "إلغاء"}),
-    "hi": frozenset({"रुको", "रुकिए", "ठहरो", "रद्द"}),
-}
 
 _WORD_RE = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", re.UNICODE)
 
@@ -49,11 +21,7 @@ def looks_like_self_echo(
     min_words: int = 3,
     min_overlap: float = 0.7,
 ) -> bool:
-    """Return True when mic transcript appears to be leaked assistant playback.
-
-    This is not acoustic echo cancellation. It is a server-side guard for the
-    loudspeaker case where AEC misses and STT transcribes Vox's own TTS.
-    """
+    """Return True when mic transcript appears to be leaked assistant playback."""
     if not transcript or not assistant_text:
         return False
 
@@ -75,7 +43,7 @@ def looks_like_self_echo(
 def transcript_word_count(text: str | None) -> int:
     if not text:
         return 0
-    return len([word for word in text.strip().split() if word])
+    return len(_WORD_RE.findall(text))
 
 
 def transcript_duration_ms(transcript: StreamTranscript | None) -> int:
@@ -88,169 +56,158 @@ def transcript_duration_ms(transcript: StreamTranscript | None) -> int:
     return 0
 
 
-def interrupt_vad_active_ms(
-    *,
-    vad_started_at: float | None,
-    latest_partial: StreamTranscript | None,
-    now: float,
-) -> int:
-    vad_active_ms = 0
-    if vad_started_at is not None:
-        vad_active_ms = max(0, int((now - vad_started_at) * 1000))
-    if latest_partial is not None:
-        vad_active_ms = max(vad_active_ms, transcript_duration_ms(latest_partial))
-    return vad_active_ms
-
-
-def has_recent_interrupt_context(
-    *,
-    confirm_timer_active: bool,
-    vad_started_at: float | None,
-    last_speech_stopped_at: float | None,
-    false_interruption_timeout_ms: int,
-    now: float,
-) -> bool:
-    if confirm_timer_active:
-        return True
-    if vad_started_at is not None:
-        return True
-    if last_speech_stopped_at is None:
-        return False
-    age_ms = max(0, int((now - last_speech_stopped_at) * 1000))
-    return age_ms <= false_interruption_timeout_ms
-
-
 @dataclass(frozen=True)
-class PartialInterruptEvidence:
-    """Policy for deciding whether partial STT is enough to confirm barge-in."""
+class AcousticInterruptEvidence:
+    """Cheap speech-likeness features computed from an interruption audio tail."""
 
-    min_interrupt_duration_ms: int
-    speaking_interrupt_min_words: int
-    self_echo_min_words: int
-    self_echo_min_overlap: float
+    duration_ms: int
+    rms: float
+    tail_rms: float
+    active_frame_ratio: float
+    voiced_frame_ratio: float
+    spectral_flatness: float
+    crest_factor: float
 
-    @classmethod
-    def from_turn_policy(cls, policy: TurnPolicy) -> PartialInterruptEvidence:
-        return cls(
-            min_interrupt_duration_ms=policy.min_interrupt_duration_ms,
-            speaking_interrupt_min_words=policy.speaking_interrupt_min_words,
-            self_echo_min_words=policy.self_echo_min_words,
-            self_echo_min_overlap=policy.self_echo_min_overlap,
-        )
-
-    def is_strong(
+    def is_speech_like(
         self,
-        transcript: StreamTranscript | None,
         *,
-        assistant_text: str | None,
+        min_duration_ms: int,
+        min_rms: float,
+        min_tail_rms: float,
+        min_active_frame_ratio: float,
+        min_voiced_frame_ratio: float,
+        max_spectral_flatness: float,
+        max_crest_factor: float,
     ) -> bool:
-        if transcript is None:
-            return False
-        text = transcript.text.strip()
-        if not text:
-            return False
-        if assistant_text and looks_like_self_echo(
-            text,
-            assistant_text,
-            min_words=self.self_echo_min_words,
-            min_overlap=self.self_echo_min_overlap,
-        ):
-            return False
-        if transcript_word_count(text) < self.speaking_interrupt_min_words:
-            return False
-        duration_ms = transcript_duration_ms(transcript)
-        return not (duration_ms > 0 and duration_ms < self.min_interrupt_duration_ms)
+        return (
+            self.duration_ms >= min_duration_ms
+            and self.rms >= min_rms
+            and self.tail_rms >= min_tail_rms
+            and self.active_frame_ratio >= min_active_frame_ratio
+            and self.voiced_frame_ratio >= min_voiced_frame_ratio
+            and self.spectral_flatness <= max_spectral_flatness
+            and self.crest_factor <= max_crest_factor
+        )
 
 
-class InterruptCandidateAction(StrEnum):
-    CONTINUE = "continue"
-    CONFIRM_FROM_PARTIAL = "confirm_from_partial"
-    REJECT = "reject"
-
-
-@dataclass(frozen=True)
-class InterruptCandidateDecision:
-    action: InterruptCandidateAction
-    false_positive_reason: str | None = None
-    speech_stopped_reason: str | None = None
-
-
-def evaluate_interrupt_candidate_gate(
+def analyze_interrupt_audio(
+    audio: NDArray[np.float32] | None,
+    sample_rate: int,
     *,
-    partial: StreamTranscript | None,
-    active_assistant_text: str,
-    policy: TurnPolicy,
-    evidence: PartialInterruptEvidence,
-    is_interrupt_keyword: bool,
-    output_echo: bool,
-    vad_active_ms: int,
-) -> InterruptCandidateDecision:
-    partial_transcript = partial.text if partial is not None else None
-    if looks_like_self_echo(
-        partial_transcript,
-        active_assistant_text,
-        min_words=policy.self_echo_min_words,
-        min_overlap=policy.self_echo_min_overlap,
-    ):
-        return InterruptCandidateDecision(
-            action=InterruptCandidateAction.REJECT,
-            false_positive_reason="self_echo_transcript",
-            speech_stopped_reason="self_echo",
+    tail_check_ms: int = 80,
+    analysis_window_ms: int = 1200,
+) -> AcousticInterruptEvidence:
+    if audio is None or audio.size == 0 or sample_rate <= 0:
+        return AcousticInterruptEvidence(0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+
+    full_signal = np.nan_to_num(np.asarray(audio, dtype=np.float32), copy=False)
+    duration_ms = int(full_signal.size * 1000 / sample_rate)
+    analysis_samples = max(1, analysis_window_ms * sample_rate // 1000)
+    signal = full_signal[-analysis_samples:]
+    rms = _rms(signal)
+    tail_samples = min(signal.size, max(1, tail_check_ms * sample_rate // 1000))
+    tail_rms = _rms(signal[-tail_samples:])
+    peak = float(np.max(np.abs(signal))) if signal.size else 0.0
+    crest_factor = peak / max(rms, 1e-8)
+
+    frame_size = max(32, int(sample_rate * 0.04))
+    hop_size = max(16, frame_size // 2)
+    frames = _audio_frames(signal, frame_size, hop_size)
+    if not frames:
+        frames = [signal]
+
+    frame_rms = np.asarray([_rms(frame) for frame in frames], dtype=np.float32)
+    active_threshold = max(0.002, float(np.max(frame_rms)) * 0.18)
+    active = [frame for frame, value in zip(frames, frame_rms, strict=True) if value >= active_threshold]
+    active_frame_ratio = len(active) / len(frames)
+    if not active:
+        return AcousticInterruptEvidence(
+            duration_ms,
+            rms,
+            tail_rms,
+            active_frame_ratio,
+            0.0,
+            1.0,
+            crest_factor,
         )
 
-    if active_assistant_text and evidence.is_strong(
-        partial,
-        assistant_text=active_assistant_text,
-    ):
-        return InterruptCandidateDecision(action=InterruptCandidateAction.CONFIRM_FROM_PARTIAL)
+    periodicities = [_frame_periodicity(frame, sample_rate) for frame in active]
+    voiced_frame_ratio = sum(value >= 0.32 for value in periodicities) / len(periodicities)
+    flatness = float(np.median([_spectral_flatness(frame) for frame in active]))
+    return AcousticInterruptEvidence(
+        duration_ms=duration_ms,
+        rms=rms,
+        tail_rms=tail_rms,
+        active_frame_ratio=active_frame_ratio,
+        voiced_frame_ratio=voiced_frame_ratio,
+        spectral_flatness=flatness,
+        crest_factor=crest_factor,
+    )
 
-    if is_interrupt_keyword and partial_transcript:
-        return InterruptCandidateDecision(action=InterruptCandidateAction.CONFIRM_FROM_PARTIAL)
 
-    if output_echo:
-        return InterruptCandidateDecision(
-            action=InterruptCandidateAction.REJECT,
-            false_positive_reason="output_echo",
-            speech_stopped_reason="output_echo",
-        )
+def _audio_frames(
+    audio: NDArray[np.float32],
+    frame_size: int,
+    hop_size: int,
+) -> list[NDArray[np.float32]]:
+    if audio.size <= frame_size:
+        return [audio] if audio.size else []
+    return [
+        audio[start:start + frame_size]
+        for start in range(0, audio.size - frame_size + 1, hop_size)
+    ]
 
-    if active_assistant_text and not is_interrupt_keyword and partial_transcript is not None:
-        word_count = transcript_word_count(partial_transcript)
-        if (
-            word_count < policy.speaking_interrupt_min_words
-            and vad_active_ms < policy.false_interruption_timeout_ms
-        ):
-            return InterruptCandidateDecision(
-                action=InterruptCandidateAction.REJECT,
-                false_positive_reason="insufficient_interrupt_evidence",
-                speech_stopped_reason="insufficient_interrupt_evidence",
-            )
 
-    return InterruptCandidateDecision(action=InterruptCandidateAction.CONTINUE)
+def _rms(audio: NDArray[np.float32]) -> float:
+    if audio.size == 0:
+        return 0.0
+    return float(np.sqrt(np.mean(np.square(audio, dtype=np.float32))))
+
+
+def _frame_periodicity(frame: NDArray[np.float32], sample_rate: int) -> float:
+    centered = np.asarray(frame, dtype=np.float32) - float(np.mean(frame))
+    energy = float(np.dot(centered, centered))
+    if energy <= 1e-10:
+        return 0.0
+
+    min_lag = max(1, sample_rate // 400)
+    max_lag = min(centered.size - 2, sample_rate // 70)
+    if max_lag <= min_lag:
+        return 0.0
+
+    best = 0.0
+    for lag in range(min_lag, max_lag + 1):
+        left = centered[:-lag]
+        right = centered[lag:]
+        denominator = float(np.linalg.norm(left) * np.linalg.norm(right))
+        if denominator > 1e-10:
+            best = max(best, float(np.dot(left, right)) / denominator)
+    return max(0.0, min(1.0, best))
+
+
+def _spectral_flatness(frame: NDArray[np.float32]) -> float:
+    if frame.size < 2:
+        return 1.0
+    windowed = frame * np.hanning(frame.size).astype(np.float32)
+    power = np.square(np.abs(np.fft.rfft(windowed)), dtype=np.float64) + 1e-12
+    geometric_mean = float(np.exp(np.mean(np.log(power))))
+    arithmetic_mean = float(np.mean(power))
+    return geometric_mean / arithmetic_mean if arithmetic_mean > 0 else 1.0
 
 
 @runtime_checkable
 class InterruptClassifier(Protocol):
-    """Decides confirm-window duration and whether an interrupt is real."""
+    """Pluggable acoustic boundary used by the interruption detector."""
 
     def confirm_window_ms(
         self,
         base_ms: int,
         last_eou_probability: float | None,
-    ) -> int:
-        """Return the PAUSED confirm window (ms) for this barge-in attempt.
+    ) -> int: ...
 
-        base_ms: TurnPolicy.min_interrupt_duration_ms (policy default).
-        last_eou_probability: EOU probability of the last committed user turn,
-          or None if no turn has occurred yet.
-        """
-        ...
+    def wants_short_circuit(self) -> bool: ...
 
-    def wants_short_circuit(self) -> bool:
-        ...
-
-    def should_short_circuit(self, partial_transcript: str | None) -> bool:
-        ...
+    def should_short_circuit(self, partial_transcript: str | None) -> bool: ...
 
     async def is_real_interrupt(
         self,
@@ -259,39 +216,15 @@ class InterruptClassifier(Protocol):
         last_eou_probability: float | None,
         vad_active_duration_ms: int,
         sample_rate: int,
-    ) -> bool:
-        """Called when the confirm timer fires. Return True to confirm the
-        interrupt, False to treat as a backchannel and resume TTS.
-
-        partial_transcript: STT text of the audio collected during the PAUSED
-          window, or None if STT wasn't available (timed out, errored, or no
-          audio). Caller supplies it as-is; the classifier is responsible
-          for any normalisation appropriate to its language / domain.
-        sample_rate: rate of audio_since_paused in Hz; required so the
-          classifier can size its tail window in samples without inferring.
-        """
-        ...
+    ) -> bool: ...
 
 
 @dataclass
 class HeuristicInterruptClassifier:
-    """Default classifier: EOU-modulated window + tail-RMS backchannel filter.
+    """Content-independent acoustic classifier for the default detector.
 
-    `confirm_window_ms` modulates the PAUSED wait time using EOU context:
-      * bot was clearly at a turn boundary (high last-EOU) → shorter window
-        (snappy interrupt on clean turn boundaries)
-      * bot was mid-thought (low last-EOU) → longer window (skeptical)
-
-    `is_real_interrupt` runs when the confirm timer fires. Its job is to catch
-    backchannels ("mhmm", "uh-huh") that keep Silero VAD "active" because of its
-    silence-padding lag even though the user's voice actually decayed quickly.
-    The heuristic: check the last `tail_check_ms` of the PAUSED-window audio —
-    if RMS is below `backchannel_rms_threshold`, the user already went quiet,
-    so treat the trigger as a backchannel and resume TTS.
-
-    When `audio_since_paused` is None (caller can't provide audio), falls back
-    to a duration-only rule: reject when the VAD burst is shorter than
-    `min_real_interrupt_ms`.
+    Explicit keyword sets remain supported for custom deployments, but Vox no
+    longer derives semantic interruption words from the session language.
     """
 
     high_eou_threshold: float = 0.7
@@ -299,26 +232,17 @@ class HeuristicInterruptClassifier:
     high_eou_multiplier: float = 0.35
     low_eou_multiplier: float = 1.25
     min_window_ms: int = 75
-
-
-
-
     tail_check_ms: int = 80
-    backchannel_rms_threshold: float = 0.01
     min_real_interrupt_ms: int = 180
     min_interrupt_words: int = 0
-
-
-
-
+    min_rms: float = 0.0025
+    min_tail_rms: float = 0.0025
+    min_active_frame_ratio: float = 0.55
+    min_voiced_frame_ratio: float = 0.20
+    max_spectral_flatness: float = 0.70
+    max_crest_factor: float = 12.0
     interrupt_keywords: frozenset[str] = field(default_factory=frozenset)
     language: str | None = None
-
-    def __post_init__(self) -> None:
-        if not self.interrupt_keywords and self.language:
-            defaults = DEFAULT_INTERRUPT_KEYWORDS_BY_LANG.get(self.language.lower())
-            if defaults:
-                self.interrupt_keywords = defaults
 
     def wants_short_circuit(self) -> bool:
         return bool(self.interrupt_keywords)
@@ -341,10 +265,10 @@ class HeuristicInterruptClassifier:
     def should_short_circuit(self, partial_transcript: str | None) -> bool:
         if not partial_transcript or not self.interrupt_keywords:
             return False
-        normalised = partial_transcript.strip().lower()
-        if not normalised:
-            return False
-        return any(keyword in normalised for keyword in self.interrupt_keywords)
+        normalised = partial_transcript.casefold().strip()
+        return bool(normalised) and any(
+            keyword.casefold() in normalised for keyword in self.interrupt_keywords
+        )
 
     async def is_real_interrupt(
         self,
@@ -354,27 +278,33 @@ class HeuristicInterruptClassifier:
         vad_active_duration_ms: int,
         sample_rate: int,
     ) -> bool:
-
-
-
         if self.should_short_circuit(partial_transcript):
             return True
 
-        if self.min_interrupt_words > 0 and partial_transcript is not None:
-            words = [word for word in partial_transcript.strip().split() if word]
-            if len(words) < self.min_interrupt_words:
-                return False
+        if (
+            self.min_interrupt_words > 0
+            and partial_transcript is not None
+            and transcript_word_count(partial_transcript) < self.min_interrupt_words
+        ):
+            return False
 
-        if audio_since_paused is not None and audio_since_paused.size > 0:
-
-
-            tail_samples = min(
-                audio_since_paused.size,
-                max(1, self.tail_check_ms * sample_rate // 1000),
-            )
-            tail = audio_since_paused[-tail_samples:]
-            rms = float(np.sqrt(np.mean(tail * tail))) if tail.size else 0.0
-            return not rms < self.backchannel_rms_threshold
-
-
-        return not vad_active_duration_ms < self.min_real_interrupt_ms
+        evidence = analyze_interrupt_audio(
+            audio_since_paused,
+            sample_rate,
+            tail_check_ms=self.tail_check_ms,
+        )
+        if evidence.duration_ms == 0:
+            return False
+        supported_eou = (
+            last_eou_probability is not None
+            and last_eou_probability >= 0.5
+        )
+        return evidence.is_speech_like(
+            min_duration_ms=max(self.min_real_interrupt_ms, min(vad_active_duration_ms, 250)),
+            min_rms=self.min_rms,
+            min_tail_rms=0.0 if supported_eou else self.min_tail_rms,
+            min_active_frame_ratio=self.min_active_frame_ratio,
+            min_voiced_frame_ratio=self.min_voiced_frame_ratio,
+            max_spectral_flatness=self.max_spectral_flatness,
+            max_crest_factor=self.max_crest_factor,
+        )

@@ -228,12 +228,11 @@ class TestAECWarmupCapture:
         await asyncio.sleep(0.1)
         assert session._aec_warmup_active()
 
-        session._vad_started_at = asyncio.get_running_loop().time() - 0.2
-        await session._evaluate_interrupt_candidate()
-        await asyncio.sleep(0.02)
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
+        await asyncio.sleep(0.12)
 
         rejected = coll.by_type("interruption.false_positive")
-        assert rejected and rejected[-1]["reason"] == "aec_warmup_unconfirmed"
+        assert not rejected
         assert not coll.by_type("response.cancelled")
 
         await session._forward_stream_event(StreamTranscript(
@@ -241,6 +240,8 @@ class TestAECWarmupCapture:
             start_ms=0,
             end_ms=900,
             audio_duration_ms=900,
+            eou_probability=0.8,
+            utterance_id=1,
         ))
         await asyncio.sleep(0.1)
 
@@ -391,7 +392,7 @@ class TestPostSpeechTranscriptFilter:
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_non_echo_final_during_speaking_confirms_and_preserves_turn(self):
+    async def test_non_echo_final_without_candidate_identity_is_ignored(self):
         from vox.streaming.types import StreamTranscript
 
         session, coll, _ = _build(aec_warmup_ms=0)
@@ -406,14 +407,14 @@ class TestPostSpeechTranscriptFilter:
             start_ms=10,
             end_ms=900,
             audio_duration_ms=890,
+            eou_probability=0.8,
         ))
         await asyncio.sleep(0.1)
 
-        detected = coll.by_type("interruption.detected")
-        assert detected and detected[-1]["reason"] == "final_transcript"
-        assert coll.by_type("response.cancelled")
-        completed = coll.by_type("conversation.item.input_audio_transcription.completed")
-        assert completed and completed[-1]["transcript"] == "No, please move it to Tuesday."
+        assert not coll.by_type("interruption.detected")
+        assert not coll.by_type("response.cancelled")
+        assert not coll.by_type("conversation.item.input_audio_transcription.completed")
+        assert session.state == TurnState.SPEAKING
 
         await session.close()
 
@@ -432,15 +433,18 @@ class TestPostSpeechTranscriptFilter:
             start_ms=0,
             end_ms=700,
             audio_duration_ms=700,
+            utterance_id=1,
         )
         final = StreamTranscript(
             text="Please stop now.",
             start_ms=0,
             end_ms=800,
             audio_duration_ms=800,
+            utterance_id=1,
         )
 
-        await session._confirm_interrupt_from_partial(partial)
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
+        await session._forward_stream_event(partial)
         await session._forward_stream_event(final)
         await asyncio.sleep(0.1)
 
@@ -482,7 +486,7 @@ class TestUninterruptibleResponse:
         await asyncio.sleep(0.1)
         assert session.state == TurnState.SPEAKING
 
-        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000))
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
         await asyncio.sleep(0.05)
 
         assert session.state == TurnState.SPEAKING
@@ -521,15 +525,19 @@ class TestUninterruptibleResponse:
         await asyncio.sleep(0.1)
         assert session.state == TurnState.SPEAKING
 
-        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000))
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
         await asyncio.sleep(0.05)
 
-        assert session.state == TurnState.SPEAKING
+        assert session.state == TurnState.PAUSED
         assert not coll.by_type("response.audio.clear")
 
         await session._forward_stream_event(StreamTranscript(
             text="stop please",
             is_partial=True,
+            start_ms=1000,
+            end_ms=1500,
+            audio_duration_ms=500,
+            utterance_id=1,
         ))
         await asyncio.sleep(0.05)
 

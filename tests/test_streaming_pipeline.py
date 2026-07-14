@@ -169,13 +169,14 @@ async def test_transcribe_segment_prefers_complete_whole_utterance_over_gap_span
     audio = np.concatenate([first, gap, second])
 
     transcript = await pipeline._transcribe_segment(
-        SpeechSegment(audio=audio, start_ms=0, end_ms=3000)
+        SpeechSegment(audio=audio, start_ms=0, end_ms=3000, utterance_id=7)
     )
 
     assert transcript.text == "just to hold my waist from behind and he turns me over"
     assert transcript.start_ms == 0
     assert transcript.end_ms == 3000
     assert transcript.audio_duration_ms == 3000
+    assert transcript.utterance_id == 7
     assert len(adapter.calls) == 1
     assert np.allclose(adapter.calls[0][: 5 * TARGET_SAMPLE_RATE], 0)
 

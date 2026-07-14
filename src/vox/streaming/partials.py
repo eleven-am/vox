@@ -161,6 +161,7 @@ class PartialTranscriptService:
         transcript.is_partial = True
         transcript.start_ms = tail_start_ms
         transcript.end_ms = buf_ms
+        transcript.utterance_id = session.get_utterance_id()
         return transcript
 
     def flush_remaining_audio(self, session: SpeechSession) -> NDArray[np.float32] | None:

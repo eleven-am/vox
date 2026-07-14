@@ -510,10 +510,46 @@ means "possible interruption", not "confirmed interruption".
 Client rules:
 
 - Do not stop playback on `input_audio_buffer.speech_started` alone.
+- A browser may immediately duck playback volume for feedback, but ducking is
+  temporary and must not discard queued audio.
 - Do not drop queued audio on `input_audio_buffer.speech_stopped` alone.
 - Do not treat `turn.state_changed: paused` as a playback-clear command.
 - Keep playing until Vox either rejects the candidate or sends
   `response.audio.clear`.
+
+Vox internally gives each VAD utterance an interruption-candidate identity.
+Partials, the final transcript, speech-stop state, acoustic evidence, and the
+confirmation timer must match that identity; delayed events from an older
+candidate cannot confirm a newer one. This identity is deliberately internal,
+so existing wire payloads do not change.
+
+The default detector returns one of three outcomes:
+
+- `DEFER`: evidence is incomplete; keep the candidate and held server output.
+- `CONFIRM`: cancel TTS and clear queued RTC audio.
+- `REJECT`: resume held output without creating a replacement response.
+
+Confirmation combines content-independent evidence: VAD duration, cumulative
+stable partials, final transcript duration and word count, EOU probability,
+speech-like acoustic features, output/self-echo correlation, AEC warm-up, and
+whether speech has stopped. A final transcript is not sufficient on its own,
+and the default policy does not give special meaning to words such as "stop"
+or "wait". Natural single-word interruptions remain valid when acoustic,
+partial-stability, or EOU evidence supports them.
+
+Acoustic analysis is bounded to the most recent 1200 ms. The detector still
+uses the complete VAD and transcript durations, but long utterances do not make
+the synchronous speech-likeness check progressively more expensive.
+
+Run the deterministic regression corpus with:
+
+```console
+uv run python scripts/benchmark_interruptions.py
+```
+
+The command exits non-zero if false-positive reduction, true-interruption
+recall, confirmation latency, category coverage, duck latency, or ordinary STT
+cadence violates the checked acceptance thresholds.
 
 ### 2. Rejected candidate / false positive
 
@@ -592,8 +628,8 @@ Client behavior:
 - Append `delta` fragments to build a live caption of the current user turn.
 - Reset the caption on the next `conversation.item.input_audio_transcription.completed`,
   which remains the authoritative final text.
-- Partials require `partial_interrupts` (on by default) or an interrupt keyword
-  classifier; with both disabled no delta events are produced.
+- Partials require `partial_interrupts` (on by default); when disabled no delta
+  events are produced by the default detector.
 
 ### `conversation.item.input_audio_transcription.completed`
 
@@ -707,6 +743,9 @@ Payload includes:
 - `response_id`
 - `vad_active_ms`
 - optional `partial_transcript`
+- `reason`: the evidence path that confirmed the candidate, such as
+  `stable_partial`, `supported_final_transcript`,
+  `supported_single_word_final`, or `acoustic_speech`
 
 Client behavior:
 
@@ -724,9 +763,11 @@ Payload includes:
 - `response_id`
 - `vad_active_ms`
 - optional `partial_transcript`
-- optional `reason`: why the candidate was rejected — one of `backchannel`,
-  `output_echo`, `self_echo_transcript`, `self_echo_transcript_window`,
-  `insufficient_interrupt_evidence`
+- `reason`: why the candidate was rejected, such as `output_echo`,
+  `self_echo_transcript`, `no_transcript`, `empty_final`,
+  `isolated_low_eou_final`, `isolated_final_without_support`,
+  `final_transcript_without_support`, `insufficient_final_evidence`,
+  `insufficient_acoustic_evidence`, or `classifier_error`
 
 Client behavior:
 

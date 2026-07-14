@@ -231,6 +231,7 @@ class StreamPipeline:
             yield SpeechStopped(
                 timestamp_ms=event.timestamp_ms,
                 expects_transcript=has_segment,
+                utterance_id=event.utterance_id,
             )
 
             if has_segment:
@@ -281,6 +282,7 @@ class StreamPipeline:
             model=model,
             segments=segments,
             words=words,
+            utterance_id=segment.utterance_id,
         )
 
     async def transcribe_async(

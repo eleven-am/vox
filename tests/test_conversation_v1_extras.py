@@ -139,7 +139,7 @@ class TestAntiFlutterCooldown:
 
 
         from vox.streaming.types import SpeechStarted
-        await session._forward_stream_event(SpeechStarted(timestamp_ms=50))
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=50, utterance_id=1))
         await asyncio.sleep(0.01)
 
         assert session.state == TurnState.SPEAKING
@@ -169,9 +169,9 @@ class TestAntiFlutterCooldown:
 
 
         from vox.streaming.types import SpeechStarted
-        await session._forward_stream_event(SpeechStarted(timestamp_ms=100))
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=100, utterance_id=1))
         await asyncio.sleep(0.01)
-        assert session.state == TurnState.SPEAKING
+        assert session.state == TurnState.PAUSED
 
         await session.close()
 
@@ -196,7 +196,7 @@ class TestAntiFlutterCooldown:
 
 
         from vox.streaming.types import SpeechStarted
-        await session._forward_stream_event(SpeechStarted(timestamp_ms=50))
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=50, utterance_id=1))
         await asyncio.sleep(0.01)
 
         wire_events_after = len([e for e in coll.events if e.get("type") == "input_audio_buffer.speech_started"])
@@ -230,9 +230,9 @@ class TestEouModulatedConfirmWindow:
 
 
         from vox.streaming.types import SpeechStarted
-        await session._forward_stream_event(SpeechStarted(timestamp_ms=100))
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=100, utterance_id=1))
         await asyncio.sleep(0.01)
-        assert session.state == TurnState.SPEAKING
+        assert session.state == TurnState.PAUSED
 
 
 
@@ -259,13 +259,13 @@ class TestEouModulatedConfirmWindow:
         await asyncio.sleep(0.03)
 
         from vox.streaming.types import SpeechStarted
-        await session._forward_stream_event(SpeechStarted(timestamp_ms=100))
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=100, utterance_id=1))
         await asyncio.sleep(0.01)
-        assert session.state == TurnState.SPEAKING
+        assert session.state == TurnState.PAUSED
 
 
         await asyncio.sleep(0.1)
-        assert session.state == TurnState.SPEAKING
+        assert session.state == TurnState.PAUSED
 
 
         await asyncio.sleep(0.1)
@@ -285,9 +285,9 @@ class TestEouModulatedConfirmWindow:
         assert session.state == TurnState.SPEAKING
 
         from vox.streaming.types import SpeechStarted
-        await session._forward_stream_event(SpeechStarted(timestamp_ms=100))
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=100, utterance_id=1))
         await asyncio.sleep(0.01)
-        assert session.state == TurnState.SPEAKING
+        assert session.state == TurnState.PAUSED
 
 
         await asyncio.sleep(0.15)
@@ -323,12 +323,12 @@ class TestEouModulatedConfirmWindow:
         await asyncio.sleep(0.03)
 
         from vox.streaming.types import SpeechStarted
-        await session._forward_stream_event(SpeechStarted(timestamp_ms=100))
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=100, utterance_id=1))
         await asyncio.sleep(0.01)
-        assert session.state == TurnState.SPEAKING
+        assert session.state == TurnState.PAUSED
 
 
         await asyncio.sleep(0.1)
-        assert session.state == TurnState.SPEAKING
+        assert session.state == TurnState.PAUSED
 
         await session.close()

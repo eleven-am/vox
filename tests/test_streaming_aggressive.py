@@ -280,7 +280,7 @@ class TestVADConfigDefaults:
 
             def get_speech_timestamps(self, audio, **kwargs):
                 self.calls += 1
-                if self.calls == 1:
+                if self.calls in {1, 3}:
                     return [{"start": 8_000, "end": 15_000}]
                 return []
 
@@ -291,13 +291,26 @@ class TestVADConfigDefaults:
         started, segment = processor.append(speech)
         assert isinstance(started, SpeechStarted)
         assert started.timestamp_ms == 200
+        assert started.utterance_id == 1
         assert segment is None
 
         stopped, segment = processor.append(np.zeros(16_000, dtype=np.float32))
         assert isinstance(stopped, SpeechStopped)
+        assert stopped.utterance_id == 1
         assert segment is not None
         assert segment.start_ms == 200
+        assert segment.utterance_id == 1
         assert len(segment.audio) == 27_200
+
+        started, _ = processor.append(speech)
+        stopped, segment = processor.append(np.zeros(16_000, dtype=np.float32))
+
+        assert isinstance(started, SpeechStarted)
+        assert isinstance(stopped, SpeechStopped)
+        assert segment is not None
+        assert started.utterance_id == 2
+        assert stopped.utterance_id == 2
+        assert segment.utterance_id == 2
 
 
 class TestVADState:

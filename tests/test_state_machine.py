@@ -120,11 +120,13 @@ class TestBargeIn:
         assert timer.payload["key"] == TimerKey.CONFIRM_INTERRUPT.value
         assert timer.payload["duration_ms"] == 250
 
-    def test_speech_during_speaking_can_defer_state_and_audio_clear_until_confirmed(self):
+    def test_speech_during_speaking_holds_output_without_clearing_until_confirmed(self):
         m = _machine(TurnState.SPEAKING)
         actions = m.handle(ev(TurnEventType.SPEECH_STARTED, defer_output_clear=True))
-        assert m.state == TurnState.SPEAKING
-        assert _action_types(actions) == [TurnActionType.START_TIMER]
+        assert m.state == TurnState.PAUSED
+        assert _action_types(actions) == [TurnActionType.PAUSE_OUTPUT, TurnActionType.START_TIMER]
+        pause = _action_with_payload(actions, TurnActionType.PAUSE_OUTPUT)
+        assert pause.payload["clear"] is False
         timer = _action_with_payload(actions, TurnActionType.START_TIMER)
         assert timer.payload["key"] == TimerKey.CONFIRM_INTERRUPT.value
         assert timer.payload["duration_ms"] == 250
@@ -156,6 +158,20 @@ class TestBargeIn:
         assert _action_types(actions) == [TurnActionType.CANCEL_TIMER, TurnActionType.RESUME_OUTPUT]
         timer_action = _action_with_payload(actions, TurnActionType.CANCEL_TIMER)
         assert timer_action.payload["key"] == TimerKey.CONFIRM_INTERRUPT.value
+
+    def test_speech_stopped_awaiting_final_keeps_output_held(self):
+        m = _machine(TurnState.SPEAKING)
+        m.handle(ev(TurnEventType.SPEECH_STARTED))
+
+        actions = m.handle(
+            TurnEvent(
+                type=TurnEventType.SPEECH_STOPPED,
+                payload={"await_final_transcript": True},
+            )
+        )
+
+        assert m.state == TurnState.PAUSED
+        assert actions == []
 
     def test_interrupted_then_user_stops_returns_to_listening(self):
         m = _machine(TurnState.INTERRUPTED)

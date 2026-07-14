@@ -36,15 +36,14 @@ from vox.conversation.audio_history import ConversationAudioHistory
 from vox.conversation.audio_output import ResponseAudioOutput
 from vox.conversation.interrupt import (
     HeuristicInterruptClassifier,
-    InterruptCandidateAction,
     InterruptClassifier,
-    PartialInterruptEvidence,
-    evaluate_interrupt_candidate_gate,
-    has_recent_interrupt_context,
-    interrupt_vad_active_ms,
     looks_like_self_echo,
-    transcript_duration_ms,
-    transcript_word_count,
+)
+from vox.conversation.interruption_detector import (
+    EvidenceBasedInterruptDetector,
+    InterruptDetector,
+    InterruptionDecision,
+    InterruptionDecisionAction,
 )
 from vox.conversation.profiles import DEFAULT_TURN_PROFILE, resolve_turn_profile
 from vox.conversation.response_lifecycle import ConversationResponseLifecycle
@@ -120,6 +119,7 @@ class ConversationConfig:
     include_word_timestamps: bool = False
 
     interrupt_classifier: InterruptClassifier | None = None
+    interrupt_detector: InterruptDetector | None = None
     audio_preprocessor: AudioPreprocessor | None = None
     pace_response_done_to_audio: bool = False
     wait_for_output_playout: Callable[[], Awaitable[None]] | None = None
@@ -131,8 +131,12 @@ class ConversationConfig:
             self.policy = profile_policy
         if self.interrupt_classifier is None:
             self.interrupt_classifier = HeuristicInterruptClassifier(
-                language=self.language,
                 min_interrupt_words=self.policy.min_interrupt_words,
+            )
+        if self.interrupt_detector is None:
+            self.interrupt_detector = EvidenceBasedInterruptDetector(
+                policy=self.policy,
+                classifier=self.interrupt_classifier,
             )
 
 
@@ -152,10 +156,11 @@ class ConversationSession:
         self._on_event = on_event
 
         self._sm = TurnStateMachine(policy=config.policy)
+        if config.interrupt_detector is None:
+            raise RuntimeError("conversation interruption detector was not configured")
+        self._interrupt_detector = config.interrupt_detector
 
-        self._wants_partials = bool(self._config.interrupt_classifier.wants_short_circuit()) or bool(
-            self._config.policy.partial_interrupts
-        )
+        self._wants_partials = self._interrupt_detector.wants_partials()
 
         self._pipeline = StreamPipeline(
             scheduler=scheduler,
@@ -178,7 +183,6 @@ class ConversationSession:
 
         self._speech_session: SpeechSession | None = None
         self._partial_service: PartialTranscriptService | None = None
-        self._latest_partial: StreamTranscript | None = None
         if self._wants_partials:
             self._speech_session = SpeechSession()
             self._partial_service = PartialTranscriptService(
@@ -200,8 +204,6 @@ class ConversationSession:
 
         self._last_eou_probability: float | None = None
 
-        self._vad_started_at: float | None = None
-        self._interrupt_confirmation_pending = False
         self._last_speech_stopped_at: float | None = None
         self._awaiting_final_transcript: bool = False
         self._awaiting_final_transcript_started_at: float = 0.0
@@ -210,8 +212,6 @@ class ConversationSession:
         self._endpoint_commit_delay = transcript_finalization.EndpointCommitDelayPolicy.from_turn_policy(
             config.policy
         )
-        self._partial_interrupt_evidence = PartialInterruptEvidence.from_turn_policy(config.policy)
-
         self._audio_history = ConversationAudioHistory()
 
     async def start(self) -> None:
@@ -229,6 +229,7 @@ class ConversationSession:
         await reap_task(self._runner)
 
         self._pipeline.shutdown()
+        self._interrupt_detector.reset()
 
     async def wait_until_settled(self, *, poll_interval_s: float = 0.01) -> None:
         """Drain timers, queued actions, and any in-flight TTS after client EOF.
@@ -434,7 +435,7 @@ class ConversationSession:
             return
         if isinstance(stream_event, SpeechStarted):
             if self._speech_session is not None:
-                self._speech_session.start_speech()
+                self._speech_session.start_speech(stream_event.utterance_id)
             await self._emit(
                 {
                     "type": WIRE_SPEECH_STARTED,
@@ -442,10 +443,40 @@ class ConversationSession:
                 }
             )
 
-            if self._sm.state == TurnState.SPEAKING and self._speech_guard.flutter_cooldown_active():
-                logger.debug("flutter cooldown active; suppressing SPEECH_STARTED state transition")
+            if self._sm.state == TurnState.SPEAKING and self._looks_like_current_output_echo():
+                logger.debug("suppressing SPEAKING speech_started as likely assistant echo")
+                await self._emit_interruption_false_positive(
+                    vad_active_ms=0,
+                    partial_transcript=None,
+                    reason="output_echo",
+                )
                 return
-            confirm_ms = self._config.interrupt_classifier.confirm_window_ms(
+
+            if (
+                self._sm.state in {TurnState.SPEAKING, TurnState.PAUSED}
+                and stream_event.utterance_id <= 0
+            ):
+                logger.warning("ignoring interruption candidate without utterance identity")
+                await self._emit_interruption_false_positive(
+                    vad_active_ms=0,
+                    partial_transcript=None,
+                    reason="missing_candidate_identity",
+                )
+                return
+
+            if self._sm.state in {TurnState.SPEAKING, TurnState.PAUSED}:
+                self._interrupt_detector.begin(
+                    utterance_id=stream_event.utterance_id,
+                    response_id=self._active_response_id,
+                    started_at=time.monotonic(),
+                    speech_started_ms=stream_event.timestamp_ms,
+                    assistant_text=self._active_assistant_text(),
+                )
+
+            if self._sm.state == TurnState.SPEAKING and self._speech_guard.flutter_cooldown_active():
+                logger.debug("flutter cooldown active; deferring SPEECH_STARTED state transition")
+                return
+            confirm_ms = self._interrupt_detector.confirm_window_ms(
                 self._config.policy.min_interrupt_duration_ms,
                 self._last_eou_probability,
             )
@@ -454,17 +485,6 @@ class ConversationSession:
                     confirm_ms,
                     self._config.policy.speaking_interrupt_min_duration_ms,
                 )
-                if self._looks_like_current_output_echo():
-                    logger.debug("suppressing SPEAKING speech_started as likely assistant echo")
-                    await self._emit_interruption_false_positive(
-                        vad_active_ms=0,
-                        partial_transcript=(
-                            self._latest_partial.text if self._latest_partial is not None else None
-                        ),
-                        reason="output_echo",
-                    )
-                    return
-            self._vad_started_at = time.monotonic()
             await self._event_queue.put(
                 TurnEvent(
                     type=TurnEventType.SPEECH_STARTED,
@@ -481,8 +501,14 @@ class ConversationSession:
             if stream_event.expects_transcript:
                 self._awaiting_final_transcript = True
                 self._awaiting_final_transcript_started_at = time.monotonic()
-            self._vad_started_at = None
             self._last_speech_stopped_at = time.monotonic()
+            interrupt_decision = self._interrupt_detector.mark_speech_stopped(
+                utterance_id=stream_event.utterance_id,
+                stopped_at=self._last_speech_stopped_at,
+                speech_stopped_ms=stream_event.timestamp_ms,
+                expects_transcript=stream_event.expects_transcript,
+            )
+            await self._apply_interrupt_decision(interrupt_decision, resume_on_reject=False)
             await self._emit(
                 {
                     "type": WIRE_SPEECH_STOPPED,
@@ -493,10 +519,12 @@ class ConversationSession:
                 TurnEvent(
                     type=TurnEventType.SPEECH_STOPPED,
                     timestamp_ms=stream_event.timestamp_ms,
+                    payload={"await_final_transcript": stream_event.expects_transcript},
                 )
             )
+            if not stream_event.expects_transcript:
+                self._interrupt_detector.finish(stream_event.utterance_id)
         elif isinstance(stream_event, StreamTranscript) and stream_event.is_partial:
-            self._latest_partial = stream_event
             if stream_event.text and stream_event.text.strip() and not self._is_in_self_echo_window():
                 await self._emit(
                     {
@@ -506,34 +534,61 @@ class ConversationSession:
                         "end_ms": stream_event.end_ms,
                     }
                 )
-            if (
-                self._sm.state in {TurnState.PAUSED, TurnState.SPEAKING}
-                and self._active_response_id is not None
-                and self._has_recent_interrupt_context()
-                and (
-                    self._config.interrupt_classifier.should_short_circuit(stream_event.text)
-                    or self._has_strong_partial_interrupt_evidence(stream_event)
+            if self._interrupt_detector.current() is not None and self._active_response_id is not None:
+                cumulative_text = stream_event.text
+                if self._speech_session is not None:
+                    cumulative_text = self._speech_session.get_confirmed_text() or cumulative_text
+                decision = await self._interrupt_detector.observe_partial(
+                    stream_event,
+                    cumulative_transcript=cumulative_text,
+                    assistant_text=self._active_assistant_text(),
+                    output_echo=self._looks_like_current_output_echo(),
+                    now=time.monotonic(),
                 )
-            ):
-                await self._confirm_interrupt_from_partial(stream_event)
-                return
+                await self._apply_interrupt_decision(decision, resume_on_reject=True)
+                if decision.action is InterruptionDecisionAction.CONFIRM:
+                    return
         elif isinstance(stream_event, StreamTranscript):
-            self._latest_partial = None
             self._awaiting_final_transcript = False
             self._awaiting_final_transcript_started_at = 0.0
 
-            if self._is_in_self_echo_window() and (
-                echo_reason := self._final_transcript_echo_reason(stream_event.text)
+            candidate = self._interrupt_detector.current()
+            if (
+                candidate is None
+                and self._sm.state in {TurnState.SPEAKING, TurnState.PAUSED}
+                and looks_like_self_echo(
+                    stream_event.text,
+                    self._active_assistant_text(),
+                    min_words=self._config.policy.self_echo_min_words,
+                    min_overlap=self._config.policy.self_echo_min_overlap,
+                )
             ):
                 await self._emit_interruption_false_positive(
-                    vad_active_ms=transcript_duration_ms(stream_event),
+                    vad_active_ms=max(0, stream_event.end_ms - stream_event.start_ms),
                     partial_transcript=stream_event.text,
-                    reason=echo_reason,
+                    reason="self_echo_transcript",
                 )
                 return
-
-            if self._sm.state in {TurnState.SPEAKING, TurnState.PAUSED}:
-                await self._confirm_interrupt_from_final(stream_event)
+            if candidate is not None or self._sm.state in {TurnState.SPEAKING, TurnState.PAUSED}:
+                audio_duration_ms = max(
+                    candidate.vad_active_ms(time.monotonic()) if candidate is not None else 0,
+                    stream_event.audio_duration_ms,
+                    max(0, stream_event.end_ms - stream_event.start_ms),
+                )
+                audio = self._audio_history.mic_tail_for_duration_ms(audio_duration_ms)
+                interrupt_decision = await self._interrupt_detector.observe_final(
+                    stream_event,
+                    assistant_text=self._active_assistant_text(),
+                    output_echo=self._looks_like_current_output_echo(),
+                    audio=audio,
+                    sample_rate=TARGET_SAMPLE_RATE,
+                    now=time.monotonic(),
+                )
+                await self._apply_interrupt_decision(interrupt_decision, resume_on_reject=True)
+                if interrupt_decision.action is not InterruptionDecisionAction.CONFIRM:
+                    if stream_event.utterance_id:
+                        self._interrupt_detector.finish(stream_event.utterance_id)
+                    return
 
             enrich_transcript(stream_event, self._config.language)
 
@@ -541,7 +596,7 @@ class ConversationSession:
                 self._last_eou_probability = float(stream_event.eou_probability)
             self._endpoint_pause_history.record_since(self._last_speech_stopped_at)
             eou_threshold = EOUConfig().threshold
-            decision = transcript_finalization.final_transcript_decision(
+            finalization_decision = transcript_finalization.final_transcript_decision(
                 stream_event,
                 endpoint_timer_active=self._has_active_timer(TimerKey.ENDPOINTING.value),
                 commit_delay_policy=self._endpoint_commit_delay,
@@ -549,13 +604,14 @@ class ConversationSession:
                 eou_threshold=eou_threshold,
                 turn_detector=self._config.turn_detector,
             )
-            if decision.eou_event is not None:
-                await self._emit(decision.eou_event)
+            if finalization_decision.eou_event is not None:
+                await self._emit(finalization_decision.eou_event)
             self._transcript_finalizer.remember(stream_event)
             pending_text = self._transcript_finalizer.pending_text(stream_event.text)
 
             if self._sm.state == TurnState.THINKING:
                 await self._emit_pending_transcript_done()
+                self._interrupt_detector.finish(stream_event.utterance_id)
                 return
 
             await self._event_queue.put(
@@ -563,11 +619,12 @@ class ConversationSession:
                     type=TurnEventType.USER_TRANSCRIPT_FINAL,
                     payload={
                         "text": pending_text,
-                        "defer_commit": decision.defer_commit,
-                        "commit_delay_ms": decision.commit_delay_ms,
+                        "defer_commit": finalization_decision.defer_commit,
+                        "commit_delay_ms": finalization_decision.commit_delay_ms,
                     },
                 )
             )
+            self._interrupt_detector.finish(stream_event.utterance_id)
 
     async def _ensure_response_stream(
         self,
@@ -726,28 +783,14 @@ class ConversationSession:
             self._config.policy.backchannel_end_cooldown_ms
         )
 
-    def _final_transcript_echo_reason(self, transcript: str | None) -> str | None:
-        if looks_like_self_echo(
-            transcript,
-            self._active_assistant_text(),
-            min_words=self._config.policy.self_echo_min_words,
-            min_overlap=self._config.policy.self_echo_min_overlap,
-        ):
-            return "self_echo_transcript"
-        if (
-            self._looks_like_current_output_echo()
-            and transcript_word_count(transcript) < self._config.policy.speaking_interrupt_min_words
-        ):
-            return "output_echo"
-        return None
-
     def _looks_like_current_output_echo(self) -> bool:
         return self._audio_history.looks_like_current_output_echo()
 
     async def _execute(self, action: TurnAction) -> None:
         if action.type == TurnActionType.PAUSE_OUTPUT:
             self._audio_output.pause()
-            await self._emit_audio_clear()
+            if bool(action.payload.get("clear", True)):
+                await self._emit_audio_clear()
 
         elif action.type == TurnActionType.RESUME_OUTPUT:
             stream = self._response_stream
@@ -767,7 +810,6 @@ class ConversationSession:
         elif action.type == TurnActionType.STOP_TTS:
             self._mark_agent_speech_ended()
             self._output_playout_started = False
-            self._interrupt_confirmation_pending = False
             stream = self._response_stream
             self._response_lifecycle.remember_cancelled_response()
             if stream is not None:
@@ -901,192 +943,21 @@ class ConversationSession:
     def _active_assistant_text(self) -> str:
         return self._response_lifecycle.assistant_context_text(separator=" ")
 
-    def _current_interrupt_vad_ms(self) -> int:
-        return interrupt_vad_active_ms(
-            vad_started_at=self._vad_started_at,
-            latest_partial=self._latest_partial,
-            now=time.monotonic(),
-        )
-
-    def _has_recent_interrupt_context(self) -> bool:
-        return has_recent_interrupt_context(
-            confirm_timer_active=self._has_active_timer(TimerKey.CONFIRM_INTERRUPT.value),
-            vad_started_at=self._vad_started_at,
-            last_speech_stopped_at=self._last_speech_stopped_at,
-            false_interruption_timeout_ms=self._config.policy.false_interruption_timeout_ms,
-            now=time.monotonic(),
-        )
-
-    def _has_strong_partial_interrupt_evidence(
+    async def _apply_interrupt_decision(
         self,
-        transcript: StreamTranscript | None,
+        decision: InterruptionDecision,
         *,
-        assistant_text: str | None = None,
-    ) -> bool:
-        if assistant_text is None:
-            assistant_text = self._active_assistant_text()
-        return self._partial_interrupt_evidence.is_strong(
-            transcript,
-            assistant_text=assistant_text,
-        )
-
-    async def _confirm_interrupt_from_partial(self, transcript: StreamTranscript) -> None:
-        if self._interrupt_confirmation_pending:
-            return
-        self._interrupt_confirmation_pending = True
-        vad_active_ms = max(
-            self._current_interrupt_vad_ms(),
-            transcript_duration_ms(transcript),
-        )
-        await self._emit_interruption_detected(
-            vad_active_ms=vad_active_ms,
-            partial_transcript=transcript.text,
-            reason=(
-                "partial_keyword"
-                if self._config.interrupt_classifier.should_short_circuit(transcript.text)
-                else "partial_transcript"
-            ),
-        )
-        await self._cancel_timer(TimerKey.CONFIRM_INTERRUPT.value)
-        await self._event_queue.put(
-            TurnEvent(
-                type=TurnEventType.TIMER_ELAPSED,
-                payload={"key": TimerKey.CONFIRM_INTERRUPT.value},
-            )
-        )
-
-    async def _confirm_interrupt_from_final(self, transcript: StreamTranscript) -> None:
-        """Treat a non-echo final STT result as authoritative barge-in evidence."""
-        if self._interrupt_confirmation_pending:
-            return
-        self._interrupt_confirmation_pending = True
-        await self._cancel_timer(TimerKey.CONFIRM_INTERRUPT.value)
-        await self._emit_interruption_detected(
-            vad_active_ms=max(self._current_interrupt_vad_ms(), transcript_duration_ms(transcript)),
-            partial_transcript=transcript.text,
-            reason="final_transcript",
-        )
-        await self._event_queue.put(
-            TurnEvent(
-                type=TurnEventType.TIMER_ELAPSED,
-                payload={"key": TimerKey.CONFIRM_INTERRUPT.value},
-            )
-        )
-
-    async def _reject_interrupt_candidate(
-        self,
-        *,
-        vad_active_ms: int,
-        partial_transcript: str | None,
-        reason: str,
-        speech_stopped_reason: str | None = None,
+        resume_on_reject: bool,
     ) -> None:
-        self._vad_started_at = None
-        self._interrupt_confirmation_pending = False
-        await self._emit_interruption_false_positive(
-            vad_active_ms=vad_active_ms,
-            partial_transcript=partial_transcript,
-            reason=reason,
-        )
-        await self._event_queue.put(
-            TurnEvent(
-                type=TurnEventType.SPEECH_STOPPED,
-                payload={"reason": speech_stopped_reason or reason},
-            )
-        )
-
-    async def _evaluate_interrupt_candidate(self) -> None:
-        """Consult the classifier before confirming a barge-in.
-
-        Classifier signals:
-          * how long VAD has been "active" since the confirm window began
-          * the last user turn's EOU probability (conversational context)
-          * the most recent N ms of audio (so the classifier can detect cases
-            where the user's voice has decayed but Silero's silence padding
-            hasn't emitted SpeechStopped yet — e.g. "mhmm" backchannels)
-          * a partial transcript of the PAUSED-window audio — lets classifiers
-            that care (with user-supplied keyword sets, per-language intent
-            models, etc.) short-circuit the audio-only heuristics.
-
-        Decision:
-          * real interrupt → TIMER_ELAPSED → state machine → INTERRUPTED
-          * backchannel    → synthetic SPEECH_STOPPED → state machine resumes
-                             SPEAKING, anti-flutter cooldown arms automatically
-        """
-        vad_active_ms = 0
-        if self._vad_started_at is not None:
-            vad_active_ms = max(0, int((time.monotonic() - self._vad_started_at) * 1000))
-
-        audio_tail = self._audio_history.mic_tail_for_duration_ms(vad_active_ms)
-
-        partial = self._latest_partial
-        partial_transcript = partial.text if partial is not None else None
-        active_assistant_text = self._active_assistant_text()
-
-        is_interrupt_keyword = self._config.interrupt_classifier.should_short_circuit(partial_transcript)
-        gate = evaluate_interrupt_candidate_gate(
-            partial=partial,
-            active_assistant_text=active_assistant_text,
-            policy=self._config.policy,
-            evidence=self._partial_interrupt_evidence,
-            is_interrupt_keyword=is_interrupt_keyword,
-            output_echo=self._looks_like_current_output_echo(),
-            vad_active_ms=vad_active_ms,
-        )
-        if gate.action == InterruptCandidateAction.REJECT:
-            logger.debug(
-                "classifier rejected barge-in as %s (vad_active=%dms)",
-                gate.false_positive_reason,
-                vad_active_ms,
-            )
-            await self._reject_interrupt_candidate(
-                vad_active_ms=vad_active_ms,
-                partial_transcript=partial_transcript,
-                reason=gate.false_positive_reason or "candidate_rejected",
-                speech_stopped_reason=gate.speech_stopped_reason,
-            )
-            return
-        if gate.action == InterruptCandidateAction.CONFIRM_FROM_PARTIAL:
-            logger.debug(
-                "classifier confirmed barge-in from partial transcript evidence "
-                "(words=%d, duration=%dms, vad_active=%dms)",
-                transcript_word_count(partial_transcript),
-                transcript_duration_ms(partial),
-                vad_active_ms,
-            )
-            await self._confirm_interrupt_from_partial(partial)
+        if not decision.newly_decided or decision.action is InterruptionDecisionAction.DEFER:
             return
 
-        if self._aec_warmup_active() and partial is None:
-            await self._reject_interrupt_candidate(
-                vad_active_ms=vad_active_ms,
-                partial_transcript=None,
-                reason="aec_warmup_unconfirmed",
-            )
-            return
-
-        try:
-            is_real = await self._config.interrupt_classifier.is_real_interrupt(
-                audio_tail,
-                partial_transcript,
-                self._last_eou_probability,
-                vad_active_ms,
-                TARGET_SAMPLE_RATE,
-            )
-        except Exception:
-            logger.exception("interrupt classifier raised; defaulting to backchannel")
-            await self._reject_interrupt_candidate(
-                vad_active_ms=vad_active_ms,
-                partial_transcript=partial_transcript,
-                reason="classifier_error",
-            )
-            return
-
-        if is_real:
+        await self._cancel_timer(TimerKey.CONFIRM_INTERRUPT.value)
+        if decision.action is InterruptionDecisionAction.CONFIRM:
             await self._emit_interruption_detected(
-                vad_active_ms=vad_active_ms,
-                partial_transcript=partial_transcript,
-                reason="classifier",
+                vad_active_ms=decision.vad_active_ms,
+                partial_transcript=decision.transcript,
+                reason=decision.reason,
             )
             await self._event_queue.put(
                 TurnEvent(
@@ -1094,17 +965,58 @@ class ConversationSession:
                     payload={"key": TimerKey.CONFIRM_INTERRUPT.value},
                 )
             )
-        else:
-            logger.debug(
-                "classifier rejected barge-in (vad_active=%dms); resuming TTS",
-                vad_active_ms,
+            return
+
+        await self._emit_interruption_false_positive(
+            vad_active_ms=decision.vad_active_ms,
+            partial_transcript=decision.transcript,
+            reason=decision.reason,
+        )
+        if resume_on_reject:
+            await self._event_queue.put(
+                TurnEvent(
+                    type=TurnEventType.SPEECH_STOPPED,
+                    payload={"reason": decision.reason},
+                )
             )
 
-            await self._reject_interrupt_candidate(
-                vad_active_ms=vad_active_ms,
-                partial_transcript=partial_transcript,
-                reason="backchannel",
+    async def _evaluate_interrupt_candidate(self) -> None:
+        candidate = self._interrupt_detector.current()
+        if candidate is None:
+            return
+
+        now = time.monotonic()
+        vad_active_ms = max(
+            candidate.vad_active_ms(now),
+            candidate.latest_partial_duration_ms,
+        )
+        audio_tail = self._audio_history.mic_tail_for_duration_ms(vad_active_ms)
+        try:
+            decision = await self._interrupt_detector.evaluate_timeout(
+                assistant_text=self._active_assistant_text(),
+                output_echo=self._looks_like_current_output_echo(),
+                aec_warmup=self._aec_warmup_active(),
+                audio=audio_tail,
+                sample_rate=TARGET_SAMPLE_RATE,
+                last_eou_probability=self._last_eou_probability,
+                now=now,
             )
+        except Exception:
+            logger.exception("interruption detector raised; rejecting candidate")
+            await self._emit_interruption_false_positive(
+                vad_active_ms=vad_active_ms,
+                partial_transcript=candidate.cumulative_transcript or None,
+                reason="detector_error",
+            )
+            self._interrupt_detector.reset()
+            await self._event_queue.put(
+                TurnEvent(
+                    type=TurnEventType.SPEECH_STOPPED,
+                    payload={"reason": "detector_error"},
+                )
+            )
+            return
+        await self._apply_interrupt_decision(decision, resume_on_reject=True)
 
     async def _cancel_timer(self, key: str) -> None:
         await self._timer_registry.cancel(key)

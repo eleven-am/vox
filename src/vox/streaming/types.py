@@ -25,12 +25,14 @@ class StreamSessionConfig:
 @dataclass
 class SpeechStarted:
     timestamp_ms: int = 0
+    utterance_id: int = 0
 
 
 @dataclass
 class SpeechStopped:
     timestamp_ms: int = 0
     expects_transcript: bool = True
+    utterance_id: int = 0
 
 
 @dataclass
@@ -47,6 +49,7 @@ class StreamTranscript:
     words: list[dict] | None = None
     entities: list[dict] | None = None
     topics: list[str] | None = None
+    utterance_id: int = 0
 
 
 @dataclass

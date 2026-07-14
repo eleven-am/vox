@@ -41,6 +41,7 @@ class VADState:
     audio_end_ms: int | None = None
     active: bool = False
     carryover: bool = False
+    utterance_id: int = 0
 
 
 @dataclass
@@ -48,6 +49,7 @@ class SpeechSegment:
     audio: NDArray[np.float32]
     start_ms: int
     end_ms: int
+    utterance_id: int = 0
 
 
 class VADBackend(Protocol):
@@ -315,6 +317,7 @@ class VADProcessor:
     state: VADState = field(default_factory=VADState)
     buffer: AudioRingBuffer = field(default_factory=lambda: AudioRingBuffer(MAX_BUFFER_SAMPLES))
     _vad_model: VADBackend | None = None
+    _utterance_sequence: int = 0
 
     def __post_init__(self) -> None:
         if self._vad_model is None:
@@ -370,7 +373,12 @@ class VADProcessor:
                     detected_start_ms - max(0, int(self.config.speech_pre_roll_ms)),
                 )
             self.state.active = True
-            return SpeechStarted(timestamp_ms=self.state.audio_start_ms), None
+            self._utterance_sequence += 1
+            self.state.utterance_id = self._utterance_sequence
+            return SpeechStarted(
+                timestamp_ms=self.state.audio_start_ms,
+                utterance_id=self.state.utterance_id,
+            ), None
 
         if speech_ts is None:
             self.state.audio_end_ms = self._duration_ms() - self.config.speech_pad_ms
@@ -378,8 +386,14 @@ class VADProcessor:
             self._clear_buffer()
             if segment.end_ms - segment.start_ms < self.config.min_audio_duration_ms:
                 logger.debug("Segment too short (%dms), skipping", segment.end_ms - segment.start_ms)
-                return SpeechStopped(timestamp_ms=segment.end_ms), None
-            return SpeechStopped(timestamp_ms=self.state.audio_end_ms), segment
+                return SpeechStopped(
+                    timestamp_ms=segment.end_ms,
+                    utterance_id=segment.utterance_id,
+                ), None
+            return SpeechStopped(
+                timestamp_ms=segment.end_ms,
+                utterance_id=segment.utterance_id,
+            ), segment
 
         if self._duration_ms() >= self.config.max_utterance_ms:
             self.state.audio_end_ms = self._duration_ms() - self.config.speech_pad_ms
@@ -396,14 +410,25 @@ class VADProcessor:
                     "Segment too short after max_utterance cap (%dms), skipping",
                     segment.end_ms - segment.start_ms,
                 )
-                return SpeechStopped(timestamp_ms=segment.end_ms), None
-            return SpeechStopped(timestamp_ms=self.state.audio_end_ms), segment
+                return SpeechStopped(
+                    timestamp_ms=segment.end_ms,
+                    utterance_id=segment.utterance_id,
+                ), None
+            return SpeechStopped(
+                timestamp_ms=segment.end_ms,
+                utterance_id=segment.utterance_id,
+            ), segment
 
         return None, None
 
     def _extract_segment(self) -> SpeechSegment:
         if self.state.audio_start_ms is None or self.state.audio_end_ms is None:
-            return SpeechSegment(audio=np.array([], dtype=np.float32), start_ms=0, end_ms=0)
+            return SpeechSegment(
+                audio=np.array([], dtype=np.float32),
+                start_ms=0,
+                end_ms=0,
+                utterance_id=self.state.utterance_id,
+            )
 
         start_sample = self.state.audio_start_ms * MS_PER_SAMPLE
         end_sample = self.state.audio_end_ms * MS_PER_SAMPLE
@@ -412,6 +437,7 @@ class VADProcessor:
             audio=self.buffer.get_slice(start_sample, end_sample),
             start_ms=self.state.audio_start_ms,
             end_ms=self.state.audio_end_ms,
+            utterance_id=self.state.utterance_id,
         )
 
     def _clear_buffer(self) -> None:

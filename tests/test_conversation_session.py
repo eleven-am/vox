@@ -676,6 +676,38 @@ class TestTTSHappyPath:
 
 class TestBargeIn:
     @pytest.mark.asyncio
+    async def test_speech_stop_waits_for_final_before_resuming_output(self):
+        tts = ScriptedTTSAdapter(chunks=40, inter_chunk_delay=0.02)
+        session, collector, _ = _build_session(
+            adapter=tts,
+            policy=TurnPolicy(min_interrupt_duration_ms=500, max_endpointing_delay_ms=200),
+        )
+        await session.start()
+        await session.submit_response_text("long reply")
+        await asyncio.sleep(0.05)
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
+        await asyncio.sleep(0.01)
+        await session._forward_stream_event(
+            SpeechStopped(timestamp_ms=1250, expects_transcript=True, utterance_id=1)
+        )
+        await asyncio.sleep(0.01)
+
+        assert session.state == TurnState.PAUSED
+        assert not collector.by_type(WIRE_AUDIO_CLEAR)
+
+        await session._forward_stream_event(
+            StreamTranscript(text="", start_ms=1000, end_ms=1250, utterance_id=1)
+        )
+        await asyncio.sleep(0.01)
+        await _drain_events(session)
+
+        assert session.state == TurnState.SPEAKING
+        assert collector.by_type(WIRE_INTERRUPTION_FALSE_POSITIVE)[-1]["reason"] == "empty_final"
+        assert not collector.by_type(WIRE_AUDIO_CLEAR)
+        await session.close()
+
+    @pytest.mark.asyncio
     async def test_confirmed_barge_in_cancels_tts(self):
         tts = ScriptedTTSAdapter(chunks=20, inter_chunk_delay=0.02)
         session, collector, _ = _build_session(
@@ -691,12 +723,20 @@ class TestBargeIn:
         await asyncio.sleep(0.05)
         assert session.state == TurnState.SPEAKING
 
-        session._latest_partial = StreamTranscript(text="I need", is_partial=True)
-        await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
         await asyncio.sleep(0.01)
         assert session.state == TurnState.PAUSED
+        assert not collector.by_type(WIRE_AUDIO_CLEAR)
 
-        await asyncio.sleep(0.1)
+        await session._forward_stream_event(StreamTranscript(
+            text="I need",
+            is_partial=True,
+            start_ms=1000,
+            end_ms=1500,
+            audio_duration_ms=500,
+            utterance_id=1,
+        ))
+        await asyncio.sleep(0.01)
         await _drain_events(session)
 
         assert session.state == TurnState.INTERRUPTED
@@ -767,12 +807,7 @@ class TestBargeIn:
         await asyncio.sleep(0.05)
         assert session.state == TurnState.SPEAKING
 
-        await session._event_queue.put(
-            TurnEvent(
-                type=TurnEventType.SPEECH_STARTED,
-                payload={"confirm_window_ms": 500},
-            )
-        )
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
         await asyncio.sleep(0.01)
         assert session.state == TurnState.PAUSED
 
@@ -780,6 +815,7 @@ class TestBargeIn:
             StreamTranscript(
                 text="please stop talking",
                 is_partial=True,
+                utterance_id=1,
             )
         )
 
@@ -806,12 +842,20 @@ class TestBargeIn:
         await session.append_response_text("Hello world. Second sentence is not heard yet")
         for _ in range(50):
             await asyncio.sleep(0.01)
-            if tts.texts == ["Hello world."]:
+            stream = session._response_stream
+            if tts.texts == ["Hello world."] and stream is not None and stream.heard_parts:
                 break
         assert tts.texts == ["Hello world."]
 
-        session._latest_partial = StreamTranscript(text="I need", is_partial=True)
-        await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
+        await session._forward_stream_event(StreamTranscript(
+            text="I need",
+            is_partial=True,
+            start_ms=1000,
+            end_ms=1500,
+            audio_duration_ms=500,
+            utterance_id=1,
+        ))
         await asyncio.sleep(0.1)
         await _drain_events(session)
 
@@ -846,8 +890,7 @@ class TestBargeIn:
             )
         )
 
-        assert session._latest_partial is not None
-        assert session._latest_partial.text == "please stop talking"
+        assert collector.by_type(WIRE_TRANSCRIPT_DELTA)
         assert session.state == TurnState.IDLE
         assert not collector.by_type(WIRE_RESPONSE_CANCELLED)
 

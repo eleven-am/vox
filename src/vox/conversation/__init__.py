@@ -9,6 +9,12 @@ See src/vox/conversation/state_machine.py for the core transition logic.
 """
 
 from vox.conversation.interrupt import HeuristicInterruptClassifier, InterruptClassifier
+from vox.conversation.interruption_detector import (
+    EvidenceBasedInterruptDetector,
+    InterruptDetector,
+    InterruptionDecision,
+    InterruptionDecisionAction,
+)
 from vox.conversation.profiles import (
     DEFAULT_TURN_PROFILE,
     list_turn_profiles,
@@ -28,6 +34,10 @@ from vox.conversation.types import (
 __all__ = [
     "HeuristicInterruptClassifier",
     "InterruptClassifier",
+    "EvidenceBasedInterruptDetector",
+    "InterruptDetector",
+    "InterruptionDecision",
+    "InterruptionDecisionAction",
     "DEFAULT_TURN_PROFILE",
     "TimerKey",
     "TurnAction",

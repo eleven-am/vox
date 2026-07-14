@@ -20,13 +20,15 @@ class SpeechSession:
     buffer: AudioRingBuffer = field(default_factory=lambda: AudioRingBuffer(MAX_SESSION_BUFFER_SAMPLES))
     confirmed_words: list[str] = field(default_factory=list)
     last_partial_ms: int = 0
+    utterance_id: int = 0
 
-    def start_speech(self) -> None:
+    def start_speech(self, utterance_id: int = 0) -> None:
         with self.lock:
             self.active = True
             self.buffer.clear()
             self.confirmed_words = []
             self.last_partial_ms = 0
+            self.utterance_id = utterance_id
 
     def stop_speech(self) -> None:
         with self.lock:
@@ -65,3 +67,7 @@ class SpeechSession:
     def get_confirmed_text(self) -> str:
         with self.lock:
             return " ".join(word for word in self.confirmed_words if word).strip()
+
+    def get_utterance_id(self) -> int:
+        with self.lock:
+            return self.utterance_id

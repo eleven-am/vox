@@ -101,7 +101,10 @@ def _on_speech_started_speaking(m: TurnStateMachine, e: TurnEvent) -> tuple[Turn
 
     confirm_ms = int(e.payload.get("confirm_window_ms", m.policy.min_interrupt_duration_ms))
     if bool(e.payload.get("defer_output_clear")):
-        return None, [start_timer(TimerKey.CONFIRM_INTERRUPT, confirm_ms)]
+        return TurnState.PAUSED, [
+            act(TurnActionType.PAUSE_OUTPUT, clear=False),
+            start_timer(TimerKey.CONFIRM_INTERRUPT, confirm_ms),
+        ]
     return TurnState.PAUSED, [
         act(TurnActionType.PAUSE_OUTPUT),
         start_timer(TimerKey.CONFIRM_INTERRUPT, confirm_ms),
@@ -129,8 +132,8 @@ def _on_speech_stopped_speaking(m: TurnStateMachine, e: TurnEvent) -> tuple[Turn
 
 
 def _on_speech_stopped_paused(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
-
-
+    if bool(e.payload.get("await_final_transcript")):
+        return None, []
     return TurnState.SPEAKING, [
         cancel_timer(TimerKey.CONFIRM_INTERRUPT),
         act(TurnActionType.RESUME_OUTPUT),
