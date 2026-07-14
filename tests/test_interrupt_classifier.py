@@ -260,6 +260,13 @@ class TestSelfEchoHeuristic:
             "Sure. The appointment is tomorrow at noon.",
         )
 
+    def test_non_latin_transcript_matches_assistant_echo(self):
+        assert looks_like_self_echo(
+            "الموعد غدا عند الظهر",
+            "حسنا، الموعد غدا عند الظهر بالتأكيد.",
+            min_words=3,
+        )
+
 
 class TestInterruptCandidateGate:
     def test_rejects_partial_transcript_self_echo(self):
@@ -278,7 +285,7 @@ class TestInterruptCandidateGate:
         assert decision.false_positive_reason == "self_echo_transcript"
         assert decision.speech_stopped_reason == "self_echo"
 
-    def test_rejects_acoustic_output_echo_before_partial_evidence(self):
+    def test_strong_partial_overrides_acoustic_echo_for_double_talk(self):
         policy = TurnPolicy(speaking_interrupt_min_words=1)
         decision = evaluate_interrupt_candidate_gate(
             partial=StreamTranscript(
@@ -295,9 +302,22 @@ class TestInterruptCandidateGate:
             vad_active_ms=1200,
         )
 
+        assert decision.action is InterruptCandidateAction.CONFIRM_FROM_PARTIAL
+
+    def test_rejects_acoustic_output_echo_without_transcript_evidence(self):
+        policy = TurnPolicy(speaking_interrupt_min_words=2)
+        decision = evaluate_interrupt_candidate_gate(
+            partial=None,
+            active_assistant_text="assistant text",
+            policy=policy,
+            evidence=PartialInterruptEvidence.from_turn_policy(policy),
+            is_interrupt_keyword=False,
+            output_echo=True,
+            vad_active_ms=500,
+        )
+
         assert decision.action is InterruptCandidateAction.REJECT
         assert decision.false_positive_reason == "output_echo"
-        assert decision.speech_stopped_reason == "output_echo"
 
     def test_confirms_strong_partial_interrupt_evidence(self):
         policy = TurnPolicy(speaking_interrupt_min_words=2, min_interrupt_duration_ms=250)

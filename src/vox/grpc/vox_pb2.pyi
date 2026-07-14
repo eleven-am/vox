@@ -1,3 +1,4 @@
+from google.protobuf import struct_pb2 as _struct_pb2
 from google.protobuf.internal import containers as _containers
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
@@ -230,20 +231,22 @@ class WordTimestamp(_message.Message):
     def __init__(self, word: _Optional[str] = ..., start_ms: _Optional[int] = ..., end_ms: _Optional[int] = ..., confidence: _Optional[float] = ...) -> None: ...
 
 class SynthesizeRequest(_message.Message):
-    __slots__ = ("model", "input", "voice", "speed", "language", "response_format")
+    __slots__ = ("model", "input", "voice", "speed", "language", "response_format", "params")
     MODEL_FIELD_NUMBER: _ClassVar[int]
     INPUT_FIELD_NUMBER: _ClassVar[int]
     VOICE_FIELD_NUMBER: _ClassVar[int]
     SPEED_FIELD_NUMBER: _ClassVar[int]
     LANGUAGE_FIELD_NUMBER: _ClassVar[int]
     RESPONSE_FORMAT_FIELD_NUMBER: _ClassVar[int]
+    PARAMS_FIELD_NUMBER: _ClassVar[int]
     model: str
     input: str
     voice: str
     speed: float
     language: str
     response_format: str
-    def __init__(self, model: _Optional[str] = ..., input: _Optional[str] = ..., voice: _Optional[str] = ..., speed: _Optional[float] = ..., language: _Optional[str] = ..., response_format: _Optional[str] = ...) -> None: ...
+    params: _struct_pb2.Struct
+    def __init__(self, model: _Optional[str] = ..., input: _Optional[str] = ..., voice: _Optional[str] = ..., speed: _Optional[float] = ..., language: _Optional[str] = ..., response_format: _Optional[str] = ..., params: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...) -> None: ...
 
 class AudioChunk(_message.Message):
     __slots__ = ("audio", "sample_rate", "is_final")

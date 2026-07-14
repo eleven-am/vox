@@ -1,4 +1,4 @@
-"""Tests for AEC warmup discard (L1) and per-utterance allow_interruptions (L2)."""
+"""Tests for AEC warmup handling and per-utterance allow_interruptions."""
 
 from __future__ import annotations
 
@@ -98,10 +98,7 @@ def _build(**policy_kwargs):
 
 
 def _install_pipeline_spy(session) -> list[int]:
-    """Wrap ``session._pipeline.process_audio`` so we can verify it isn't
-    invoked while AEC warmup is active. Returns a list of incoming audio sizes,
-    one entry per call.
-    """
+    """Record each audio chunk passed through the streaming pipeline."""
     call_log: list[int] = []
     original = session._pipeline.process_audio
 
@@ -114,9 +111,9 @@ def _install_pipeline_spy(session) -> list[int]:
     return call_log
 
 
-class TestAECWarmupDiscard:
+class TestAECWarmupCapture:
     @pytest.mark.asyncio
-    async def test_pipeline_is_skipped_during_warmup_after_tts_starts(self):
+    async def test_pipeline_keeps_receiving_audio_during_warmup_after_tts_starts(self):
         session, _, _ = _build(aec_warmup_ms=200)
         await session.start()
         call_log = _install_pipeline_spy(session)
@@ -130,7 +127,7 @@ class TestAECWarmupDiscard:
         await session.ingest_audio(audio, sample_rate=16_000)
         await asyncio.sleep(0.0)
 
-        assert len(call_log) == baseline_calls
+        assert len(call_log) == baseline_calls + 1
 
         await session.close()
 
@@ -218,6 +215,41 @@ class TestAECWarmupDiscard:
 
         await session.close()
 
+    @pytest.mark.asyncio
+    async def test_untranscribed_warmup_burst_is_rejected_without_losing_later_final(self):
+        from vox.streaming.types import StreamTranscript
+
+        session, coll, _ = _build(
+            aec_warmup_ms=500,
+            speaking_interrupt_min_duration_ms=80,
+        )
+        await session.start()
+        await session.submit_response_text("The assistant is speaking.")
+        await asyncio.sleep(0.1)
+        assert session._aec_warmup_active()
+
+        session._vad_started_at = asyncio.get_running_loop().time() - 0.2
+        await session._evaluate_interrupt_candidate()
+        await asyncio.sleep(0.02)
+
+        rejected = coll.by_type("interruption.false_positive")
+        assert rejected and rejected[-1]["reason"] == "aec_warmup_unconfirmed"
+        assert not coll.by_type("response.cancelled")
+
+        await session._forward_stream_event(StreamTranscript(
+            text="Please move the appointment to Tuesday.",
+            start_ms=0,
+            end_ms=900,
+            audio_duration_ms=900,
+        ))
+        await asyncio.sleep(0.1)
+
+        assert coll.by_type("response.cancelled")
+        completed = coll.by_type("conversation.item.input_audio_transcription.completed")
+        assert completed[-1]["transcript"] == "Please move the appointment to Tuesday."
+
+        await session.close()
+
 
 class TestWarmupArmingAlignedToPlayout:
     @pytest.mark.asyncio
@@ -249,22 +281,44 @@ class TestWarmupArmingAlignedToPlayout:
 
         await session.close()
 
+    @pytest.mark.asyncio
+    async def test_observed_transport_arms_only_after_actual_playout(self):
+        session, _, _ = _build(aec_warmup_ms=200)
+        session._config.output_playout_observed = True
+        await session.start()
+
+        await session.submit_response_text("hello")
+        await asyncio.sleep(0.1)
+
+        assert not session._aec_warmup_active()
+        assert session._audio_history.output_size == 0
+
+        played = np.full(320, 0.02, dtype=np.float32)
+        from vox.streaming.codecs import float32_to_pcm16
+
+        session.observe_output_playout(float32_to_pcm16(played), 16_000)
+
+        assert session._aec_warmup_active()
+        assert session._audio_history.output_size == 320
+
+        await session.close()
+
 
 class TestPostSpeechTranscriptFilter:
     @pytest.mark.asyncio
-    async def test_final_transcript_during_speaking_is_dropped(self):
+    async def test_matching_final_transcript_during_speaking_is_dropped(self):
         from vox.streaming.types import StreamTranscript
 
         session, coll, _ = _build(aec_warmup_ms=0, backchannel_end_cooldown_ms=1500)
         await session.start()
 
-        await session.submit_response_text("hello")
+        await session.submit_response_text("The appointment is tomorrow at noon.")
         await asyncio.sleep(0.1)
         assert session.state == TurnState.SPEAKING
         assert session._speech_guard.speech_active
 
         await session._forward_stream_event(StreamTranscript(
-            text="echo of myself",
+            text="the appointment is tomorrow",
             start_ms=10,
             end_ms=500,
         ))
@@ -273,26 +327,27 @@ class TestPostSpeechTranscriptFilter:
         assert not coll.by_type("conversation.item.input_audio_transcription.completed")
         echoes = [
             e for e in coll.by_type("interruption.false_positive")
-            if e.get("reason") == "self_echo_transcript_window"
+            if e.get("reason") == "self_echo_transcript"
         ]
         assert echoes
 
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_final_transcript_within_cooldown_after_speech_is_dropped(self):
+    async def test_matching_final_transcript_within_cooldown_is_dropped(self):
         from vox.streaming.types import StreamTranscript
 
         session, coll, _ = _build(aec_warmup_ms=0, backchannel_end_cooldown_ms=500)
         await session.start()
 
-        session._mark_agent_speech_started()
+        await session.submit_response_text("This is leaked assistant transcript content.")
+        await asyncio.sleep(0.1)
         session._mark_agent_speech_ended()
         assert not session._speech_guard.speech_active
 
         session._sm._state = TurnState.SPEAKING
         await session._forward_stream_event(StreamTranscript(
-            text="leaked transcript",
+            text="leaked assistant transcript content",
             start_ms=10,
             end_ms=500,
         ))
@@ -300,7 +355,7 @@ class TestPostSpeechTranscriptFilter:
 
         echoes = [
             e for e in coll.by_type("interruption.false_positive")
-            if e.get("reason") == "self_echo_transcript_window"
+            if e.get("reason") == "self_echo_transcript"
         ]
         assert echoes
         assert not coll.by_type("conversation.item.input_audio_transcription.completed")
@@ -329,9 +384,69 @@ class TestPostSpeechTranscriptFilter:
         assert coll.by_type("conversation.item.input_audio_transcription.completed")
         echoes = [
             e for e in coll.by_type("interruption.false_positive")
-            if e.get("reason") == "self_echo_transcript_window"
+            if e.get("reason") == "self_echo_transcript"
         ]
         assert not echoes
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_non_echo_final_during_speaking_confirms_and_preserves_turn(self):
+        from vox.streaming.types import StreamTranscript
+
+        session, coll, _ = _build(aec_warmup_ms=0)
+        await session.start()
+
+        await session.submit_response_text("The appointment is tomorrow at noon.")
+        await asyncio.sleep(0.1)
+        assert session.state == TurnState.SPEAKING
+
+        await session._forward_stream_event(StreamTranscript(
+            text="No, please move it to Tuesday.",
+            start_ms=10,
+            end_ms=900,
+            audio_duration_ms=890,
+        ))
+        await asyncio.sleep(0.1)
+
+        detected = coll.by_type("interruption.detected")
+        assert detected and detected[-1]["reason"] == "final_transcript"
+        assert coll.by_type("response.cancelled")
+        completed = coll.by_type("conversation.item.input_audio_transcription.completed")
+        assert completed and completed[-1]["transcript"] == "No, please move it to Tuesday."
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_partial_and_final_confirm_same_interruption_once(self):
+        from vox.streaming.types import StreamTranscript
+
+        session, coll, _ = _build(aec_warmup_ms=0)
+        await session.start()
+        await session.submit_response_text("The assistant is still speaking.")
+        await asyncio.sleep(0.1)
+
+        partial = StreamTranscript(
+            text="Please stop now",
+            is_partial=True,
+            start_ms=0,
+            end_ms=700,
+            audio_duration_ms=700,
+        )
+        final = StreamTranscript(
+            text="Please stop now.",
+            start_ms=0,
+            end_ms=800,
+            audio_duration_ms=800,
+        )
+
+        await session._confirm_interrupt_from_partial(partial)
+        await session._forward_stream_event(final)
+        await asyncio.sleep(0.1)
+
+        assert len(coll.by_type("interruption.detected")) == 1
+        completed = coll.by_type("conversation.item.input_audio_transcription.completed")
+        assert completed and completed[-1]["transcript"] == "Please stop now."
 
         await session.close()
 

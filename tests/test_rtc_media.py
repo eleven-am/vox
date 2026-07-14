@@ -32,6 +32,24 @@ async def test_rtc_audio_output_track_packetizes_large_tts_chunk():
 
 
 @pytest.mark.asyncio
+async def test_rtc_audio_output_track_reports_only_played_audio_frames():
+    queue = asyncio.Queue()
+    played: list[tuple[bytes, int]] = []
+    track = RtcAudioOutputTrack(
+        queue,
+        on_playout=lambda pcm16, sample_rate: played.append((pcm16, sample_rate)),
+    )
+    await track.enqueue(np.full(640, 1200, dtype=np.int16).tobytes(), 16_000)
+
+    assert played == []
+    await track.recv()
+
+    assert len(played) == 1
+    assert played[0][1] == 16_000
+    assert np.frombuffer(played[0][0], dtype=np.int16).size == 320
+
+
+@pytest.mark.asyncio
 async def test_rtc_audio_output_track_stops_on_sentinel():
     queue = asyncio.Queue()
     track = RtcAudioOutputTrack(queue)
@@ -180,4 +198,3 @@ async def test_pump_input_audio_ingests_real_audio_frame():
     await pump_input_audio(OneFrameTrack(), ingest)
 
     assert calls == [(samples.reshape(-1).tobytes(), 16_000)]
-

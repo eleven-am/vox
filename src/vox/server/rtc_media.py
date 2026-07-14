@@ -31,9 +31,15 @@ RtcAudioQueueItem = tuple[bytes, int] | RtcAudioDrain | RtcAudioClear | None
 class RtcAudioOutputTrack(MediaStreamTrack):
     kind = "audio"
 
-    def __init__(self, queue: asyncio.Queue[RtcAudioQueueItem]) -> None:
+    def __init__(
+        self,
+        queue: asyncio.Queue[RtcAudioQueueItem],
+        *,
+        on_playout: Callable[[bytes, int], None] | None = None,
+    ) -> None:
         super().__init__()
         self._queue = queue
+        self._on_playout = on_playout
         self._timestamp = 0
         self._start: float | None = None
         self._pending = np.empty(0, dtype=np.int16)
@@ -44,6 +50,7 @@ class RtcAudioOutputTrack(MediaStreamTrack):
         self._enqueued_chunks = 0
         self._silence_frames = 0
         self._clear_count = 0
+        self._playout_callback_errors = 0
 
     async def enqueue(self, pcm16: bytes, sample_rate: int) -> None:
         self._silenced = False
@@ -110,7 +117,13 @@ class RtcAudioOutputTrack(MediaStreamTrack):
         if samples.size == 0:
             samples = np.zeros(1, dtype=np.int16)
 
-        return await self._frame(samples)
+        frame = await self._frame(samples)
+        if self._on_playout is not None:
+            try:
+                self._on_playout(np.ascontiguousarray(samples).tobytes(), self._sample_rate)
+            except Exception:
+                self._playout_callback_errors += 1
+        return frame
 
     async def _silence_frame(self) -> av.AudioFrame:
         self._silence_frames += 1
@@ -159,6 +172,7 @@ class RtcAudioOutputTrack(MediaStreamTrack):
             "enqueued_chunks": self._enqueued_chunks,
             "silence_frames": self._silence_frames,
             "clear_count": self._clear_count,
+            "playout_callback_errors": self._playout_callback_errors,
         }
 
     def _update_max_buffered_audio_ms(self) -> None:

@@ -182,6 +182,7 @@ class ConvInterruptionDetectedEvent:
     response_id: str
     vad_active_ms: int
     partial_transcript: str | None
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -295,12 +296,15 @@ def serialize_conversation_event(event: ConvEvent) -> dict | None:
     if isinstance(event, ConvResponseCommittedEvent):
         return {"type": WIRE_RESPONSE_COMMITTED, "response_id": event.response_id}
     if isinstance(event, ConvInterruptionDetectedEvent):
-        return {
+        payload: dict = {
             "type": WIRE_INTERRUPTION_DETECTED,
             "response_id": event.response_id,
             "vad_active_ms": event.vad_active_ms,
             "partial_transcript": event.partial_transcript,
         }
+        if event.reason:
+            payload["reason"] = event.reason
+        return payload
     if isinstance(event, ConvInterruptionFalsePositiveEvent):
         payload_fp: dict = {
             "type": WIRE_INTERRUPTION_FALSE_POSITIVE,
@@ -733,6 +737,7 @@ def parse_conversation_wire_event(event: dict) -> ConvEvent | None:
                 if event.get("partial_transcript") is not None
                 else None
             ),
+            reason=str(event["reason"]) if event.get("reason") else None,
         )
     if t == WIRE_INTERRUPTION_FALSE_POSITIVE:
         return ConvInterruptionFalsePositiveEvent(
@@ -776,11 +781,13 @@ class ConversationOrchestrator:
         pace_response_done_to_audio: bool = False,
         audio_sink: Callable[[ConvAudioDeltaEvent], Awaitable[None]] | None = None,
         wait_for_output_playout: Callable[[], Awaitable[None]] | None = None,
+        output_playout_observed: bool = False,
     ) -> None:
         self._scheduler = scheduler
         self._pace_response_done_to_audio = pace_response_done_to_audio
         self._audio_sink = audio_sink
         self._wait_for_output_playout = wait_for_output_playout
+        self._output_playout_observed = output_playout_observed
         self._session: ConversationSession | None = None
         self._config: ConversationSessionConfig | None = None
         self._events: asyncio.Queue[ConvEvent] = asyncio.Queue()
@@ -807,6 +814,7 @@ class ConversationOrchestrator:
             include_word_timestamps=config.include_word_timestamps,
             pace_response_done_to_audio=self._pace_response_done_to_audio,
             wait_for_output_playout=self._wait_for_output_playout,
+            output_playout_observed=self._output_playout_observed,
         )
         self._config = config
         self._session = ConversationSession(
@@ -821,6 +829,10 @@ class ConversationOrchestrator:
         if self._session is None:
             raise SessionNotConfiguredError()
         await self._session.ingest_audio(pcm16, sample_rate=sample_rate)
+
+    def observe_output_playout(self, pcm16: bytes, sample_rate: int) -> None:
+        if self._session is not None:
+            self._session.observe_output_playout(pcm16, sample_rate)
 
     async def start_response(self, *, allow_interruptions: bool = True) -> None:
         if self._session is None:

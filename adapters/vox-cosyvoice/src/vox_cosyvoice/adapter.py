@@ -439,7 +439,10 @@ def _write_reference_audio(path: Path, reference_audio: NDArray[np.float32], sam
 
 
 def _reference_speech_16k(reference_audio: NDArray[np.float32]) -> Any:
-    torch = importlib.import_module("torch")
+    try:
+        torch = importlib.import_module("torch")
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("CosyVoice reference audio conversion requires the Torch runtime") from exc
     audio = np.asarray(reference_audio, dtype=np.float32).reshape(-1)
     if audio.size == 0:
         return torch.zeros((1, 0), dtype=torch.float32)
@@ -615,13 +618,17 @@ class CosyVoice2Adapter(TTSAdapter):
                 name="text_frontend",
                 type="boolean",
                 default=_DEFAULT_TEXT_FRONTEND,
-                description="Enable CosyVoice text normalization. Defaults off to match the upstream reproducibility guidance.",
+                description=(
+                    "Enable CosyVoice text normalization. Defaults off to match the upstream reproducibility guidance."
+                ),
             ),
             SynthesisParameterInfo(
                 name="stream",
                 type="boolean",
                 default=_DEFAULT_STREAM,
-                description="Use CosyVoice internal streaming generation. Defaults off for more stable one-shot synthesis.",
+                description=(
+                    "Use CosyVoice internal streaming generation. Defaults off for more stable one-shot synthesis."
+                ),
             ),
         )
 

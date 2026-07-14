@@ -106,6 +106,7 @@ def _build():
             max_endpointing_delay_ms=500,
             stable_speaking_min_ms=50,
             speaking_interrupt_min_duration_ms=80,
+            aec_warmup_ms=0,
         ),
     )
     session = ConversationSession(scheduler=Scheduler(tts), config=cfg, on_event=coll)
@@ -663,7 +664,11 @@ class TestClassifierFailureFallsBackToBackchannel:
         coll = Collector()
         cfg = ConversationConfig(
             stt_model="x:1", tts_model="y:1", voice="default",
-            policy=TurnPolicy(min_interrupt_duration_ms=80, stable_speaking_min_ms=50),
+            policy=TurnPolicy(
+                min_interrupt_duration_ms=80,
+                stable_speaking_min_ms=50,
+                aec_warmup_ms=0,
+            ),
             interrupt_classifier=BrokenClassifier(),
         )
         session = ConversationSession(scheduler=Scheduler(tts), config=cfg, on_event=coll)
@@ -674,7 +679,7 @@ class TestClassifierFailureFallsBackToBackchannel:
         assert session.state == TurnState.SPEAKING
 
         session._vad_started_at = time.monotonic()
-        session._latest_partial = StreamTranscript(text="actually", is_partial=True)
+        session._latest_partial = None
         await session._event_queue.put(TurnEvent(
             type=TurnEventType.SPEECH_STARTED,
             payload={"confirm_window_ms": 80},
@@ -683,6 +688,7 @@ class TestClassifierFailureFallsBackToBackchannel:
 
 
         assert session.state == TurnState.SPEAKING
-        assert coll.by_type("interruption.false_positive")
+        false_positives = coll.by_type("interruption.false_positive")
+        assert false_positives and false_positives[-1]["reason"] == "classifier_error"
 
         await session.close()

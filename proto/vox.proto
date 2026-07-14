@@ -1,6 +1,8 @@
 syntax = "proto3";
 package vox;
 
+import "google/protobuf/struct.proto";
+
 service HealthService {
   rpc Health(HealthRequest) returns (HealthResponse);
   rpc ListLoaded(ListLoadedRequest) returns (ListLoadedResponse);
@@ -156,6 +158,7 @@ message SynthesizeRequest {
   float speed = 4;
   string language = 5;
   string response_format = 6;
+  google.protobuf.Struct params = 7;
 }
 
 message AudioChunk {

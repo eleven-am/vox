@@ -739,9 +739,11 @@ def test_interruption_detected_wire_event_maps_to_operation_event():
         "response_id": "resp_1",
         "vad_active_ms": 320,
         "partial_transcript": "wait",
+        "reason": "partial_keyword",
     })
     assert isinstance(event, ConvInterruptionDetectedEvent)
     assert event.response_id == "resp_1"
+    assert event.reason == "partial_keyword"
 
 
 def test_transcript_delta_wire_event_maps_to_operation_event():

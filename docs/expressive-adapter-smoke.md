@@ -6,6 +6,18 @@ already-running Vox HTTP endpoint. Do not create a new namespace or PVC for
 cluster testing. If cluster testing is needed, use the existing Vox namespace,
 service, and HTTP port that are already running.
 
+## Implementation Layout
+
+The two CLI entry points keep environment-specific orchestration separate:
+
+- `scripts/expressive-adapter-local-smoke.py` owns disposable Docker clean-pull runs.
+- `scripts/expressive-adapter-served-smoke.py` owns read-only checks against an existing Vox server.
+
+Shared behavior lives under `src/vox/smoke/`: `audio.py` inspects generated WAVs,
+`evidence.py` serializes and classifies evidence, and `local_proof.py` evaluates the
+clean-pull proof contract. Changes to evidence semantics belong in those shared modules
+so local and served smoke runs do not drift.
+
 ## Scope
 
 Use this runbook for:

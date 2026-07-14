@@ -42,6 +42,7 @@ from vox.conversation.interrupt import (
     evaluate_interrupt_candidate_gate,
     has_recent_interrupt_context,
     interrupt_vad_active_ms,
+    looks_like_self_echo,
     transcript_duration_ms,
     transcript_word_count,
 )
@@ -122,6 +123,7 @@ class ConversationConfig:
     audio_preprocessor: AudioPreprocessor | None = None
     pace_response_done_to_audio: bool = False
     wait_for_output_playout: Callable[[], Awaitable[None]] | None = None
+    output_playout_observed: bool = False
 
     def __post_init__(self) -> None:
         self.turn_profile, profile_policy = resolve_turn_profile(self.turn_profile)
@@ -194,10 +196,12 @@ class ConversationSession:
         self._input_resampler = StreamResampler(TARGET_SAMPLE_RATE)
 
         self._speech_guard = AssistantSpeechGuard()
+        self._output_playout_started = False
 
         self._last_eou_probability: float | None = None
 
         self._vad_started_at: float | None = None
+        self._interrupt_confirmation_pending = False
         self._last_speech_stopped_at: float | None = None
         self._awaiting_final_transcript: bool = False
         self._awaiting_final_transcript_started_at: float = 0.0
@@ -272,9 +276,6 @@ class ConversationSession:
 
         if audio.size:
             self._audio_history.append_mic(audio)
-
-        if self._aec_warmup_active():
-            return
 
         try:
             async for stream_event in self._pipeline.process_audio(audio):
@@ -521,18 +522,18 @@ class ConversationSession:
             self._awaiting_final_transcript = False
             self._awaiting_final_transcript_started_at = 0.0
 
-            if self._is_in_self_echo_window():
-                logger.debug(
-                    "dropping final transcript inside agent-speech window (state=%s, agent_speech_active=%s)",
-                    self._sm.state.value,
-                    self._speech_guard.speech_active,
-                )
+            if self._is_in_self_echo_window() and (
+                echo_reason := self._final_transcript_echo_reason(stream_event.text)
+            ):
                 await self._emit_interruption_false_positive(
-                    vad_active_ms=0,
+                    vad_active_ms=transcript_duration_ms(stream_event),
                     partial_transcript=stream_event.text,
-                    reason="self_echo_transcript_window",
+                    reason=echo_reason,
                 )
                 return
+
+            if self._sm.state in {TurnState.SPEAKING, TurnState.PAUSED}:
+                await self._confirm_interrupt_from_final(stream_event)
 
             enrich_transcript(stream_event, self._config.language)
 
@@ -582,6 +583,7 @@ class ConversationSession:
             return None
 
         stream = self._response_lifecycle.start_stream(allow_interruptions=allow_interruptions)
+        self._output_playout_started = False
         self._audio_output.reset_for_response()
         await self._event_queue.put(TurnEvent(type=TurnEventType.RESPONSE_STARTED))
         await self._emit_response_created(stream.response_id)
@@ -630,6 +632,7 @@ class ConversationSession:
     async def _complete_response_stream(self, stream: ResponseStream) -> None:
         stream.pending_done = False
         self._mark_agent_speech_ended()
+        self._output_playout_started = False
         await self._event_queue.put(TurnEvent(type=TurnEventType.TTS_COMPLETED))
         await self._emit_response_done(stream.response_id)
         self._response_lifecycle.finish_stream_if_current(stream)
@@ -668,8 +671,8 @@ class ConversationSession:
         stream = self._response_stream
         if stream is not None and not stream.audio_started:
             stream.audio_started = True
-            self._arm_aec_warmup()
-            self._mark_agent_speech_started()
+        if not self._config.output_playout_observed:
+            self._mark_output_playout_started()
         await self._emit(
             {
                 "type": WIRE_AUDIO_DELTA,
@@ -680,8 +683,23 @@ class ConversationSession:
                 "sequence": sequence,
             }
         )
-        self._audio_history.remember_output_pcm16(encoded_audio, sample_rate)
+        if not self._config.output_playout_observed:
+            self._audio_history.remember_output_pcm16(encoded_audio, sample_rate)
         self._mark_estimated_playout(encoded_audio, sample_rate)
+
+    def observe_output_playout(self, pcm16_audio: bytes, sample_rate: int) -> None:
+        """Record audio after the transport has paced it for actual playout."""
+        if self._closed or not pcm16_audio:
+            return
+        self._mark_output_playout_started()
+        self._audio_history.remember_output_pcm16(pcm16_audio, sample_rate)
+
+    def _mark_output_playout_started(self) -> None:
+        if self._output_playout_started:
+            return
+        self._output_playout_started = True
+        self._arm_aec_warmup()
+        self._mark_agent_speech_started()
 
     def _arm_aec_warmup(self) -> None:
         self._speech_guard.arm_aec_warmup(self._config.policy.aec_warmup_ms)
@@ -702,11 +720,26 @@ class ConversationSession:
         self._speech_guard.mark_speech_ended()
 
     def _is_in_self_echo_window(self) -> bool:
-        if self._sm.state not in {TurnState.SPEAKING, TurnState.THINKING}:
+        if self._sm.state not in {TurnState.SPEAKING, TurnState.PAUSED, TurnState.THINKING}:
             return False
         return self._speech_guard.in_self_echo_window(
             self._config.policy.backchannel_end_cooldown_ms
         )
+
+    def _final_transcript_echo_reason(self, transcript: str | None) -> str | None:
+        if looks_like_self_echo(
+            transcript,
+            self._active_assistant_text(),
+            min_words=self._config.policy.self_echo_min_words,
+            min_overlap=self._config.policy.self_echo_min_overlap,
+        ):
+            return "self_echo_transcript"
+        if (
+            self._looks_like_current_output_echo()
+            and transcript_word_count(transcript) < self._config.policy.speaking_interrupt_min_words
+        ):
+            return "output_echo"
+        return None
 
     def _looks_like_current_output_echo(self) -> bool:
         return self._audio_history.looks_like_current_output_echo()
@@ -733,6 +766,8 @@ class ConversationSession:
 
         elif action.type == TurnActionType.STOP_TTS:
             self._mark_agent_speech_ended()
+            self._output_playout_started = False
+            self._interrupt_confirmation_pending = False
             stream = self._response_stream
             self._response_lifecycle.remember_cancelled_response()
             if stream is not None:
@@ -822,13 +857,21 @@ class ConversationSession:
         *,
         vad_active_ms: int,
         partial_transcript: str | None,
+        reason: str,
     ) -> None:
+        logger.info(
+            "interruption confirmed reason=%s vad_active_ms=%d transcript=%r",
+            reason,
+            vad_active_ms,
+            partial_transcript,
+        )
         await self._emit(
             {
                 "type": WIRE_INTERRUPTION_DETECTED,
                 "response_id": self._active_response_id,
                 "vad_active_ms": vad_active_ms,
                 "partial_transcript": partial_transcript,
+                "reason": reason,
             }
         )
 
@@ -839,6 +882,12 @@ class ConversationSession:
         partial_transcript: str | None,
         reason: str,
     ) -> None:
+        logger.info(
+            "interruption rejected reason=%s vad_active_ms=%d transcript=%r",
+            reason,
+            vad_active_ms,
+            partial_transcript,
+        )
         await self._emit(
             {
                 "type": WIRE_INTERRUPTION_FALSE_POSITIVE,
@@ -882,6 +931,9 @@ class ConversationSession:
         )
 
     async def _confirm_interrupt_from_partial(self, transcript: StreamTranscript) -> None:
+        if self._interrupt_confirmation_pending:
+            return
+        self._interrupt_confirmation_pending = True
         vad_active_ms = max(
             self._current_interrupt_vad_ms(),
             transcript_duration_ms(transcript),
@@ -889,12 +941,57 @@ class ConversationSession:
         await self._emit_interruption_detected(
             vad_active_ms=vad_active_ms,
             partial_transcript=transcript.text,
+            reason=(
+                "partial_keyword"
+                if self._config.interrupt_classifier.should_short_circuit(transcript.text)
+                else "partial_transcript"
+            ),
         )
         await self._cancel_timer(TimerKey.CONFIRM_INTERRUPT.value)
         await self._event_queue.put(
             TurnEvent(
                 type=TurnEventType.TIMER_ELAPSED,
                 payload={"key": TimerKey.CONFIRM_INTERRUPT.value},
+            )
+        )
+
+    async def _confirm_interrupt_from_final(self, transcript: StreamTranscript) -> None:
+        """Treat a non-echo final STT result as authoritative barge-in evidence."""
+        if self._interrupt_confirmation_pending:
+            return
+        self._interrupt_confirmation_pending = True
+        await self._cancel_timer(TimerKey.CONFIRM_INTERRUPT.value)
+        await self._emit_interruption_detected(
+            vad_active_ms=max(self._current_interrupt_vad_ms(), transcript_duration_ms(transcript)),
+            partial_transcript=transcript.text,
+            reason="final_transcript",
+        )
+        await self._event_queue.put(
+            TurnEvent(
+                type=TurnEventType.TIMER_ELAPSED,
+                payload={"key": TimerKey.CONFIRM_INTERRUPT.value},
+            )
+        )
+
+    async def _reject_interrupt_candidate(
+        self,
+        *,
+        vad_active_ms: int,
+        partial_transcript: str | None,
+        reason: str,
+        speech_stopped_reason: str | None = None,
+    ) -> None:
+        self._vad_started_at = None
+        self._interrupt_confirmation_pending = False
+        await self._emit_interruption_false_positive(
+            vad_active_ms=vad_active_ms,
+            partial_transcript=partial_transcript,
+            reason=reason,
+        )
+        await self._event_queue.put(
+            TurnEvent(
+                type=TurnEventType.SPEECH_STOPPED,
+                payload={"reason": speech_stopped_reason or reason},
             )
         )
 
@@ -942,17 +1039,11 @@ class ConversationSession:
                 gate.false_positive_reason,
                 vad_active_ms,
             )
-            self._vad_started_at = None
-            await self._emit_interruption_false_positive(
+            await self._reject_interrupt_candidate(
                 vad_active_ms=vad_active_ms,
                 partial_transcript=partial_transcript,
-                reason=gate.false_positive_reason,
-            )
-            await self._event_queue.put(
-                TurnEvent(
-                    type=TurnEventType.SPEECH_STOPPED,
-                    payload={"reason": gate.speech_stopped_reason},
-                )
+                reason=gate.false_positive_reason or "candidate_rejected",
+                speech_stopped_reason=gate.speech_stopped_reason,
             )
             return
         if gate.action == InterruptCandidateAction.CONFIRM_FROM_PARTIAL:
@@ -966,6 +1057,14 @@ class ConversationSession:
             await self._confirm_interrupt_from_partial(partial)
             return
 
+        if self._aec_warmup_active() and partial is None:
+            await self._reject_interrupt_candidate(
+                vad_active_ms=vad_active_ms,
+                partial_transcript=None,
+                reason="aec_warmup_unconfirmed",
+            )
+            return
+
         try:
             is_real = await self._config.interrupt_classifier.is_real_interrupt(
                 audio_tail,
@@ -976,12 +1075,18 @@ class ConversationSession:
             )
         except Exception:
             logger.exception("interrupt classifier raised; defaulting to backchannel")
-            is_real = False
+            await self._reject_interrupt_candidate(
+                vad_active_ms=vad_active_ms,
+                partial_transcript=partial_transcript,
+                reason="classifier_error",
+            )
+            return
 
         if is_real:
             await self._emit_interruption_detected(
                 vad_active_ms=vad_active_ms,
                 partial_transcript=partial_transcript,
+                reason="classifier",
             )
             await self._event_queue.put(
                 TurnEvent(
@@ -995,17 +1100,10 @@ class ConversationSession:
                 vad_active_ms,
             )
 
-            self._vad_started_at = None
-            await self._emit_interruption_false_positive(
+            await self._reject_interrupt_candidate(
                 vad_active_ms=vad_active_ms,
                 partial_transcript=partial_transcript,
                 reason="backchannel",
-            )
-            await self._event_queue.put(
-                TurnEvent(
-                    type=TurnEventType.SPEECH_STOPPED,
-                    payload={"reason": "backchannel"},
-                )
             )
 
     async def _cancel_timer(self, key: str) -> None:

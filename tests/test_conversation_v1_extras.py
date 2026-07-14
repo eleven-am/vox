@@ -102,6 +102,7 @@ def _build(**policy_kwargs):
         "stable_speaking_min_ms": 150,
         "speaking_interrupt_min_duration_ms": 0,
         "speaking_interrupt_min_words": 0,
+        "aec_warmup_ms": 0,
         **policy_kwargs,
     })
     cfg = ConversationConfig(

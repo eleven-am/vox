@@ -39,7 +39,7 @@ DEFAULT_INTERRUPT_KEYWORDS_BY_LANG: dict[str, frozenset[str]] = {
     "hi": frozenset({"रुको", "रुकिए", "ठहरो", "रद्द"}),
 }
 
-_WORD_RE = re.compile(r"[a-z0-9']+")
+_WORD_RE = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", re.UNICODE)
 
 
 def looks_like_self_echo(
@@ -57,8 +57,8 @@ def looks_like_self_echo(
     if not transcript or not assistant_text:
         return False
 
-    heard = _WORD_RE.findall(transcript.lower())
-    spoken = _WORD_RE.findall(assistant_text.lower())
+    heard = _WORD_RE.findall(transcript.casefold())
+    spoken = _WORD_RE.findall(assistant_text.casefold())
     if len(heard) < min_words or len(spoken) < min_words:
         return False
 
@@ -198,18 +198,21 @@ def evaluate_interrupt_candidate_gate(
             speech_stopped_reason="self_echo",
         )
 
+    if active_assistant_text and evidence.is_strong(
+        partial,
+        assistant_text=active_assistant_text,
+    ):
+        return InterruptCandidateDecision(action=InterruptCandidateAction.CONFIRM_FROM_PARTIAL)
+
+    if is_interrupt_keyword and partial_transcript:
+        return InterruptCandidateDecision(action=InterruptCandidateAction.CONFIRM_FROM_PARTIAL)
+
     if output_echo:
         return InterruptCandidateDecision(
             action=InterruptCandidateAction.REJECT,
             false_positive_reason="output_echo",
             speech_stopped_reason="output_echo",
         )
-
-    if active_assistant_text and evidence.is_strong(
-        partial,
-        assistant_text=active_assistant_text,
-    ):
-        return InterruptCandidateDecision(action=InterruptCandidateAction.CONFIRM_FROM_PARTIAL)
 
     if active_assistant_text and not is_interrupt_keyword and partial_transcript is not None:
         word_count = transcript_word_count(partial_transcript)

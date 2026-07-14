@@ -10,6 +10,7 @@ from vox.operations.conversation import (
     serialize_conversation_event,
 )
 from vox.operations.errors import OperationError
+from vox.server.rtc_timeline import RtcTurnTimeline, rtc_audio_stats
 
 
 def pondsocket_route_or_channel_session_id(ctx: Any) -> str:
@@ -57,10 +58,17 @@ async def broadcast_rtc_control_events_to_user(
     session_id: str,
     prepare_event: Any,
 ) -> None:
+    timeline = RtcTurnTimeline(session_id=session_id)
     async for event in orchestrator.events():
         prepared = prepare_event(record=record, session_id=session_id, event=event)
         if prepared.wire is not None:
             await try_broadcast_wire_to_user(channel, user_id, prepared.wire)
+            timing = timeline.observe(
+                prepared.wire,
+                audio_stats=rtc_audio_stats(record),
+            )
+            if timing is not None:
+                await try_broadcast_wire_to_user(channel, user_id, timing)
         if prepared.done:
             return
 

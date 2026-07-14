@@ -9,20 +9,19 @@ already serving requests.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import math
 import os
-import sys
 import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-import wave
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+
+from vox.smoke.audio import inspect_audio
+from vox.smoke.evidence import FAILURE_CLASSES, failure_classification_reasons, write_evidence
 
 DEFAULT_SHORT_TEXT = "This is a short expressive adapter smoke test."
 DEFAULT_LONG_TEXT = (
@@ -30,7 +29,6 @@ DEFAULT_LONG_TEXT = (
     "keep a stable voice, and avoid silence or obvious truncation while the existing "
     "Vox server handles the request."
 )
-FAILURE_CLASSES = ("none", "Vox", "adapter", "dependency", "upstream", "hardware")
 EVIDENCE_SCHEMA_VERSION = 1
 NOT_CLEAN_PULL_BLOCKER = (
     "existing-server smoke cannot prove a clean model pull or clean adapter runtime install"
@@ -203,60 +201,20 @@ def _sample_memory_until(
             break
 
 
-def _pcm_stats(frames: bytes, *, sample_width: int) -> tuple[float | None, float | None]:
-    if not frames or sample_width not in {1, 2, 4}:
-        return None, None
-
-    if sample_width == 1:
-        values = [byte - 128 for byte in frames]
-        normalizer = 128.0
-    else:
-        values = [
-            int.from_bytes(frames[i:i + sample_width], byteorder="little", signed=True)
-            for i in range(0, len(frames) - sample_width + 1, sample_width)
-        ]
-        normalizer = float(2 ** (8 * sample_width - 1))
-
-    if not values:
-        return None, None
-    peak = max(abs(value) for value in values) / normalizer
-    rms = math.sqrt(sum(value * value for value in values) / len(values)) / normalizer
-    return peak, rms
-
-
 def _audio_stats(path: Path) -> AudioStats:
-    data = path.read_bytes()
-    digest = hashlib.sha256(data).hexdigest()
-    duration_s: float | None = None
-    sample_rate: int | None = None
-    channels: int | None = None
-    sample_width: int | None = None
-    peak: float | None = None
-    rms: float | None = None
-
-    try:
-        with wave.open(str(path), "rb") as wav:
-            sample_rate = wav.getframerate()
-            channels = wav.getnchannels()
-            sample_width = wav.getsampwidth()
-            frames_count = wav.getnframes()
-            duration_s = frames_count / sample_rate if sample_rate else None
-            frames = wav.readframes(frames_count)
-            peak, rms = _pcm_stats(frames, sample_width=sample_width)
-    except (wave.Error, EOFError):
-        pass
-
-    silent = bool(rms is not None and rms < 0.0001)
+    metrics = inspect_audio(path)
+    if metrics is None:
+        raise FileNotFoundError(path)
     return AudioStats(
-        bytes=len(data),
-        sha256=digest,
-        duration_s=duration_s,
-        sample_rate=sample_rate,
-        channels=channels,
-        sample_width=sample_width,
-        peak=peak,
-        rms=rms,
-        silent=silent,
+        bytes=metrics.bytes,
+        sha256=metrics.sha256,
+        duration_s=metrics.duration_s,
+        sample_rate=metrics.sample_rate,
+        channels=metrics.channels,
+        sample_width=metrics.sample_width,
+        peak=metrics.peak,
+        rms=metrics.rms,
+        silent=metrics.silent,
     )
 
 
@@ -357,11 +315,7 @@ def _run_case(
 
 
 def _write_evidence(evidence: dict[str, Any], output_dir: Path) -> Path:
-    evidence_path = output_dir / "evidence.json"
-    evidence_path.write_text(json.dumps(evidence, indent=2, sort_keys=True), encoding="utf-8")
-    print(json.dumps(evidence, indent=2, sort_keys=True))
-    print(f"Evidence written to {evidence_path}", file=sys.stderr)
-    return evidence_path
+    return write_evidence(evidence, output_dir, filename="evidence.json")
 
 
 def _status_failed(evidence: dict[str, Any], keys: tuple[str, ...]) -> bool:
@@ -417,18 +371,11 @@ def _failure_classification_reasons(
     failure_class: str,
     failure_note: str,
 ) -> list[str]:
-    if failure_reasons and failure_class == "none":
-        return [
-            "failing smoke run must set --failure-class to one of "
-            "Vox, adapter, dependency, upstream, or hardware"
-        ]
-    if failure_reasons and failure_class != "none" and not failure_note.strip():
-        return ["classified failing smoke run must include --failure-note"]
-    if not failure_reasons and failure_class != "none":
-        return ["passing smoke run must use --failure-class none"]
-    if not failure_reasons and failure_note.strip():
-        return ["passing smoke run must not set --failure-note"]
-    return []
+    return failure_classification_reasons(
+        failure_reasons=failure_reasons,
+        failure_class=failure_class,
+        failure_note=failure_note,
+    )
 
 
 def main() -> int:

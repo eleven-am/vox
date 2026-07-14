@@ -248,6 +248,48 @@ async def test_broadcast_rtc_control_events_to_user_uses_prepared_wire_and_stops
 
 
 @pytest.mark.asyncio
+async def test_broadcast_rtc_control_events_includes_turn_timing_diagnostics():
+    channel = FakeChannel()
+    orchestrator = FakeOrchestrator("started", "interrupted", "done")
+
+    def prepare_event(*, record, session_id, event):
+        wires = {
+            "started": {"type": "input_audio_buffer.speech_started", "timestamp_ms": 10},
+            "interrupted": {
+                "type": "interruption.detected",
+                "response_id": "resp_1",
+                "reason": "partial_keyword",
+            },
+            "done": {"type": "response.done", "response_id": "resp_1"},
+        }
+        return FakePreparedEvent(wires[event], done=event == "done")
+
+    record = object()
+    await broadcast_rtc_control_events_to_user(
+        orchestrator=orchestrator,
+        channel=channel,
+        user_id="user-1",
+        record=record,
+        session_id="rtc_1",
+        prepare_event=prepare_event,
+    )
+
+    event_names = [name for name, _, _ in channel.broadcasts]
+    assert event_names == [
+        "input_audio_buffer.speech_started",
+        "rtc.turn_timing",
+        "interruption.detected",
+        "rtc.turn_timing",
+        "response.done",
+        "rtc.turn_timing",
+    ]
+    interruption_timing = channel.broadcasts[3][1]["data"]
+    assert interruption_timing["source_event"] == "interruption.detected"
+    assert interruption_timing["response_id"] == "resp_1"
+    assert interruption_timing["ms_since_speech_started"] >= 0
+
+
+@pytest.mark.asyncio
 async def test_broadcast_rtc_client_events_to_user_drains_control_queue_until_sentinel():
     channel = FakeChannel()
     record = FakeRecord(

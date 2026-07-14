@@ -13,6 +13,7 @@ from vox.server.rtc_client_events import (
     flush_pending_client_events,
     handle_browser_data_channel_message,
 )
+from vox.server.rtc_conversation import observe_rtc_audio_playout
 from vox.server.rtc_ice import (
     InvalidIceCandidateError,
     candidate_events_from_sdp,
@@ -53,7 +54,14 @@ async def create_browser_rtc_answer(
     record.rtc_peer = pc
     if record.audio_output is None:
         record.audio_output = asyncio.Queue()
-    record.audio_output_track = RtcAudioOutputTrack(record.audio_output)
+    record.audio_output_track = RtcAudioOutputTrack(
+        record.audio_output,
+        on_playout=lambda pcm16, sample_rate: observe_rtc_audio_playout(
+            record,
+            pcm16,
+            sample_rate,
+        ),
+    )
     pc.addTrack(record.audio_output_track)
 
     bind_peer_connection_handlers(record=record, session_id=session_id, registry=registry)

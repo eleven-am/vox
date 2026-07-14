@@ -188,6 +188,7 @@ class TestInterruptionEventContracts:
         await session._emit_interruption_detected(
             vad_active_ms=420,
             partial_transcript="stop there",
+            reason="partial_keyword",
         )
 
         assert collector.events == [
@@ -196,6 +197,7 @@ class TestInterruptionEventContracts:
                 "response_id": "resp_1",
                 "vad_active_ms": 420,
                 "partial_transcript": "stop there",
+                "reason": "partial_keyword",
             }
         ]
 

@@ -555,6 +555,33 @@ class TestSynthesizeMapping:
         assert "audio/L16" in resp.headers["content-type"]
         assert resp.content[:4] != b"RIFF"
 
+    def test_openai_speech_request_passes_params_to_operation_builder(self, monkeypatch):
+        from vox.server.routes import synthesize
+
+        captured = None
+        original_builder = synthesize.synthesis_request_from_fields
+
+        def capture_build(**kwargs):
+            nonlocal captured
+            captured = kwargs
+            return original_builder(**{**kwargs, "params": {}})
+
+        monkeypatch.setattr(synthesize, "synthesis_request_from_fields", capture_build)
+        client = self._client()
+
+        resp = client.post(
+            "/v1/audio/speech",
+            json={
+                "model": "test-tts:latest",
+                "input": "hello",
+                "params": {"temperature": 0.7, "seed": 123},
+            },
+        )
+
+        assert resp.status_code == 200
+        assert captured is not None
+        assert captured["params"] == {"temperature": pytest.approx(0.7), "seed": 123}
+
     def test_model_not_found_maps_to_404(self):
         client = self._client()
         resp = client.post(

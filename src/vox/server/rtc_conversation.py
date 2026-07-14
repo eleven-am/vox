@@ -111,9 +111,16 @@ def create_rtc_orchestrator_with(
         pace_response_done_to_audio=True,
         audio_sink=send_rtc_audio,
         wait_for_output_playout=wait_for_rtc_playout,
+        output_playout_observed=True,
     )
     record.orchestrator = orchestrator
     return orchestrator
+
+
+def observe_rtc_audio_playout(record: Any, pcm16: bytes, sample_rate: int) -> None:
+    orchestrator = getattr(record, "orchestrator", None)
+    if orchestrator is not None:
+        orchestrator.observe_output_playout(pcm16, sample_rate)
 
 
 async def enqueue_rtc_audio(record: Any, event: ConvAudioDeltaEvent) -> None:

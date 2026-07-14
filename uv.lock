@@ -2564,7 +2564,7 @@ wheels = [
 
 [[package]]
 name = "vox-runtime"
-version = "0.2.93"
+version = "0.2.94"
 source = { editable = "." }
 dependencies = [
     { name = "aiortc" },
@@ -2633,7 +2633,7 @@ requires-dist = [
     { name = "pondsocket", specifier = ">=0.0.7,<0.1.0" },
     { name = "pondsocket-asgi", specifier = ">=0.0.1,<0.1.0" },
     { name = "pondsocket-common", specifier = ">=0.0.1,<0.1.0" },
-    { name = "protobuf", specifier = ">=4.25.0" },
+    { name = "protobuf", specifier = ">=6.31.1,<7.0" },
     { name = "pydub", specifier = ">=0.25.1" },
     { name = "python-multipart", specifier = ">=0.0.18" },
     { name = "soundfile", specifier = ">=0.13.1" },

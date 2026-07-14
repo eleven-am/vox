@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import grpc
 import numpy as np
 import pytest
+from google.protobuf.struct_pb2 import Struct
 
 from tests.fakes import FakeCloneableTTSAdapter
 from vox.audio.codecs import encode_wav
@@ -715,6 +716,52 @@ class TestSynthesisServicerMapping:
         assert context._details == "bad grpc synthesis config"
 
     @pytest.mark.asyncio
+    async def test_synthesize_passes_json_params_to_operation(self, tmp_path, monkeypatch):
+        from vox.grpc import synthesis_servicer
+        from vox.grpc.synthesis_servicer import SynthesisServicer
+
+        captured = None
+
+        async def fake_synthesize_raw(**kwargs):
+            nonlocal captured
+            captured = kwargs["request"]
+
+            async def chunks():
+                yield SynthesisRawChunk(audio=b"audio", sample_rate=24_000, is_final=True)
+
+            return chunks()
+
+        monkeypatch.setattr(synthesis_servicer, "synthesize_raw", fake_synthesize_raw)
+        params = Struct()
+        params.update(
+            {
+                "temperature": 0.7,
+                "seed": 123,
+                "stream": True,
+                "style": "warm",
+            }
+        )
+        servicer = SynthesisServicer(_make_store(tmp_path), MagicMock(), MagicMock())
+
+        chunks = [
+            chunk
+            async for chunk in servicer.Synthesize(
+                vox_pb2.SynthesizeRequest(model="expressive:latest", input="hello", params=params),
+                FakeContext(),
+            )
+        ]
+
+        assert len(chunks) == 1
+        assert captured is not None
+        assert captured.params == {
+            "temperature": pytest.approx(0.7),
+            "seed": 123,
+            "stream": True,
+            "style": "warm",
+        }
+        assert isinstance(captured.params["seed"], int)
+
+    @pytest.mark.asyncio
     async def test_list_voices_empty(self, tmp_path):
         from vox.grpc.synthesis_servicer import SynthesisServicer
 
@@ -973,11 +1020,18 @@ class TestProtoMessages:
         assert msg.word_timestamps is True
 
     def test_synthesize_request_fields(self):
+        params = Struct()
+        params.update({"temperature": 0.7, "seed": 123})
         msg = vox_pb2.SynthesizeRequest(
-            model="kokoro:v1.0", input="Hello world", voice="af_heart", speed=1.5,
+            model="kokoro:v1.0",
+            input="Hello world",
+            voice="af_heart",
+            speed=1.5,
+            params=params,
         )
         assert msg.input == "Hello world"
         assert msg.speed == pytest.approx(1.5)
+        assert dict(msg.params) == {"temperature": pytest.approx(0.7), "seed": 123.0}
 
     def test_voice_info_fields(self):
         msg = vox_pb2.VoiceInfo(id="af_heart", name="Heart", language="en-us", gender="female")

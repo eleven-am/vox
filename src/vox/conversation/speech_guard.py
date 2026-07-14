@@ -38,9 +38,12 @@ class AssistantSpeechGuard:
         self._aec_warmup_until = self._clock() + duration_ms / 1000.0
 
     def aec_warmup_active(self) -> bool:
+        return self.aec_warmup_remaining_ms() > 0
+
+    def aec_warmup_remaining_ms(self) -> int:
         if self._aec_warmup_until <= 0.0:
-            return False
-        return self._clock() < self._aec_warmup_until
+            return 0
+        return max(0, int((self._aec_warmup_until - self._clock()) * 1000))
 
     def start_flutter_cooldown(self, duration_ms: int) -> None:
         if duration_ms <= 0:

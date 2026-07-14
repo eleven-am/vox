@@ -7,7 +7,7 @@ from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.grpc import vox_pb2_grpc
 from vox.grpc.operation_errors import map_operation_errors_to_grpc, map_route_errors_to_grpc
-from vox.grpc.synthesis_messages import audio_chunk_message
+from vox.grpc.synthesis_messages import audio_chunk_message, synthesis_params_from_message
 from vox.grpc.voice_messages import (
     create_voice_response,
     delete_voice_response,
@@ -47,6 +47,7 @@ class SynthesisServicer(vox_pb2_grpc.SynthesisServiceServicer):
                 speed=request.speed,
                 language=request.language or None,
                 response_format="wav",
+                params=synthesis_params_from_message(request.params),
             )
             iterator = await synthesize_raw(
                 scheduler=self._scheduler,

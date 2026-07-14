@@ -158,6 +158,7 @@ def test_expressive_adapter_smoke_script_refuses_production_and_requires_create(
 
 def test_expressive_adapter_served_smoke_script_uses_existing_server_only():
     script = Path("scripts/expressive-adapter-served-smoke.py").read_text()
+    evidence_helpers = Path("src/vox/smoke/evidence.py").read_text()
     runbook = Path("docs/expressive-adapter-smoke.md").read_text()
 
     assert "already-running Vox HTTP server" in script
@@ -184,10 +185,10 @@ def test_expressive_adapter_served_smoke_script_uses_existing_server_only():
     assert "--failure-note" in script
     assert "failure_class" in script
     assert "failure_note" in script
-    assert "failing smoke run must set --failure-class" in script
-    assert "classified failing smoke run must include --failure-note" in script
-    assert "passing smoke run must not set --failure-note" in script
-    assert "passing smoke run must use --failure-class none" in script
+    assert "failing smoke run must set --failure-class" in evidence_helpers
+    assert "classified failing smoke run must include --failure-note" in evidence_helpers
+    assert "passing smoke run must not set --failure-note" in evidence_helpers
+    assert "passing smoke run must use --failure-class none" in evidence_helpers
     assert "--inspect-only" in script
     assert "synthesis_skipped" in script
     assert "inspect_only" in script
@@ -209,7 +210,10 @@ def test_expressive_adapter_served_smoke_script_uses_existing_server_only():
     assert "per-synthesis `/v1/system/memory` samples under `memory_samples`" in runbook
     assert "`clean_pull_proof: false`" in runbook
     assert "`clean_pull_blockers`" in runbook
-    assert "cannot prove a\nclean `vox pull`, a clean adapter package install, or a clean adapter runtime\ninstall" in runbook
+    assert (
+        "cannot prove a\nclean `vox pull`, a clean adapter package install, or a clean adapter runtime\ninstall"
+        in runbook
+    )
     assert "--memory-sample-interval 0" in runbook
     assert "SMOKE_MEMORY_SAMPLE_INTERVAL=0" in runbook
     assert "explicit `failure_reasons`" in runbook
@@ -267,7 +271,10 @@ def test_expressive_adapter_served_smoke_script_uses_existing_server_only():
     assert "default voice `samantha`" in status
     assert "not acceptable completion evidence for IndexTTS" in status
     assert "actual cloned voice id `44a66a38` (`Samantha (Her)`)" in status
-    assert "The first invalid check with `voice=samantha` loaded IndexTTS in\nabout 16.7s but returned HTTP 400" in status
+    assert (
+        "The first invalid check with `voice=samantha` loaded IndexTTS in\nabout 16.7s but returned HTTP 400"
+        in status
+    )
     assert "Short text: HTTP 200, 37 input characters, 215596-byte WAV" in status
     assert "Long text: HTTP 200, 241 input characters, 905772-byte WAV" in status
     assert "estimated loaded VRAM at 8.5GB" in status
@@ -338,7 +345,8 @@ def test_expressive_adapter_smoke_runbook_documents_local_docker_clean_pull():
         "`goal_checklist`",
         "adapter production-readiness goal to the concrete proof fields",
         "Each check has\n`status`, `evidence`, and `blockers` keys",
-        "blocked checks explain the missing command, state, artifact,\nresource, usability, or failure-classification proof",
+        "blocked checks explain the missing command, state, artifact,\n"
+        "resource, usability, or failure-classification proof",
         "copied audio stats including sample\nwidth, peak, RMS, and silence detection",
         "Silent generated WAVs fail the run even if",
         "post-pull adapter/runtime/manifest/model-store state",
@@ -417,7 +425,9 @@ def test_expressive_adapter_smoke_runbook_documents_clean_pull_proof_queue():
         "Passing proof requires `proof_ready: true`",
         "If `proof_ready` is false, use `proof_blockers` as the\n"
         "authoritative list",
-        "make verify-expressive-local-evidence EVIDENCE=/tmp/vox-adapter-lab/dia-tts-1.6b/artifacts/local-smoke-evidence.json VERIFY_PROOF_TARGET=dia VERIFY_MODEL=dia-tts:1.6b",
+        "make verify-expressive-local-evidence "
+        "EVIDENCE=/tmp/vox-adapter-lab/dia-tts-1.6b/artifacts/local-smoke-evidence.json "
+        "VERIFY_PROOF_TARGET=dia VERIFY_MODEL=dia-tts:1.6b",
         "scripts/verify-expressive-adapter-evidence.py",
         "checks\n`evidence_schema_version`, requires `proof_ready: true`, and independently",
         "checks the requested model/proof target, required command results",
@@ -782,7 +792,8 @@ def test_expressive_adapter_status_records_dia_budget_finding():
         "`min_vram_gb=12`",
         "wrote evidence to `/tmp/vox-served-smoke/evidence.json`",
         "Short and long Dia synthesis both returned HTTP 500",
-        "Cannot satisfy VRAM budget: projected 12500000000 bytes plus headroom\n1073741824 exceeds max 10737418240 bytes",
+        "Cannot satisfy VRAM budget: projected 12500000000 bytes plus headroom\n"
+        "1073741824 exceeds max 10737418240 bytes",
         "loaded model state before and\nafter the run still contained only `parakeet-stt:tdt-0.6b-v3`",
         "current served\nfailure as deployment hardware/budget",
         "generic `Internal synthesis error`",

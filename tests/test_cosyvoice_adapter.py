@@ -16,6 +16,20 @@ import soundfile as sf
 from vox.core.types import ModelFormat, ModelType
 from vox.operations.errors import InvalidConfigError
 
+_FAKE_RUNTIME_MODULES = ("cosyvoice", "cosyvoice.cli", "cosyvoice.cli.cosyvoice", "torch")
+_MISSING_MODULE = object()
+
+
+@pytest.fixture(autouse=True)
+def _restore_fake_runtime_modules():
+    previous = {name: sys.modules.get(name, _MISSING_MODULE) for name in _FAKE_RUNTIME_MODULES}
+    yield
+    for name, module in previous.items():
+        if module is _MISSING_MODULE:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = module
+
 
 class _FakeCosyVoice2:
     instances: list[_FakeCosyVoice2] = []
@@ -48,6 +62,18 @@ class _FakeCosyVoice2:
         yield {"tts_speech": np.array([0.0, 0.25, -0.25], dtype=np.float32)}
 
 
+class _FakeTorchTensor:
+    def __init__(self, value) -> None:
+        self._value = np.asarray(value, dtype=np.float32)
+
+    @property
+    def shape(self):
+        return self._value.shape
+
+    def reshape(self, *shape):
+        return _FakeTorchTensor(self._value.reshape(*shape))
+
+
 def _cosyvoice_runtime_file() -> str:
     runtime_root = Path(os.environ.get("VOX_HOME", str(Path.home() / ".vox"))) / "runtime" / "cosyvoice"
     return str(runtime_root / "CosyVoice" / "cosyvoice" / "cli" / "cosyvoice.py")
@@ -61,9 +87,14 @@ def _install_fake_cosyvoice_modules(*, module_file: str | None = None) -> None:
     cli.__file__ = str(Path(module_file or _cosyvoice_runtime_file()).parent / "__init__.py")
     cosyvoice.__file__ = module_file or _cosyvoice_runtime_file()
     cosyvoice.CosyVoice2 = _FakeCosyVoice2
+    torch = ModuleType("torch")
+    torch.float32 = np.float32
+    torch.from_numpy = _FakeTorchTensor
+    torch.zeros = lambda shape, dtype=None: _FakeTorchTensor(np.zeros(shape, dtype=dtype))
     sys.modules["cosyvoice"] = package
     sys.modules["cosyvoice.cli"] = cli
     sys.modules["cosyvoice.cli.cosyvoice"] = cosyvoice
+    sys.modules["torch"] = torch
 
 
 def test_cosyvoice_package_import_is_light():
@@ -109,11 +140,23 @@ def test_cosyvoice_readme_uses_public_model_reference():
 def test_cosyvoice_load_rejects_cpu_before_runtime_install(tmp_path):
     from vox_cosyvoice.adapter import CosyVoice2Adapter
 
-    with patch("vox_cosyvoice.adapter._load_cosyvoice_class") as load_cosyvoice_class:
-        with pytest.raises(RuntimeError, match="requires a Linux x86_64 CUDA runtime"):
-            CosyVoice2Adapter().load(str(tmp_path), "cpu")
+    with (
+        patch("vox_cosyvoice.adapter._load_cosyvoice_class") as load_cosyvoice_class,
+        pytest.raises(RuntimeError, match="requires a Linux x86_64 CUDA runtime"),
+    ):
+        CosyVoice2Adapter().load(str(tmp_path), "cpu")
 
     load_cosyvoice_class.assert_not_called()
+
+
+def test_cosyvoice_reference_conversion_reports_missing_torch():
+    from vox_cosyvoice.adapter import _reference_speech_16k
+
+    with (
+        patch.dict(sys.modules, {"torch": None}),
+        pytest.raises(RuntimeError, match="requires the Torch runtime"),
+    ):
+        _reference_speech_16k(np.zeros(160, dtype=np.float32))
 
 
 def test_cosyvoice_load_and_synthesize_with_reference_audio(tmp_path):
