@@ -14,9 +14,9 @@ One `asyncio.Task` drives the state machine (`_run_loop`); it is the **only**
 mutator of output pause state and `_tts_task`. The audio ingest path and the
 TTS task push work back through the main loop. When output is paused for an
 unconfirmed barge-in, newly generated TTS audio is held until the candidate is
-confirmed or rejected. The acoustic echo guard runs synchronously when VAD
-fires during SPEAKING, suppressing the SPEECH_STARTED event entirely when the
-mic input strongly correlates with recent TTS output.
+confirmed or rejected. Acoustic echo is evidence owned by the interruption
+detector; it never bypasses candidate creation or vetoes later transcript
+evidence.
 """
 
 from __future__ import annotations
@@ -191,6 +191,7 @@ class ConversationSession:
 
         self._event_queue: asyncio.Queue[TurnEvent] = asyncio.Queue()
         self._timer_registry = ConversationTimerRegistry(self._on_timer_expired)
+        self._interrupt_timer_candidate_id: int | None = None
         self._tts_task: asyncio.Task | None = None
         self._runner: asyncio.Task | None = None
         self._audio_output = ResponseAudioOutput(pace_to_playout=config.pace_response_done_to_audio)
@@ -209,9 +210,7 @@ class ConversationSession:
         self._awaiting_final_transcript_started_at: float = 0.0
         self._endpoint_pause_history = transcript_finalization.EndpointPauseHistory()
         self._transcript_finalizer = transcript_finalization.PendingTranscriptFinalizer(language=config.language)
-        self._endpoint_commit_delay = transcript_finalization.EndpointCommitDelayPolicy.from_turn_policy(
-            config.policy
-        )
+        self._endpoint_commit_delay = transcript_finalization.EndpointCommitDelayPolicy.from_turn_policy(config.policy)
         self._audio_history = ConversationAudioHistory()
 
     async def start(self) -> None:
@@ -443,19 +442,7 @@ class ConversationSession:
                 }
             )
 
-            if self._sm.state == TurnState.SPEAKING and self._looks_like_current_output_echo():
-                logger.debug("suppressing SPEAKING speech_started as likely assistant echo")
-                await self._emit_interruption_false_positive(
-                    vad_active_ms=0,
-                    partial_transcript=None,
-                    reason="output_echo",
-                )
-                return
-
-            if (
-                self._sm.state in {TurnState.SPEAKING, TurnState.PAUSED}
-                and stream_event.utterance_id <= 0
-            ):
+            if self._sm.state in {TurnState.SPEAKING, TurnState.PAUSED} and stream_event.utterance_id <= 0:
                 logger.warning("ignoring interruption candidate without utterance identity")
                 await self._emit_interruption_false_positive(
                     vad_active_ms=0,
@@ -640,6 +627,7 @@ class ConversationSession:
             return None
 
         stream = self._response_lifecycle.start_stream(allow_interruptions=allow_interruptions)
+        self._interrupt_detector.reset()
         self._output_playout_started = False
         self._audio_output.reset_for_response()
         await self._event_queue.put(TurnEvent(type=TurnEventType.RESPONSE_STARTED))
@@ -693,8 +681,10 @@ class ConversationSession:
         await self._event_queue.put(TurnEvent(type=TurnEventType.TTS_COMPLETED))
         await self._emit_response_done(stream.response_id)
         self._response_lifecycle.finish_stream_if_current(stream)
+        self._interrupt_detector.reset()
 
     async def _fail_response(self, message: str) -> None:
+        self._interrupt_detector.reset()
         await self._emit_error(message)
         await self._event_queue.put(TurnEvent(type=TurnEventType.TTS_FAILED))
 
@@ -779,9 +769,7 @@ class ConversationSession:
     def _is_in_self_echo_window(self) -> bool:
         if self._sm.state not in {TurnState.SPEAKING, TurnState.PAUSED, TurnState.THINKING}:
             return False
-        return self._speech_guard.in_self_echo_window(
-            self._config.policy.backchannel_end_cooldown_ms
-        )
+        return self._speech_guard.in_self_echo_window(self._config.policy.backchannel_end_cooldown_ms)
 
     def _looks_like_current_output_echo(self) -> bool:
         return self._audio_history.looks_like_current_output_echo()
@@ -821,6 +809,7 @@ class ConversationSession:
             self._tts_task = None
             self._audio_output.reset_playout()
             self._response_lifecycle.clear_active_response(stream)
+            self._interrupt_detector.reset()
 
         elif action.type == TurnActionType.CANCEL_RESPONSE:
             await self._emit_response_cancelled()
@@ -844,6 +833,16 @@ class ConversationSession:
 
     async def _on_timer_expired(self, key: str) -> None:
         if key == TimerKey.CONFIRM_INTERRUPT.value:
+            expected_candidate_id = self._interrupt_timer_candidate_id
+            self._interrupt_timer_candidate_id = None
+            candidate = self._interrupt_detector.current()
+            if candidate is None or candidate.candidate_id != expected_candidate_id:
+                logger.debug(
+                    "ignoring stale interruption timer expected_candidate_id=%s current_candidate_id=%s",
+                    expected_candidate_id,
+                    candidate.candidate_id if candidate is not None else None,
+                )
+                return
             await self._evaluate_interrupt_candidate()
             return
 
@@ -859,6 +858,9 @@ class ConversationSession:
 
     async def _start_timer(self, key: str, duration_ms: int) -> None:
         await self._timer_registry.start(key, duration_ms)
+        if key == TimerKey.CONFIRM_INTERRUPT.value:
+            candidate = self._interrupt_detector.current()
+            self._interrupt_timer_candidate_id = candidate.candidate_id if candidate is not None else None
 
     async def _emit_pending_transcript_done(self) -> None:
         payload = self._transcript_finalizer.pop()
@@ -949,7 +951,14 @@ class ConversationSession:
         *,
         resume_on_reject: bool,
     ) -> None:
-        if not decision.newly_decided or decision.action is InterruptionDecisionAction.DEFER:
+        if decision.action is InterruptionDecisionAction.DEFER:
+            if decision.candidate_id is not None and decision.retry_after_ms > 0:
+                await self._start_timer(
+                    TimerKey.CONFIRM_INTERRUPT.value,
+                    decision.retry_after_ms,
+                )
+            return
+        if not decision.newly_decided:
             return
 
         await self._cancel_timer(TimerKey.CONFIRM_INTERRUPT.value)
@@ -995,7 +1004,7 @@ class ConversationSession:
             decision = await self._interrupt_detector.evaluate_timeout(
                 assistant_text=self._active_assistant_text(),
                 output_echo=self._looks_like_current_output_echo(),
-                aec_warmup=self._aec_warmup_active(),
+                aec_warmup_remaining_ms=self._speech_guard.aec_warmup_remaining_ms(),
                 audio=audio_tail,
                 sample_rate=TARGET_SAMPLE_RATE,
                 last_eou_probability=self._last_eou_probability,
@@ -1019,6 +1028,8 @@ class ConversationSession:
         await self._apply_interrupt_decision(decision, resume_on_reject=True)
 
     async def _cancel_timer(self, key: str) -> None:
+        if key == TimerKey.CONFIRM_INTERRUPT.value:
+            self._interrupt_timer_candidate_id = None
         await self._timer_registry.cancel(key)
 
     def _should_wait_for_final_transcript(self, event: TurnEvent) -> bool:

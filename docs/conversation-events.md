@@ -542,6 +542,13 @@ and the default policy does not give special meaning to words such as "stop"
 or "wait". Natural single-word interruptions remain valid when acoustic,
 partial-stability, or EOU evidence supports them.
 
+Output correlation and AEC warm-up are uncertainty signals, not immediate
+vetoes. Vox keeps the same candidate pending for a bounded evidence window so a
+genuine partial or final transcript can still confirm speech mixed with leaked
+assistant playback. If no supporting evidence arrives, the detector rejects the
+candidate and resumes held output. Starting or replacing an assistant response
+clears any older candidate, so a delayed final cannot cancel the new response.
+
 Acoustic analysis is bounded to the most recent 1200 ms. The detector still
 uses the complete VAD and transcript durations, but long utterances do not make
 the synchronous speech-likeness check progressively more expensive.
@@ -768,7 +775,7 @@ Payload includes:
 - `response_id`
 - `vad_active_ms`
 - optional `partial_transcript`
-- `reason`: why the candidate was rejected, such as `output_echo`,
+- `reason`: why the candidate was rejected, such as `output_echo_timeout`,
   `self_echo_transcript`, `no_transcript`, `empty_final`,
   `isolated_low_eou_final`, `isolated_final_without_support`,
   `final_transcript_without_support`, `insufficient_final_evidence`,

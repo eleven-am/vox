@@ -39,6 +39,7 @@ class InterruptionDecision:
     vad_active_ms: int = 0
     transcript: str | None = None
     newly_decided: bool = False
+    retry_after_ms: int = 0
 
 
 @dataclass
@@ -119,7 +120,7 @@ class InterruptDetector(Protocol):
         *,
         assistant_text: str,
         output_echo: bool,
-        aec_warmup: bool,
+        aec_warmup_remaining_ms: int,
         audio: NDArray[np.float32] | None,
         sample_rate: int,
         last_eou_probability: float | None,
@@ -289,10 +290,7 @@ class EvidenceBasedInterruptDetector:
             duration_ms,
             sample_rate,
         )
-        eou_support = (
-            transcript.eou_probability is not None
-            and transcript.eou_probability >= 0.5
-        )
+        eou_support = transcript.eou_probability is not None and transcript.eou_probability >= 0.5
         if strong_text:
             if acoustic_speech or candidate.partial_revisions > 0 or eou_support:
                 return self._decide(
@@ -339,7 +337,7 @@ class EvidenceBasedInterruptDetector:
         *,
         assistant_text: str,
         output_echo: bool,
-        aec_warmup: bool,
+        aec_warmup_remaining_ms: int,
         audio: NDArray[np.float32] | None,
         sample_rate: int,
         last_eou_probability: float | None,
@@ -354,15 +352,30 @@ class EvidenceBasedInterruptDetector:
         candidate.assistant_text = assistant_text
         candidate.last_observed_at = now
         vad_active_ms = max(candidate.vad_active_ms(now), candidate.latest_partial_duration_ms)
+        candidate_age_ms = max(0, int((now - candidate.started_at) * 1000))
+        evidence_wait_ms = max(1, int(self._policy.false_interruption_timeout_ms))
         text = candidate.cumulative_transcript.strip()
         if self._is_self_echo(text, assistant_text):
             return self._decide(candidate, InterruptionDecisionAction.REJECT, "self_echo_transcript")
         if self._strong_transcript(text, vad_active_ms):
             return self._decide(candidate, InterruptionDecisionAction.CONFIRM, "stable_partial")
+        if output_echo and candidate_age_ms < evidence_wait_ms:
+            return self._defer(
+                "output_echo_waiting_for_transcript",
+                candidate,
+                retry_after_ms=evidence_wait_ms - candidate_age_ms,
+            )
         if output_echo:
-            return self._decide(candidate, InterruptionDecisionAction.REJECT, "output_echo")
-        if aec_warmup and not text:
-            return self._defer("aec_warmup_waiting_for_transcript", candidate)
+            return self._decide(candidate, InterruptionDecisionAction.REJECT, "output_echo_timeout")
+        if aec_warmup_remaining_ms > 0 and not text and candidate_age_ms < evidence_wait_ms:
+            return self._defer(
+                "aec_warmup_waiting_for_transcript",
+                candidate,
+                retry_after_ms=min(
+                    max(1, int(aec_warmup_remaining_ms)),
+                    evidence_wait_ms - candidate_age_ms,
+                ),
+            )
 
         try:
             acoustic_speech = await self._classifier.is_real_interrupt(
@@ -462,15 +475,14 @@ class EvidenceBasedInterruptDetector:
     def _defer(
         reason: str,
         candidate: InterruptionCandidate | None = None,
+        *,
+        retry_after_ms: int = 0,
     ) -> InterruptionDecision:
         return InterruptionDecision(
             action=InterruptionDecisionAction.DEFER,
             reason=reason,
             candidate_id=candidate.candidate_id if candidate is not None else None,
-            vad_active_ms=(
-                candidate.vad_active_ms(candidate.last_observed_at)
-                if candidate is not None
-                else 0
-            ),
+            vad_active_ms=(candidate.vad_active_ms(candidate.last_observed_at) if candidate is not None else 0),
             transcript=(candidate.cumulative_transcript or None) if candidate is not None else None,
+            retry_after_ms=max(0, int(retry_after_ms)),
         )

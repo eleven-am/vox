@@ -34,22 +34,28 @@ class LongTTS(TTSAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="long-tts", type=ModelType.TTS,
-            architectures=("x",), default_sample_rate=24_000,
+            name="long-tts",
+            type=ModelType.TTS,
+            architectures=("x",),
+            default_sample_rate=24_000,
             supported_formats=(ModelFormat.ONNX,),
         )
 
     def load(self, *a, **k): ...
     def unload(self): ...
     @property
-    def is_loaded(self): return True
-    def list_voices(self): return [VoiceInfo(id="default", name="Default")]
+    def is_loaded(self):
+        return True
+
+    def list_voices(self):
+        return [VoiceInfo(id="default", name="Default")]
 
     async def synthesize(self, text, **_):
         for _ in range(50):
             yield SynthesizeChunk(
                 audio=np.full(480, 0.01, dtype=np.float32).tobytes(),
-                sample_rate=24_000, is_final=False,
+                sample_rate=24_000,
+                is_final=False,
             )
             await asyncio.sleep(0.02)
         yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
@@ -60,44 +66,60 @@ class BriefTTS(TTSAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="brief-tts", type=ModelType.TTS,
-            architectures=("x",), default_sample_rate=24_000,
+            name="brief-tts",
+            type=ModelType.TTS,
+            architectures=("x",),
+            default_sample_rate=24_000,
             supported_formats=(ModelFormat.ONNX,),
         )
 
     def load(self, *a, **k): ...
     def unload(self): ...
     @property
-    def is_loaded(self): return True
-    def list_voices(self): return [VoiceInfo(id="default", name="Default")]
+    def is_loaded(self):
+        return True
+
+    def list_voices(self):
+        return [VoiceInfo(id="default", name="Default")]
 
     async def synthesize(self, text, **_):
         for _ in range(4):
             yield SynthesizeChunk(
                 audio=np.full(480, 0.01, dtype=np.float32).tobytes(),
-                sample_rate=24_000, is_final=False,
+                sample_rate=24_000,
+                is_final=False,
             )
             await asyncio.sleep(0.02)
         yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
 
 
 class Scheduler:
-    def __init__(self, adapter): self._a = adapter
+    def __init__(self, adapter):
+        self._a = adapter
+
     @asynccontextmanager
-    async def acquire(self, _): yield self._a
+    async def acquire(self, _):
+        yield self._a
 
 
 class Collector:
-    def __init__(self): self.events = []
-    async def __call__(self, e): self.events.append(e)
-    def by_type(self, t): return [e for e in self.events if e.get("type") == t]
+    def __init__(self):
+        self.events = []
+
+    async def __call__(self, e):
+        self.events.append(e)
+
+    def by_type(self, t):
+        return [e for e in self.events if e.get("type") == t]
 
 
 def _build():
     tts = LongTTS()
     coll = Collector()
     cfg = ConversationConfig(
-        stt_model="x:1", tts_model="y:1", voice="default",
+        stt_model="x:1",
+        tts_model="y:1",
+        voice="default",
         language="en",
         policy=TurnPolicy(
             min_interrupt_duration_ms=180,
@@ -134,20 +156,16 @@ class TestBackchannelRejection:
         session, coll, tts = _build()
         await session.start()
 
-
         await session.submit_response_text("hello world this is the assistant speaking")
         await asyncio.sleep(0.15)
         assert session.state == TurnState.SPEAKING
-
 
         voice = _voice_signal(0.25)
         silence = np.zeros(int(0.30 * 16_000), dtype=np.float32)
         _replace_mic_audio(session, np.concatenate([voice, silence]))
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
 
-
         await asyncio.sleep(0.25)
-
 
         assert session.state != TurnState.INTERRUPTED
         assert not coll.by_type("response.cancelled")
@@ -170,12 +188,14 @@ class TestBackchannelRejection:
 
         _replace_mic_audio(session, _voice_signal(0.60, amp=0.15))
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
-        await session._forward_stream_event(StreamTranscript(
-            text="the appointment is tomorrow",
-            is_partial=True,
-            audio_duration_ms=600,
-            utterance_id=1,
-        ))
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="the appointment is tomorrow",
+                is_partial=True,
+                audio_duration_ms=600,
+                utterance_id=1,
+            )
+        )
 
         await asyncio.sleep(0.25)
 
@@ -187,9 +207,7 @@ class TestBackchannelRejection:
 
     @pytest.mark.asyncio
     async def test_acoustic_output_echo_is_rejected_before_audio_clear(self):
-        """When mic audio strongly matches recent TTS output, suppress the
-        candidate before PAUSE_OUTPUT clears the audible response.
-        """
+        """Pure output echo is evaluated by the candidate without clearing audio."""
         session, coll, _ = _build()
         await session.start()
 
@@ -202,12 +220,135 @@ class TestBackchannelRejection:
         _replace_mic_audio(session, echo.copy())
 
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
-        await asyncio.sleep(0.14)
+        await asyncio.sleep(0.22)
+
+        assert session.state == TurnState.PAUSED
+        assert session._has_active_timer("confirm_interrupt")
+        assert not coll.by_type("interruption.false_positive")
+        assert not coll.by_type("response.cancelled")
+
+        await session._forward_stream_event(
+            SpeechStopped(
+                timestamp_ms=1500,
+                expects_transcript=False,
+                utterance_id=1,
+            )
+        )
+        await asyncio.sleep(0.05)
 
         assert session.state == TurnState.SPEAKING
         assert coll.by_type("interruption.false_positive")
         assert not coll.by_type("response.audio.clear")
         assert not coll.by_type("response.cancelled")
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_real_final_can_confirm_over_correlated_output_audio(self):
+        """Output leakage must not veto a genuine user transcript."""
+        session, coll, _ = _build()
+        await session.start()
+
+        await session.submit_response_text("The assistant is speaking.")
+        await asyncio.sleep(0.15)
+        assert session.state == TurnState.SPEAKING
+
+        echo = _voice_signal(0.80, amp=0.08, freq=330)
+        _replace_output_audio(session, echo.copy())
+        _replace_mic_audio(session, echo.copy())
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
+        await asyncio.sleep(0.02)
+        assert session.state == TurnState.PAUSED
+        assert session._interrupt_detector.current() is not None
+
+        await session._forward_stream_event(
+            SpeechStopped(
+                timestamp_ms=1800,
+                expects_transcript=True,
+                utterance_id=1,
+            )
+        )
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="I need to clarify something important.",
+                audio_duration_ms=800,
+                eou_probability=0.8,
+                utterance_id=1,
+            )
+        )
+        await asyncio.sleep(0.10)
+
+        assert coll.by_type("interruption.detected")
+        assert coll.by_type("response.cancelled")
+        assert coll.by_type("response.audio.clear")
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_replacement_response_cannot_inherit_stale_candidate(self):
+        session, coll, _ = _build()
+        await session.start()
+
+        await session.submit_response_text("The first assistant response.")
+        await asyncio.sleep(0.15)
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
+        await asyncio.sleep(0.02)
+        assert session._interrupt_detector.current() is not None
+
+        await session.cancel_response()
+        assert session._interrupt_detector.current() is None
+        cancellations_before = len(coll.by_type("response.cancelled"))
+
+        await session.submit_response_text("The replacement assistant response.")
+        await asyncio.sleep(0.15)
+        assert session.state == TurnState.SPEAKING
+
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="This belongs to the previous response.",
+                audio_duration_ms=900,
+                eou_probability=0.9,
+                utterance_id=1,
+            )
+        )
+        await asyncio.sleep(0.05)
+
+        assert len(coll.by_type("response.cancelled")) == cancellations_before
+        assert session.state == TurnState.SPEAKING
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_repeated_candidate_cannot_inherit_previous_confirm_timer(self):
+        session, coll, _ = _build()
+        await session.start()
+
+        await session.submit_response_text("The assistant is speaking.")
+        await asyncio.sleep(0.15)
+        assert session.state == TurnState.SPEAKING
+
+        _replace_mic_audio(session, _voice_signal(0.60, amp=0.15))
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
+        await asyncio.sleep(0.13)
+        assert session.state == TurnState.PAUSED
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1130, utterance_id=2))
+        await asyncio.sleep(0.08)
+
+        assert session.state == TurnState.PAUSED
+        assert session._interrupt_detector.current().utterance_id == 2
+        assert not coll.by_type("response.cancelled")
+
+        await session._forward_stream_event(
+            SpeechStopped(
+                timestamp_ms=1400,
+                expects_transcript=False,
+                utterance_id=2,
+            )
+        )
+        await asyncio.sleep(0.05)
+        assert session.state == TurnState.SPEAKING
 
         await session.close()
 
@@ -233,6 +374,32 @@ class TestBackchannelRejection:
 
         assert session.state in {TurnState.INTERRUPTED, TurnState.IDLE}
         assert coll.by_type("response.audio.clear")
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_speech_started_signal_precedes_server_output_pause(self):
+        session, coll, _ = _build()
+        observed: list[tuple[TurnState, bool]] = []
+        original_emit = session._on_event
+
+        async def observe_order(event):
+            if event.get("type") == "input_audio_buffer.speech_started":
+                observed.append((session.state, session._audio_output.paused))
+            await original_emit(event)
+
+        session._on_event = observe_order
+        await session.start()
+        await session.submit_response_text("The assistant is speaking.")
+        await asyncio.sleep(0.15)
+
+        _replace_output_audio(session, _voice_signal(0.50, amp=0.08, freq=330))
+        _replace_mic_audio(session, _voice_signal(0.50, amp=0.15, freq=660))
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
+        await asyncio.sleep(0.02)
+
+        assert observed == [(TurnState.SPEAKING, False)]
+        assert session.state == TurnState.PAUSED
 
         await session.close()
 
@@ -300,11 +467,7 @@ class TestBackchannelRejection:
         async def emit_then_inject_late_chunk(event):
             nonlocal late_chunk_inserted
             await original_emit(event)
-            if (
-                not late_chunk_inserted
-                and event.get("type") == "response.audio.delta"
-                and event.get("sequence") == 1
-            ):
+            if not late_chunk_inserted and event.get("type") == "response.audio.delta" and event.get("sequence") == 1:
                 late_chunk_inserted = True
                 await session._handle_tts_chunk(chunk_d, 24_000)
 
@@ -348,16 +511,20 @@ class TestBackchannelRejection:
         noise = np.random.default_rng(7).normal(0, 0.15, int(0.60 * 16_000)).astype(np.float32)
         _replace_mic_audio(session, noise)
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
-        await session._forward_stream_event(SpeechStopped(
-            timestamp_ms=1600,
-            utterance_id=1,
-        ))
-        await session._forward_stream_event(StreamTranscript(
-            text="Anyway.",
-            audio_duration_ms=600,
-            eou_probability=0.00005,
-            utterance_id=1,
-        ))
+        await session._forward_stream_event(
+            SpeechStopped(
+                timestamp_ms=1600,
+                utterance_id=1,
+            )
+        )
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="Anyway.",
+                audio_duration_ms=600,
+                eou_probability=0.00005,
+                utterance_id=1,
+            )
+        )
 
         await asyncio.sleep(0.25)
 
@@ -379,12 +546,14 @@ class TestBackchannelRejection:
         noise = np.random.default_rng(8).normal(0, 0.15, int(0.60 * 16_000)).astype(np.float32)
         _replace_mic_audio(session, noise)
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
-        await session._forward_stream_event(StreamTranscript(
-            text="stop",
-            is_partial=True,
-            audio_duration_ms=600,
-            utterance_id=1,
-        ))
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="stop",
+                is_partial=True,
+                audio_duration_ms=600,
+                utterance_id=1,
+            )
+        )
 
         await asyncio.sleep(0.25)
 
@@ -405,11 +574,9 @@ class TestBackchannelRejection:
         await asyncio.sleep(0.15)
         assert session.state == TurnState.SPEAKING
 
-
         voice = _voice_signal(0.60, amp=0.15)
         _replace_mic_audio(session, voice)
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
-
 
         await asyncio.sleep(0.25)
 
@@ -431,14 +598,16 @@ class TestBackchannelRejection:
         silence = np.zeros(int(0.30 * 16_000), dtype=np.float32)
         _replace_mic_audio(session, np.concatenate([voice, silence]))
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
-        await session._forward_stream_event(StreamTranscript(
-            text="Can you hear me?",
-            is_partial=True,
-            start_ms=0,
-            end_ms=920,
-            audio_duration_ms=920,
-            utterance_id=1,
-        ))
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="Can you hear me?",
+                is_partial=True,
+                start_ms=0,
+                end_ms=920,
+                audio_duration_ms=920,
+                utterance_id=1,
+            )
+        )
 
         await asyncio.sleep(0.25)
 
@@ -460,18 +629,22 @@ class TestBackchannelRejection:
         _replace_mic_audio(session, _voice_signal(0.80, amp=0.08, freq=330))
 
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
-        await session._forward_stream_event(SpeechStopped(
-            timestamp_ms=1800,
-            utterance_id=1,
-        ))
-        await session._forward_stream_event(StreamTranscript(
-            text="I'm talking, I'm talking.",
-            start_ms=0,
-            end_ms=800,
-            audio_duration_ms=800,
-            eou_probability=0.8,
-            utterance_id=1,
-        ))
+        await session._forward_stream_event(
+            SpeechStopped(
+                timestamp_ms=1800,
+                utterance_id=1,
+            )
+        )
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="I'm talking, I'm talking.",
+                start_ms=0,
+                end_ms=800,
+                audio_duration_ms=800,
+                eou_probability=0.8,
+                utterance_id=1,
+            )
+        )
         await asyncio.sleep(0.05)
 
         assert session.state in {TurnState.INTERRUPTED, TurnState.THINKING}
@@ -485,7 +658,9 @@ class TestBackchannelRejection:
         tts = BriefTTS()
         coll = Collector()
         cfg = ConversationConfig(
-            stt_model="x:1", tts_model="y:1", voice="default",
+            stt_model="x:1",
+            tts_model="y:1",
+            voice="default",
             language="en",
             policy=TurnPolicy(
                 min_interrupt_duration_ms=300,
@@ -511,14 +686,16 @@ class TestBackchannelRejection:
         assert not coll.by_type("response.audio.clear")
         assert not coll.by_type("response.done")
 
-        await session._forward_stream_event(StreamTranscript(
-            text="I am interrupting you",
-            is_partial=True,
-            start_ms=1000,
-            end_ms=1600,
-            audio_duration_ms=600,
-            utterance_id=1,
-        ))
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="I am interrupting you",
+                is_partial=True,
+                start_ms=1000,
+                end_ms=1600,
+                audio_duration_ms=600,
+                utterance_id=1,
+            )
+        )
         await asyncio.sleep(0.10)
         assert session.state == TurnState.INTERRUPTED
         assert coll.by_type("interruption.detected")
@@ -540,7 +717,9 @@ class TestMhmmAtRealisticWindow:
         tts = LongTTS()
         coll = Collector()
         cfg = ConversationConfig(
-            stt_model="x:1", tts_model="y:1", voice="default",
+            stt_model="x:1",
+            tts_model="y:1",
+            voice="default",
             policy=TurnPolicy(
                 min_interrupt_duration_ms=300,
                 max_endpointing_delay_ms=500,
@@ -555,20 +734,16 @@ class TestMhmmAtRealisticWindow:
         await asyncio.sleep(0.15)
         assert session.state == TurnState.SPEAKING
 
-
-
         voice = _voice_signal(0.25)
         silence = np.zeros(int(0.15 * 16_000), dtype=np.float32)
         _replace_mic_audio(session, np.concatenate([voice, silence]))
-
 
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
 
         await asyncio.sleep(0.40)
 
         assert session.state != TurnState.INTERRUPTED
-        assert not coll.by_type("response.cancelled"),\
-            "'mhmm' should NOT cancel TTS"
+        assert not coll.by_type("response.cancelled"), "'mhmm' should NOT cancel TTS"
 
         await session.close()
 
@@ -580,7 +755,9 @@ class TestMhmmAtRealisticWindow:
         tts = LongTTS()
         coll = Collector()
         cfg = ConversationConfig(
-            stt_model="x:1", tts_model="y:1", voice="default",
+            stt_model="x:1",
+            tts_model="y:1",
+            voice="default",
             policy=TurnPolicy(
                 min_interrupt_duration_ms=300,
                 max_endpointing_delay_ms=500,
@@ -595,18 +772,19 @@ class TestMhmmAtRealisticWindow:
         await asyncio.sleep(0.15)
         assert session.state == TurnState.SPEAKING
 
-
         voice = _voice_signal(0.40, amp=0.15)
         _replace_mic_audio(session, voice)
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
-        await session._forward_stream_event(StreamTranscript(
-            text="stop",
-            is_partial=True,
-            start_ms=1000,
-            end_ms=1400,
-            audio_duration_ms=400,
-            utterance_id=1,
-        ))
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="stop",
+                is_partial=True,
+                start_ms=1000,
+                end_ms=1400,
+                audio_duration_ms=400,
+                utterance_id=1,
+            )
+        )
 
         await asyncio.sleep(0.40)
 
@@ -623,10 +801,8 @@ class TestAudioRingBuffer:
         session, _, _ = _build()
         await session.start()
 
-
         five_seconds_pcm = (np.zeros(16_000 * 5, dtype=np.int16)).tobytes()
         await session.ingest_audio(five_seconds_pcm, sample_rate=16_000)
-
 
         assert session._audio_history.mic_size <= session._audio_history.mic_max_samples
 
@@ -653,7 +829,9 @@ class TestClassifierFailureFallsBackToBackchannel:
         tts = LongTTS()
         coll = Collector()
         cfg = ConversationConfig(
-            stt_model="x:1", tts_model="y:1", voice="default",
+            stt_model="x:1",
+            tts_model="y:1",
+            voice="default",
             policy=TurnPolicy(
                 min_interrupt_duration_ms=80,
                 stable_speaking_min_ms=50,
@@ -671,7 +849,6 @@ class TestClassifierFailureFallsBackToBackchannel:
 
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
         await asyncio.sleep(0.25)
-
 
         assert session.state == TurnState.SPEAKING
         false_positives = coll.by_type("interruption.false_positive")

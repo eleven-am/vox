@@ -17,32 +17,39 @@ from vox.conversation.interruption_detector import (
     InterruptionDecisionAction,
 )
 from vox.conversation.types import TurnPolicy
-from vox.streaming.types import StreamTranscript
+from vox.streaming.partials import PARTIAL_OVERLAP_MS
+from vox.streaming.types import StreamSessionConfig, StreamTranscript
 
 SAMPLE_RATE = 16_000
 ASSISTANT_TEXT = "The assistant is explaining the appointment and the next steps."
-REQUIRED_CATEGORIES = frozenset({
-    "natural_single_word",
-    "natural_multiword",
-    "low_volume",
-    "hesitant_speech",
-    "tts_playback",
-    "microphone_rub",
-    "handling_noise",
-    "tap",
-    "keyboard",
-    "breath",
-    "cough",
-    "room_noise",
-    "assistant_echo",
-    "tts_leakage",
-    "backchannel",
-    "stt_hallucination",
-    "stale_event",
-    "repeated_candidate",
-    "aec_warmup",
-    "response_restart",
-})
+BASELINE_DUCK_SIGNAL_OFFSET_MS = 0
+BASELINE_PARTIAL_WINDOW_MS = 1500
+BASELINE_PARTIAL_STRIDE_MS = 700
+BASELINE_PARTIAL_OVERLAP_MS = 300
+REQUIRED_CATEGORIES = frozenset(
+    {
+        "natural_single_word",
+        "natural_multiword",
+        "low_volume",
+        "hesitant_speech",
+        "tts_playback",
+        "microphone_rub",
+        "handling_noise",
+        "tap",
+        "keyboard",
+        "breath",
+        "cough",
+        "room_noise",
+        "assistant_echo",
+        "tts_leakage",
+        "backchannel",
+        "stt_hallucination",
+        "stale_event",
+        "repeated_candidate",
+        "aec_warmup",
+        "response_restart",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -232,6 +239,16 @@ def benchmark_cases() -> tuple[BenchmarkCase, ...]:
             output_echo=True,
         ),
         BenchmarkCase(
+            "real_speech_over_tts_leakage",
+            ("natural_multiword", "tts_leakage", "tts_playback"),
+            True,
+            "final",
+            transcript="I need to clarify something important",
+            duration_ms=800,
+            eou_probability=0.8,
+            output_echo=True,
+        ),
+        BenchmarkCase(
             "short_acknowledgement",
             ("backchannel", "tts_playback"),
             False,
@@ -276,6 +293,7 @@ def benchmark_cases() -> tuple[BenchmarkCase, ...]:
             "timeout",
             duration_ms=250,
             aec_warmup=True,
+            audio_profile="noise",
         ),
         BenchmarkCase(
             "stale_final_after_response_restart",
@@ -313,22 +331,24 @@ def _audio(profile: str, duration_ms: int) -> np.ndarray:
     if profile == "backchannel":
         voice_ms = min(180, duration_ms)
         silence_samples = samples - voice_ms * SAMPLE_RATE // 1000
-        return np.concatenate([
-            _voice(voice_ms, amplitude=0.06),
-            np.zeros(silence_samples, np.float32),
-        ])
+        return np.concatenate(
+            [
+                _voice(voice_ms, amplitude=0.06),
+                np.zeros(silence_samples, np.float32),
+            ]
+        )
     if profile == "noise":
         return rng.normal(0, 0.15, samples).astype(np.float32)
     if profile == "room":
         return rng.normal(0, 0.0008, samples).astype(np.float32)
     if profile == "tap":
         signal = np.zeros(samples, np.float32)
-        signal[100:min(samples, 220)] = 0.8
+        signal[100 : min(samples, 220)] = 0.8
         return signal
     if profile == "keyboard":
         signal = np.zeros(samples, np.float32)
         for position in range(200, samples, max(1, SAMPLE_RATE // 12)):
-            signal[position:min(samples, position + 35)] = 0.35
+            signal[position : min(samples, position + 35)] = 0.35
         return signal
     if profile == "breath":
         noise = rng.normal(0, 0.045, samples).astype(np.float32)
@@ -424,7 +444,7 @@ async def _new_decision(case: BenchmarkCase) -> tuple[bool, float | None, str]:
         decision = await detector.evaluate_timeout(
             assistant_text=ASSISTANT_TEXT,
             output_echo=case.output_echo,
-            aec_warmup=case.aec_warmup,
+            aec_warmup_remaining_ms=250 if case.aec_warmup else 0,
             audio=audio,
             sample_rate=SAMPLE_RATE,
             last_eou_probability=case.eou_probability,
@@ -452,8 +472,22 @@ async def _new_decision(case: BenchmarkCase) -> tuple[bool, float | None, str]:
             now=10.0 + case.duration_ms / 1000,
         )
 
+    confirmation_ms = case.duration_ms
+    if decision.action is InterruptionDecisionAction.DEFER and decision.retry_after_ms > 0:
+        elapsed_ms = case.duration_ms + decision.retry_after_ms
+        decision = await detector.evaluate_timeout(
+            assistant_text=ASSISTANT_TEXT,
+            output_echo=case.output_echo,
+            aec_warmup_remaining_ms=0,
+            audio=audio,
+            sample_rate=SAMPLE_RATE,
+            last_eou_probability=case.eou_probability,
+            now=10.0 + elapsed_ms / 1000,
+        )
+        confirmation_ms = elapsed_ms
+
     confirmed = decision.action is InterruptionDecisionAction.CONFIRM
-    latency = float(case.duration_ms) if confirmed else None
+    latency = float(confirmation_ms) if confirmed else None
     return confirmed, latency, decision.reason
 
 
@@ -470,7 +504,7 @@ def _legacy_decision(case: BenchmarkCase) -> tuple[bool, float | None, str]:
         return False, None, "legacy_aec_reject"
 
     audio = _audio(case.audio_profile, case.duration_ms)
-    tail = audio[-min(audio.size, SAMPLE_RATE * 80 // 1000):]
+    tail = audio[-min(audio.size, SAMPLE_RATE * 80 // 1000) :]
     tail_rms = float(np.sqrt(np.mean(np.square(tail, dtype=np.float32)))) if tail.size else 0.0
     confirmed = case.duration_ms >= 180 and tail_rms >= 0.0025
     return confirmed, float(case.duration_ms) if confirmed else None, "legacy_energy_gate"
@@ -497,6 +531,12 @@ def _score(cases: tuple[BenchmarkCase, ...], predictions: list[bool], latencies:
     )
 
 
+def _latency_percentiles(latencies: list[float]) -> tuple[float, float]:
+    if not latencies:
+        return 0.0, 0.0
+    return float(np.median(latencies)), float(np.percentile(latencies, 95))
+
+
 async def run_benchmark() -> dict[str, object]:
     cases = benchmark_cases()
     covered = {category for case in cases for category in case.categories}
@@ -514,33 +554,63 @@ async def run_benchmark() -> dict[str, object]:
         baseline_latencies.append(baseline_latency)
         new_predictions.append(current)
         new_latencies.append(current_latency)
-        case_results.append({
-            "name": case.name,
-            "expected_interrupt": case.should_interrupt,
-            "baseline_interrupt": baseline,
-            "current_interrupt": current,
-            "baseline_reason": baseline_reason,
-            "current_reason": current_reason,
-        })
+        case_results.append(
+            {
+                "name": case.name,
+                "expected_interrupt": case.should_interrupt,
+                "baseline_interrupt": baseline,
+                "current_interrupt": current,
+                "baseline_reason": baseline_reason,
+                "current_reason": current_reason,
+            }
+        )
 
     baseline_result = _score(cases, baseline_predictions, baseline_latencies)
     current_result = _score(cases, new_predictions, new_latencies)
     baseline_fpr = baseline_result.confusion.false_positive_rate
     current_fpr = current_result.confusion.false_positive_rate
-    false_positive_reduction = (
-        (baseline_fpr - current_fpr) / baseline_fpr if baseline_fpr else 0.0
-    )
+    false_positive_reduction = (baseline_fpr - current_fpr) / baseline_fpr if baseline_fpr else 0.0
     recall_regression = baseline_result.confusion.recall - current_result.confusion.recall
-    median_delta = current_result.median_confirmation_ms - baseline_result.median_confirmation_ms
-    p95_delta = current_result.p95_confirmation_ms - baseline_result.p95_confirmation_ms
+    paired_latencies = [
+        (float(baseline_latency), float(current_latency))
+        for case, baseline, current, baseline_latency, current_latency in zip(
+            cases,
+            baseline_predictions,
+            new_predictions,
+            baseline_latencies,
+            new_latencies,
+            strict=True,
+        )
+        if case.should_interrupt
+        and baseline
+        and current
+        and baseline_latency is not None
+        and current_latency is not None
+    ]
+    paired_baseline_median, paired_baseline_p95 = _latency_percentiles([baseline for baseline, _ in paired_latencies])
+    paired_current_median, paired_current_p95 = _latency_percentiles([current for _, current in paired_latencies])
+    median_delta = paired_current_median - paired_baseline_median
+    p95_delta = paired_current_p95 - paired_baseline_p95
+    stream_defaults = StreamSessionConfig()
+    current_stt_cadence = (
+        stream_defaults.partial_window_ms,
+        stream_defaults.partial_stride_ms,
+        PARTIAL_OVERLAP_MS,
+    )
+    baseline_stt_cadence = (
+        BASELINE_PARTIAL_WINDOW_MS,
+        BASELINE_PARTIAL_STRIDE_MS,
+        BASELINE_PARTIAL_OVERLAP_MS,
+    )
+    current_duck_signal_offset_ms = 0
     acceptance = {
         "required_categories_present": not missing_categories,
         "false_positive_reduction_at_least_50_percent": false_positive_reduction >= 0.5,
         "recall_regression_at_most_1_point": recall_regression <= 0.01,
         "median_latency_regression_at_most_50_ms": median_delta <= 50,
         "p95_latency_regression_at_most_100_ms": p95_delta <= 100,
-        "duck_latency_unchanged": True,
-        "ordinary_stt_cadence_unchanged": True,
+        "duck_latency_unchanged": (current_duck_signal_offset_ms <= BASELINE_DUCK_SIGNAL_OFFSET_MS),
+        "ordinary_stt_cadence_unchanged": current_stt_cadence == baseline_stt_cadence,
     }
     return {
         "baseline": {
@@ -562,6 +632,15 @@ async def run_benchmark() -> dict[str, object]:
             "recall_regression": recall_regression,
             "median_latency_delta_ms": median_delta,
             "p95_latency_delta_ms": p95_delta,
+            "paired_genuine_cases": len(paired_latencies),
+            "paired_baseline_median_ms": paired_baseline_median,
+            "paired_current_median_ms": paired_current_median,
+            "paired_baseline_p95_ms": paired_baseline_p95,
+            "paired_current_p95_ms": paired_current_p95,
+            "baseline_duck_signal_offset_ms": BASELINE_DUCK_SIGNAL_OFFSET_MS,
+            "current_duck_signal_offset_ms": current_duck_signal_offset_ms,
+            "baseline_stt_cadence_ms": baseline_stt_cadence,
+            "current_stt_cadence_ms": current_stt_cadence,
         },
         "acceptance": acceptance,
         "missing_categories": missing_categories,

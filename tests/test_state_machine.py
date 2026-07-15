@@ -37,11 +37,6 @@ def _action_with_payload(actions: list[TurnAction], type_: TurnActionType) -> Tu
     return matching[0]
 
 
-
-
-
-
-
 class TestHappyPath:
     def test_full_turn_idle_to_idle(self):
         m = TurnStateMachine()
@@ -81,11 +76,13 @@ class TestHappyPath:
 
     def test_user_transcript_final_can_defer_commit(self):
         m = _machine(TurnState.LISTENING)
-        actions = m.handle(ev(
-            TurnEventType.USER_TRANSCRIPT_FINAL,
-            defer_commit=True,
-            commit_delay_ms=900,
-        ))
+        actions = m.handle(
+            ev(
+                TurnEventType.USER_TRANSCRIPT_FINAL,
+                defer_commit=True,
+                commit_delay_ms=900,
+            )
+        )
         assert m.state == TurnState.LISTENING
         assert _action_types(actions) == [TurnActionType.CANCEL_TIMER, TurnActionType.START_TIMER]
         assert actions[0].payload["key"] == TimerKey.ENDPOINTING.value
@@ -103,11 +100,6 @@ class TestHappyPath:
         actions = m.handle(ev(TurnEventType.RESPONSE_STARTED))
         assert m.state == TurnState.THINKING
         assert actions == []
-
-
-
-
-
 
 
 class TestBargeIn:
@@ -130,6 +122,19 @@ class TestBargeIn:
         timer = _action_with_payload(actions, TurnActionType.START_TIMER)
         assert timer.payload["key"] == TimerKey.CONFIRM_INTERRUPT.value
         assert timer.payload["duration_ms"] == 250
+
+    def test_repeated_speech_while_paused_restarts_confirm_timer(self):
+        m = _machine(TurnState.PAUSED)
+
+        actions = m.handle(ev(TurnEventType.SPEECH_STARTED, confirm_window_ms=640))
+
+        assert m.state == TurnState.PAUSED
+        assert _action_types(actions) == [TurnActionType.START_TIMER]
+        timer = _action_with_payload(actions, TurnActionType.START_TIMER)
+        assert timer.payload == {
+            "key": TimerKey.CONFIRM_INTERRUPT.value,
+            "duration_ms": 640,
+        }
 
     def test_confirm_timer_fires_interrupt(self):
         m = _machine(TurnState.PAUSED)
@@ -221,11 +226,6 @@ class TestBargeIn:
         assert actions == []
 
 
-
-
-
-
-
 class TestClientCancel:
     def test_cancel_in_idle_is_noop(self):
         m = _machine(TurnState.IDLE)
@@ -240,7 +240,6 @@ class TestClientCancel:
         assert _action_types(actions) == [TurnActionType.CANCEL_TIMER]
 
     def test_cancel_in_thinking_stops_tts_and_cancels_response(self):
-
 
         m = _machine(TurnState.THINKING)
         actions = m.handle(ev(TurnEventType.CLIENT_CANCEL))
@@ -278,20 +277,18 @@ class TestClientCancel:
         assert actions == []
 
 
-
-
-
-
-
 class TestUnhandledEvents:
-    @pytest.mark.parametrize("state", [
-        TurnState.IDLE,
-        TurnState.LISTENING,
-        TurnState.THINKING,
-        TurnState.SPEAKING,
-        TurnState.PAUSED,
-        TurnState.INTERRUPTED,
-    ])
+    @pytest.mark.parametrize(
+        "state",
+        [
+            TurnState.IDLE,
+            TurnState.LISTENING,
+            TurnState.THINKING,
+            TurnState.SPEAKING,
+            TurnState.PAUSED,
+            TurnState.INTERRUPTED,
+        ],
+    )
     @pytest.mark.parametrize("event_type", list(TurnEventType))
     def test_any_state_event_pair_does_not_raise(self, state, event_type):
         """Smoke: every (state, event) combination returns a list without raising."""
@@ -334,11 +331,6 @@ class TestUnhandledEvents:
         assert actions == []
 
 
-
-
-
-
-
 class TestPolicy:
     def test_custom_confirm_duration(self):
         policy = TurnPolicy(min_interrupt_duration_ms=150)
@@ -353,11 +345,6 @@ class TestPolicy:
         actions = m.handle(ev(TurnEventType.SPEECH_STOPPED))
         timer = _action_with_payload(actions, TurnActionType.START_TIMER)
         assert timer.payload["duration_ms"] == 5000
-
-
-
-
-
 
 
 class TestResetAndReentry:
@@ -375,14 +362,8 @@ class TestResetAndReentry:
         m.handle(ev(TurnEventType.TTS_COMPLETED))
         assert m.state == TurnState.IDLE
 
-
         m.handle(ev(TurnEventType.SPEECH_STARTED))
         assert m.state == TurnState.LISTENING
-
-
-
-
-
 
 
 class TestActionPayloads:

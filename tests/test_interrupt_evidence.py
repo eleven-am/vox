@@ -16,18 +16,19 @@ SAMPLE_RATE = 16_000
 
 def _voice(duration_ms: int, *, amplitude: float = 0.1) -> np.ndarray:
     t = np.arange(duration_ms * SAMPLE_RATE // 1000) / SAMPLE_RATE
-    return (
-        amplitude
-        * (np.sin(2 * np.pi * 220 * t) + 0.3 * np.sin(2 * np.pi * 440 * t))
-    ).astype(np.float32)
+    return (amplitude * (np.sin(2 * np.pi * 220 * t) + 0.3 * np.sin(2 * np.pi * 440 * t))).astype(np.float32)
 
 
 def _noise(duration_ms: int, *, seed: int = 0) -> np.ndarray:
-    return np.random.default_rng(seed).normal(
-        0,
-        0.15,
-        duration_ms * SAMPLE_RATE // 1000,
-    ).astype(np.float32)
+    return (
+        np.random.default_rng(seed)
+        .normal(
+            0,
+            0.15,
+            duration_ms * SAMPLE_RATE // 1000,
+        )
+        .astype(np.float32)
+    )
 
 
 def _detector(**policy_overrides) -> EvidenceBasedInterruptDetector:
@@ -176,7 +177,7 @@ async def test_timeout_uses_acoustic_speech_likeness_not_energy_alone() -> None:
     voice = await voice_detector.evaluate_timeout(
         assistant_text="The assistant is still speaking.",
         output_echo=False,
-        aec_warmup=False,
+        aec_warmup_remaining_ms=0,
         audio=_voice(600),
         sample_rate=SAMPLE_RATE,
         last_eou_probability=None,
@@ -188,7 +189,7 @@ async def test_timeout_uses_acoustic_speech_likeness_not_energy_alone() -> None:
     noise = await noise_detector.evaluate_timeout(
         assistant_text="The assistant is still speaking.",
         output_echo=False,
-        aec_warmup=False,
+        aec_warmup_remaining_ms=0,
         audio=_noise(600, seed=4),
         sample_rate=SAMPLE_RATE,
         last_eou_probability=None,
@@ -222,13 +223,27 @@ async def test_self_echo_and_output_echo_reject_without_cancelling() -> None:
     output_echo = await output_detector.evaluate_timeout(
         assistant_text="The assistant is still speaking.",
         output_echo=True,
-        aec_warmup=False,
+        aec_warmup_remaining_ms=0,
         audio=_voice(600),
         sample_rate=SAMPLE_RATE,
         last_eou_probability=None,
         now=10.6,
     )
-    assert output_echo.action is InterruptionDecisionAction.REJECT
+    assert output_echo.action is InterruptionDecisionAction.DEFER
+    assert output_echo.reason == "output_echo_waiting_for_transcript"
+    assert output_echo.retry_after_ms > 0
+
+    timed_out = await output_detector.evaluate_timeout(
+        assistant_text="The assistant is still speaking.",
+        output_echo=True,
+        aec_warmup_remaining_ms=0,
+        audio=_voice(2100),
+        sample_rate=SAMPLE_RATE,
+        last_eou_probability=None,
+        now=12.1,
+    )
+    assert timed_out.action is InterruptionDecisionAction.REJECT
+    assert timed_out.reason == "output_echo_timeout"
 
 
 @pytest.mark.asyncio
