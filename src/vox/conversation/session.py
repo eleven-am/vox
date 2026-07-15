@@ -727,16 +727,13 @@ class ConversationSession:
         if (
             not accepted
             or self._sm.state != TurnState.SPEAKING
-            or self._input_speech_active
             or self._response_stream is None
         ):
             self._response_lifecycle.remember_cancelled_response()
             raise asyncio.CancelledError
 
     def _accepts_turn_event(self, event: TurnEvent) -> bool:
-        if not self._sm.accepts(event.type):
-            return False
-        return not (event.type == TurnEventType.TTS_AUDIO_STARTED and self._input_speech_active)
+        return self._sm.accepts(event.type)
 
     async def _complete_response_stream(self, stream: ResponseStream) -> None:
         stream.pending_done = False

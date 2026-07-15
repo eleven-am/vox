@@ -269,21 +269,34 @@ class TestResponseAdmission:
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_live_speech_flag_rejects_audio_start_before_vad_event_is_dequeued(self):
-        session, collector, _ = _build_session()
+    async def test_raw_vad_flag_does_not_drop_stream_after_first_audio(self):
+        session, _, _ = _build_session(adapter=ScriptedTTSAdapter(chunks=1))
         await session.start()
         await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
         await _drain_events(session)
         assert session.state == TurnState.THINKING
 
         response_id = await session.start_response_stream()
-        session._input_speech_active = True
-        with pytest.raises(asyncio.CancelledError):
-            await session._notify_tts_audio_started()
+        assert response_id is not None
+        assert await session.append_response_text(
+            "The first phrase.",
+            expected_response_id=response_id,
+        )
 
-        assert session.state == TurnState.THINKING
-        assert "speaking" not in collector.states()
-        assert session._response_lifecycle.last_cancelled_response_id == response_id
+        # A raw VAD edge can race with the first playout frame when the
+        # assistant's own audio reaches the microphone. The turn-state event,
+        # not this early flag, owns whether the response is interrupted.
+        session._input_speech_active = True
+        await asyncio.sleep(0.05)
+
+        assert session.state == TurnState.SPEAKING
+        assert await session.append_response_text(
+            " The response continues.",
+            expected_response_id=response_id,
+        )
+
+        session._input_speech_active = False
+        assert await session.commit_response_stream(expected_response_id=response_id)
         await session.close()
 
     @pytest.mark.asyncio
