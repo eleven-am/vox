@@ -46,6 +46,13 @@ async def close_attached_rtc_resources(
     record.orchestrator = None
     record.data_channel = None
     if record.audio_output is not None:
+        if record.audio_output_track is not None:
+            record.audio_output_track.clear()
+        while True:
+            try:
+                record.audio_output.get_nowait()
+            except asyncio.QueueEmpty:
+                break
         await record.audio_output.put(None)
     if record.media_events is not None:
         await record.media_events.put(None)

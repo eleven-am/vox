@@ -223,6 +223,95 @@ class TestInterruptionEventContracts:
         ]
 
 
+class TestResponseAdmission:
+    @pytest.mark.asyncio
+    async def test_late_response_while_listening_never_synthesizes_audio(self):
+        session, collector, adapter = _build_session()
+        await session.start()
+
+        await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
+        await _drain_events(session)
+        assert session.state == TurnState.LISTENING
+
+        await session.start_response_stream()
+        await session.append_response_text("stale response")
+        await session.commit_response_stream()
+        await _drain_events(session)
+
+        assert session.state == TurnState.LISTENING
+        assert not collector.by_type(WIRE_RESPONSE_CREATED)
+        assert not collector.by_type(WIRE_AUDIO_DELTA)
+        assert not collector.by_type(WIRE_RESPONSE_DONE)
+        assert collector.by_type(WIRE_ERROR) == [
+            {
+                "type": WIRE_ERROR,
+                "message": "response rejected: turn state is listening",
+            }
+        ]
+        assert adapter.texts == []
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_tts_audio_start_must_be_accepted_before_audio_can_emit(self):
+        session, collector, _ = _build_session()
+        await session.start()
+
+        await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
+        await _drain_events(session)
+        assert session.state == TurnState.LISTENING
+
+        with pytest.raises(asyncio.CancelledError):
+            await session._notify_tts_audio_started()
+
+        assert session.state == TurnState.LISTENING
+        assert not collector.by_type(WIRE_AUDIO_DELTA)
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_live_speech_flag_rejects_audio_start_before_vad_event_is_dequeued(self):
+        session, collector, _ = _build_session()
+        await session.start()
+        await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
+        await _drain_events(session)
+        assert session.state == TurnState.THINKING
+
+        response_id = await session.start_response_stream()
+        session._input_speech_active = True
+        with pytest.raises(asyncio.CancelledError):
+            await session._notify_tts_audio_started()
+
+        assert session.state == TurnState.THINKING
+        assert "speaking" not in collector.states()
+        assert session._response_lifecycle.last_cancelled_response_id == response_id
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_response_is_rejected_during_vad_state_transition(self):
+        session, collector, adapter = _build_session()
+        await session.start()
+        await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
+        await _drain_events(session)
+        assert session.state == TurnState.THINKING
+        session._input_speech_active = True
+
+        await session.submit_response_text("raced with speech start")
+        await _drain_events(session)
+
+        assert session.state == TurnState.THINKING
+        assert not collector.by_type(WIRE_RESPONSE_CREATED)
+        assert not collector.by_type(WIRE_AUDIO_DELTA)
+        assert collector.by_type(WIRE_ERROR) == [
+            {
+                "type": WIRE_ERROR,
+                "message": "response rejected: user speech is active",
+            }
+        ]
+        assert adapter.texts == []
+
+        await session.close()
+
+
 class TestLifecycle:
     @pytest.mark.asyncio
     async def test_start_and_close_no_leaks(self):
@@ -286,9 +375,7 @@ class TestLifecycle:
         session, collector, _ = _build_session()
         await session.start()
 
-        await session._forward_stream_event(
-            StreamTranscript(text="  ", is_partial=True, start_ms=0, end_ms=700)
-        )
+        await session._forward_stream_event(StreamTranscript(text="  ", is_partial=True, start_ms=0, end_ms=700))
         await _drain_events(session)
 
         assert not collector.by_type(WIRE_TRANSCRIPT_DELTA)
@@ -536,6 +623,27 @@ class TestTTSHappyPath:
         await session.close()
 
     @pytest.mark.asyncio
+    async def test_response_done_is_emitted_after_idle_state_transition(self):
+        session, collector, _ = _build_session(adapter=ScriptedTTSAdapter(chunks=1))
+        await session.start()
+
+        await session.submit_response_text("ordered response")
+        await asyncio.sleep(0.05)
+        await _drain_events(session)
+
+        idle_index = next(
+            index
+            for index, event in enumerate(collector.events)
+            if event.get("type") == WIRE_STATE_CHANGED and event.get("state") == TurnState.IDLE.value
+        )
+        done_index = next(
+            index for index, event in enumerate(collector.events) if event.get("type") == WIRE_RESPONSE_DONE
+        )
+        assert idle_index < done_index
+
+        await session.close()
+
+    @pytest.mark.asyncio
     async def test_audio_deltas_include_response_id_and_sequence(self):
         session, collector, _ = _build_session()
         await session.start()
@@ -688,17 +796,13 @@ class TestBargeIn:
 
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
         await asyncio.sleep(0.01)
-        await session._forward_stream_event(
-            SpeechStopped(timestamp_ms=1250, expects_transcript=True, utterance_id=1)
-        )
+        await session._forward_stream_event(SpeechStopped(timestamp_ms=1250, expects_transcript=True, utterance_id=1))
         await asyncio.sleep(0.01)
 
         assert session.state == TurnState.PAUSED
         assert not collector.by_type(WIRE_AUDIO_CLEAR)
 
-        await session._forward_stream_event(
-            StreamTranscript(text="", start_ms=1000, end_ms=1250, utterance_id=1)
-        )
+        await session._forward_stream_event(StreamTranscript(text="", start_ms=1000, end_ms=1250, utterance_id=1))
         await asyncio.sleep(0.01)
         await _drain_events(session)
 
@@ -728,14 +832,16 @@ class TestBargeIn:
         assert session.state == TurnState.PAUSED
         assert not collector.by_type(WIRE_AUDIO_CLEAR)
 
-        await session._forward_stream_event(StreamTranscript(
-            text="I need",
-            is_partial=True,
-            start_ms=1000,
-            end_ms=1500,
-            audio_duration_ms=500,
-            utterance_id=1,
-        ))
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="I need",
+                is_partial=True,
+                start_ms=1000,
+                end_ms=1500,
+                audio_duration_ms=500,
+                utterance_id=1,
+            )
+        )
         await asyncio.sleep(0.01)
         await _drain_events(session)
 
@@ -848,14 +954,16 @@ class TestBargeIn:
         assert tts.texts == ["Hello world."]
 
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
-        await session._forward_stream_event(StreamTranscript(
-            text="I need",
-            is_partial=True,
-            start_ms=1000,
-            end_ms=1500,
-            audio_duration_ms=500,
-            utterance_id=1,
-        ))
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="I need",
+                is_partial=True,
+                start_ms=1000,
+                end_ms=1500,
+                audio_duration_ms=500,
+                utterance_id=1,
+            )
+        )
         await asyncio.sleep(0.1)
         await _drain_events(session)
 

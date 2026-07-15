@@ -97,6 +97,35 @@ async def test_close_tracks_peer_teardown_with_shared_task_owner():
 
 
 @pytest.mark.asyncio
+async def test_close_awaits_cancelled_media_task_cleanup():
+    registry = RtcSessionRegistry()
+    record, _ = registry.create_session(now=1000.0)
+    cleanup_started = asyncio.Event()
+    cleanup_release = asyncio.Event()
+
+    async def media_worker() -> None:
+        try:
+            await asyncio.Future()
+        finally:
+            cleanup_started.set()
+            await cleanup_release.wait()
+
+    task = asyncio.create_task(media_worker())
+    record.media_tasks.add(task)
+    await asyncio.sleep(0)
+
+    registry.close(record.session_id)
+    await asyncio.wait_for(cleanup_started.wait(), timeout=0.1)
+    assert not task.done()
+
+    cleanup_release.set()
+    await registry.drain_teardowns()
+
+    assert task.done()
+    assert registry._teardown_tasks == set()
+
+
+@pytest.mark.asyncio
 async def test_client_disconnect_control_event_is_deduped():
     registry = RtcSessionRegistry()
     record, _ = registry.create_session(now=1000.0)

@@ -356,9 +356,7 @@ def parse_session_update(payload: dict) -> ConversationSessionConfig:
     if not tts_model:
         raise InvalidConfigError("session.update requires 'tts_model'")
 
-    turn_profile = str(
-        _first_session_value(sess, SESSION_UPDATE_TURN_PROFILE_FIELDS) or DEFAULT_TURN_PROFILE
-    )
+    turn_profile = str(_first_session_value(sess, SESSION_UPDATE_TURN_PROFILE_FIELDS) or DEFAULT_TURN_PROFILE)
     policy_in = _first_session_mapping(sess, SESSION_UPDATE_POLICY_FIELDS)
     policy_kwargs = {}
     for field_name in TURN_POLICY_OVERRIDE_FIELDS:
@@ -377,9 +375,7 @@ def parse_session_update(payload: dict) -> ConversationSessionConfig:
         sample_rate=int(sess.get("sample_rate") or TARGET_SAMPLE_RATE),
         turn_profile=turn_profile,
         vad_backend=str(_first_session_value(sess, SESSION_UPDATE_VAD_BACKEND_FIELDS) or "silero"),
-        turn_detector=str(
-            _first_session_value(sess, SESSION_UPDATE_TURN_DETECTOR_FIELDS) or "livekit"
-        ),
+        turn_detector=str(_first_session_value(sess, SESSION_UPDATE_TURN_DETECTOR_FIELDS) or "livekit"),
         policy=policy,
         include_word_timestamps=bool(sess.get("include_word_timestamps") or False),
     )
@@ -431,6 +427,15 @@ def parse_response_text(message: dict, preferred_key: str) -> str | None:
             value = payload.get(field)
             if value is not None:
                 return str(value)
+    return None
+
+
+def parse_response_generation_id(message: dict) -> str | None:
+    for payload in response_command_payloads(message):
+        value = payload.get("generation_id", payload.get("generationId"))
+        if value is not None:
+            generation_id = str(value).strip()
+            return generation_id or None
     return None
 
 
@@ -498,7 +503,14 @@ async def execute_conversation_command(
 
     if msg_type == "response.start":
         allow_interruptions = parse_allow_interruptions(message)
-        await orchestrator.start_response(allow_interruptions=allow_interruptions)
+        generation_id = parse_response_generation_id(message)
+        if generation_id is None:
+            await orchestrator.start_response(allow_interruptions=allow_interruptions)
+        else:
+            await orchestrator.start_response(
+                allow_interruptions=allow_interruptions,
+                generation_id=generation_id,
+            )
         return
 
     if msg_type == "response.delta":
@@ -506,15 +518,31 @@ async def execute_conversation_command(
         if not text:
             raise InvalidConfigError("response.delta requires 'delta' text")
         allow_interruptions = parse_allow_interruptions(message)
-        await orchestrator.append_response_text(text, allow_interruptions=allow_interruptions)
+        generation_id = parse_response_generation_id(message)
+        if generation_id is None:
+            await orchestrator.append_response_text(text, allow_interruptions=allow_interruptions)
+        else:
+            await orchestrator.append_response_text(
+                text,
+                allow_interruptions=allow_interruptions,
+                generation_id=generation_id,
+            )
         return
 
     if msg_type == "response.commit":
-        await orchestrator.commit_response()
+        generation_id = parse_response_generation_id(message)
+        if generation_id is None:
+            await orchestrator.commit_response()
+        else:
+            await orchestrator.commit_response(generation_id=generation_id)
         return
 
     if msg_type == "response.cancel":
-        await orchestrator.cancel_response()
+        generation_id = parse_response_generation_id(message)
+        if generation_id is None:
+            await orchestrator.cancel_response()
+        else:
+            await orchestrator.cancel_response(generation_id=generation_id)
         return
 
     if msg_type == "response.replace_text":
@@ -701,11 +729,7 @@ def parse_conversation_wire_event(event: dict) -> ConvEvent | None:
             language=str(event.get("language", "")),
             start_ms=int(event.get("start_ms") or 0),
             end_ms=int(event.get("end_ms") or 0),
-            eou_probability=(
-                float(event["eou_probability"])
-                if event.get("eou_probability") is not None
-                else None
-            ),
+            eou_probability=(float(event["eou_probability"]) if event.get("eou_probability") is not None else None),
             entities=tuple(event.get("entities") or ()),
             topics=tuple(event.get("topics") or ()),
             words=tuple(event.get("words") or ()),
@@ -733,9 +757,7 @@ def parse_conversation_wire_event(event: dict) -> ConvEvent | None:
             response_id=str(event.get("response_id") or ""),
             vad_active_ms=int(event.get("vad_active_ms") or 0),
             partial_transcript=(
-                str(event["partial_transcript"])
-                if event.get("partial_transcript") is not None
-                else None
+                str(event["partial_transcript"]) if event.get("partial_transcript") is not None else None
             ),
             reason=str(event["reason"]) if event.get("reason") else None,
         )
@@ -744,9 +766,7 @@ def parse_conversation_wire_event(event: dict) -> ConvEvent | None:
             response_id=str(event.get("response_id") or ""),
             vad_active_ms=int(event.get("vad_active_ms") or 0),
             partial_transcript=(
-                str(event["partial_transcript"])
-                if event.get("partial_transcript") is not None
-                else None
+                str(event["partial_transcript"]) if event.get("partial_transcript") is not None else None
             ),
             reason=str(event["reason"]) if event.get("reason") else None,
         )
@@ -773,7 +793,6 @@ def parse_conversation_wire_event(event: dict) -> ConvEvent | None:
 
 
 class ConversationOrchestrator:
-
     def __init__(
         self,
         *,
@@ -791,6 +810,8 @@ class ConversationOrchestrator:
         self._session: ConversationSession | None = None
         self._config: ConversationSessionConfig | None = None
         self._events: asyncio.Queue[ConvEvent] = asyncio.Queue()
+        self._control_response_id: str | None = None
+        self._control_generation_id: str | None = None
         self._closed = False
 
     @property
@@ -834,30 +855,75 @@ class ConversationOrchestrator:
         if self._session is not None:
             self._session.observe_output_playout(pcm16, sample_rate)
 
-    async def start_response(self, *, allow_interruptions: bool = True) -> None:
+    async def start_response(
+        self,
+        *,
+        allow_interruptions: bool = True,
+        generation_id: str | None = None,
+    ) -> None:
         if self._session is None:
             raise SessionNotConfiguredError()
-        await self._session.start_response_stream(allow_interruptions=allow_interruptions)
+        if self._control_response_id is not None:
+            raise InvalidConfigError("response already active")
+        response_id = await self._session.start_response_stream(
+            allow_interruptions=allow_interruptions,
+        )
+        if response_id is not None:
+            self._control_response_id = response_id
+            self._control_generation_id = generation_id or response_id
 
-    async def append_response_text(self, text: str, *, allow_interruptions: bool = True) -> None:
+    async def append_response_text(
+        self,
+        text: str,
+        *,
+        allow_interruptions: bool = True,
+        generation_id: str | None = None,
+    ) -> None:
         if self._session is None:
             raise SessionNotConfiguredError()
-        await self._session.append_response_text(text, allow_interruptions=allow_interruptions)
+        response_id = self._control_response_id
+        if response_id is None:
+            raise InvalidConfigError("response.start required before response.delta")
+        self._validate_response_generation(generation_id)
+        accepted = await self._session.append_response_text(
+            text,
+            allow_interruptions=allow_interruptions,
+            expected_response_id=response_id,
+        )
+        if not accepted:
+            self._control_response_id = None
+            self._control_generation_id = None
+            raise InvalidConfigError("response generation is no longer active")
 
     async def replace_response_text(self, text: str, *, allow_interruptions: bool = True) -> None:
         if self._session is None:
             raise SessionNotConfiguredError()
         await self._session.replace_response_text(text, allow_interruptions=allow_interruptions)
 
-    async def commit_response(self) -> None:
+    async def commit_response(self, *, generation_id: str | None = None) -> None:
         if self._session is None:
             raise SessionNotConfiguredError()
-        await self._session.commit_response_stream()
+        response_id = self._control_response_id
+        if response_id is None:
+            raise InvalidConfigError("response.start required before response.commit")
+        self._validate_response_generation(generation_id)
+        accepted = await self._session.commit_response_stream(
+            expected_response_id=response_id,
+        )
+        if not accepted:
+            self._control_response_id = None
+            self._control_generation_id = None
+            raise InvalidConfigError("response generation is no longer active")
 
-    async def cancel_response(self) -> None:
+    async def cancel_response(self, *, generation_id: str | None = None) -> None:
         if self._session is None:
             raise SessionNotConfiguredError()
+        self._validate_response_generation(generation_id)
+        response_id = self._control_response_id
         await self._session.cancel_response()
+        if self._control_response_id == response_id:
+            self._control_response_id = None
+            self._control_generation_id = None
 
     async def report_error(self, message: str) -> None:
         await self._events.put(ConvErrorEvent(message=message))
@@ -889,10 +955,23 @@ class ConversationOrchestrator:
         mapped = parse_conversation_wire_event(event)
         if mapped is None:
             return
+        if isinstance(mapped, ConvResponseCreatedEvent):
+            self._control_response_id = mapped.response_id or self._control_response_id
+        elif isinstance(mapped, (ConvResponseCancelledEvent, ConvResponseDoneEvent)) and (
+            not mapped.response_id or mapped.response_id == self._control_response_id
+        ):
+            self._control_response_id = None
+            self._control_generation_id = None
         if self._audio_sink is not None and isinstance(mapped, ConvAudioDeltaEvent):
             await self._audio_sink(mapped)
             return
         await self._events.put(mapped)
+
+    def _validate_response_generation(self, generation_id: str | None) -> None:
+        if generation_id is None:
+            return
+        if generation_id != self._control_generation_id:
+            raise InvalidConfigError("stale response generation")
 
 
 def serialize_session_config(config: ConversationSessionConfig) -> dict:

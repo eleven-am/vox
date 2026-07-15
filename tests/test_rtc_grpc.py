@@ -196,6 +196,9 @@ async def test_rtc_grpc_control_drops_audio_delta_events():
                 ),
             ),
             vox_pb2.RtcControlClientMessage(
+                response_start=vox_pb2.ConversationResponseStart(),
+            ),
+            vox_pb2.RtcControlClientMessage(
                 response_delta=vox_pb2.ConversationResponseDelta(delta="hello"),
             ),
             vox_pb2.RtcControlClientMessage(

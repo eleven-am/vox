@@ -299,6 +299,13 @@ class TestBackchannelRejection:
         await session.cancel_response()
         assert session._interrupt_detector.current() is None
         cancellations_before = len(coll.by_type("response.cancelled"))
+        await session._forward_stream_event(
+            SpeechStopped(
+                timestamp_ms=1800,
+                expects_transcript=True,
+                utterance_id=1,
+            )
+        )
 
         await session.submit_response_text("The replacement assistant response.")
         await asyncio.sleep(0.15)

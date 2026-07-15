@@ -76,8 +76,10 @@ class ScriptedTTS(TTSAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="scripted", type=ModelType.TTS,
-            architectures=("scripted",), default_sample_rate=24_000,
+            name="scripted",
+            type=ModelType.TTS,
+            architectures=("scripted",),
+            default_sample_rate=24_000,
             supported_formats=(ModelFormat.ONNX,),
         )
 
@@ -96,7 +98,8 @@ class ScriptedTTS(TTSAdapter):
         for _ in range(self._chunks):
             yield SynthesizeChunk(
                 audio=np.full(256, 0.02, dtype=np.float32).tobytes(),
-                sample_rate=24_000, is_final=False,
+                sample_rate=24_000,
+                is_final=False,
             )
             await asyncio.sleep(0.005)
         yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
@@ -123,20 +126,39 @@ class CommandSpy:
     async def ingest_pcm16(self, pcm16: bytes, sample_rate: int | None = None) -> None:
         self.calls.append(("ingest_pcm16", (pcm16,), {"sample_rate": sample_rate}))
 
-    async def start_response(self, *, allow_interruptions: bool = True) -> None:
-        self.calls.append(("start_response", (), {"allow_interruptions": allow_interruptions}))
+    async def start_response(
+        self,
+        *,
+        allow_interruptions: bool = True,
+        generation_id: str | None = None,
+    ) -> None:
+        kwargs: dict[str, object] = {"allow_interruptions": allow_interruptions}
+        if generation_id is not None:
+            kwargs["generation_id"] = generation_id
+        self.calls.append(("start_response", (), kwargs))
 
-    async def append_response_text(self, text: str, *, allow_interruptions: bool = True) -> None:
-        self.calls.append(("append_response_text", (text,), {"allow_interruptions": allow_interruptions}))
+    async def append_response_text(
+        self,
+        text: str,
+        *,
+        allow_interruptions: bool = True,
+        generation_id: str | None = None,
+    ) -> None:
+        kwargs: dict[str, object] = {"allow_interruptions": allow_interruptions}
+        if generation_id is not None:
+            kwargs["generation_id"] = generation_id
+        self.calls.append(("append_response_text", (text,), kwargs))
 
     async def replace_response_text(self, text: str, *, allow_interruptions: bool = True) -> None:
         self.calls.append(("replace_response_text", (text,), {"allow_interruptions": allow_interruptions}))
 
-    async def commit_response(self) -> None:
-        self.calls.append(("commit_response", (), {}))
+    async def commit_response(self, *, generation_id: str | None = None) -> None:
+        kwargs = {"generation_id": generation_id} if generation_id is not None else {}
+        self.calls.append(("commit_response", (), kwargs))
 
-    async def cancel_response(self) -> None:
-        self.calls.append(("cancel_response", (), {}))
+    async def cancel_response(self, *, generation_id: str | None = None) -> None:
+        kwargs = {"generation_id": generation_id} if generation_id is not None else {}
+        self.calls.append(("cancel_response", (), kwargs))
 
 
 def test_parse_session_update_requires_stt_model():
@@ -220,6 +242,41 @@ async def test_execute_conversation_command_appends_audio_and_response_text():
 
 
 @pytest.mark.asyncio
+async def test_execute_conversation_command_forwards_response_generation_id():
+    spy = CommandSpy()
+
+    await execute_conversation_command(
+        spy,
+        {"type": "response.start", "generation_id": "generation-7"},
+    )
+    await execute_conversation_command(
+        spy,
+        {
+            "type": "response.delta",
+            "response": {"delta": "hello", "generationId": "generation-7"},
+        },
+    )
+    await execute_conversation_command(
+        spy,
+        {"type": "response.commit", "generation_id": "generation-7"},
+    )
+
+    assert spy.calls == [
+        (
+            "start_response",
+            (),
+            {"allow_interruptions": True, "generation_id": "generation-7"},
+        ),
+        (
+            "append_response_text",
+            ("hello",),
+            {"allow_interruptions": True, "generation_id": "generation-7"},
+        ),
+        ("commit_response", (), {"generation_id": "generation-7"}),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_execute_conversation_command_accepts_internal_raw_pcm_audio():
     spy = CommandSpy()
 
@@ -277,9 +334,7 @@ async def test_response_command_compatibility_policy_is_named_and_ordered():
     assert RESPONSE_ALLOW_INTERRUPTION_FIELD == "allow_interruptions"
     assert response_text_fields("delta") == ("delta", "text")
     assert response_command_payloads(message) == (message["response"], message)
-    assert spy.calls == [
-        ("append_response_text", ("nested canonical",), {"allow_interruptions": False})
-    ]
+    assert spy.calls == [("append_response_text", ("nested canonical",), {"allow_interruptions": False})]
 
 
 @pytest.mark.asyncio
@@ -466,20 +521,22 @@ def test_conversation_wire_event_payload_is_operation_owned_transport_contract()
 
 
 def test_parse_session_update_accepts_turn_policy_overrides():
-    config = parse_session_update({
-        "session": {
-            "stt_model": "x:1",
-            "tts_model": "y:1",
-            "turn_policy": {
-                "min_interrupt_duration_ms": 150,
-                "stable_speaking_min_ms": 100,
-                "speaking_interrupt_min_duration_ms": 650,
-                "speaking_interrupt_min_words": 3,
-                "self_echo_min_words": 4,
-                "self_echo_min_overlap": 0.8,
+    config = parse_session_update(
+        {
+            "session": {
+                "stt_model": "x:1",
+                "tts_model": "y:1",
+                "turn_policy": {
+                    "min_interrupt_duration_ms": 150,
+                    "stable_speaking_min_ms": 100,
+                    "speaking_interrupt_min_duration_ms": 650,
+                    "speaking_interrupt_min_words": 3,
+                    "self_echo_min_words": 4,
+                    "self_echo_min_overlap": 0.8,
+                },
             },
-        },
-    })
+        }
+    )
     assert config.policy is not None
     assert config.policy.min_interrupt_duration_ms == 150
     assert config.policy.stable_speaking_min_ms == 100
@@ -490,13 +547,15 @@ def test_parse_session_update_accepts_turn_policy_overrides():
 
 
 def test_parse_session_update_applies_turn_profile_defaults():
-    config = parse_session_update({
-        "session": {
-            "stt_model": "x:1",
-            "tts_model": "y:1",
-            "turn_profile": "headset",
-        },
-    })
+    config = parse_session_update(
+        {
+            "session": {
+                "stt_model": "x:1",
+                "tts_model": "y:1",
+                "turn_profile": "headset",
+            },
+        }
+    )
     assert config.turn_profile == "headset"
     assert config.policy is not None
     assert config.policy.min_interrupt_duration_ms == 180
@@ -506,29 +565,33 @@ def test_parse_session_update_applies_turn_profile_defaults():
 
 
 def test_parse_session_update_allows_vad_min_silence_override():
-    config = parse_session_update({
-        "session": {
-            "stt_model": "x:1",
-            "tts_model": "y:1",
-            "turn_policy": {"vad_min_silence_ms": 550},
-        },
-    })
+    config = parse_session_update(
+        {
+            "session": {
+                "stt_model": "x:1",
+                "tts_model": "y:1",
+                "turn_policy": {"vad_min_silence_ms": 550},
+            },
+        }
+    )
     assert config.policy is not None
     assert config.policy.vad_min_silence_ms == 550
 
 
 def test_parse_session_update_allows_profile_with_explicit_overrides():
-    config = parse_session_update({
-        "session": {
-            "stt_model": "x:1",
-            "tts_model": "y:1",
-            "turn_profile": "speakerphone",
-            "turn_policy": {
-                "speaking_interrupt_min_words": 4,
-                "aec_warmup_ms": 600,
+    config = parse_session_update(
+        {
+            "session": {
+                "stt_model": "x:1",
+                "tts_model": "y:1",
+                "turn_profile": "speakerphone",
+                "turn_policy": {
+                    "speaking_interrupt_min_words": 4,
+                    "aec_warmup_ms": 600,
+                },
             },
-        },
-    })
+        }
+    )
     assert config.turn_profile == "speakerphone"
     assert config.policy is not None
     assert config.policy.speaking_interrupt_min_words == 4
@@ -537,26 +600,30 @@ def test_parse_session_update_allows_profile_with_explicit_overrides():
 
 
 def test_parse_session_update_accepts_noisy_alias():
-    config = parse_session_update({
-        "session": {
-            "stt_model": "x:1",
-            "tts_model": "y:1",
-            "turn_profile": "noisy",
-        },
-    })
+    config = parse_session_update(
+        {
+            "session": {
+                "stt_model": "x:1",
+                "tts_model": "y:1",
+                "turn_profile": "noisy",
+            },
+        }
+    )
     assert config.turn_profile == "noisy_room"
     assert config.policy.vad_min_silence_ms == 1200
 
 
 def test_parse_session_update_rejects_unknown_turn_profile():
     with pytest.raises(InvalidConfigError):
-        parse_session_update({
-            "session": {
-                "stt_model": "x:1",
-                "tts_model": "y:1",
-                "turn_profile": "spaceship",
-            },
-        })
+        parse_session_update(
+            {
+                "session": {
+                    "stt_model": "x:1",
+                    "tts_model": "y:1",
+                    "turn_profile": "spaceship",
+                },
+            }
+        )
 
 
 def test_parse_session_update_compatibility_fields_are_explicit_policy():
@@ -573,15 +640,17 @@ def test_parse_session_update_compatibility_fields_are_explicit_policy():
     assert SESSION_UPDATE_TURN_DETECTOR_FIELDS == ("turn_detector", "eou_model")
     assert SESSION_UPDATE_POLICY_FIELDS == ("turn_policy", "policy")
 
-    config = parse_session_update({
-        "session": {
-            "input_audio_transcription": {"model": "legacy-stt:1"},
-            "output_audio_generation": {"model": "legacy-tts:1"},
-            "profile": "browser",
-            "vad": "silero",
-            "eou_model": "livekit",
-        },
-    })
+    config = parse_session_update(
+        {
+            "session": {
+                "input_audio_transcription": {"model": "legacy-stt:1"},
+                "output_audio_generation": {"model": "legacy-tts:1"},
+                "profile": "browser",
+                "vad": "silero",
+                "eou_model": "livekit",
+            },
+        }
+    )
 
     assert config.stt_model == "legacy-stt:1"
     assert config.tts_model == "legacy-tts:1"
@@ -600,21 +669,25 @@ def test_session_update_payload_accepts_root_or_session_envelope_explicitly():
 
 
 def test_parse_session_update_accepts_policy_alias_with_canonical_precedence():
-    canonical = parse_session_update({
-        "session": {
-            "stt_model": "x:1",
-            "tts_model": "y:1",
-            "turn_policy": {"vad_min_silence_ms": 550},
-            "policy": {"vad_min_silence_ms": 1200},
-        },
-    })
-    alias = parse_session_update({
-        "session": {
-            "stt_model": "x:1",
-            "tts_model": "y:1",
-            "policy": {"vad_min_silence_ms": 1200},
-        },
-    })
+    canonical = parse_session_update(
+        {
+            "session": {
+                "stt_model": "x:1",
+                "tts_model": "y:1",
+                "turn_policy": {"vad_min_silence_ms": 550},
+                "policy": {"vad_min_silence_ms": 1200},
+            },
+        }
+    )
+    alias = parse_session_update(
+        {
+            "session": {
+                "stt_model": "x:1",
+                "tts_model": "y:1",
+                "policy": {"vad_min_silence_ms": 1200},
+            },
+        }
+    )
 
     assert canonical.policy is not None
     assert canonical.policy.vad_min_silence_ms == 550
@@ -623,20 +696,22 @@ def test_parse_session_update_accepts_policy_alias_with_canonical_precedence():
 
 
 def test_parse_session_update_prefers_canonical_fields_over_compatibility_aliases():
-    config = parse_session_update({
-        "session": {
-            "stt_model": "canonical-stt:1",
-            "input_audio_transcription": {"model": "legacy-stt:1"},
-            "tts_model": "canonical-tts:1",
-            "output_audio_generation": {"model": "legacy-tts:1"},
-            "turn_profile": "headset",
-            "profile": "browser",
-            "vad_backend": "silero",
-            "vad": "other-vad",
-            "turn_detector": "livekit",
-            "eou_model": "other-eou",
-        },
-    })
+    config = parse_session_update(
+        {
+            "session": {
+                "stt_model": "canonical-stt:1",
+                "input_audio_transcription": {"model": "legacy-stt:1"},
+                "tts_model": "canonical-tts:1",
+                "output_audio_generation": {"model": "legacy-tts:1"},
+                "turn_profile": "headset",
+                "profile": "browser",
+                "vad_backend": "silero",
+                "vad": "other-vad",
+                "turn_detector": "livekit",
+                "eou_model": "other-eou",
+            },
+        }
+    )
 
     assert config.stt_model == "canonical-stt:1"
     assert config.tts_model == "canonical-tts:1"
@@ -646,9 +721,11 @@ def test_parse_session_update_prefers_canonical_fields_over_compatibility_aliase
 
 
 def test_serialize_session_config_round_trip_includes_policy_and_audio_format():
-    config = parse_session_update({
-        "session": {"stt_model": "x:1", "tts_model": "y:1", "sample_rate": 48_000},
-    })
+    config = parse_session_update(
+        {
+            "session": {"stt_model": "x:1", "tts_model": "y:1", "sample_rate": 48_000},
+        }
+    )
     payload = serialize_session_config(config)
     assert payload["stt_model"] == "x:1"
     assert payload["tts_model"] == "y:1"
@@ -734,25 +811,29 @@ def test_audio_clear_wire_event_maps_to_operation_event():
 
 
 def test_interruption_detected_wire_event_maps_to_operation_event():
-    event = parse_conversation_wire_event({
-        "type": "interruption.detected",
-        "response_id": "resp_1",
-        "vad_active_ms": 320,
-        "partial_transcript": "wait",
-        "reason": "partial_keyword",
-    })
+    event = parse_conversation_wire_event(
+        {
+            "type": "interruption.detected",
+            "response_id": "resp_1",
+            "vad_active_ms": 320,
+            "partial_transcript": "wait",
+            "reason": "partial_keyword",
+        }
+    )
     assert isinstance(event, ConvInterruptionDetectedEvent)
     assert event.response_id == "resp_1"
     assert event.reason == "partial_keyword"
 
 
 def test_transcript_delta_wire_event_maps_to_operation_event():
-    event = parse_conversation_wire_event({
-        "type": "conversation.item.input_audio_transcription.delta",
-        "delta": "hello there",
-        "start_ms": 100,
-        "end_ms": 700,
-    })
+    event = parse_conversation_wire_event(
+        {
+            "type": "conversation.item.input_audio_transcription.delta",
+            "delta": "hello there",
+            "start_ms": 100,
+            "end_ms": 700,
+        }
+    )
     assert isinstance(event, ConvTranscriptDeltaEvent)
     assert event.delta == "hello there"
     assert event.start_ms == 100
@@ -760,29 +841,33 @@ def test_transcript_delta_wire_event_maps_to_operation_event():
 
 
 def test_interruption_false_positive_preserves_reason():
-    event = parse_conversation_wire_event({
-        "type": "interruption.false_positive",
-        "response_id": "resp_1",
-        "vad_active_ms": 120,
-        "partial_transcript": "mhmm",
-        "reason": "backchannel",
-    })
+    event = parse_conversation_wire_event(
+        {
+            "type": "interruption.false_positive",
+            "response_id": "resp_1",
+            "vad_active_ms": 120,
+            "partial_transcript": "mhmm",
+            "reason": "backchannel",
+        }
+    )
     assert isinstance(event, ConvInterruptionFalsePositiveEvent)
     assert event.reason == "backchannel"
 
 
 def test_turn_eou_predicted_wire_event_maps_to_operation_event():
-    event = parse_conversation_wire_event({
-        "type": "turn.eou.predicted",
-        "probability": 0.82,
-        "threshold": 0.5,
-        "decision": "complete",
-        "action": "commit",
-        "delay_ms": 0,
-        "turn_detector": "livekit",
-        "start_ms": 10,
-        "end_ms": 420,
-    })
+    event = parse_conversation_wire_event(
+        {
+            "type": "turn.eou.predicted",
+            "probability": 0.82,
+            "threshold": 0.5,
+            "decision": "complete",
+            "action": "commit",
+            "delay_ms": 0,
+            "turn_detector": "livekit",
+            "start_ms": 10,
+            "end_ms": 420,
+        }
+    )
 
     assert isinstance(event, ConvTurnEouPredictedEvent)
     assert event.probability == pytest.approx(0.82)
@@ -797,9 +882,11 @@ def test_turn_eou_predicted_wire_event_maps_to_operation_event():
 @pytest.mark.asyncio
 async def test_start_session_emits_session_created_event():
     orchestrator = ConversationOrchestrator(scheduler=DummyScheduler(ScriptedTTS()))
-    config = parse_session_update({
-        "session": {"stt_model": "x:1", "tts_model": "y:1", "voice": "default"},
-    })
+    config = parse_session_update(
+        {
+            "session": {"stt_model": "x:1", "tts_model": "y:1", "voice": "default"},
+        }
+    )
     await orchestrator.start_session(config)
     await orchestrator.end_of_stream()
     events: list = []
@@ -813,9 +900,11 @@ async def test_start_session_emits_session_created_event():
 @pytest.mark.asyncio
 async def test_double_start_raises_session_already_configured():
     orchestrator = ConversationOrchestrator(scheduler=DummyScheduler(ScriptedTTS()))
-    config = parse_session_update({
-        "session": {"stt_model": "x:1", "tts_model": "y:1"},
-    })
+    config = parse_session_update(
+        {
+            "session": {"stt_model": "x:1", "tts_model": "y:1"},
+        }
+    )
     await orchestrator.start_session(config)
     with pytest.raises(SessionAlreadyConfiguredError):
         await orchestrator.start_session(config)
@@ -826,9 +915,11 @@ async def test_double_start_raises_session_already_configured():
 async def test_streaming_response_emits_audio_and_done_events():
     adapter = ScriptedTTS(chunks=2)
     orchestrator = ConversationOrchestrator(scheduler=DummyScheduler(adapter))
-    config = parse_session_update({
-        "session": {"stt_model": "x:1", "tts_model": "y:1", "voice": "default"},
-    })
+    config = parse_session_update(
+        {
+            "session": {"stt_model": "x:1", "tts_model": "y:1", "voice": "default"},
+        }
+    )
     await orchestrator.start_session(config)
     await orchestrator.start_response()
     await orchestrator.append_response_text("hi there")
@@ -853,12 +944,77 @@ async def test_streaming_response_emits_audio_and_done_events():
 
 
 @pytest.mark.asyncio
+async def test_response_delta_requires_an_explicit_active_response_generation():
+    orchestrator = ConversationOrchestrator(scheduler=DummyScheduler(ScriptedTTS()))
+    config = parse_session_update(
+        {
+            "session": {"stt_model": "x:1", "tts_model": "y:1", "voice": "default"},
+        }
+    )
+    await orchestrator.start_session(config)
+
+    with pytest.raises(InvalidConfigError, match="response.start required"):
+        await orchestrator.append_response_text("stale delta")
+
+    await orchestrator.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_response_generation_rejects_late_delta_and_commit():
+    orchestrator = ConversationOrchestrator(scheduler=DummyScheduler(ScriptedTTS(chunks=5)))
+    config = parse_session_update(
+        {
+            "session": {"stt_model": "x:1", "tts_model": "y:1", "voice": "default"},
+        }
+    )
+    await orchestrator.start_session(config)
+    await orchestrator.start_response()
+    await orchestrator.cancel_response()
+
+    with pytest.raises(InvalidConfigError, match="response.start required"):
+        await orchestrator.append_response_text("late delta")
+    with pytest.raises(InvalidConfigError, match="response.start required"):
+        await orchestrator.commit_response()
+
+    await orchestrator.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_wire_generation_cannot_write_into_a_new_response():
+    orchestrator = ConversationOrchestrator(scheduler=DummyScheduler(ScriptedTTS(chunks=5)))
+    config = parse_session_update(
+        {
+            "session": {"stt_model": "x:1", "tts_model": "y:1", "voice": "default"},
+        }
+    )
+    await orchestrator.start_session(config)
+    await orchestrator.start_response(generation_id="generation-a")
+    await orchestrator.cancel_response(generation_id="generation-a")
+    await orchestrator.start_response(generation_id="generation-b")
+
+    with pytest.raises(InvalidConfigError, match="stale response generation"):
+        await orchestrator.append_response_text(
+            "late delta",
+            generation_id="generation-a",
+        )
+    await orchestrator.append_response_text(
+        "current delta",
+        generation_id="generation-b",
+    )
+    await orchestrator.commit_response(generation_id="generation-b")
+
+    await orchestrator.close()
+
+
+@pytest.mark.asyncio
 async def test_end_of_stream_can_skip_pending_response_flush_for_rtc_shutdown():
     adapter = ScriptedTTS(chunks=1)
     orchestrator = ConversationOrchestrator(scheduler=DummyScheduler(adapter))
-    config = parse_session_update({
-        "session": {"stt_model": "x:1", "tts_model": "y:1", "voice": "default"},
-    })
+    config = parse_session_update(
+        {
+            "session": {"stt_model": "x:1", "tts_model": "y:1", "voice": "default"},
+        }
+    )
     await orchestrator.start_session(config)
     await orchestrator.start_response()
     await orchestrator.append_response_text("do not synthesize yet")

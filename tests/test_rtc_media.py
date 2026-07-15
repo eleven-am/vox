@@ -8,6 +8,7 @@ from aiortc.mediastreams import MediaStreamError
 from vox.server.rtc_media import (
     RtcAudioOutputTrack,
     audio_frame_to_pcm16,
+    create_rtc_audio_queue,
     pump_input_audio,
 )
 
@@ -145,6 +146,27 @@ async def test_rtc_audio_output_track_reports_buffer_and_clear_stats():
     silence = await track.recv()
     assert np.all(silence.to_ndarray() == 0)
     assert track.stats()["silence_frames"] == 1
+
+
+@pytest.mark.asyncio
+async def test_rtc_audio_output_queue_applies_backpressure_at_buffer_limit():
+    queue = create_rtc_audio_queue(max_buffered_audio_ms=100, chunk_ms=50)
+    track = RtcAudioOutputTrack(queue, enqueue_chunk_ms=50)
+    producer = asyncio.create_task(track.enqueue(np.full(3_200, 1000, dtype=np.int16).tobytes(), 16_000))
+
+    await asyncio.sleep(0)
+    assert queue.full()
+    assert not producer.done()
+    assert track.stats()["max_buffered_audio_ms_limit"] == 100
+
+    await track.recv()
+    await asyncio.sleep(0)
+    assert not producer.done()
+    while not producer.done():
+        await track.recv()
+    await asyncio.wait_for(producer, timeout=0.1)
+
+    assert track.stats()["buffered_audio_ms"] <= 100
 
 
 @pytest.mark.asyncio

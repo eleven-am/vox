@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,7 +21,7 @@ from vox.server.rtc_ice import (
     rewrite_private_relay_candidates,
     server_ice_servers_from_env,
 )
-from vox.server.rtc_media import RtcAudioOutputTrack, pump_input_audio
+from vox.server.rtc_media import RtcAudioOutputTrack, create_rtc_audio_queue, pump_input_audio
 from vox.server.rtc_media_events import emit_media_event
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 from vox.server.rtc_tasks import track_media_task
@@ -53,7 +52,7 @@ async def create_browser_rtc_answer(
     pc = RTCPeerConnection(configuration=rtc_configuration(server_ice_servers_from_env()))
     record.rtc_peer = pc
     if record.audio_output is None:
-        record.audio_output = asyncio.Queue()
+        record.audio_output = create_rtc_audio_queue()
     record.audio_output_track = RtcAudioOutputTrack(
         record.audio_output,
         on_playout=lambda pcm16, sample_rate: observe_rtc_audio_playout(
@@ -196,7 +195,7 @@ def bind_peer_connection_handlers(
                     connection_state=pc.connectionState,
                     ice_connection_state=pc.iceConnectionState,
                     data_channel_state=getattr(channel, "readyState", None),
-                )
+                ),
             )
 
         @channel.on("message")

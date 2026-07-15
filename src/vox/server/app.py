@@ -81,8 +81,12 @@ async def lifespan(app: FastAPI):
                     await pond.close()
                     logger.info("PondSocket server stopped")
             finally:
-                await services.scheduler.stop()
-                logger.info("Vox server stopped")
+                try:
+                    await rtc_registry.close_all()
+                    logger.info("RTC sessions stopped")
+                finally:
+                    await services.scheduler.stop()
+                    logger.info("Vox server stopped")
 
 
 def create_app(
@@ -145,6 +149,7 @@ def create_app(
 
     from vox.server.pondsocket_gateway import install_pondsocket_gateway
     from vox.server.routes import bidi, health, models, rtc, stream, synthesize, system, transcribe, voices
+
     app.include_router(health.router)
     app.include_router(models.router)
     app.include_router(system.router)

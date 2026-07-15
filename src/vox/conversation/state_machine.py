@@ -50,6 +50,10 @@ class TurnStateMachine:
     def reset(self) -> None:
         self._state = TurnState.IDLE
 
+    def accepts(self, event_type: TurnEventType) -> bool:
+        """Return whether the current state defines a transition for an event."""
+        return (self._state, event_type) in _TRANSITIONS
+
     def handle(self, event: TurnEvent) -> list[TurnAction]:
         """Apply a single event. Returns the actions to execute.
 

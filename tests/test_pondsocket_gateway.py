@@ -136,6 +136,14 @@ def test_pondsocket_conversation_channel_matches_ws_flow():
             ws,
             action="BROADCAST",
             channel_name="/conversation/demo",
+            event="response.start",
+            payload={},
+            request_id="start-1",
+        )
+        _send_channel_message(
+            ws,
+            action="BROADCAST",
+            channel_name="/conversation/demo",
             event="response.delta",
             payload={"delta": "hello"},
             request_id="delta-1",

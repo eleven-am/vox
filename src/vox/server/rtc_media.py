@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import fractions
 import functools
+import math
+import os
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -27,6 +29,28 @@ class RtcAudioClear:
 
 RtcAudioQueueItem = tuple[bytes, int] | RtcAudioDrain | RtcAudioClear | None
 
+DEFAULT_RTC_OUTPUT_BUFFER_MS = 2_000
+DEFAULT_RTC_OUTPUT_CHUNK_MS = 100
+
+
+def create_rtc_audio_queue(
+    *,
+    max_buffered_audio_ms: int | None = None,
+    chunk_ms: int = DEFAULT_RTC_OUTPUT_CHUNK_MS,
+) -> asyncio.Queue[RtcAudioQueueItem]:
+    """Create a bounded playout queue sized by an audio-duration budget."""
+    if max_buffered_audio_ms is None:
+        raw_limit = os.environ.get("VOX_RTC_MAX_OUTPUT_BUFFER_MS", "")
+        try:
+            max_buffered_audio_ms = int(raw_limit) if raw_limit else DEFAULT_RTC_OUTPUT_BUFFER_MS
+        except ValueError:
+            max_buffered_audio_ms = DEFAULT_RTC_OUTPUT_BUFFER_MS
+    chunk_ms = max(1, int(chunk_ms))
+    # One chunk may already be held in ``RtcAudioOutputTrack._pending`` while
+    # the queue fills, so reserve that chunk inside the total duration budget.
+    max_items = max(1, math.ceil(max(1, int(max_buffered_audio_ms)) / chunk_ms) - 1)
+    return asyncio.Queue(maxsize=max_items)
+
 
 class RtcAudioOutputTrack(MediaStreamTrack):
     kind = "audio"
@@ -36,10 +60,12 @@ class RtcAudioOutputTrack(MediaStreamTrack):
         queue: asyncio.Queue[RtcAudioQueueItem],
         *,
         on_playout: Callable[[bytes, int], None] | None = None,
+        enqueue_chunk_ms: int = DEFAULT_RTC_OUTPUT_CHUNK_MS,
     ) -> None:
         super().__init__()
         self._queue = queue
         self._on_playout = on_playout
+        self._enqueue_chunk_ms = max(1, int(enqueue_chunk_ms))
         self._timestamp = 0
         self._start: float | None = None
         self._pending = np.empty(0, dtype=np.int16)
@@ -55,9 +81,16 @@ class RtcAudioOutputTrack(MediaStreamTrack):
     async def enqueue(self, pcm16: bytes, sample_rate: int) -> None:
         self._silenced = False
         self._enqueued_chunks += 1
-        self._queued_audio_ms += _pcm16_duration_ms(pcm16, sample_rate)
-        self._update_max_buffered_audio_ms()
-        await self._queue.put((pcm16, sample_rate))
+        rate = max(1, int(sample_rate))
+        bytes_per_chunk = max(2, rate * 2 * self._enqueue_chunk_ms // 1000)
+        bytes_per_chunk -= bytes_per_chunk % 2
+        for offset in range(0, len(pcm16), bytes_per_chunk):
+            chunk = pcm16[offset : offset + bytes_per_chunk]
+            if not chunk:
+                continue
+            await self._queue.put((chunk, rate))
+            self._queued_audio_ms += _pcm16_duration_ms(chunk, rate)
+            self._update_max_buffered_audio_ms()
 
     async def wait_until_drained(self) -> None:
         loop = asyncio.get_running_loop()
@@ -166,6 +199,9 @@ class RtcAudioOutputTrack(MediaStreamTrack):
         return {
             "buffered_audio_ms": round(buffered_ms, 2),
             "max_buffered_audio_ms": round(self._max_buffered_audio_ms, 2),
+            "max_buffered_audio_ms_limit": (
+                (self._queue.maxsize + 1) * self._enqueue_chunk_ms if self._queue.maxsize > 0 else None
+            ),
             "queued_items": self._queue.qsize(),
             "pending_samples": int(self._pending.size),
             "sample_rate": int(self._sample_rate),

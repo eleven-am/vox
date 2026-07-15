@@ -8,6 +8,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any
 
+from vox.server.rtc_media import create_rtc_audio_queue
 from vox.server.rtc_tasks import cancel_media_tasks, track_task
 
 
@@ -98,7 +99,7 @@ class RtcSessionRegistry:
         media_token = f"rtc_media_{secrets.token_urlsafe(32)}"
         record.media_token_hash = self._hash_token(media_token)
         record.media_events = asyncio.Queue()
-        record.audio_output = asyncio.Queue()
+        record.audio_output = create_rtc_audio_queue()
         return record, media_token
 
     def validate_media_token(self, session_id: str, token: str) -> RtcSessionRecord | None:
@@ -129,21 +130,44 @@ class RtcSessionRegistry:
         self._release_resources(record)
 
     def _release_resources(self, record: RtcSessionRecord) -> None:
-        cancel_media_tasks(record)
+        media_tasks = cancel_media_tasks(record)
         peer = record.rtc_peer
         record.rtc_peer = None
-        if peer is None:
-            return
+        orchestrator = record.orchestrator
+        record.orchestrator = None
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             return
-        track_task(self._teardown_tasks, self._close_peer(peer))
+        if media_tasks or peer is not None or orchestrator is not None:
+            track_task(
+                self._teardown_tasks,
+                self._drain_resources(media_tasks, orchestrator, peer),
+            )
 
     @staticmethod
-    async def _close_peer(peer: Any) -> None:
-        with suppress(Exception):
-            await peer.close()
+    async def _drain_resources(
+        media_tasks: list[asyncio.Task],
+        orchestrator: Any | None,
+        peer: Any | None,
+    ) -> None:
+        if media_tasks:
+            await asyncio.gather(*media_tasks, return_exceptions=True)
+        if orchestrator is not None:
+            with suppress(Exception):
+                await orchestrator.close()
+        if peer is not None:
+            with suppress(Exception):
+                await peer.close()
+
+    async def drain_teardowns(self) -> None:
+        while self._teardown_tasks:
+            await asyncio.gather(*tuple(self._teardown_tasks), return_exceptions=True)
+
+    async def close_all(self) -> None:
+        for session_id in tuple(self._sessions):
+            self.close(session_id)
+        await self.drain_teardowns()
 
     def _prune_expired(self, *, now: float) -> None:
         for session_id, record in list(self._sessions.items()):

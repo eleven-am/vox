@@ -17,6 +17,7 @@ def _make_app(*, grpc_port: int | None) -> FastAPI:
     app.state.store = MagicMock(root=Path("/path/that/does/not/exist"))
     app.state.registry = MagicMock()
     app.state.grpc_port = grpc_port
+    app.state.rtc_registry = MagicMock(close_all=AsyncMock())
     return app
 
 
@@ -86,3 +87,24 @@ async def test_lifespan_closes_pondsocket_before_stopping_scheduler():
     app.state.pondsocket.close.assert_awaited_once()
     app.state.scheduler.stop.assert_awaited_once()
     assert shutdown_order == ["pondsocket", "scheduler"]
+
+
+@pytest.mark.asyncio
+async def test_lifespan_closes_all_rtc_sessions_before_stopping_scheduler():
+    app = _make_app(grpc_port=None)
+    shutdown_order: list[str] = []
+
+    async def close_rtc() -> None:
+        shutdown_order.append("rtc")
+
+    async def stop_scheduler() -> None:
+        shutdown_order.append("scheduler")
+
+    app.state.rtc_registry.close_all.side_effect = close_rtc
+    app.state.scheduler.stop.side_effect = stop_scheduler
+
+    async with lifespan(app):
+        pass
+
+    app.state.rtc_registry.close_all.assert_awaited_once()
+    assert shutdown_order == ["rtc", "scheduler"]
