@@ -8,19 +8,8 @@ from vox.streaming.types import TARGET_SAMPLE_RATE
 SPEAKING_ECHO_MIN_WINDOW_MS = 120
 SPEAKING_ECHO_COMPARE_WINDOW_MS = 320
 SPEAKING_ECHO_MAX_DELAY_MS = 900
-SPEAKING_ECHO_SEARCH_STEP_MS = 20
-SPEAKING_ECHO_CORRELATION_THRESHOLD = 0.68
+SPEAKING_ECHO_CORRELATION_THRESHOLD = 0.72
 SPEAKING_ECHO_MIN_RMS = 0.002
-
-
-def _normalise_for_correlation(audio: np.ndarray) -> np.ndarray | None:
-    if audio.size == 0:
-        return None
-    centred = audio.astype(np.float32, copy=False) - float(np.mean(audio))
-    norm = float(np.linalg.norm(centred))
-    if norm <= 1e-6:
-        return None
-    return centred / norm
 
 
 def _best_recent_correlation(
@@ -28,26 +17,57 @@ def _best_recent_correlation(
     output_audio: np.ndarray,
     *,
     max_delay_ms: int,
-    step_ms: int,
 ) -> float:
-    mic = _normalise_for_correlation(mic_audio)
-    if mic is None:
+    """Return sample-accurate normalized correlation against recent output.
+
+    WebRTC resampling and two Opus passes add a codec delay that is not aligned
+    to a 20 ms media frame. Sampling only frame-aligned delays can therefore
+    miss an otherwise strong echo. The bounded sliding calculation below
+    evaluates every possible lag while computing segment norms from rolling
+    sums, keeping the hot-path cost independent of the full audio history.
+    """
+    if mic_audio.size == 0 or output_audio.size < mic_audio.size:
+        return 0.0
+
+    mic = mic_audio.astype(np.float32, copy=False)
+    mic = mic - float(np.mean(mic))
+    mic_norm = float(np.linalg.norm(mic))
+    if mic_norm <= 1e-6:
         return 0.0
 
     window_samples = mic.size
     max_delay_samples = max(0, max_delay_ms * TARGET_SAMPLE_RATE // 1000)
-    step_samples = max(1, step_ms * TARGET_SAMPLE_RATE // 1000)
-    best = 0.0
-    for delay in range(0, max_delay_samples + 1, step_samples):
-        end = output_audio.size - delay
-        start = end - window_samples
-        if start < 0:
-            continue
-        segment = _normalise_for_correlation(output_audio[start:end])
-        if segment is None:
-            continue
-        best = max(best, abs(float(np.dot(mic, segment))))
-    return best
+    search_samples = min(
+        output_audio.size,
+        window_samples + max_delay_samples,
+    )
+    search = output_audio[-search_samples:].astype(np.float32, copy=False)
+
+    dots = np.correlate(search, mic, mode="valid")
+    cumulative = np.concatenate(
+        (np.zeros(1, dtype=np.float64), np.cumsum(search, dtype=np.float64))
+    )
+    cumulative_squared = np.concatenate(
+        (
+            np.zeros(1, dtype=np.float64),
+            np.cumsum(np.square(search, dtype=np.float32), dtype=np.float64),
+        )
+    )
+    segment_sums = cumulative[window_samples:] - cumulative[:-window_samples]
+    segment_squares = (
+        cumulative_squared[window_samples:]
+        - cumulative_squared[:-window_samples]
+    )
+    segment_energy = segment_squares - (
+        np.square(segment_sums) / window_samples
+    )
+    segment_norms = np.sqrt(np.maximum(segment_energy, 0.0))
+    valid = segment_norms > 1e-6
+    if not np.any(valid):
+        return 0.0
+
+    scores = np.abs(dots[valid]) / (mic_norm * segment_norms[valid])
+    return float(np.max(scores, initial=0.0))
 
 
 class ConversationAudioHistory:
@@ -138,7 +158,6 @@ class ConversationAudioHistory:
             mic,
             self._output,
             max_delay_ms=SPEAKING_ECHO_MAX_DELAY_MS,
-            step_ms=SPEAKING_ECHO_SEARCH_STEP_MS,
         )
         return best >= SPEAKING_ECHO_CORRELATION_THRESHOLD
 

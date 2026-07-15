@@ -42,6 +42,11 @@ transcribes as text that closely matches the active assistant response, Vox emit
 safety net, not a replacement for AEC. True AEC needs the far-end playback
 reference before the speaker audio leaks into the microphone.
 
+Before transcript evidence is available, the RTC path also compares recent mic
+audio with paced assistant playout. That comparison searches the bounded playout
+delay window at sample precision so resampling and non-frame-aligned Opus codec
+delay do not turn leaked assistant audio into an acoustic-only interruption.
+
 While assistant audio is active, Vox uses stricter interruption evidence by
 default:
 
