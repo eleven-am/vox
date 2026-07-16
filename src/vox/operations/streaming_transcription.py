@@ -141,6 +141,8 @@ def streaming_transcription_event_payload(event: SessionEvent) -> dict[str, Any]
         return streaming_transcript_payload(event.transcript)
     if isinstance(event, ErrorEvent):
         return {"type": "error", "message": event.message}
+    if isinstance(event, DoneEvent):
+        return {"type": "done"}
     return None
 
 

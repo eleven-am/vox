@@ -52,8 +52,20 @@ class TestAudioStreamWireMapping:
             websocket.send_text(json.dumps({"type": "config"}))
             response = websocket.receive_json()
             websocket.send_text(json.dumps({"type": "end"}))
+            done = websocket.receive_json()
 
         assert response == {"type": "ready"}
+        assert done == {"type": "done"}
+
+    def test_end_without_config_still_emits_one_done_event(self):
+        with (
+            TestClient(_build_stream_app()) as client,
+            client.websocket_connect("/v1/audio/stream") as websocket,
+        ):
+            websocket.send_text(json.dumps({"type": "end"}))
+            done = websocket.receive_json()
+
+        assert done == {"type": "done"}
 
     def test_unknown_message_type_emits_wire_error(self):
         store = MagicMock()

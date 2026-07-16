@@ -242,7 +242,7 @@ def test_streaming_event_payload_preserves_realtime_wire_contract():
         "type": "error",
         "message": "boom",
     }
-    assert streaming_transcription_event_payload(DoneEvent()) is None
+    assert streaming_transcription_event_payload(DoneEvent()) == {"type": "done"}
 
 
 @pytest.mark.asyncio
