@@ -73,19 +73,35 @@ class EOUModel:
 
             import onnxruntime as ort
             from huggingface_hub import hf_hub_download
+            from huggingface_hub.errors import LocalEntryNotFoundError
             from transformers import AutoTokenizer
 
             started = time.perf_counter()
-            model_path = hf_hub_download(
-                repo_id=EOU_MODEL_ID,
-                filename=EOU_MODEL_FILE,
-                subfolder=EOU_MODEL_SUBFOLDER,
-                revision=EOU_MODEL_REVISION,
-            )
-            EOUModel._tokenizer = AutoTokenizer.from_pretrained(
-                EOU_MODEL_ID,
-                revision=EOU_MODEL_REVISION,
-            )
+            model_kwargs = {
+                "repo_id": EOU_MODEL_ID,
+                "filename": EOU_MODEL_FILE,
+                "subfolder": EOU_MODEL_SUBFOLDER,
+                "revision": EOU_MODEL_REVISION,
+            }
+            try:
+                model_path = hf_hub_download(**model_kwargs, local_files_only=True)
+            except LocalEntryNotFoundError:
+                logger.info("LiveKit turn detector model is not cached; downloading it")
+                model_path = hf_hub_download(**model_kwargs)
+
+            tokenizer_kwargs = {"revision": EOU_MODEL_REVISION}
+            try:
+                EOUModel._tokenizer = AutoTokenizer.from_pretrained(
+                    EOU_MODEL_ID,
+                    **tokenizer_kwargs,
+                    local_files_only=True,
+                )
+            except OSError:
+                logger.info("LiveKit turn detector tokenizer is not cached; downloading it")
+                EOUModel._tokenizer = AutoTokenizer.from_pretrained(
+                    EOU_MODEL_ID,
+                    **tokenizer_kwargs,
+                )
             EOUModel._session = ort.InferenceSession(
                 model_path,
                 providers=["CPUExecutionProvider"],
