@@ -10,12 +10,15 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+import vox.operations.rtc_runtime as rtc_runtime_module
+
 pytest.importorskip("pondsocket")
 pytest.importorskip("pondsocket_asgi")
 
 from tests.fakes import FakeScheduler
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+from vox.operations.rtc_signaling import RtcOfferAnswer
 from vox.server.pondsocket_gateway import install_pondsocket_gateway
 from vox.server.routes.rtc import router as rtc_router
 from vox.server.rtc_registry import RtcSessionRegistry
@@ -235,6 +238,56 @@ def test_pondsocket_socket_can_multiplex_conversation_and_rtc_channels():
         assert created["channelName"] == f"/rtc/{rtc_session['session_id']}"
         assert created["payload"]["session_id"] == rtc_session["session_id"]
         assert created["payload"]["session"]["turn_profile"] == "speakerphone"
+
+
+def test_pondsocket_rtc_offer_reaches_rtc_runtime_and_returns_answer(monkeypatch):
+    app = _build_app()
+    client = TestClient(app)
+    rtc_session = client.post("/v1/rtc/sessions").json()
+
+    async def fake_exchange(*, registry, request):
+        assert registry is app.state.rtc_registry
+        assert request.session_id == rtc_session["session_id"]
+        assert request.offer_type == "offer"
+        assert request.sdp == "offer-sdp"
+        return RtcOfferAnswer(
+            session_id=request.session_id,
+            answer_type="answer",
+            sdp="answer-sdp",
+        )
+
+    monkeypatch.setattr(rtc_runtime_module, "exchange_server_rtc_offer", fake_exchange)
+
+    with client.websocket_connect("/v1/socket") as ws:
+        _receive_json(ws)
+        channel_name = f"/rtc/{rtc_session['session_id']}"
+        _send_channel_message(
+            ws,
+            action="JOIN_CHANNEL",
+            channel_name=channel_name,
+            event="join",
+            payload={},
+            request_id="join-rtc",
+        )
+        assert _receive_json(ws)["event"] == "ACKNOWLEDGE"
+        assert _receive_json(ws)["event"] == "rtc.session.attached"
+
+        _send_channel_message(
+            ws,
+            action="BROADCAST",
+            channel_name=channel_name,
+            event="rtc.offer",
+            payload={"offer": {"type": "offer", "sdp": "offer-sdp"}},
+            request_id="rtc-offer",
+        )
+
+        answer = _receive_json(ws)
+        assert answer["event"] == "rtc.answer"
+        assert answer["channelName"] == channel_name
+        assert answer["payload"]["answer"] == {
+            "type": "answer",
+            "sdp": "answer-sdp",
+        }
 
 
 def test_pondsocket_rejects_grpc_owned_session_without_consuming_it():

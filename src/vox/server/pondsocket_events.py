@@ -208,7 +208,7 @@ async def handle_pondsocket_control_event(
         return
     try:
         command = decode_pondsocket_command(ctx.event_name, ctx.get_payload())
-        await runtime.conversation.dispatch(command)
+        await runtime.dispatch(command)
     except OperationError as exc:
         await reply_pondsocket_error(ctx, str(exc))
     except Exception as exc:  # noqa: BLE001

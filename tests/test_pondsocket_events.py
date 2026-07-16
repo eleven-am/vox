@@ -5,6 +5,7 @@ import pytest
 from vox.operations.conversation import ConvDoneEvent, ConvResponseCreatedEvent
 from vox.operations.conversation_commands import ClientEventCommand, UnknownCommand
 from vox.operations.errors import SessionNotConfiguredError
+from vox.operations.rtc_runtime import RtcOfferCommand
 from vox.server.pondsocket_events import (
     broadcast_conversation_event_to_user,
     broadcast_rtc_client_events_to_user,
@@ -92,6 +93,12 @@ class FakeRuntime:
         if self.error is not None:
             raise self.error
         self.commands.append(command)
+
+
+class FakeRtcRuntime(FakeRuntime):
+    def __init__(self) -> None:
+        super().__init__()
+        self.conversation = FakeRuntime(RuntimeError("RTC command bypassed its runtime"))
 
 
 class FakeLogger:
@@ -378,6 +385,29 @@ async def test_handle_pondsocket_control_event_executes_conversation_command():
 
     assert ctx.replies == []
     assert runtime.commands == [UnknownCommand(name="response.create")]
+
+
+@pytest.mark.asyncio
+async def test_handle_pondsocket_control_event_dispatches_rtc_offer_through_rtc_runtime():
+    ctx = FakeContext(
+        event_name="rtc.offer",
+        payload={"offer": {"type": "offer", "sdp": "offer-sdp"}},
+    )
+    runtime = FakeRtcRuntime()
+
+    await handle_pondsocket_control_event(
+        ctx,
+        runtime=runtime,
+        missing_message="RTC control session not attached",
+        error_log_message="unexpected RTC control error",
+        logger=FakeLogger(),
+    )
+
+    assert ctx.replies == []
+    assert runtime.commands == [
+        RtcOfferCommand(offer_type="offer", sdp="offer-sdp"),
+    ]
+    assert runtime.conversation.commands == []
 
 
 @pytest.mark.asyncio

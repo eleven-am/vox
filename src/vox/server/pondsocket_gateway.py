@@ -182,9 +182,10 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
             await close_conversation_runtime(runtime)
 
     async def on_conversation_event(ctx: EventContext) -> None:
+        runtime = conversation_runtimes.get(ctx.channel.name)
         await handle_pondsocket_control_event(
             ctx,
-            runtime=conversation_runtimes.get(ctx.channel.name),
+            runtime=None if runtime is None else runtime.conversation,
             missing_message="conversation session not attached",
             error_log_message="PondSocket conversation event error",
             logger=logger,
