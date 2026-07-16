@@ -43,7 +43,7 @@ class FakeAudioTrack:
 async def test_rtc_audio_helpers_are_noops_without_media_track():
     record = SimpleNamespace(audio_output_track=None, orchestrator=None)
     event = ConvAudioDeltaEvent(
-        audio_b64=base64.b64encode(b"pcm").decode(),
+        audio=b"pcm",
         sample_rate=16_000,
         audio_format="pcm16",
     )
@@ -59,7 +59,7 @@ async def test_rtc_audio_helpers_decode_enqueue_drain_and_clear_track():
     track = FakeAudioTrack()
     record = SimpleNamespace(audio_output_track=track, orchestrator=None)
     event = ConvAudioDeltaEvent(
-        audio_b64=base64.b64encode(b"abc123").decode(),
+        audio=b"abc123",
         sample_rate=24_000,
         audio_format="pcm16",
     )
@@ -86,9 +86,9 @@ def test_prepare_rtc_control_event_serializes_and_forwards_browser_event():
     channel.readyState = "open"
     record = RtcSessionRecord(
         session_id="rtc_1",
-        client_token_hash="",
         created_at=0.0,
         expires_at=10.0,
+        expected_control_transport="pondsocket",
         data_channel=channel,
     )
 
@@ -138,7 +138,7 @@ def test_prepare_rtc_control_event_suppresses_audio_delta_when_media_track_exist
         record=record,
         session_id="rtc_1",
         event=ConvAudioDeltaEvent(
-            audio_b64=base64.b64encode(b"pcm").decode(),
+            audio=b"pcm",
             sample_rate=24_000,
             audio_format="pcm16",
             response_id="resp_1",
@@ -157,7 +157,7 @@ def test_prepare_rtc_control_event_preserves_audio_delta_without_media_track():
         record=record,
         session_id="rtc_1",
         event=ConvAudioDeltaEvent(
-            audio_b64=base64.b64encode(b"pcm").decode(),
+            audio=b"pcm",
             sample_rate=24_000,
             audio_format="pcm16",
             response_id="resp_1",

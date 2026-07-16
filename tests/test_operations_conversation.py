@@ -16,9 +16,6 @@ from vox.core.types import (
     VoiceInfo,
 )
 from vox.operations.conversation import (
-    RESPONSE_ALLOW_INTERRUPTION_FIELD,
-    RESPONSE_COMMAND_ENVELOPE_FIELDS,
-    RESPONSE_TEXT_COMPATIBILITY_FIELDS,
     SESSION_UPDATE_POLICY_FIELDS,
     SESSION_UPDATE_STT_MODEL_FIELDS,
     SESSION_UPDATE_TTS_MODEL_FIELDS,
@@ -28,7 +25,6 @@ from vox.operations.conversation import (
     WIRE_BROWSER_EVENT,
     WIRE_CLIENT_EVENT,
     WIRE_RTC_CLIENT_DISCONNECTED,
-    WIRE_RTC_SESSION_ATTACHED,
     ConvAudioClearEvent,
     ConvAudioDeltaEvent,
     ConvDoneEvent,
@@ -43,22 +39,13 @@ from vox.operations.conversation import (
     ConvTurnEouPredictedEvent,
     browser_event_wire,
     client_disconnected_wire,
-    client_event_command_from_parts,
-    client_event_command_from_payload_json,
     client_event_payload,
     client_event_payload_json,
     control_event_as_client_event,
     control_event_client_payload_json,
     conversation_wire_event_payload,
-    execute_conversation_command,
-    execute_rtc_control_command,
     parse_conversation_wire_event,
     parse_session_update,
-    pondsocket_event_to_conversation_command,
-    response_command_payloads,
-    response_text_fields,
-    rtc_session_attached_payload,
-    rtc_session_attached_wire,
     serialize_conversation_event,
     serialize_session_config,
     session_update_payload,
@@ -114,53 +101,6 @@ class DummyScheduler:
         yield self._a
 
 
-class CommandSpy:
-    def __init__(self, *, configured: bool = True) -> None:
-        self.config = object() if configured else None
-        self.calls: list[tuple[str, tuple, dict]] = []
-
-    async def start_session(self, config) -> None:
-        self.config = config
-        self.calls.append(("start_session", (config,), {}))
-
-    async def ingest_pcm16(self, pcm16: bytes, sample_rate: int | None = None) -> None:
-        self.calls.append(("ingest_pcm16", (pcm16,), {"sample_rate": sample_rate}))
-
-    async def start_response(
-        self,
-        *,
-        allow_interruptions: bool = True,
-        generation_id: str | None = None,
-    ) -> None:
-        kwargs: dict[str, object] = {"allow_interruptions": allow_interruptions}
-        if generation_id is not None:
-            kwargs["generation_id"] = generation_id
-        self.calls.append(("start_response", (), kwargs))
-
-    async def append_response_text(
-        self,
-        text: str,
-        *,
-        allow_interruptions: bool = True,
-        generation_id: str | None = None,
-    ) -> None:
-        kwargs: dict[str, object] = {"allow_interruptions": allow_interruptions}
-        if generation_id is not None:
-            kwargs["generation_id"] = generation_id
-        self.calls.append(("append_response_text", (text,), kwargs))
-
-    async def replace_response_text(self, text: str, *, allow_interruptions: bool = True) -> None:
-        self.calls.append(("replace_response_text", (text,), {"allow_interruptions": allow_interruptions}))
-
-    async def commit_response(self, *, generation_id: str | None = None) -> None:
-        kwargs = {"generation_id": generation_id} if generation_id is not None else {}
-        self.calls.append(("commit_response", (), kwargs))
-
-    async def cancel_response(self, *, generation_id: str | None = None) -> None:
-        kwargs = {"generation_id": generation_id} if generation_id is not None else {}
-        self.calls.append(("cancel_response", (), kwargs))
-
-
 def test_parse_session_update_requires_stt_model():
     with pytest.raises(InvalidConfigError):
         parse_session_update({"session": {"tts_model": "y:1"}})
@@ -171,273 +111,7 @@ def test_parse_session_update_requires_tts_model():
         parse_session_update({"session": {"stt_model": "x:1"}})
 
 
-def test_pondsocket_event_to_conversation_command_wraps_object_payload():
-    assert pondsocket_event_to_conversation_command(
-        "response.delta",
-        {"delta": "hello", "allow_interruptions": False},
-    ) == {
-        "type": "response.delta",
-        "delta": "hello",
-        "allow_interruptions": False,
-    }
-
-
-def test_pondsocket_event_to_conversation_command_rejects_non_object_payload():
-    with pytest.raises(InvalidConfigError, match="response.delta requires an object payload"):
-        pondsocket_event_to_conversation_command("response.delta", "hello")
-
-
-@pytest.mark.asyncio
-async def test_execute_conversation_command_requires_message_type():
-    spy = CommandSpy()
-
-    with pytest.raises(InvalidConfigError, match="missing 'type' field"):
-        await execute_conversation_command(spy, {})
-
-
-@pytest.mark.asyncio
-async def test_execute_conversation_command_requires_session_update_first():
-    spy = CommandSpy(configured=False)
-
-    with pytest.raises(InvalidConfigError, match="send session.update first"):
-        await execute_conversation_command(spy, {"type": "response.start"})
-
-
-@pytest.mark.asyncio
-async def test_execute_conversation_command_starts_session_from_session_update():
-    spy = CommandSpy(configured=False)
-
-    await execute_conversation_command(
-        spy,
-        {"type": "session.update", "session": {"stt_model": "x:1", "tts_model": "y:1"}},
-    )
-
-    assert spy.calls[0][0] == "start_session"
-    assert spy.config.stt_model == "x:1"
-    assert spy.config.tts_model == "y:1"
-
-
-@pytest.mark.asyncio
-async def test_execute_conversation_command_appends_audio_and_response_text():
-    spy = CommandSpy()
-
-    await execute_conversation_command(
-        spy,
-        {
-            "type": "input_audio_buffer.append",
-            "audio": "AQIDBA==",
-            "sample_rate": 16_000,
-        },
-    )
-    await execute_conversation_command(
-        spy,
-        {
-            "type": "response.delta",
-            "response": {"delta": "hello", "allow_interruptions": False},
-        },
-    )
-
-    assert spy.calls[0] == ("ingest_pcm16", (b"\x01\x02\x03\x04",), {"sample_rate": 16_000})
-    assert spy.calls[1] == ("append_response_text", ("hello",), {"allow_interruptions": False})
-
-
-@pytest.mark.asyncio
-async def test_execute_conversation_command_forwards_response_generation_id():
-    spy = CommandSpy()
-
-    await execute_conversation_command(
-        spy,
-        {"type": "response.start", "generation_id": "generation-7"},
-    )
-    await execute_conversation_command(
-        spy,
-        {
-            "type": "response.delta",
-            "response": {"delta": "hello", "generationId": "generation-7"},
-        },
-    )
-    await execute_conversation_command(
-        spy,
-        {"type": "response.commit", "generation_id": "generation-7"},
-    )
-
-    assert spy.calls == [
-        (
-            "start_response",
-            (),
-            {"allow_interruptions": True, "generation_id": "generation-7"},
-        ),
-        (
-            "append_response_text",
-            ("hello",),
-            {"allow_interruptions": True, "generation_id": "generation-7"},
-        ),
-        ("commit_response", (), {"generation_id": "generation-7"}),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_execute_conversation_command_accepts_internal_raw_pcm_audio():
-    spy = CommandSpy()
-
-    await execute_conversation_command(
-        spy,
-        {
-            "type": "input_audio_buffer.append",
-            "audio_pcm16": b"\x01\x02\x03\x04",
-            "sample_rate": 16_000,
-        },
-    )
-
-    assert spy.calls == [("ingest_pcm16", (b"\x01\x02\x03\x04",), {"sample_rate": 16_000})]
-
-
-@pytest.mark.asyncio
-async def test_execute_conversation_command_rejects_empty_response_delta():
-    spy = CommandSpy()
-
-    with pytest.raises(InvalidConfigError, match="response.delta requires 'delta' text"):
-        await execute_conversation_command(spy, {"type": "response.delta"})
-
-
-@pytest.mark.asyncio
-async def test_execute_conversation_command_replaces_response_text():
-    spy = CommandSpy()
-
-    await execute_conversation_command(
-        spy,
-        {"type": "response.replace_text", "text": "new text", "allow_interruptions": False},
-    )
-
-    assert spy.calls == [("replace_response_text", ("new text",), {"allow_interruptions": False})]
-
-
-@pytest.mark.asyncio
-async def test_response_command_compatibility_policy_is_named_and_ordered():
-    spy = CommandSpy()
-
-    message = {
-        "type": "response.delta",
-        "delta": "root fallback",
-        "allow_interruptions": True,
-        "response": {
-            "text": "nested compatibility",
-            "delta": "nested canonical",
-            "allow_interruptions": False,
-        },
-    }
-
-    await execute_conversation_command(spy, message)
-
-    assert RESPONSE_COMMAND_ENVELOPE_FIELDS == ("response",)
-    assert RESPONSE_TEXT_COMPATIBILITY_FIELDS == ("text", "delta")
-    assert RESPONSE_ALLOW_INTERRUPTION_FIELD == "allow_interruptions"
-    assert response_text_fields("delta") == ("delta", "text")
-    assert response_command_payloads(message) == (message["response"], message)
-    assert spy.calls == [("append_response_text", ("nested canonical",), {"allow_interruptions": False})]
-
-
-@pytest.mark.asyncio
-async def test_execute_conversation_command_rejects_unknown_type():
-    spy = CommandSpy()
-
-    with pytest.raises(InvalidConfigError, match="unknown message type: 'bogus'"):
-        await execute_conversation_command(spy, {"type": "bogus"})
-
-
-@pytest.mark.asyncio
-async def test_execute_conversation_command_can_preserve_transport_unknown_label():
-    spy = CommandSpy()
-
-    with pytest.raises(InvalidConfigError, match="unknown conversation message type: 'bogus'"):
-        await execute_conversation_command(
-            spy,
-            {"type": "bogus"},
-            unknown_message_label="unknown conversation message type",
-        )
-
-
-@pytest.mark.asyncio
-async def test_execute_conversation_command_dispatches_client_event_before_session_update():
-    spy = CommandSpy(configured=False)
-    received = []
-
-    def on_client_event(event_name: str, payload) -> None:
-        received.append((event_name, payload))
-
-    await execute_conversation_command(
-        spy,
-        {"type": "client.event", "event": "render.url", "payload": {"url": "https://example.com"}},
-        client_event_handler=on_client_event,
-    )
-
-    assert received == [("render.url", {"url": "https://example.com"})]
-    assert spy.calls == []
-
-
-@pytest.mark.asyncio
-async def test_execute_conversation_command_rejects_invalid_client_event():
-    spy = CommandSpy()
-
-    with pytest.raises(InvalidConfigError, match="client.event requires a non-empty string 'event'"):
-        await execute_conversation_command(
-            spy,
-            {"type": "client.event", "payload": {}},
-            client_event_handler=lambda *_: None,
-        )
-
-
-@pytest.mark.asyncio
-async def test_execute_conversation_command_can_disable_input_audio_for_control_only_transports():
-    spy = CommandSpy()
-
-    with pytest.raises(InvalidConfigError, match="unknown control message type"):
-        await execute_conversation_command(
-            spy,
-            {"type": "input_audio_buffer.append", "audio": "AQIDBA=="},
-            allow_input_audio=False,
-            unknown_message_label="unknown control message type",
-        )
-
-
-@pytest.mark.asyncio
-async def test_execute_rtc_control_command_disables_input_audio_by_policy():
-    spy = CommandSpy()
-
-    with pytest.raises(InvalidConfigError, match="unknown control message type"):
-        await execute_rtc_control_command(
-            spy,
-            {"type": "input_audio_buffer.append", "audio": "AQIDBA=="},
-            client_event_handler=lambda *_: None,
-        )
-
-    assert spy.calls == []
-
-
-@pytest.mark.asyncio
-async def test_execute_rtc_control_command_dispatches_client_event():
-    spy = CommandSpy(configured=False)
-    received = []
-
-    def on_client_event(event_name: str, payload) -> None:
-        received.append((event_name, payload))
-
-    await execute_rtc_control_command(
-        spy,
-        {"type": "client.event", "event": "ui.toast", "payload": {"message": "hi"}},
-        client_event_handler=on_client_event,
-    )
-
-    assert received == [("ui.toast", {"message": "hi"})]
-    assert spy.calls == []
-
-
 def test_client_event_payloads_are_operation_owned_contracts():
-    assert client_event_command_from_parts(" ui.toast ", {"message": "hi"}) == {
-        "type": "client.event",
-        "event": "ui.toast",
-        "payload": {"message": "hi"},
-    }
     assert client_event_payload("ui.toast", {"message": "hi"}) == {
         "event": "ui.toast",
         "payload": {"message": "hi"},
@@ -468,31 +142,13 @@ def test_client_event_payloads_are_operation_owned_contracts():
     }
 
 
-def test_client_event_command_rejects_empty_event_name():
-    with pytest.raises(InvalidConfigError, match="non-empty string 'event'"):
-        client_event_command_from_parts(" ", {"message": "hi"})
-
-
-def test_client_event_command_from_payload_json_decodes_payload_at_operation_boundary():
-    assert client_event_command_from_payload_json("app.marker", '{"n": 1}') == {
-        "type": "client.event",
-        "event": "app.marker",
-        "payload": {"n": 1},
-    }
-    assert client_event_command_from_payload_json("app.marker", "") == {
-        "type": "client.event",
-        "event": "app.marker",
-        "payload": None,
-    }
-
-    with pytest.raises(InvalidConfigError, match="requires valid payload JSON"):
-        client_event_command_from_payload_json("app.marker", "{")
-
-
 def test_control_event_as_client_event_preserves_explicit_client_event_contract():
     assert control_event_as_client_event(
         {"type": WIRE_CLIENT_EVENT, "event": "render.url", "payload": {"url": "https://example.com"}}
     ) == ("render.url", {"url": "https://example.com"})
+    assert control_event_as_client_event(
+        {"type": WIRE_BROWSER_EVENT, "event": "ui.select", "payload": {"id": "choice-a"}}
+    ) == ("ui.select", {"id": "choice-a"})
 
     assert control_event_as_client_event(
         {"type": WIRE_RTC_CLIENT_DISCONNECTED, "session_id": "rtc_1", "reason": "closed"}
@@ -773,7 +429,7 @@ def test_serialize_conversation_event_preserves_response_audio_contract():
     }
     assert serialize_conversation_event(
         ConvAudioDeltaEvent(
-            audio_b64="AAAA",
+            audio=b"\x00\x00\x00",
             sample_rate=24_000,
             audio_format="pcm16",
             response_id="resp_1",
@@ -793,14 +449,6 @@ def test_serialize_conversation_event_uses_operation_wire_error_constant():
     assert serialize_conversation_event(ConvErrorEvent(message="boom")) == {
         "type": "error",
         "message": "boom",
-    }
-
-
-def test_rtc_session_attached_contract_is_operation_owned():
-    assert rtc_session_attached_payload("rtc_123") == {"session_id": "rtc_123"}
-    assert rtc_session_attached_wire("rtc_123") == {
-        "type": WIRE_RTC_SESSION_ATTACHED,
-        "session_id": "rtc_123",
     }
 
 

@@ -11,6 +11,7 @@ import grpc
 from vox.operations.errors import OperationError, OperationErrorKind, classify_operation_error
 
 GRPC_STATUS_BY_OPERATION_ERROR_KIND: dict[OperationErrorKind, grpc.StatusCode] = {
+    OperationErrorKind.UNAUTHENTICATED: grpc.StatusCode.UNAUTHENTICATED,
     OperationErrorKind.INVALID_ARGUMENT: grpc.StatusCode.INVALID_ARGUMENT,
     OperationErrorKind.UNPROCESSABLE_ENTITY: grpc.StatusCode.INVALID_ARGUMENT,
     OperationErrorKind.NOT_FOUND: grpc.StatusCode.NOT_FOUND,

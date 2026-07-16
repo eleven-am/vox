@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -91,18 +90,29 @@ class DummyScheduler:
 class FakeSTTAdapter(STTAdapter):
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="fake-stt", type=ModelType.STT,
-            architectures=("fake",), default_sample_rate=16_000,
+            name="fake-stt",
+            type=ModelType.STT,
+            architectures=("fake",),
+            default_sample_rate=16_000,
             supported_formats=(ModelFormat.ONNX,),
         )
-    def load(self, *a, **k): pass
-    def unload(self): pass
+
+    def load(self, *a, **k):
+        pass
+
+    def unload(self):
+        pass
+
     @property
-    def is_loaded(self): return True
+    def is_loaded(self):
+        return True
 
     def transcribe(self, audio, **kwargs) -> TranscribeResult:
         return TranscribeResult(
-            text="hello grpc", language="en", duration_ms=1000, model="fake-stt:latest",
+            text="hello grpc",
+            language="en",
+            duration_ms=1000,
+            model="fake-stt:latest",
             segments=(TranscriptSegment(text="hello grpc", start_ms=0, end_ms=1000),),
         )
 
@@ -121,8 +131,14 @@ class TestHealthServicer:
         from vox.grpc.health_servicer import HealthServicer
 
         loaded_model = LoadedModelInfo(
-            name="whisper", tag="large-v3", type=ModelType.STT, device="cpu",
-            vram_bytes=1000, loaded_at=1.0, last_used=2.0, ref_count=1,
+            name="whisper",
+            tag="large-v3",
+            type=ModelType.STT,
+            device="cpu",
+            vram_bytes=1000,
+            loaded_at=1.0,
+            last_used=2.0,
+            ref_count=1,
         )
         scheduler = MagicMock()
         scheduler.list_loaded.return_value = [loaded_model]
@@ -577,28 +593,34 @@ class TestGrpcStreamingMessages:
 
         session = RecordingSession()
 
-        assert await execute_stream_input_message(
-            session,
-            vox_pb2.StreamInput(
-                config=vox_pb2.StreamConfig(model="parakeet", sample_rate=48_000)
-            ),
-        ) is True
-        assert await execute_stream_input_message(
-            session,
-            vox_pb2.StreamInput(audio=vox_pb2.AudioFrame(pcm16=b"pcm", sample_rate=44_100)),
-        ) is True
-        assert await execute_stream_input_message(
-            session,
-            vox_pb2.StreamInput(
-                opus_frame=vox_pb2.OpusFrame(data=b"opus", sample_rate=48_000, channels=2)
-            ),
-        ) is True
-        assert await execute_stream_input_message(
-            session,
-            vox_pb2.StreamInput(
-                encoded_audio=vox_pb2.EncodedAudioFrame(data=b"wav", format="wav")
-            ),
-        ) is True
+        assert (
+            await execute_stream_input_message(
+                session,
+                vox_pb2.StreamInput(config=vox_pb2.StreamConfig(model="parakeet", sample_rate=48_000)),
+            )
+            is True
+        )
+        assert (
+            await execute_stream_input_message(
+                session,
+                vox_pb2.StreamInput(audio=vox_pb2.AudioFrame(pcm16=b"pcm", sample_rate=44_100)),
+            )
+            is True
+        )
+        assert (
+            await execute_stream_input_message(
+                session,
+                vox_pb2.StreamInput(opus_frame=vox_pb2.OpusFrame(data=b"opus", sample_rate=48_000, channels=2)),
+            )
+            is True
+        )
+        assert (
+            await execute_stream_input_message(
+                session,
+                vox_pb2.StreamInput(encoded_audio=vox_pb2.EncodedAudioFrame(data=b"wav", format="wav")),
+            )
+            is True
+        )
 
         assert session.calls[0][0] == "configure"
         assert session.calls[0][1][0].model == "parakeet"
@@ -619,10 +641,13 @@ class TestGrpcStreamingMessages:
         class RecordingSession:
             calls: list[str] = []
 
-        assert await execute_stream_input_message(
-            RecordingSession(),
-            vox_pb2.StreamInput(end_of_stream=vox_pb2.EndOfStream()),
-        ) is False
+        assert (
+            await execute_stream_input_message(
+                RecordingSession(),
+                vox_pb2.StreamInput(end_of_stream=vox_pb2.EndOfStream()),
+            )
+            is False
+        )
 
         assert RecordingSession.calls == []
 
@@ -638,49 +663,6 @@ class TestGrpcStreamingMessages:
         assert RecordingSession.calls == []
 
 
-class TestGrpcConversationEvents:
-    def test_rtc_session_attached_message_uses_operation_contract(self):
-        from vox.grpc.conversation_events import rtc_session_attached_pb
-        from vox.operations.conversation import rtc_session_attached_payload
-
-        message = rtc_session_attached_pb("rtc_123")
-        payload = rtc_session_attached_payload("rtc_123")
-
-        assert message.WhichOneof("msg") == "rtc_session_attached"
-        assert message.rtc_session_attached.session_id == payload["session_id"]
-        assert message.rtc_session_attached.provider == "webrtc"
-
-    def test_rtc_client_event_message_preserves_payload_json(self):
-        from vox.grpc.conversation_events import rtc_client_event_pb
-
-        message = rtc_client_event_pb("browser.event", '{"ok":true}')
-
-        assert message.WhichOneof("msg") == "client_event"
-        assert message.client_event.event == "browser.event"
-        assert message.client_event.payload_json == '{"ok":true}'
-
-    def test_rtc_client_event_from_control_event_uses_operation_contract(self):
-        from vox.grpc.conversation_events import rtc_client_event_from_control_event
-        from vox.operations.conversation import WIRE_BROWSER_EVENT
-
-        message = rtc_client_event_from_control_event(
-            {
-                "type": WIRE_BROWSER_EVENT,
-                "session_id": "rtc_123",
-                "event": "ui.select",
-                "payload": {"id": "choice-a"},
-            }
-        )
-
-        assert message.WhichOneof("msg") == "client_event"
-        assert message.client_event.event == WIRE_BROWSER_EVENT
-        assert json.loads(message.client_event.payload_json) == {
-            "session_id": "rtc_123",
-            "event": "ui.select",
-            "payload": {"id": "choice-a"},
-        }
-
-
 class TestSynthesisServicerMapping:
     @pytest.mark.asyncio
     async def test_synthesize_no_input_aborts_with_invalid_argument(self, tmp_path):
@@ -689,7 +671,8 @@ class TestSynthesisServicerMapping:
         servicer = SynthesisServicer(_make_store(tmp_path), MagicMock(), MagicMock())
         with pytest.raises(Exception, match="gRPC abort"):
             async for _ in servicer.Synthesize(
-                vox_pb2.SynthesizeRequest(model="kokoro:v1.0", input=""), FakeContext(),
+                vox_pb2.SynthesizeRequest(model="kokoro:v1.0", input=""),
+                FakeContext(),
             ):
                 pass
 
@@ -781,7 +764,9 @@ class TestSynthesisServicerMapping:
             vox_pb2.CreateVoiceRequest(
                 name="Roy",
                 audio=encode_wav(np.full(16_000, 0.1, dtype=np.float32), 16_000),
-                format_hint="wav", language="en", gender="male",
+                format_hint="wav",
+                language="en",
+                gender="male",
             ),
             FakeContext(),
         )
@@ -856,13 +841,16 @@ class TestSynthesisServicerMapping:
 
         store = _make_store(tmp_path)
         create_stored_voice(
-            store, voice_id="voice1234", name="Roy",
+            store,
+            voice_id="voice1234",
+            name="Roy",
             audio_bytes=encode_wav(np.full(16_000, 0.1, dtype=np.float32), 16_000),
             content_type="audio/wav",
         )
         servicer = SynthesisServicer(store, MagicMock(), MagicMock())
         resp = await servicer.DeleteVoice(
-            vox_pb2.DeleteVoiceRequest(id="voice1234"), FakeContext(),
+            vox_pb2.DeleteVoiceRequest(id="voice1234"),
+            FakeContext(),
         )
         assert resp.id == "voice1234"
         assert resp.deleted is True
@@ -873,7 +861,9 @@ class TestSynthesisServicerMapping:
 
         store = _make_store(tmp_path)
         create_stored_voice(
-            store, voice_id="voice1234", name="Roy",
+            store,
+            voice_id="voice1234",
+            name="Roy",
             audio_bytes=encode_wav(np.full(16_000, 0.1, dtype=np.float32), 16_000),
             content_type="audio/wav",
         )
@@ -1013,8 +1003,11 @@ class TestProtoMessages:
 
     def test_transcribe_request_fields(self):
         msg = vox_pb2.TranscribeRequest(
-            audio=b"\x00\x00", model="whisper:large-v3", language="en",
-            word_timestamps=True, temperature=0.2,
+            audio=b"\x00\x00",
+            model="whisper:large-v3",
+            language="en",
+            word_timestamps=True,
+            temperature=0.2,
         )
         assert msg.model == "whisper:large-v3"
         assert msg.word_timestamps is True

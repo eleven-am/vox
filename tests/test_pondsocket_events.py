@@ -3,11 +3,12 @@ from __future__ import annotations
 import pytest
 
 from vox.operations.conversation import ConvDoneEvent, ConvResponseCreatedEvent
+from vox.operations.conversation_commands import ClientEventCommand, UnknownCommand
 from vox.operations.errors import SessionNotConfiguredError
 from vox.server.pondsocket_events import (
-    broadcast_conversation_events_to_user,
+    broadcast_conversation_event_to_user,
     broadcast_rtc_client_events_to_user,
-    broadcast_rtc_control_events_to_user,
+    broadcast_rtc_control_event_to_user,
     broadcast_wire_to_user,
     decline_if_channel_attached,
     handle_pondsocket_control_event,
@@ -15,6 +16,7 @@ from vox.server.pondsocket_events import (
     reply_pondsocket_error,
     try_broadcast_wire_to_user,
 )
+from vox.server.rtc_timeline import RtcTurnTimeline
 
 
 class FakeChannel:
@@ -81,8 +83,15 @@ class FakeJoinContext:
 
 
 class FakeRuntime:
-    def __init__(self) -> None:
-        self.orchestrator = object()
+    def __init__(self, error: Exception | None = None) -> None:
+        self.conversation = self
+        self.error = error
+        self.commands = []
+
+    async def dispatch(self, command) -> None:
+        if self.error is not None:
+            raise self.error
+        self.commands.append(command)
 
 
 class FakeLogger:
@@ -185,31 +194,29 @@ async def test_try_broadcast_wire_to_user_reports_suppressed_failure():
 
 
 @pytest.mark.asyncio
-async def test_broadcast_conversation_events_to_user_serializes_operation_events():
+async def test_broadcast_conversation_event_to_user_serializes_operation_event():
     channel = FakeChannel()
-    orchestrator = FakeOrchestrator(
+    events = (
         ConvResponseCreatedEvent(response_id="resp_1"),
         ConvDoneEvent(),
     )
 
-    await broadcast_conversation_events_to_user(
-        orchestrator=orchestrator,
-        channel=channel,
-        user_id="user-1",
-    )
+    for event in events:
+        await broadcast_conversation_event_to_user(
+            event,
+            channel=channel,
+            user_id="user-1",
+        )
 
-    assert channel.broadcasts == [
-        ("response.created", {"response_id": "resp_1"}, "user-1")
-    ]
+    assert channel.broadcasts == [("response.created", {"response_id": "resp_1"}, "user-1")]
 
 
 @pytest.mark.asyncio
-async def test_broadcast_conversation_events_to_user_suppresses_channel_failures():
+async def test_broadcast_conversation_event_to_user_suppresses_channel_failures():
     channel = FakeChannel(fail=True)
-    orchestrator = FakeOrchestrator(ConvResponseCreatedEvent(response_id="resp_1"))
 
-    await broadcast_conversation_events_to_user(
-        orchestrator=orchestrator,
+    await broadcast_conversation_event_to_user(
+        ConvResponseCreatedEvent(response_id="resp_1"),
         channel=channel,
         user_id="user-1",
     )
@@ -218,9 +225,8 @@ async def test_broadcast_conversation_events_to_user_suppresses_channel_failures
 
 
 @pytest.mark.asyncio
-async def test_broadcast_rtc_control_events_to_user_uses_prepared_wire_and_stops_on_done():
+async def test_broadcast_rtc_control_event_to_user_uses_prepared_wire_and_reports_done():
     channel = FakeChannel()
-    orchestrator = FakeOrchestrator("first", "done", "ignored")
     seen = []
 
     def prepare_event(*, record, session_id, event):
@@ -231,16 +237,23 @@ async def test_broadcast_rtc_control_events_to_user_uses_prepared_wire_and_stops
         )
 
     record = object()
-    await broadcast_rtc_control_events_to_user(
-        orchestrator=orchestrator,
-        channel=channel,
-        user_id="user-1",
-        record=record,
-        session_id="rtc_1",
-        prepare_event=prepare_event,
-    )
+    timeline = RtcTurnTimeline(session_id="rtc_1")
+    done_values = []
+    for event in ("first", "done"):
+        done_values.append(
+            await broadcast_rtc_control_event_to_user(
+                event,
+                channel=channel,
+                user_id="user-1",
+                record=record,
+                session_id="rtc_1",
+                prepare_event=prepare_event,
+                timeline=timeline,
+            )
+        )
 
     assert seen == [(record, "rtc_1", "first"), (record, "rtc_1", "done")]
+    assert done_values == [False, True]
     assert channel.broadcasts == [
         ("rtc.event", {"value": "first"}, "user-1"),
         ("rtc.event", {"value": "done"}, "user-1"),
@@ -248,9 +261,8 @@ async def test_broadcast_rtc_control_events_to_user_uses_prepared_wire_and_stops
 
 
 @pytest.mark.asyncio
-async def test_broadcast_rtc_control_events_includes_turn_timing_diagnostics():
+async def test_broadcast_rtc_control_event_includes_turn_timing_diagnostics():
     channel = FakeChannel()
-    orchestrator = FakeOrchestrator("started", "interrupted", "done")
 
     def prepare_event(*, record, session_id, event):
         wires = {
@@ -265,14 +277,17 @@ async def test_broadcast_rtc_control_events_includes_turn_timing_diagnostics():
         return FakePreparedEvent(wires[event], done=event == "done")
 
     record = object()
-    await broadcast_rtc_control_events_to_user(
-        orchestrator=orchestrator,
-        channel=channel,
-        user_id="user-1",
-        record=record,
-        session_id="rtc_1",
-        prepare_event=prepare_event,
-    )
+    timeline = RtcTurnTimeline(session_id="rtc_1")
+    for event in ("started", "interrupted", "done"):
+        await broadcast_rtc_control_event_to_user(
+            event,
+            channel=channel,
+            user_id="user-1",
+            record=record,
+            session_id="rtc_1",
+            prepare_event=prepare_event,
+            timeline=timeline,
+        )
 
     event_names = [name for name, _, _ in channel.broadcasts]
     assert event_names == [
@@ -341,8 +356,6 @@ async def test_handle_pondsocket_control_event_replies_when_runtime_missing():
         ctx,
         runtime=None,
         missing_message="session not attached",
-        executor=None,
-        unknown_message_label="unknown",
         error_log_message="unexpected",
         logger=FakeLogger(),
     )
@@ -354,71 +367,44 @@ async def test_handle_pondsocket_control_event_replies_when_runtime_missing():
 async def test_handle_pondsocket_control_event_executes_conversation_command():
     ctx = FakeContext(event_name="response.create", payload={"response_id": "resp_1"})
     runtime = FakeRuntime()
-    calls = []
-
-    async def executor(orchestrator, message, **kwargs):
-        calls.append((orchestrator, message, kwargs))
 
     await handle_pondsocket_control_event(
         ctx,
         runtime=runtime,
         missing_message="session not attached",
-        executor=executor,
-        unknown_message_label="unknown message",
         error_log_message="unexpected",
         logger=FakeLogger(),
     )
 
     assert ctx.replies == []
-    assert calls == [
-        (
-            runtime.orchestrator,
-            {"type": "response.create", "response_id": "resp_1"},
-            {"unknown_message_label": "unknown message"},
-        )
-    ]
+    assert runtime.commands == [UnknownCommand(name="response.create")]
 
 
 @pytest.mark.asyncio
 async def test_handle_pondsocket_control_event_passes_client_event_handler():
-    ctx = FakeContext(event_name="client.event", payload={"event": {"type": "ping"}})
+    ctx = FakeContext(event_name="client.event", payload={"event": "ping", "payload": {"n": 1}})
     runtime = FakeRuntime()
-    client_events = []
-
-    async def executor(orchestrator, message, **kwargs):
-        client_events.append(kwargs["client_event_handler"])
-
-    async def client_event_handler(event_name, payload):
-        return None
 
     await handle_pondsocket_control_event(
         ctx,
         runtime=runtime,
         missing_message="session not attached",
-        executor=executor,
-        unknown_message_label="unknown message",
         error_log_message="unexpected",
         logger=FakeLogger(),
-        client_event_handler=client_event_handler,
     )
 
-    assert client_events == [client_event_handler]
+    assert runtime.commands == [ClientEventCommand(event="ping", payload={"n": 1})]
 
 
 @pytest.mark.asyncio
 async def test_handle_pondsocket_control_event_replies_with_operation_error():
     ctx = FakeContext()
-    runtime = FakeRuntime()
-
-    async def executor(*_args, **_kwargs):
-        raise SessionNotConfiguredError()
+    runtime = FakeRuntime(SessionNotConfiguredError())
 
     await handle_pondsocket_control_event(
         ctx,
         runtime=runtime,
         missing_message="session not attached",
-        executor=executor,
-        unknown_message_label="unknown message",
         error_log_message="unexpected",
         logger=FakeLogger(),
     )
@@ -429,18 +415,13 @@ async def test_handle_pondsocket_control_event_replies_with_operation_error():
 @pytest.mark.asyncio
 async def test_handle_pondsocket_control_event_logs_unexpected_errors():
     ctx = FakeContext()
-    runtime = FakeRuntime()
+    runtime = FakeRuntime(RuntimeError("boom"))
     logger = FakeLogger()
-
-    async def executor(*_args, **_kwargs):
-        raise RuntimeError("boom")
 
     await handle_pondsocket_control_event(
         ctx,
         runtime=runtime,
         missing_message="session not attached",
-        executor=executor,
-        unknown_message_label="unknown message",
         error_log_message="unexpected control error",
         logger=logger,
     )

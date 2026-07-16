@@ -4,6 +4,7 @@ from enum import StrEnum
 
 
 class OperationErrorKind(StrEnum):
+    UNAUTHENTICATED = "unauthenticated"
     INVALID_ARGUMENT = "invalid_argument"
     UNPROCESSABLE_ENTITY = "unprocessable_entity"
     NOT_FOUND = "not_found"
@@ -19,6 +20,31 @@ class OperationError(Exception):
 class InternalOperationError(OperationError):
     def __init__(self, message: str) -> None:
         super().__init__(message)
+
+
+class RtcSessionNotFoundError(OperationError):
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        super().__init__(f"RTC session '{session_id}' not found")
+
+
+class RtcControlAlreadyAttachedError(OperationError):
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        super().__init__(f"RTC session '{session_id}' already has an attached control transport")
+
+
+class RtcControlTransportMismatchError(OperationError):
+    def __init__(self, session_id: str, *, expected: str, received: str) -> None:
+        self.session_id = session_id
+        self.expected = expected
+        self.received = received
+        super().__init__(f"RTC session '{session_id}' requires {expected} control; received {received}")
+
+
+class InvalidRtcCandidateError(OperationError):
+    def __init__(self) -> None:
+        super().__init__("invalid ICE candidate")
 
 
 class NoDefaultModelError(OperationError):
@@ -78,8 +104,7 @@ class ModelIncompatibleError(OperationError):
         self.reasons = reasons
         detail = "; ".join(reasons)
         super().__init__(
-            f"Model '{model}' cannot run in this environment: {detail}. "
-            f"Set VOX_ALLOW_INCOMPATIBLE=1 to pull anyway."
+            f"Model '{model}' cannot run in this environment: {detail}. Set VOX_ALLOW_INCOMPATIBLE=1 to pull anyway."
         )
 
 
@@ -157,32 +182,48 @@ class InvalidConfigError(OperationError):
 
 
 def classify_operation_error(exc: OperationError) -> OperationErrorKind:
-    if isinstance(exc, (
-        NoDefaultModelError,
-        WrongModelTypeError,
-        EmptyAudioError,
-        EmptyInputError,
-        VoiceNameRequiredError,
-        VoiceAudioRequiredError,
-        VoiceIdRequiredError,
-        VoiceCloningUnsupportedOperationError,
-        SessionAlreadyConfiguredError,
-        SessionNotConfiguredError,
-        UnknownMessageTypeError,
-        UnsupportedFormatError,
-        InvalidConfigError,
-    )):
+    if isinstance(
+        exc,
+        (
+            NoDefaultModelError,
+            WrongModelTypeError,
+            EmptyAudioError,
+            EmptyInputError,
+            VoiceNameRequiredError,
+            VoiceAudioRequiredError,
+            VoiceIdRequiredError,
+            VoiceCloningUnsupportedOperationError,
+            SessionAlreadyConfiguredError,
+            SessionNotConfiguredError,
+            UnknownMessageTypeError,
+            UnsupportedFormatError,
+            InvalidConfigError,
+            InvalidRtcCandidateError,
+        ),
+    ):
         return OperationErrorKind.INVALID_ARGUMENT
     if isinstance(exc, VoiceReferenceInvalidError):
         return OperationErrorKind.UNPROCESSABLE_ENTITY
-    if isinstance(exc, (
-        CatalogEntryNotFoundError,
-        StoredModelNotFoundError,
-        VoiceNotFoundOperationError,
-        VoiceReferenceNotFoundError,
-    )):
+    if isinstance(
+        exc,
+        (
+            CatalogEntryNotFoundError,
+            StoredModelNotFoundError,
+            VoiceNotFoundOperationError,
+            VoiceReferenceNotFoundError,
+            RtcSessionNotFoundError,
+        ),
+    ):
         return OperationErrorKind.NOT_FOUND
-    if isinstance(exc, (ModelInUseError, ModelIncompatibleError)):
+    if isinstance(
+        exc,
+        (
+            ModelInUseError,
+            ModelIncompatibleError,
+            RtcControlAlreadyAttachedError,
+            RtcControlTransportMismatchError,
+        ),
+    ):
         return OperationErrorKind.CONFLICT
     if isinstance(exc, MemoryBudgetExceededError):
         return OperationErrorKind.RESOURCE_EXHAUSTED

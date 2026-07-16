@@ -21,9 +21,9 @@ def _record_with_open_channel() -> tuple[RtcSessionRecord, MagicMock]:
     channel.readyState = "open"
     record = RtcSessionRecord(
         session_id="rtc_test",
-        client_token_hash="",
         created_at=0.0,
         expires_at=10.0,
+        expected_control_transport="pondsocket",
         data_channel=channel,
     )
     return record, channel
@@ -33,7 +33,8 @@ def test_forwards_curated_event_to_open_data_channel():
     record, channel = _record_with_open_channel()
 
     forward_wire_event_to_browser(
-        record, {"type": WIRE_STATE_CHANGED, "state": "thinking", "previous_state": "listening"},
+        record,
+        {"type": WIRE_STATE_CHANGED, "state": "thinking", "previous_state": "listening"},
     )
 
     channel.send.assert_called_once()

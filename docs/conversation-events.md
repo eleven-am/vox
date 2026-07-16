@@ -71,7 +71,7 @@ RTC sessions can also carry arbitrary JSON application events over a WebRTC data
 channel. Vox relays those JSON payloads between the browser data channel and the
 developer control stream without imposing an application schema.
 
-Create a session:
+Application backends create a session with their Vox API key:
 
 ```http
 POST /v1/rtc/sessions
@@ -82,9 +82,8 @@ Response:
 ```json
 {
   "session_id": "rtc_...",
-  "client_token": "rtc_client_...",
   "expires_at": "2026-05-08T12:34:56+00:00",
-  "join_token_ttl_seconds": 120,
+  "attach_ttl_seconds": 120,
   "ice_servers": [
     {
       "urls": ["stun:turn.example.com:3478"]
@@ -98,93 +97,28 @@ Response:
 }
 ```
 
-The `client_token` is for the browser/media side and is single-use. Its expiry
-only controls how long the browser has to join; once joined, token expiry should
-not end an active call.
+The session identifier is an ephemeral routing identifier, not a browser
+credential. The developer backend keeps the Vox API key private and attaches to
+the session over exactly one authenticated control transport.
 
-Browser joins with an SDP offer:
-
-```http
-POST /v1/rtc/sessions/{session_id}/offer
-Authorization: Bearer rtc_client_...
-Content-Type: application/json
-```
-
-```json
-{
-  "type": "offer",
-  "sdp": "v=0\r\n..."
-}
-```
-
-The token may also be sent as `client_token` in the JSON body. The response is:
-
-```json
-{
-  "session_id": "rtc_...",
-  "media_token": "rtc_media_...",
-  "events_url": "/v1/rtc/sessions/rtc_.../events?token=rtc_media_...",
-  "type": "answer",
-  "sdp": "v=0\r\n..."
-}
-```
-
-The `media_token` is for media-side follow-up calls only. It is different from
-the single-use `client_token`.
-
-Browser receives Vox-side trickle ICE over Server-Sent Events:
-
-```http
-GET /v1/rtc/sessions/{session_id}/events?token=rtc_media_...
-Accept: text/event-stream
-```
-
-Each SSE message has an `event` matching the payload `type`. Important events:
-
-- `rtc.ice_candidate`: add `candidate` to the browser peer connection. If
-  `candidate` is `null`, call `addIceCandidate(null)` or otherwise mark end of
-  candidates in the browser stack.
-- `rtc.connection_state`: Vox peer connection state changed.
-- `rtc.ice_connection_state`: ICE state changed.
-- `rtc.ice_gathering_state`: Vox ICE gathering state changed.
-
-Browser sends its trickle ICE candidates back to Vox:
-
-```http
-POST /v1/rtc/sessions/{session_id}/candidates
-Authorization: Bearer rtc_media_...
-Content-Type: application/json
-```
-
-```json
-{
-  "candidate": {
-    "candidate": "candidate:...",
-    "sdpMid": "0",
-    "sdpMLineIndex": 0
-  }
-}
-```
-
-At end-of-candidates, send:
-
-```json
-{
-  "candidate": null
-}
-```
-
-Developer backend can attach to the control-only stream over PondSocket:
+Application backends use PondSocket:
 
 ```text
 /v1/socket channel /rtc/{session_id}
 ```
 
-This stream accepts `session.update`, `response.start`, `response.delta`,
-`response.commit`, `response.cancel`, and `client.event`. It emits the same
-conversation events as the conversation control channel, plus `browser.event` for browser data
-channel payloads. It does not emit `response.audio.delta`; assistant audio
-belongs on the WebRTC media path for this session.
+The first SDP offer, every browser ICE candidate, explicit browser
+end-of-candidates, the answer, every Vox ICE candidate, and explicit Vox
+end-of-candidates all travel on this same channel. The answer is emitted before
+Vox finishes gathering candidates. Candidates that arrive before their remote
+description are buffered in order. ICE restart uses another `rtc.offer` with
+`restart: true` on the same control channel.
+
+After signaling, the channel also accepts `session.update`, `response.start`,
+`response.delta`, `response.commit`, `response.cancel`, and `client.event`. It
+emits the conversation events plus `browser.event` for browser data-channel
+payloads. It never emits `response.audio.delta`; assistant audio belongs on the
+direct WebRTC media path.
 
 ### Browser-native events
 
@@ -208,10 +142,11 @@ path. Forwarding only happens while the data channel is open (missed events are
 not buffered). Disable it by creating the session with
 `POST /v1/rtc/sessions {"browser_events": false}`.
 
-Developer backends can also attach over gRPC:
+Native systems use the equivalent gRPC transport instead:
 
 ```text
-RtcService.Control(stream RtcControlClientMessage) returns (stream ConverseServerMessage)
+RtcService.CreateSession(RtcCreateSessionRequest) returns (RtcSessionBootstrap)
+RtcService.Control(stream RtcControlClientMessage) returns (stream RtcControlServerMessage)
 ```
 
 Expected gRPC control startup:
@@ -219,31 +154,21 @@ Expected gRPC control startup:
 1. Open the bidi gRPC stream.
 2. Send `RtcControlAttach { session_id }` as the first message.
 3. Wait for `rtc_session_attached`.
-4. Send `session_update`.
-5. Drive `response_start`, `response_delta`, `response_commit`, and
+4. Send the SDP offer and trickled candidates, including explicit completion.
+5. Apply the answer and trickled Vox candidates in order.
+6. Send `session_update`.
+7. Drive `response_start`, `response_delta`, `response_commit`, and
    `response_cancel` the same way as the PondSocket control stream.
-6. Use `RtcClientEvent.event` plus `RtcClientEvent.payload_json` for
+8. Use `RtcClientEvent.event` plus `RtcClientEvent.payload_json` for
    application events that should be relayed to the browser data channel.
 
 The RTC gRPC control stream is backend-facing. It is not intended to replace
 browser WebRTC media, and it is not a browser-native transport.
 
-The expected RTC startup order is:
-
-1. Developer backend creates `POST /v1/rtc/sessions`.
-2. Developer backend gives `session_id`, `client_token`, and `ice_servers` to the
-   browser through its own application protocol.
-3. Browser creates a `RTCPeerConnection`, adds its microphone track with AEC
-   enabled, and posts the SDP offer to `/offer`.
-4. Browser applies Vox's SDP answer.
-5. Browser listens to `events_url` for Vox-side trickle ICE and posts browser ICE
-   candidates to `/candidates`.
-6. Developer backend joins the PondSocket `/rtc/{session_id}` channel or attaches to
-   `RtcService.Control` over gRPC, sends `session.update`, waits for
-   `session.created`, and then drives assistant text with `response.delta` and
-   `response.commit`.
-7. Vox sends user transcripts and interruption events over the control stream; Vox sends
-   assistant audio over WebRTC.
+PondSocket and gRPC are complete, mutually exclusive transports for a session.
+Do not create a session over one transport and attach its control plane over the
+other. Vox deliberately has no direct HTTP offer, candidate, or SSE signaling
+routes.
 
 Optional data channel:
 
@@ -313,6 +238,46 @@ ConversationService.Converse(stream ConverseClientMessage) returns (stream Conve
 
 The gRPC fields mirror the conversation event names. For example,
 `response.audio.delta` maps to gRPC `audio_delta`.
+
+## Internal Transport Boundary
+
+PondSocket and gRPC are wire adapters over the same conversation runtime. They
+do not implement VAD, STT, EOU, turn state, interruption, response streaming,
+or TTS behavior independently.
+
+The internal flow is:
+
+```text
+JSON/base64 or protobuf/raw bytes
+  -> transport decoder
+  -> typed ConversationCommand
+  -> ConversationRuntime
+  -> ConversationOrchestrator
+  -> typed ConvEvent
+  -> transport encoder
+```
+
+The shared pieces are:
+
+- `operations/conversation_commands.py`: canonical typed commands.
+- `operations/conversation_runtime.py`: command dispatch, event pumping, end of
+  input, background-task ownership, and exactly-once close.
+- `operations/conversation.py`: the transport-neutral orchestrator and canonical
+  events.
+
+Transport adapters retain only their unavoidable responsibilities:
+
+| Concern | PondSocket | gRPC |
+| --- | --- | --- |
+| Connection | channel join/leave and replies | bidi stream and status lifecycle |
+| Input framing | event name plus JSON payload | protobuf oneof |
+| Input audio | decode base64 PCM16 once | use protobuf bytes directly |
+| Output audio | encode canonical PCM16 as base64 | assign canonical PCM16 bytes directly |
+| Output framing | event name plus JSON payload | protobuf message |
+
+Canonical audio is always raw PCM16 bytes inside Vox. Base64 exists only at the
+PondSocket JSON boundary. RTC control uses the same runtime, while RTC attachment,
+browser data-channel relaying, and WebRTC media output remain RTC-specific.
 
 ## Startup
 

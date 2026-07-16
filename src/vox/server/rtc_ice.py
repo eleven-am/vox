@@ -7,11 +7,10 @@ import ipaddress
 import os
 import socket
 import time
-from struct import unpack
 from urllib.parse import urlparse
 
-from aioice import stun
-from aiortc.sdp import candidate_from_sdp
+from aiortc.rtcicetransport import RTCIceCandidate
+from aiortc.sdp import candidate_from_sdp, candidate_to_sdp
 
 
 class InvalidIceCandidateError(ValueError):
@@ -48,19 +47,6 @@ def server_ice_servers_from_env(*, now: float | None = None) -> list[dict]:
     )
 
 
-def patch_aioice_turn_error_code_parser() -> None:
-    """Allow aioice to handle coturn ERROR-CODE reason bytes defensively."""
-    attr = stun.ATTRIBUTES_BY_TYPE.get(0x0009)
-    if attr and attr[3] is _unpack_error_code_compat:
-        return
-    stun.ATTRIBUTES_BY_TYPE[0x0009] = (
-        0x0009,
-        "ERROR-CODE",
-        stun.pack_error_code,
-        _unpack_error_code_compat,
-    )
-
-
 def rewrite_private_relay_candidates(sdp: str) -> str:
     advertise_addrs = _relay_advertise_addrs_from_env()
     if not advertise_addrs:
@@ -72,27 +58,20 @@ def rewrite_private_relay_candidates(sdp: str) -> str:
     return "\r\n".join(lines) + ("\r\n" if sdp.endswith(("\r\n", "\n")) else "")
 
 
-def candidate_events_from_sdp(sdp: str) -> list[dict]:
-    events: list[dict] = []
-    current_mid: str | None = None
-    current_mline = -1
-    for line in sdp.splitlines():
-        if line.startswith("m="):
-            current_mline += 1
-        elif line.startswith("a=mid:"):
-            current_mid = line.removeprefix("a=mid:")
-        elif line.startswith("a=candidate:"):
-            events.append(
-                {
-                    "type": "rtc.ice_candidate",
-                    "candidate": {
-                        "candidate": line.removeprefix("a="),
-                        "sdpMid": current_mid,
-                        "sdpMLineIndex": current_mline if current_mline >= 0 else None,
-                    },
-                }
-            )
-    return events
+def local_candidate_events(candidate: RTCIceCandidate) -> list[dict]:
+    """Serialize one discovered candidate, including public TURN rewrites."""
+    line = f"a=candidate:{candidate_to_sdp(candidate)}"
+    return [
+        {
+            "type": "rtc.ice_candidate",
+            "candidate": {
+                "candidate": rewritten.removeprefix("a="),
+                "sdpMid": candidate.sdpMid,
+                "sdpMLineIndex": candidate.sdpMLineIndex,
+            },
+        }
+        for rewritten in _rewrite_candidate_line(line, _relay_advertise_addrs_from_env())
+    ]
 
 
 def parse_browser_ice_candidate(body: dict) -> object | None:
@@ -132,11 +111,13 @@ def _ice_servers_from_env(*, now: float | None, stun_env: str, turn_env: str) ->
     shared_secret = os.environ.get("VOX_RTC_TURN_SECRET")
 
     if static_username and static_credential:
-        servers.append({
-            "urls": turn_urls,
-            "username": static_username,
-            "credential": static_credential,
-        })
+        servers.append(
+            {
+                "urls": turn_urls,
+                "username": static_username,
+                "credential": static_credential,
+            }
+        )
         return servers
 
     if shared_secret:
@@ -149,20 +130,15 @@ def _ice_servers_from_env(*, now: float | None, stun_env: str, turn_env: str) ->
                 hashlib.sha1,
             ).digest()
         ).decode("ascii")
-        servers.append({
-            "urls": turn_urls,
-            "username": username,
-            "credential": credential,
-        })
+        servers.append(
+            {
+                "urls": turn_urls,
+                "username": username,
+                "credential": credential,
+            }
+        )
 
     return servers
-
-
-def _unpack_error_code_compat(data: bytes) -> tuple[int, str]:
-    if len(data) < 4:
-        raise ValueError("STUN error code is less than 4 bytes")
-    _reserved, code_high, code_low = unpack("!HBB", data[0:4])
-    return code_high * 100 + code_low, data[4:].decode("utf8", errors="replace")
 
 
 def _relay_advertise_addrs_from_env() -> list[str]:
@@ -187,7 +163,7 @@ def _turn_uri_host(url: str) -> str | None:
     if not host_port:
         return None
     if host_port.startswith("[") and "]" in host_port:
-        return host_port[1:host_port.index("]")]
+        return host_port[1 : host_port.index("]")]
     return host_port.rsplit(":", 1)[0]
 
 

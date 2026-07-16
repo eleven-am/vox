@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
+from aioice.ice import Candidate
+from aiortc import RTCConfiguration, RTCPeerConnection
 
+from vox.server.rtc_registry import RtcSessionRegistry
 from vox.server.rtc_signaling import (
-    RtcSignalingError,
     add_browser_rtc_candidate,
     create_browser_rtc_answer,
     ingest_media_audio,
     rtc_configuration,
 )
+from vox.webrtc.trickle import TrickleConnection
 
 
 def test_rtc_configuration_maps_ice_server_dicts():
@@ -59,109 +63,6 @@ async def test_ingest_media_audio_forwards_to_configured_orchestrator():
 
 
 @pytest.mark.asyncio
-async def test_create_browser_rtc_answer_rejects_invalid_client_token():
-    class Registry:
-        def attach_browser(self, _client_token: str):
-            return None
-
-    with pytest.raises(RtcSignalingError) as exc_info:
-        await create_browser_rtc_answer(
-            registry=Registry(),
-            session_id="rtc_123",
-            client_token="wrong",
-            offer={},
-        )
-
-    assert exc_info.value.status_code == 401
-    assert exc_info.value.detail == "invalid or expired client token"
-
-
-@pytest.mark.asyncio
-async def test_create_browser_rtc_answer_closes_mismatched_session():
-    class Registry:
-        def __init__(self) -> None:
-            self.closed = []
-
-        def attach_browser(self, _client_token: str):
-            return SimpleNamespace(session_id="rtc_other"), "rtc_media_123"
-
-        def close(self, session_id: str) -> None:
-            self.closed.append(session_id)
-
-    registry = Registry()
-
-    with pytest.raises(RtcSignalingError) as exc_info:
-        await create_browser_rtc_answer(
-            registry=registry,
-            session_id="rtc_expected",
-            client_token="rtc_client_123",
-            offer={},
-        )
-
-    assert exc_info.value.status_code == 404
-    assert exc_info.value.detail == "RTC session not found"
-    assert registry.closed == ["rtc_other"]
-
-
-@pytest.mark.asyncio
-async def test_add_browser_rtc_candidate_rejects_invalid_media_token():
-    class Registry:
-        def validate_media_token(self, _session_id: str, _token: str):
-            return None
-
-    with pytest.raises(RtcSignalingError) as exc_info:
-        await add_browser_rtc_candidate(
-            registry=Registry(),
-            session_id="rtc_123",
-            media_token="wrong",
-            candidate={"candidate": None},
-        )
-
-    assert exc_info.value.status_code == 401
-    assert exc_info.value.detail == "invalid RTC media token"
-
-
-@pytest.mark.asyncio
-async def test_add_browser_rtc_candidate_rejects_record_without_peer():
-    class Registry:
-        def validate_media_token(self, _session_id: str, _token: str):
-            return SimpleNamespace(rtc_peer=None)
-
-    with pytest.raises(RtcSignalingError) as exc_info:
-        await add_browser_rtc_candidate(
-            registry=Registry(),
-            session_id="rtc_123",
-            media_token="rtc_media_123",
-            candidate={"candidate": None},
-        )
-
-    assert exc_info.value.status_code == 401
-    assert exc_info.value.detail == "invalid RTC media token"
-
-
-@pytest.mark.asyncio
-async def test_add_browser_rtc_candidate_rejects_invalid_candidate():
-    class Peer:
-        async def addIceCandidate(self, _candidate):
-            raise AssertionError("invalid candidate should not be applied")
-
-    class Registry:
-        def validate_media_token(self, _session_id: str, _token: str):
-            return SimpleNamespace(rtc_peer=Peer())
-
-    with pytest.raises(RtcSignalingError) as exc_info:
-        await add_browser_rtc_candidate(
-            registry=Registry(),
-            session_id="rtc_123",
-            media_token="rtc_media_123",
-            candidate={"candidate": "not-a-real-candidate"},
-        )
-
-    assert exc_info.value.status_code == 400
-    assert exc_info.value.detail == "invalid ICE candidate"
-
-
-@pytest.mark.asyncio
 async def test_add_browser_rtc_candidate_applies_end_of_candidates():
     class Peer:
         def __init__(self) -> None:
@@ -172,16 +73,66 @@ async def test_add_browser_rtc_candidate_applies_end_of_candidates():
 
     peer = Peer()
 
-    class Registry:
-        def validate_media_token(self, _session_id: str, _token: str):
-            return SimpleNamespace(rtc_peer=peer)
-
     payload = await add_browser_rtc_candidate(
-        registry=Registry(),
-        session_id="rtc_123",
-        media_token="rtc_media_123",
+        record=SimpleNamespace(rtc_peer=peer),
         candidate={"candidate": None},
     )
 
     assert payload == {"ok": True}
     assert peer.candidates == [None]
+
+
+@pytest.mark.asyncio
+async def test_answer_returns_and_candidate_is_queued_before_gathering_finishes(monkeypatch):
+    gathering_started = asyncio.Event()
+    release_gathering = asyncio.Event()
+
+    async def controlled_candidates(self, component, addresses, timeout=5):
+        candidate = Candidate(
+            foundation="host",
+            component=component,
+            transport="udp",
+            priority=2130706431,
+            host="192.0.2.10",
+            port=50000,
+            type="host",
+        )
+        self._record_candidate(candidate)
+        gathering_started.set()
+        await release_gathering.wait()
+        return [candidate]
+
+    browser = RTCPeerConnection(RTCConfiguration(iceServers=[]))
+    browser.addTransceiver("audio", direction="sendonly")
+    browser.createDataChannel("vox")
+    offer = await browser.createOffer()
+
+    monkeypatch.setattr(TrickleConnection, "get_component_candidates", controlled_candidates)
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket")
+    assert registry.attach_browser_session(record.session_id) is record
+
+    result = await create_browser_rtc_answer(
+        registry=registry,
+        record=record,
+        offer={"type": "offer", "sdp": offer.sdp},
+    )
+    await asyncio.wait_for(gathering_started.wait(), timeout=1)
+
+    assert "a=candidate:" not in result["sdp"]
+    assert any(
+        event.get("type") == "rtc.ice_candidate" and event.get("candidate") is not None
+        for event in list(record.media_events._queue)
+    )
+    assert any(not task.done() for task in record.media_tasks)
+
+    release_gathering.set()
+    local_description_tasks = [
+        task for task in record.media_tasks if task.get_coro().__name__ == "_apply_local_description"
+    ]
+    await asyncio.wait_for(
+        asyncio.gather(*local_description_tasks, return_exceptions=True),
+        timeout=1,
+    )
+    await browser.close()
+    await registry.close_all()

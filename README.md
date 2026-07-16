@@ -362,12 +362,13 @@ All HTTP endpoints live under `/v1/`. STT/TTS endpoints are OpenAI-compatible by
 | `/v1/audio/transcriptions/stream` | WS | Long-form streaming STT |
 | `/v1/audio/speech/stream` | WS | Long-form streaming TTS |
 | `/v1/rtc/sessions` | POST | Create a realtime WebRTC voice session |
-| `/v1/rtc/sessions/{id}/offer` | POST | Submit the browser SDP offer, get the answer |
-| `/v1/rtc/sessions/{id}/candidates` | POST | Trickle browser ICE candidates |
-| `/v1/rtc/sessions/{id}/events` | GET (SSE) | Vox-side ICE / connection-state events |
 
-The realtime conversation control stream runs over PondSocket
-(`/v1/socket` channel `/conversation/{id}` or `/rtc/{id}`) or gRPC; see
+After session creation, the complete RTC signaling and conversation control
+stream runs over exactly one transport: PondSocket (`/v1/socket` channel
+`/rtc/{id}`) or `RtcService.Control` over gRPC. Direct HTTP offer, candidate,
+and SSE signaling routes are intentionally not exposed. The non-RTC
+conversation stream remains available on PondSocket channel
+`/conversation/{id}` or `ConversationService.Converse`; see
 [docs/conversation-events.md](docs/conversation-events.md).
 
 ## gRPC

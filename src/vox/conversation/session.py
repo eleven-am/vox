@@ -22,7 +22,6 @@ evidence.
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -724,11 +723,7 @@ class ConversationSession:
             )
         )
         accepted = await done
-        if (
-            not accepted
-            or self._sm.state != TurnState.SPEAKING
-            or self._response_stream is None
-        ):
+        if not accepted or self._sm.state != TurnState.SPEAKING or self._response_stream is None:
             self._response_lifecycle.remember_cancelled_response()
             raise asyncio.CancelledError
 
@@ -797,7 +792,7 @@ class ConversationSession:
         await self._emit(
             {
                 "type": WIRE_AUDIO_DELTA,
-                "audio": base64.b64encode(encoded_audio).decode("ascii"),
+                "audio_pcm16": encoded_audio,
                 "sample_rate": sample_rate,
                 "audio_format": "pcm16",
                 "response_id": self._active_response_id,

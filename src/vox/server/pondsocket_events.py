@@ -1,15 +1,38 @@
 from __future__ import annotations
 
+import base64
 import logging
 from contextlib import suppress
 from typing import Any
 
 from vox.operations.conversation import (
+    ConvEvent,
     conversation_wire_event_payload,
-    pondsocket_event_to_conversation_command,
+    parse_allow_interruptions,
+    parse_response_generation_id,
+    parse_response_text,
+    parse_session_update,
     serialize_conversation_event,
 )
-from vox.operations.errors import OperationError
+from vox.operations.conversation_commands import (
+    AudioAppendCommand,
+    ConversationCommand,
+    ResponseCancelCommand,
+    ResponseCommitCommand,
+    ResponseDeltaCommand,
+    ResponseReplaceTextCommand,
+    ResponseStartCommand,
+    SessionUpdateCommand,
+    UnknownCommand,
+    client_event_command,
+)
+from vox.operations.errors import InvalidConfigError, OperationError
+from vox.operations.rtc_runtime import (
+    RtcCandidateCommand,
+    RtcCloseCommand,
+    RtcCommand,
+    RtcOfferCommand,
+)
 from vox.server.rtc_timeline import RtcTurnTimeline, rtc_audio_stats
 
 
@@ -37,40 +60,37 @@ async def try_broadcast_wire_to_user(channel: Any, user_id: str, wire: dict[str,
     return False
 
 
-async def broadcast_conversation_events_to_user(
+async def broadcast_conversation_event_to_user(
+    event: ConvEvent,
     *,
-    orchestrator: Any,
     channel: Any,
     user_id: str,
 ) -> None:
-    async for event in orchestrator.events():
-        wire = serialize_conversation_event(event)
-        if wire is not None:
-            await try_broadcast_wire_to_user(channel, user_id, wire)
+    wire = serialize_conversation_event(event)
+    if wire is not None:
+        await try_broadcast_wire_to_user(channel, user_id, wire)
 
 
-async def broadcast_rtc_control_events_to_user(
+async def broadcast_rtc_control_event_to_user(
+    event: ConvEvent,
     *,
-    orchestrator: Any,
     channel: Any,
     user_id: str,
     record: Any,
     session_id: str,
     prepare_event: Any,
-) -> None:
-    timeline = RtcTurnTimeline(session_id=session_id)
-    async for event in orchestrator.events():
-        prepared = prepare_event(record=record, session_id=session_id, event=event)
-        if prepared.wire is not None:
-            await try_broadcast_wire_to_user(channel, user_id, prepared.wire)
-            timing = timeline.observe(
-                prepared.wire,
-                audio_stats=rtc_audio_stats(record),
-            )
-            if timing is not None:
-                await try_broadcast_wire_to_user(channel, user_id, timing)
-        if prepared.done:
-            return
+    timeline: RtcTurnTimeline,
+) -> bool:
+    prepared = prepare_event(record=record, session_id=session_id, event=event)
+    if prepared.wire is not None:
+        await try_broadcast_wire_to_user(channel, user_id, prepared.wire)
+        timing = timeline.observe(
+            prepared.wire,
+            audio_stats=rtc_audio_stats(record),
+        )
+        if timing is not None:
+            await try_broadcast_wire_to_user(channel, user_id, timing)
+    return prepared.done
 
 
 async def broadcast_rtc_client_events_to_user(
@@ -95,35 +115,100 @@ async def reply_pondsocket_error(ctx: Any, message: str) -> None:
         await ctx.reply("error", {"message": message})
 
 
+def decode_pondsocket_command(event_name: str, payload: Any) -> ConversationCommand | RtcCommand:
+    if not isinstance(payload, dict):
+        raise InvalidConfigError(f"{event_name} requires an object payload")
+    message = {"type": event_name, **payload}
+    if event_name == "rtc.offer":
+        offer = message.get("offer")
+        if not isinstance(offer, dict):
+            offer = message
+        return RtcOfferCommand(
+            offer_type=str(offer.get("type") or offer.get("sdpType") or offer.get("sdp_type") or "offer"),
+            sdp=str(offer.get("sdp") or ""),
+            restart=bool(message.get("restart", False)),
+        )
+    if event_name == "rtc.ice_candidate":
+        candidate = message.get("candidate")
+        if candidate is None:
+            return RtcCandidateCommand(candidate=None)
+        if isinstance(candidate, dict):
+            return RtcCandidateCommand(
+                candidate=str(candidate.get("candidate") or ""),
+                sdp_mid=_optional_string(candidate.get("sdpMid") or candidate.get("sdp_mid")),
+                sdp_m_line_index=_optional_int(
+                    candidate.get("sdpMLineIndex")
+                    if "sdpMLineIndex" in candidate
+                    else candidate.get("sdp_m_line_index")
+                ),
+                username_fragment=_optional_string(
+                    candidate.get("usernameFragment") or candidate.get("username_fragment")
+                ),
+            )
+        return RtcCandidateCommand(candidate=str(candidate))
+    if event_name == "rtc.close":
+        return RtcCloseCommand(reason=str(message.get("reason") or "client_closed"))
+    if event_name == "session.update":
+        return SessionUpdateCommand(config=parse_session_update(message))
+    if event_name == "client.event":
+        return client_event_command(message.get("event"), message.get("payload"))
+    if event_name == "input_audio_buffer.append":
+        audio_b64 = message.get("audio")
+        if not audio_b64:
+            raise InvalidConfigError("audio field required")
+        try:
+            pcm16 = base64.b64decode(audio_b64, validate=True)
+        except Exception as exc:  # noqa: BLE001
+            raise InvalidConfigError(f"invalid base64 audio: {exc}") from exc
+        return AudioAppendCommand(
+            pcm16=pcm16,
+            sample_rate=int(message.get("sample_rate", 0)) or None,
+        )
+    if event_name == "response.start":
+        return ResponseStartCommand(
+            allow_interruptions=parse_allow_interruptions(message),
+            generation_id=parse_response_generation_id(message),
+        )
+    if event_name == "response.delta":
+        return ResponseDeltaCommand(
+            text=parse_response_text(message, "delta") or "",
+            allow_interruptions=parse_allow_interruptions(message),
+            generation_id=parse_response_generation_id(message),
+        )
+    if event_name == "response.commit":
+        return ResponseCommitCommand(generation_id=parse_response_generation_id(message))
+    if event_name == "response.cancel":
+        return ResponseCancelCommand(generation_id=parse_response_generation_id(message))
+    if event_name == "response.replace_text":
+        return ResponseReplaceTextCommand(
+            text=parse_response_text(message, "text") or "",
+            allow_interruptions=parse_allow_interruptions(message),
+        )
+    return UnknownCommand(name=event_name)
+
+
+def _optional_string(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _optional_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
 async def handle_pondsocket_control_event(
     ctx: Any,
     *,
     runtime: Any | None,
     missing_message: str,
-    executor: Any,
-    unknown_message_label: str,
     error_log_message: str,
     logger: logging.Logger,
-    client_event_handler: Any = None,
 ) -> None:
     if runtime is None:
         await reply_pondsocket_error(ctx, missing_message)
         return
     try:
-        message = pondsocket_event_to_conversation_command(ctx.event_name, ctx.get_payload())
-        if client_event_handler is None:
-            await executor(
-                runtime.orchestrator,
-                message,
-                unknown_message_label=unknown_message_label,
-            )
-        else:
-            await executor(
-                runtime.orchestrator,
-                message,
-                client_event_handler=client_event_handler,
-                unknown_message_label=unknown_message_label,
-            )
+        command = decode_pondsocket_command(ctx.event_name, ctx.get_payload())
+        await runtime.conversation.dispatch(command)
     except OperationError as exc:
         await reply_pondsocket_error(ctx, str(exc))
     except Exception as exc:  # noqa: BLE001

@@ -10,11 +10,15 @@ from vox.operations.errors import (
     EmptyAudioError,
     EmptyInputError,
     InvalidConfigError,
+    InvalidRtcCandidateError,
     MemoryBudgetExceededError,
     ModelInUseError,
     NoAudioGeneratedError,
     NoDefaultModelError,
     OperationErrorKind,
+    RtcControlAlreadyAttachedError,
+    RtcControlTransportMismatchError,
+    RtcSessionNotFoundError,
     SessionNotConfiguredError,
     StoredModelNotFoundError,
     UnsupportedFormatError,
@@ -39,11 +43,22 @@ from vox.server.operation_errors import map_operation_errors_to_http, map_route_
         (SessionNotConfiguredError(), OperationErrorKind.INVALID_ARGUMENT),
         (UnsupportedFormatError("audio format", "aac", ["wav"]), OperationErrorKind.INVALID_ARGUMENT),
         (InvalidConfigError("bad config"), OperationErrorKind.INVALID_ARGUMENT),
+        (InvalidRtcCandidateError(), OperationErrorKind.INVALID_ARGUMENT),
         (VoiceReferenceInvalidError("bad reference"), OperationErrorKind.UNPROCESSABLE_ENTITY),
         (CatalogEntryNotFoundError("missing:model"), OperationErrorKind.NOT_FOUND),
         (StoredModelNotFoundError("missing:model"), OperationErrorKind.NOT_FOUND),
         (VoiceNotFoundOperationError("voice-1"), OperationErrorKind.NOT_FOUND),
         (VoiceReferenceNotFoundError("voice-1"), OperationErrorKind.NOT_FOUND),
+        (RtcSessionNotFoundError("rtc_missing"), OperationErrorKind.NOT_FOUND),
+        (RtcControlAlreadyAttachedError("rtc_1"), OperationErrorKind.CONFLICT),
+        (
+            RtcControlTransportMismatchError(
+                "rtc_1",
+                expected="pondsocket",
+                received="grpc",
+            ),
+            OperationErrorKind.CONFLICT,
+        ),
         (ModelInUseError("parakeet"), OperationErrorKind.CONFLICT),
         (MemoryBudgetExceededError("budget exceeded"), OperationErrorKind.RESOURCE_EXHAUSTED),
         (NoAudioGeneratedError(), OperationErrorKind.INTERNAL),
@@ -74,10 +89,13 @@ def test_map_operation_errors_to_http_does_not_hide_unexpected_errors():
 
 
 def test_map_route_errors_to_http_preserves_operation_http_mapping():
-    with pytest.raises(HTTPException) as exc_info, map_route_errors_to_http(
-        logger=logging.getLogger("tests.operation_errors"),
-        unexpected_detail="internal",
-        unexpected_log_message="unexpected route failure",
+    with (
+        pytest.raises(HTTPException) as exc_info,
+        map_route_errors_to_http(
+            logger=logging.getLogger("tests.operation_errors"),
+            unexpected_detail="internal",
+            unexpected_log_message="unexpected route failure",
+        ),
     ):
         raise ModelInUseError("parakeet")
 
@@ -88,10 +106,13 @@ def test_map_route_errors_to_http_preserves_operation_http_mapping():
 def test_map_route_errors_to_http_converts_unexpected_errors(caplog):
     logger = logging.getLogger("tests.operation_errors")
 
-    with pytest.raises(HTTPException) as exc_info, map_route_errors_to_http(
-        logger=logger,
-        unexpected_detail="internal failure",
-        unexpected_log_message="unexpected route failure",
+    with (
+        pytest.raises(HTTPException) as exc_info,
+        map_route_errors_to_http(
+            logger=logger,
+            unexpected_detail="internal failure",
+            unexpected_log_message="unexpected route failure",
+        ),
     ):
         raise RuntimeError("boom")
 

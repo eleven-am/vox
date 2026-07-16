@@ -15,10 +15,10 @@ from tests.fakes import FakeScheduler
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
 from vox.grpc import vox_pb2
-from vox.grpc.conversation_commands import conversation_session_update_to_message
+from vox.grpc.conversation_commands import conversation_session_update_to_command
 from vox.grpc.conversation_events import conversation_event_to_pb, conversation_wire_event_to_pb
 from vox.grpc.conversation_servicer import ConversationServicer
-from vox.operations.conversation import ConvAudioClearEvent, ConvTranscriptDoneEvent, parse_session_update
+from vox.operations.conversation import ConvAudioClearEvent, ConvTranscriptDoneEvent
 
 
 class ScriptedTTS(TTSAdapter):
@@ -121,31 +121,27 @@ async def test_session_update_proto_maps_to_session_created_pb():
 
 
 def test_session_update_proto_preserves_backend_selection():
-    config = parse_session_update(
-        conversation_session_update_to_message(
-            vox_pb2.ConversationSessionUpdate(
-                stt_model="x:1",
-                tts_model="y:1",
-                vad_backend="ten-vad",
-                turn_detector="ten-turn",
-            )
+    config = conversation_session_update_to_command(
+        vox_pb2.ConversationSessionUpdate(
+            stt_model="x:1",
+            tts_model="y:1",
+            vad_backend="ten-vad",
+            turn_detector="ten-turn",
         )
-    )
+    ).config
 
     assert config.vad_backend == "ten-vad"
     assert config.turn_detector == "ten-turn"
 
 
 def test_session_update_proto_applies_turn_profile_defaults():
-    config = parse_session_update(
-        conversation_session_update_to_message(
-            vox_pb2.ConversationSessionUpdate(
-                stt_model="x:1",
-                tts_model="y:1",
-                turn_profile="speakerphone",
-            )
+    config = conversation_session_update_to_command(
+        vox_pb2.ConversationSessionUpdate(
+            stt_model="x:1",
+            tts_model="y:1",
+            turn_profile="speakerphone",
         )
-    )
+    ).config
 
     assert config.turn_profile == "speakerphone"
     assert config.policy is not None
@@ -154,20 +150,18 @@ def test_session_update_proto_applies_turn_profile_defaults():
 
 
 def test_session_update_proto_preserves_speaking_interrupt_policy():
-    config = parse_session_update(
-        conversation_session_update_to_message(
-            vox_pb2.ConversationSessionUpdate(
-                stt_model="x:1",
-                tts_model="y:1",
-                policy=vox_pb2.ConversationTurnPolicy(
-                    speaking_interrupt_min_duration_ms=650,
-                    speaking_interrupt_min_words=3,
-                    self_echo_min_words=4,
-                    self_echo_min_overlap=0.8,
-                ),
-            )
+    config = conversation_session_update_to_command(
+        vox_pb2.ConversationSessionUpdate(
+            stt_model="x:1",
+            tts_model="y:1",
+            policy=vox_pb2.ConversationTurnPolicy(
+                speaking_interrupt_min_duration_ms=650,
+                speaking_interrupt_min_words=3,
+                self_echo_min_words=4,
+                self_echo_min_overlap=0.8,
+            ),
         )
-    )
+    ).config
 
     assert config.policy is not None
     assert config.policy.speaking_interrupt_min_duration_ms == 650
@@ -177,18 +171,16 @@ def test_session_update_proto_preserves_speaking_interrupt_policy():
 
 
 def test_session_update_proto_preserves_profile_defaults_when_overriding_one_field():
-    config = parse_session_update(
-        conversation_session_update_to_message(
-            vox_pb2.ConversationSessionUpdate(
-                stt_model="x:1",
-                tts_model="y:1",
-                turn_profile="headset",
-                policy=vox_pb2.ConversationTurnPolicy(
-                    speaking_interrupt_min_duration_ms=300,
-                ),
-            )
+    config = conversation_session_update_to_command(
+        vox_pb2.ConversationSessionUpdate(
+            stt_model="x:1",
+            tts_model="y:1",
+            turn_profile="headset",
+            policy=vox_pb2.ConversationTurnPolicy(
+                speaking_interrupt_min_duration_ms=300,
+            ),
         )
-    )
+    ).config
 
     assert config.turn_profile == "headset"
     assert config.policy is not None

@@ -46,7 +46,6 @@ logger = logging.getLogger(__name__)
 WIRE_SESSION_CREATED = "session.created"
 WIRE_CLIENT_EVENT = "client.event"
 WIRE_BROWSER_EVENT = "browser.event"
-WIRE_RTC_SESSION_ATTACHED = "rtc.session.attached"
 WIRE_RTC_CLIENT_DISCONNECTED = "rtc.client.disconnected"
 SESSION_UPDATE_STT_MODEL_FIELDS = (
     "stt_model",
@@ -150,7 +149,7 @@ class ConvResponseCreatedEvent:
 
 @dataclass(frozen=True)
 class ConvAudioDeltaEvent:
-    audio_b64: str
+    audio: bytes
     sample_rate: int
     audio_format: str
     response_id: str = ""
@@ -281,7 +280,7 @@ def serialize_conversation_event(event: ConvEvent) -> dict | None:
     if isinstance(event, ConvAudioDeltaEvent):
         return {
             "type": WIRE_AUDIO_DELTA,
-            "audio": event.audio_b64,
+            "audio": base64.b64encode(event.audio).decode("ascii"),
             "sample_rate": event.sample_rate,
             "audio_format": event.audio_format,
             "response_id": event.response_id,
@@ -351,13 +350,39 @@ def parse_session_update(payload: dict) -> ConversationSessionConfig:
     sess = session_update_payload(payload)
     stt_model = _first_session_value(sess, SESSION_UPDATE_STT_MODEL_FIELDS)
     tts_model = _first_session_value(sess, SESSION_UPDATE_TTS_MODEL_FIELDS)
+    return build_conversation_session_config(
+        stt_model=stt_model,
+        tts_model=tts_model,
+        voice=sess.get("voice"),
+        language=sess.get("language", "en") or "en",
+        sample_rate=int(sess.get("sample_rate") or TARGET_SAMPLE_RATE),
+        turn_profile=str(_first_session_value(sess, SESSION_UPDATE_TURN_PROFILE_FIELDS) or DEFAULT_TURN_PROFILE),
+        vad_backend=str(_first_session_value(sess, SESSION_UPDATE_VAD_BACKEND_FIELDS) or "silero"),
+        turn_detector=str(_first_session_value(sess, SESSION_UPDATE_TURN_DETECTOR_FIELDS) or DEFAULT_TURN_DETECTOR),
+        policy_overrides=_first_session_mapping(sess, SESSION_UPDATE_POLICY_FIELDS),
+        include_word_timestamps=bool(sess.get("include_word_timestamps") or False),
+    )
+
+
+def build_conversation_session_config(
+    *,
+    stt_model: str | None,
+    tts_model: str | None,
+    voice: str | None = None,
+    language: str = "en",
+    sample_rate: int = TARGET_SAMPLE_RATE,
+    turn_profile: str = DEFAULT_TURN_PROFILE,
+    vad_backend: str = "silero",
+    turn_detector: str = DEFAULT_TURN_DETECTOR,
+    policy_overrides: dict[str, Any] | None = None,
+    include_word_timestamps: bool = False,
+) -> ConversationSessionConfig:
     if not stt_model:
         raise InvalidConfigError("session.update requires 'stt_model'")
     if not tts_model:
         raise InvalidConfigError("session.update requires 'tts_model'")
 
-    turn_profile = str(_first_session_value(sess, SESSION_UPDATE_TURN_PROFILE_FIELDS) or DEFAULT_TURN_PROFILE)
-    policy_in = _first_session_mapping(sess, SESSION_UPDATE_POLICY_FIELDS)
+    policy_in = policy_overrides or {}
     policy_kwargs = {}
     for field_name in TURN_POLICY_OVERRIDE_FIELDS:
         if field_name in policy_in:
@@ -370,14 +395,14 @@ def parse_session_update(payload: dict) -> ConversationSessionConfig:
     return ConversationSessionConfig(
         stt_model=stt_model,
         tts_model=tts_model,
-        voice=sess.get("voice"),
-        language=sess.get("language", "en") or "en",
-        sample_rate=int(sess.get("sample_rate") or TARGET_SAMPLE_RATE),
+        voice=voice,
+        language=language,
+        sample_rate=sample_rate,
         turn_profile=turn_profile,
-        vad_backend=str(_first_session_value(sess, SESSION_UPDATE_VAD_BACKEND_FIELDS) or "silero"),
-        turn_detector=str(_first_session_value(sess, SESSION_UPDATE_TURN_DETECTOR_FIELDS) or "livekit"),
+        vad_backend=vad_backend,
+        turn_detector=turn_detector,
         policy=policy,
-        include_word_timestamps=bool(sess.get("include_word_timestamps") or False),
+        include_word_timestamps=include_word_timestamps,
     )
 
 
@@ -455,137 +480,6 @@ def response_text_fields(preferred_key: str) -> tuple[str, ...]:
     return tuple(fields)
 
 
-async def execute_conversation_command(
-    orchestrator: ConversationOrchestrator,
-    message: dict,
-    *,
-    allow_input_audio: bool = True,
-    client_event_handler: Callable[[str, Any], Awaitable[None] | None] | None = None,
-    require_config_message: str = "send session.update first",
-    unknown_message_label: str = "unknown message type",
-) -> None:
-    msg_type = message.get("type")
-    if not msg_type:
-        raise InvalidConfigError("missing 'type' field")
-
-    if msg_type == "session.update":
-        await execute_conversation_session_update(
-            orchestrator,
-            parse_session_update(message),
-        )
-        return
-
-    if msg_type == "client.event" and client_event_handler is not None:
-        event_name, payload = parse_client_event_command(message)
-        result = client_event_handler(event_name, payload)
-        if result is not None:
-            await result
-        return
-
-    if orchestrator.config is None:
-        raise InvalidConfigError(require_config_message)
-
-    if msg_type == "input_audio_buffer.append" and allow_input_audio:
-        raw_pcm = message.get("audio_pcm16")
-        audio_b64 = message.get("audio")
-        if raw_pcm is not None:
-            pcm = bytes(raw_pcm)
-        elif audio_b64:
-            try:
-                pcm = base64.b64decode(audio_b64)
-            except Exception as exc:  # noqa: BLE001
-                raise InvalidConfigError(f"invalid base64 audio: {exc}") from exc
-        else:
-            raise InvalidConfigError("audio field required")
-        sample_rate = int(message.get("sample_rate", 0)) or None
-        await orchestrator.ingest_pcm16(pcm, sample_rate=sample_rate)
-        return
-
-    if msg_type == "response.start":
-        allow_interruptions = parse_allow_interruptions(message)
-        generation_id = parse_response_generation_id(message)
-        if generation_id is None:
-            await orchestrator.start_response(allow_interruptions=allow_interruptions)
-        else:
-            await orchestrator.start_response(
-                allow_interruptions=allow_interruptions,
-                generation_id=generation_id,
-            )
-        return
-
-    if msg_type == "response.delta":
-        text = parse_response_text(message, "delta")
-        if not text:
-            raise InvalidConfigError("response.delta requires 'delta' text")
-        allow_interruptions = parse_allow_interruptions(message)
-        generation_id = parse_response_generation_id(message)
-        if generation_id is None:
-            await orchestrator.append_response_text(text, allow_interruptions=allow_interruptions)
-        else:
-            await orchestrator.append_response_text(
-                text,
-                allow_interruptions=allow_interruptions,
-                generation_id=generation_id,
-            )
-        return
-
-    if msg_type == "response.commit":
-        generation_id = parse_response_generation_id(message)
-        if generation_id is None:
-            await orchestrator.commit_response()
-        else:
-            await orchestrator.commit_response(generation_id=generation_id)
-        return
-
-    if msg_type == "response.cancel":
-        generation_id = parse_response_generation_id(message)
-        if generation_id is None:
-            await orchestrator.cancel_response()
-        else:
-            await orchestrator.cancel_response(generation_id=generation_id)
-        return
-
-    if msg_type == "response.replace_text":
-        text = parse_response_text(message, "text")
-        if not text:
-            raise InvalidConfigError("response.replace_text requires 'text'")
-        allow_interruptions = parse_allow_interruptions(message)
-        await orchestrator.replace_response_text(text, allow_interruptions=allow_interruptions)
-        return
-
-    raise InvalidConfigError(f"{unknown_message_label}: {msg_type!r}")
-
-
-async def execute_rtc_control_command(
-    orchestrator: ConversationOrchestrator,
-    message: dict,
-    *,
-    client_event_handler: Callable[[str, Any], Awaitable[None] | None] | None,
-    require_config_message: str = "send session.update first",
-    unknown_message_label: str = "unknown control message type",
-) -> None:
-    await execute_conversation_command(
-        orchestrator,
-        message,
-        allow_input_audio=False,
-        client_event_handler=client_event_handler,
-        require_config_message=require_config_message,
-        unknown_message_label=unknown_message_label,
-    )
-
-
-async def execute_conversation_session_update(
-    orchestrator: ConversationOrchestrator,
-    config: ConversationSessionConfig,
-    *,
-    already_configured_message: str = "session already configured",
-) -> None:
-    try:
-        await orchestrator.start_session(config)
-    except SessionAlreadyConfiguredError as exc:
-        raise InvalidConfigError(already_configured_message) from exc
-
-
 def parse_client_event_command(message: Any) -> tuple[str, Any]:
     if not isinstance(message, dict):
         raise InvalidConfigError("client.event requires a JSON object")
@@ -607,38 +501,6 @@ def parse_client_event_parts(
     return event_name.strip(), payload
 
 
-def client_event_command_from_parts(
-    event_name: Any,
-    payload: Any,
-    *,
-    non_empty_message: str = "client.event requires a non-empty string 'event'",
-) -> dict[str, Any]:
-    event_name, payload = parse_client_event_parts(
-        event_name,
-        payload,
-        non_empty_message=non_empty_message,
-    )
-    return {"type": "client.event", "event": event_name, "payload": payload}
-
-
-def client_event_command_from_payload_json(
-    event_name: Any,
-    payload_json: str,
-    *,
-    invalid_json_message: str = "client.event requires valid payload JSON",
-    non_empty_message: str = "client.event requires a non-empty string 'event'",
-) -> dict[str, Any]:
-    try:
-        payload = json.loads(payload_json or "null")
-    except json.JSONDecodeError as exc:
-        raise InvalidConfigError(f"{invalid_json_message}: {exc}") from exc
-    return client_event_command_from_parts(
-        event_name,
-        payload,
-        non_empty_message=non_empty_message,
-    )
-
-
 def client_event_payload(event_name: str, payload: Any) -> dict:
     return {
         "event": event_name,
@@ -654,17 +516,6 @@ def control_event_client_payload_json(payload: Any) -> str:
     return json.dumps(payload)
 
 
-def rtc_session_attached_payload(session_id: str) -> dict:
-    return {"session_id": session_id}
-
-
-def rtc_session_attached_wire(session_id: str) -> dict:
-    return {
-        "type": WIRE_RTC_SESSION_ATTACHED,
-        **rtc_session_attached_payload(session_id),
-    }
-
-
 def browser_event_wire(session_id: str, event_name: str, payload: Any) -> dict:
     return {
         "type": WIRE_BROWSER_EVENT,
@@ -676,7 +527,7 @@ def browser_event_wire(session_id: str, event_name: str, payload: Any) -> dict:
 
 def control_event_as_client_event(event: dict) -> tuple[str, Any]:
     event_type = event.get("type")
-    if event_type == WIRE_CLIENT_EVENT:
+    if event_type in {WIRE_CLIENT_EVENT, WIRE_BROWSER_EVENT}:
         return parse_client_event_command(event)
     if not isinstance(event_type, str) or not event_type.strip():
         raise InvalidConfigError("control event requires a non-empty string 'type'")
@@ -705,14 +556,10 @@ def client_disconnected_wire(
     return payload
 
 
-def pondsocket_event_to_conversation_command(event_name: str, payload: Any) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise InvalidConfigError(f"{event_name} requires an object payload")
-    return {"type": event_name, **payload}
-
-
 def parse_conversation_wire_event(event: dict) -> ConvEvent | None:
     t = event.get("type")
+    if t == WIRE_SESSION_CREATED:
+        return ConvSessionCreatedEvent(config=parse_session_update(event))
     if t == WIRE_SPEECH_STARTED:
         return ConvSpeechStartedEvent(timestamp_ms=int(event.get("timestamp_ms") or 0))
     if t == WIRE_SPEECH_STOPPED:
@@ -737,8 +584,17 @@ def parse_conversation_wire_event(event: dict) -> ConvEvent | None:
     if t == WIRE_RESPONSE_CREATED:
         return ConvResponseCreatedEvent(response_id=str(event.get("response_id") or ""))
     if t == WIRE_AUDIO_DELTA:
+        raw_audio = event.get("audio_pcm16")
+        if raw_audio is not None:
+            pcm16 = bytes(raw_audio)
+        else:
+            audio_b64 = event.get("audio")
+            try:
+                pcm16 = base64.b64decode(audio_b64) if audio_b64 else b""
+            except Exception as exc:  # noqa: BLE001
+                raise InvalidConfigError(f"invalid base64 audio event: {exc}") from exc
         return ConvAudioDeltaEvent(
-            audio_b64=str(event.get("audio") or ""),
+            audio=pcm16,
             sample_rate=int(event.get("sample_rate") or 0),
             audio_format=str(event.get("audio_format") or "pcm16"),
             response_id=str(event.get("response_id") or ""),

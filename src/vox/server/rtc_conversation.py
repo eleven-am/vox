@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass
 from typing import Any
 
@@ -126,7 +125,7 @@ def observe_rtc_audio_playout(record: Any, pcm16: bytes, sample_rate: int) -> No
 async def enqueue_rtc_audio(record: Any, event: ConvAudioDeltaEvent) -> None:
     if record is None or record.audio_output_track is None:
         return
-    await record.audio_output_track.enqueue(base64.b64decode(event.audio_b64), event.sample_rate)
+    await record.audio_output_track.enqueue(event.audio, event.sample_rate)
 
 
 async def wait_until_rtc_audio_drained(record: Any) -> None:
@@ -136,11 +135,7 @@ async def wait_until_rtc_audio_drained(record: Any) -> None:
 
 
 def clear_rtc_audio_if_needed(record: Any, event: object) -> bool:
-    if (
-        record is None
-        or not isinstance(event, ConvAudioClearEvent)
-        or record.audio_output_track is None
-    ):
+    if record is None or not isinstance(event, ConvAudioClearEvent) or record.audio_output_track is None:
         return False
     record.audio_output_track.clear()
     return True

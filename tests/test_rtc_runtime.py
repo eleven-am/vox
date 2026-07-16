@@ -1,0 +1,323 @@
+from __future__ import annotations
+
+import asyncio
+
+import pytest
+
+import vox.operations.rtc_runtime as rtc_runtime_module
+from tests.fakes import FakeScheduler
+from vox.operations.conversation import ConversationSessionConfig
+from vox.operations.conversation_commands import (
+    ClientEventCommand,
+    ResponseStartCommand,
+    SessionUpdateCommand,
+)
+from vox.operations.errors import (
+    InvalidConfigError,
+    RtcControlAlreadyAttachedError,
+    RtcControlTransportMismatchError,
+)
+from vox.operations.rtc_runtime import (
+    RtcCandidateCommand,
+    RtcOfferCommand,
+    RtcRuntime,
+)
+from vox.operations.rtc_signaling import RtcCandidateResult, RtcOfferAnswer
+from vox.server.rtc_registry import RtcSessionRegistry
+
+
+@pytest.mark.asyncio
+async def test_runtime_emits_attached_before_preexisting_session_events():
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket")
+    emitted: list[dict] = []
+    await record.media_events.put({"type": "rtc.connection_state", "state": "new"})
+
+    runtime = RtcRuntime(
+        scheduler=FakeScheduler(),
+        registry=registry,
+        session_id=record.session_id,
+        transport="pondsocket",
+        emit=lambda event: _append(emitted, event),
+    )
+    await asyncio.sleep(0)
+
+    assert emitted == []
+
+    await runtime.start()
+    await asyncio.sleep(0)
+
+    assert [event["type"] for event in emitted[:2]] == [
+        "rtc.session.attached",
+        "rtc.connection_state",
+    ]
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_buffers_candidate_before_offer_and_preserves_order(monkeypatch):
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket")
+    emitted: list[dict] = []
+    applied = []
+
+    async def fake_exchange(**_kwargs):
+        return RtcOfferAnswer(
+            session_id=record.session_id,
+            answer_type="answer",
+            sdp="answer-sdp",
+        )
+
+    async def fake_add(**kwargs):
+        applied.append(kwargs["request"])
+        return RtcCandidateResult(ok=True)
+
+    monkeypatch.setattr(rtc_runtime_module, "exchange_server_rtc_offer", fake_exchange)
+    monkeypatch.setattr(rtc_runtime_module, "add_server_rtc_candidate", fake_add)
+    runtime = RtcRuntime(
+        scheduler=FakeScheduler(),
+        registry=registry,
+        session_id=record.session_id,
+        transport="pondsocket",
+        emit=lambda event: _append(emitted, event),
+    )
+
+    await runtime.start()
+    await runtime.dispatch(
+        RtcCandidateCommand(
+            candidate="candidate:first",
+            sdp_mid="audio",
+            sdp_m_line_index=0,
+        )
+    )
+    await runtime.dispatch(RtcCandidateCommand(candidate=None))
+    assert applied == []
+
+    await runtime.dispatch(RtcOfferCommand(offer_type="offer", sdp="offer-sdp"))
+
+    assert [request.candidate for request in applied] == ["candidate:first", None]
+    assert emitted[0]["type"] == "rtc.session.attached"
+    assert emitted[1] == {
+        "type": "rtc.answer",
+        "session_id": record.session_id,
+        "answer": {"type": "answer", "sdp": "answer-sdp"},
+    }
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_allows_setup_commands_before_offer_but_not_response_commands():
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket")
+    runtime = RtcRuntime(
+        scheduler=FakeScheduler(),
+        registry=registry,
+        session_id=record.session_id,
+        transport="pondsocket",
+        emit=lambda event: _append([], event),
+    )
+    config = ConversationSessionConfig(stt_model="stt:1", tts_model="tts:1")
+
+    await runtime.dispatch(SessionUpdateCommand(config=config))
+    await runtime.dispatch(ClientEventCommand(event="ui.ready", payload={"call": "pending"}))
+
+    assert record.orchestrator.config == config
+    assert len(record.pending_client_events) == 1
+    with pytest.raises(InvalidConfigError, match="send rtc.offer first"):
+        await runtime.dispatch(ResponseStartCommand())
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_ignores_duplicate_completion_and_rejects_late_candidate(monkeypatch):
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="grpc")
+    applied = []
+
+    async def fake_add(**kwargs):
+        applied.append(kwargs["request"])
+        return RtcCandidateResult(ok=True)
+
+    monkeypatch.setattr(rtc_runtime_module, "add_server_rtc_candidate", fake_add)
+    runtime = RtcRuntime(
+        scheduler=FakeScheduler(),
+        registry=registry,
+        session_id=record.session_id,
+        transport="grpc",
+        emit=lambda event: _append([], event),
+    )
+    record.remote_description_set = True
+    record.rtc_peer = object()
+
+    await runtime.dispatch(RtcCandidateCommand(candidate=None))
+    await runtime.dispatch(RtcCandidateCommand(candidate=None))
+    with pytest.raises(InvalidConfigError, match="after end-of-candidates"):
+        await runtime.dispatch(RtcCandidateCommand(candidate="candidate:late"))
+
+    assert len(applied) == 1
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_ice_restart_replaces_peer_and_keeps_control_transport(monkeypatch):
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="grpc")
+    emitted: list[dict] = []
+    offers: list[RtcOfferCommand] = []
+
+    class OldPeer:
+        closed = 0
+
+        async def close(self):
+            self.closed += 1
+
+    old_peer = OldPeer()
+
+    async def fake_exchange(**kwargs):
+        offers.append(
+            RtcOfferCommand(
+                offer_type=kwargs["request"].offer_type,
+                sdp=kwargs["request"].sdp,
+            )
+        )
+        record.browser_attached = True
+        return RtcOfferAnswer(
+            session_id=record.session_id,
+            answer_type="answer",
+            sdp=f"answer-{len(offers)}",
+        )
+
+    monkeypatch.setattr(rtc_runtime_module, "exchange_server_rtc_offer", fake_exchange)
+    runtime = RtcRuntime(
+        scheduler=FakeScheduler(),
+        registry=registry,
+        session_id=record.session_id,
+        transport="grpc",
+        emit=lambda event: _append(emitted, event),
+    )
+    await runtime.start()
+    await runtime.dispatch(RtcOfferCommand(offer_type="offer", sdp="offer-1"))
+    record.rtc_peer = old_peer
+
+    with pytest.raises(InvalidConfigError, match="set restart=true"):
+        await runtime.dispatch(RtcOfferCommand(offer_type="offer", sdp="offer-2"))
+
+    await runtime.dispatch(RtcOfferCommand(offer_type="offer", sdp="offer-2", restart=True))
+
+    assert old_peer.closed == 1
+    assert record.attached_control_transport == "grpc"
+    assert record.control_attached is True
+    assert record.remote_description_set is True
+    assert record.ice_restart_in_progress is False
+    assert [event.get("answer", {}).get("sdp") for event in emitted if event["type"] == "rtc.answer"] == [
+        "answer-1",
+        "answer-2",
+    ]
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_only_one_transport_can_control_a_session():
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket")
+    first = RtcRuntime(
+        scheduler=FakeScheduler(),
+        registry=registry,
+        session_id=record.session_id,
+        transport="pondsocket",
+        emit=lambda event: _append([], event),
+    )
+
+    with pytest.raises(RtcControlTransportMismatchError, match="requires pondsocket"):
+        RtcRuntime(
+            scheduler=FakeScheduler(),
+            registry=registry,
+            session_id=record.session_id,
+            transport="grpc",
+            emit=lambda event: _append([], event),
+        )
+
+    assert record.attached_control_transport == "pondsocket"
+    await first.close()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_control_attach_has_an_explicit_conflict():
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="grpc")
+    first = RtcRuntime(
+        scheduler=FakeScheduler(),
+        registry=registry,
+        session_id=record.session_id,
+        transport="grpc",
+        emit=lambda event: _append([], event),
+    )
+
+    with pytest.raises(RtcControlAlreadyAttachedError, match="already has"):
+        RtcRuntime(
+            scheduler=FakeScheduler(),
+            registry=registry,
+            session_id=record.session_id,
+            transport="grpc",
+            emit=lambda event: _append([], event),
+        )
+
+    await first.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_closes_after_background_signaling_failure():
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="grpc")
+    emitted: list[dict] = []
+    runtime = RtcRuntime(
+        scheduler=FakeScheduler(),
+        registry=registry,
+        session_id=record.session_id,
+        transport="grpc",
+        emit=lambda event: _append(emitted, event),
+    )
+    await runtime.start()
+
+    await record.media_events.put({"type": "rtc.signaling_error", "message": "TURN gathering failed"})
+    await asyncio.wait_for(runtime.wait_closed(), timeout=1)
+
+    assert [event["type"] for event in emitted] == [
+        "rtc.session.attached",
+        "rtc.signaling_error",
+        "rtc.session.closed",
+    ]
+    assert emitted[-1]["reason"] == "signaling_error"
+    assert registry.get(record.session_id) is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_emits_closed_after_conversation_cleanup(monkeypatch):
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket")
+    emitted: list[dict] = []
+    runtime = RtcRuntime(
+        scheduler=FakeScheduler(),
+        registry=registry,
+        session_id=record.session_id,
+        transport="pondsocket",
+        emit=lambda event: _append(emitted, event),
+    )
+    await runtime.start()
+
+    async def close_conversation():
+        emitted.append({"type": "conversation.cleanup.completed"})
+
+    monkeypatch.setattr(runtime.conversation, "close", close_conversation)
+    await runtime.close(reason="client_closed")
+
+    assert [event["type"] for event in emitted] == [
+        "rtc.session.attached",
+        "conversation.cleanup.completed",
+        "rtc.session.closed",
+    ]
+    assert runtime.is_closed is True
+
+
+async def _append(events: list[dict], event: dict) -> None:
+    events.append(event)

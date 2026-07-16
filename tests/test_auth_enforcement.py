@@ -60,19 +60,6 @@ def test_health_is_exempt_from_auth(monkeypatch):
     assert client.get("/v1/health").status_code == 200
 
 
-def test_rtc_signaling_routes_bypass_global_api_key(monkeypatch):
-    monkeypatch.setenv("VOX_API_KEY", "secret")
-    client = TestClient(_build_app())
-
-    for path in (
-        "/v1/rtc/sessions/abc/offer",
-        "/v1/rtc/sessions/abc/candidates",
-        "/v1/rtc/sessions/abc/events",
-    ):
-        response = client.post(path)
-        assert response.status_code != 401, f"{path} should not require the global API key"
-
-
 def test_rtc_session_create_still_requires_global_api_key(monkeypatch):
     monkeypatch.setenv("VOX_API_KEY", "secret")
     client = TestClient(_build_app())

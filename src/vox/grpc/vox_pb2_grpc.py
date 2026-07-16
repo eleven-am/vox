@@ -831,15 +831,26 @@ class RtcServiceStub(object):
         Args:
             channel: A grpc.Channel.
         """
+        self.CreateSession = channel.unary_unary(
+                '/vox.RtcService/CreateSession',
+                request_serializer=vox__pb2.RtcCreateSessionRequest.SerializeToString,
+                response_deserializer=vox__pb2.RtcSessionBootstrap.FromString,
+                _registered_method=True)
         self.Control = channel.stream_stream(
                 '/vox.RtcService/Control',
                 request_serializer=vox__pb2.RtcControlClientMessage.SerializeToString,
-                response_deserializer=vox__pb2.ConverseServerMessage.FromString,
+                response_deserializer=vox__pb2.RtcControlServerMessage.FromString,
                 _registered_method=True)
 
 
 class RtcServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
+
+    def CreateSession(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
 
     def Control(self, request_iterator, context):
         """Missing associated documentation comment in .proto file."""
@@ -850,10 +861,15 @@ class RtcServiceServicer(object):
 
 def add_RtcServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
+            'CreateSession': grpc.unary_unary_rpc_method_handler(
+                    servicer.CreateSession,
+                    request_deserializer=vox__pb2.RtcCreateSessionRequest.FromString,
+                    response_serializer=vox__pb2.RtcSessionBootstrap.SerializeToString,
+            ),
             'Control': grpc.stream_stream_rpc_method_handler(
                     servicer.Control,
                     request_deserializer=vox__pb2.RtcControlClientMessage.FromString,
-                    response_serializer=vox__pb2.ConverseServerMessage.SerializeToString,
+                    response_serializer=vox__pb2.RtcControlServerMessage.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -865,6 +881,33 @@ def add_RtcServiceServicer_to_server(servicer, server):
  # This class is part of an EXPERIMENTAL API.
 class RtcService(object):
     """Missing associated documentation comment in .proto file."""
+
+    @staticmethod
+    def CreateSession(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/vox.RtcService/CreateSession',
+            vox__pb2.RtcCreateSessionRequest.SerializeToString,
+            vox__pb2.RtcSessionBootstrap.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
 
     @staticmethod
     def Control(request_iterator,
@@ -882,7 +925,7 @@ class RtcService(object):
             target,
             '/vox.RtcService/Control',
             vox__pb2.RtcControlClientMessage.SerializeToString,
-            vox__pb2.ConverseServerMessage.FromString,
+            vox__pb2.RtcControlServerMessage.FromString,
             options,
             channel_credentials,
             insecure,

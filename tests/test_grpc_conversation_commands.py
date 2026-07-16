@@ -4,22 +4,27 @@ import pytest
 
 from vox.grpc import vox_pb2
 from vox.grpc.conversation_commands import (
-    conversation_session_update_to_message,
+    conversation_session_update_to_command,
     converse_client_message_to_command,
-    execute_converse_client_message,
-    execute_rtc_control_message,
     rtc_control_message_to_command,
 )
 from vox.operations.conversation import (
     TURN_POLICY_OVERRIDE_FIELDS,
     ConversationOrchestrator,
-    parse_session_update,
 )
+from vox.operations.conversation_commands import (
+    AudioAppendCommand,
+    ClientEventCommand,
+    ResponseDeltaCommand,
+    ResponseReplaceTextCommand,
+    ResponseStartCommand,
+)
+from vox.operations.conversation_runtime import ConversationRuntime
 from vox.operations.errors import InvalidConfigError
 
 
 def test_grpc_session_update_decodes_to_shared_command_shape():
-    command = conversation_session_update_to_message(
+    command = conversation_session_update_to_command(
         vox_pb2.ConversationSessionUpdate(
             stt_model="parakeet-stt-onnx:tdt-0.6b-v3",
             tts_model="kokoro-tts:v1.0",
@@ -31,19 +36,7 @@ def test_grpc_session_update_decodes_to_shared_command_shape():
         )
     )
 
-    assert command == {
-        "type": "session.update",
-        "session": {
-            "stt_model": "parakeet-stt-onnx:tdt-0.6b-v3",
-            "tts_model": "kokoro-tts:v1.0",
-            "voice": "af_heart",
-            "turn_profile": "headset",
-            "turn_policy": {
-                "speaking_interrupt_min_duration_ms": 300,
-            },
-        },
-    }
-    config = parse_session_update(command)
+    config = command.config
     assert config.stt_model == "parakeet-stt-onnx:tdt-0.6b-v3"
     assert config.tts_model == "kokoro-tts:v1.0"
     assert config.voice == "af_heart"
@@ -54,7 +47,7 @@ def test_grpc_session_update_decodes_to_shared_command_shape():
 
 
 def test_grpc_session_update_preserves_every_operation_owned_policy_override():
-    command = conversation_session_update_to_message(
+    command = conversation_session_update_to_command(
         vox_pb2.ConversationSessionUpdate(
             stt_model="parakeet-stt-onnx:tdt-0.6b-v3",
             tts_model="kokoro-tts:v1.0",
@@ -79,10 +72,9 @@ def test_grpc_session_update_preserves_every_operation_owned_policy_override():
         )
     )
 
-    policy = command["session"]["turn_policy"]
-
-    assert tuple(policy) == TURN_POLICY_OVERRIDE_FIELDS
-    assert policy == {
+    config = command.config
+    assert config.policy is not None
+    expected = {
         "allow_interrupt_while_speaking": False,
         "min_interrupt_duration_ms": 101,
         "max_endpointing_delay_ms": 102,
@@ -100,11 +92,9 @@ def test_grpc_session_update_preserves_every_operation_owned_policy_override():
         "backchannel_end_cooldown_ms": 111,
         "vad_min_silence_ms": 112,
     }
-
-    config = parse_session_update(command)
-    assert config.policy is not None
-    assert config.policy.vad_min_silence_ms == 112
-    assert config.policy.self_echo_min_overlap == pytest.approx(0.72)
+    assert tuple(expected) == TURN_POLICY_OVERRIDE_FIELDS
+    for field, value in expected.items():
+        assert getattr(config.policy, field) == value
 
 
 def test_converse_audio_append_decodes_to_shared_command_shape():
@@ -114,11 +104,7 @@ def test_converse_audio_append_decodes_to_shared_command_shape():
         )
     )
 
-    assert command.message == {
-        "type": "input_audio_buffer.append",
-        "audio_pcm16": b"abc",
-        "sample_rate": 16_000,
-    }
+    assert command == AudioAppendCommand(pcm16=b"abc", sample_rate=16_000)
 
 
 def test_converse_and_rtc_response_delta_decode_to_same_command_shape():
@@ -133,8 +119,8 @@ def test_converse_and_rtc_response_delta_decode_to_same_command_shape():
         )
     )
 
-    assert converse.message == {"type": "response.delta", "delta": "hello"}
-    assert rtc.message == converse.message
+    assert converse == ResponseDeltaCommand(text="hello")
+    assert rtc == converse
 
 
 def test_converse_response_start_preserves_allow_interruptions():
@@ -144,10 +130,7 @@ def test_converse_response_start_preserves_allow_interruptions():
         )
     )
 
-    assert command.message == {
-        "type": "response.start",
-        "allow_interruptions": False,
-    }
+    assert command == ResponseStartCommand(allow_interruptions=False)
 
 
 def test_response_delta_preserves_allow_interruptions_for_both_grpc_transports():
@@ -168,12 +151,8 @@ def test_response_delta_preserves_allow_interruptions_for_both_grpc_transports()
         )
     )
 
-    assert converse.message == {
-        "type": "response.delta",
-        "delta": "hello",
-        "allow_interruptions": False,
-    }
-    assert rtc.message == converse.message
+    assert converse == ResponseDeltaCommand(text="hello", allow_interruptions=False)
+    assert rtc == converse
 
 
 def test_converse_and_rtc_response_replace_text_decode_to_same_command_shape():
@@ -194,12 +173,11 @@ def test_converse_and_rtc_response_replace_text_decode_to_same_command_shape():
         )
     )
 
-    assert converse.message == {
-        "type": "response.replace_text",
-        "text": "replacement",
-        "allow_interruptions": False,
-    }
-    assert rtc.message == converse.message
+    assert converse == ResponseReplaceTextCommand(
+        text="replacement",
+        allow_interruptions=False,
+    )
+    assert rtc == converse
 
 
 def test_rtc_client_event_decodes_json_payload():
@@ -212,11 +190,7 @@ def test_rtc_client_event_decodes_json_payload():
         )
     )
 
-    assert command.message == {
-        "type": "client.event",
-        "event": "app.marker",
-        "payload": {"n": 1},
-    }
+    assert command == ClientEventCommand(event="app.marker", payload={"n": 1})
 
 
 def test_rtc_client_event_rejects_invalid_json_payload():
@@ -241,46 +215,64 @@ def test_rtc_attach_is_not_a_conversation_command_after_attach_phase():
 
 
 @pytest.mark.asyncio
-async def test_execute_converse_client_message_owns_session_update_error_policy():
+async def test_runtime_owns_grpc_session_update_error_policy():
     orchestrator = ConversationOrchestrator(scheduler=object())
+    runtime = ConversationRuntime(
+        orchestrator,
+        require_config_message="send session_update first",
+        unknown_message_label="unknown message kind",
+    )
 
     with pytest.raises(InvalidConfigError, match="send session_update first"):
-        await execute_converse_client_message(
-            orchestrator,
-            vox_pb2.ConverseClientMessage(
-                audio_append=vox_pb2.ConversationAudioAppend(pcm16=b"\x00" * 100),
-            ),
+        await runtime.dispatch(
+            converse_client_message_to_command(
+                vox_pb2.ConverseClientMessage(
+                    audio_append=vox_pb2.ConversationAudioAppend(pcm16=b"\x00" * 100),
+                )
+            )
         )
 
 
 @pytest.mark.asyncio
-async def test_execute_rtc_control_message_owns_session_update_error_policy():
+async def test_runtime_owns_rtc_session_update_error_policy():
     orchestrator = ConversationOrchestrator(scheduler=object())
+    runtime = ConversationRuntime(
+        orchestrator,
+        allow_input_audio=False,
+        client_event_handler=lambda _event, _payload: None,
+        require_config_message="send session_update first",
+        unknown_message_label="unknown control message kind",
+    )
 
     with pytest.raises(InvalidConfigError, match="send session_update first"):
-        await execute_rtc_control_message(
-            orchestrator,
-            vox_pb2.RtcControlClientMessage(
-                response_delta=vox_pb2.ConversationResponseDelta(delta="hello"),
-            ),
-            client_event_handler=lambda _event, _payload: None,
+        await runtime.dispatch(
+            rtc_control_message_to_command(
+                vox_pb2.RtcControlClientMessage(
+                    response_delta=vox_pb2.ConversationResponseDelta(delta="hello"),
+                )
+            )
         )
 
 
 @pytest.mark.asyncio
-async def test_execute_rtc_control_message_routes_client_events_before_session_update():
+async def test_runtime_routes_rtc_client_events_before_session_update():
     orchestrator = ConversationOrchestrator(scheduler=object())
     received: list[tuple[str, object]] = []
-
-    await execute_rtc_control_message(
+    runtime = ConversationRuntime(
         orchestrator,
-        vox_pb2.RtcControlClientMessage(
-            client_event=vox_pb2.RtcClientEvent(
-                event="app.marker",
-                payload_json='{"n": 1}',
-            ),
-        ),
+        allow_input_audio=False,
         client_event_handler=lambda event, payload: received.append((event, payload)),
+    )
+
+    await runtime.dispatch(
+        rtc_control_message_to_command(
+            vox_pb2.RtcControlClientMessage(
+                client_event=vox_pb2.RtcClientEvent(
+                    event="app.marker",
+                    payload_json='{"n": 1}',
+                ),
+            )
+        )
     )
 
     assert received == [("app.marker", {"n": 1})]

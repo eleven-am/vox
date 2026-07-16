@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import asyncio
 from typing import Any
 
-from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCConfiguration, RTCIceServer, RTCSessionDescription
 
 from vox.server.rtc_client_events import (
     emit_client_disconnected_to_control,
@@ -14,10 +14,8 @@ from vox.server.rtc_client_events import (
 )
 from vox.server.rtc_conversation import observe_rtc_audio_playout
 from vox.server.rtc_ice import (
-    InvalidIceCandidateError,
-    candidate_events_from_sdp,
+    local_candidate_events,
     parse_browser_ice_candidate,
-    patch_aioice_turn_error_code_parser,
     rewrite_private_relay_candidates,
     server_ice_servers_from_env,
 )
@@ -25,31 +23,18 @@ from vox.server.rtc_media import RtcAudioOutputTrack, create_rtc_audio_queue, pu
 from vox.server.rtc_media_events import emit_media_event
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 from vox.server.rtc_tasks import track_media_task
-
-
-@dataclass(frozen=True)
-class RtcSignalingError(Exception):
-    status_code: int
-    detail: str
+from vox.webrtc import TrickleRTCPeerConnection
 
 
 async def create_browser_rtc_answer(
     *,
     registry: RtcSessionRegistry,
-    session_id: str,
-    client_token: str,
+    record: RtcSessionRecord,
     offer: dict[str, Any],
 ) -> dict[str, Any]:
-    attached = registry.attach_browser(client_token)
-    if attached is None:
-        raise RtcSignalingError(status_code=401, detail="invalid or expired client token")
-    record, media_token = attached
-    if record.session_id != session_id:
-        registry.close(record.session_id)
-        raise RtcSignalingError(status_code=404, detail="RTC session not found")
+    session_id = record.session_id
 
-    patch_aioice_turn_error_code_parser()
-    pc = RTCPeerConnection(configuration=rtc_configuration(server_ice_servers_from_env()))
+    pc = TrickleRTCPeerConnection(configuration=rtc_configuration(server_ice_servers_from_env()))
     record.rtc_peer = pc
     if record.audio_output is None:
         record.audio_output = create_rtc_audio_queue()
@@ -72,37 +57,48 @@ async def create_browser_rtc_answer(
         )
     )
     answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
-    answer_sdp = rewrite_private_relay_candidates(pc.localDescription.sdp)
-    for event in candidate_events_from_sdp(answer_sdp):
-        await emit_media_event(record, event)
-    await emit_media_event(record, {"type": "rtc.ice_candidate", "candidate": None})
+    track_media_task(record, _apply_local_description(record, registry, answer))
+    await asyncio.sleep(0)
+    answer_sdp = rewrite_private_relay_candidates(answer.sdp)
 
     return {
         "session_id": session_id,
-        "media_token": media_token,
-        "events_url": f"/v1/rtc/sessions/{session_id}/events?token={media_token}",
-        "type": pc.localDescription.type,
+        "type": answer.type,
         "sdp": answer_sdp,
     }
 
 
+async def _apply_local_description(
+    record: RtcSessionRecord,
+    registry: RtcSessionRegistry,
+    answer: RTCSessionDescription,
+) -> None:
+    try:
+        await record.rtc_peer.setLocalDescription(answer)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        await emit_media_event(
+            record,
+            {
+                "type": "rtc.signaling_error",
+                "message": str(exc),
+            },
+        )
+        current = asyncio.current_task()
+        if current is not None:
+            record.media_tasks.discard(current)
+        registry.close(record.session_id)
+
+
 async def add_browser_rtc_candidate(
     *,
-    registry: RtcSessionRegistry,
-    session_id: str,
-    media_token: str,
+    record: RtcSessionRecord,
     candidate: dict[str, Any],
 ) -> dict[str, bool]:
-    record = registry.validate_media_token(session_id, media_token)
-    if record is None or record.rtc_peer is None:
-        raise RtcSignalingError(status_code=401, detail="invalid RTC media token")
-
-    try:
-        ice = parse_browser_ice_candidate(candidate)
-    except InvalidIceCandidateError as exc:
-        raise RtcSignalingError(status_code=400, detail="invalid ICE candidate") from exc
-
+    if record.rtc_peer is None:
+        raise RuntimeError("RTC browser is not attached")
+    ice = parse_browser_ice_candidate(candidate)
     await record.rtc_peer.addIceCandidate(ice)
     return {"ok": True}
 
@@ -127,6 +123,8 @@ def bind_peer_connection_handlers(
             },
         )
         if pc.connectionState in {"closed", "failed"}:
+            if pc.connectionState == "closed" and record.ice_restart_in_progress:
+                return
             await emit_client_disconnected_to_control(
                 record,
                 session_id,
@@ -165,6 +163,14 @@ def bind_peer_connection_handlers(
                 "state": pc.iceGatheringState,
             },
         )
+
+    @pc.on("icecandidate")
+    async def on_icecandidate(candidate) -> None:
+        if candidate is None:
+            await emit_media_event(record, {"type": "rtc.ice_candidate", "candidate": None})
+            return
+        for event in local_candidate_events(candidate):
+            await emit_media_event(record, event)
 
     @pc.on("track")
     def on_track(track) -> None:

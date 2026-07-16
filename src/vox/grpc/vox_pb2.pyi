@@ -454,6 +454,102 @@ class VoiceInfo(_message.Message):
     model: str
     def __init__(self, id: _Optional[str] = ..., name: _Optional[str] = ..., language: _Optional[str] = ..., gender: _Optional[str] = ..., description: _Optional[str] = ..., is_cloned: bool = ..., model: _Optional[str] = ...) -> None: ...
 
+class RtcCreateSessionRequest(_message.Message):
+    __slots__ = ("browser_events",)
+    BROWSER_EVENTS_FIELD_NUMBER: _ClassVar[int]
+    browser_events: bool
+    def __init__(self, browser_events: bool = ...) -> None: ...
+
+class RtcIceServer(_message.Message):
+    __slots__ = ("urls", "username", "credential")
+    URLS_FIELD_NUMBER: _ClassVar[int]
+    USERNAME_FIELD_NUMBER: _ClassVar[int]
+    CREDENTIAL_FIELD_NUMBER: _ClassVar[int]
+    urls: _containers.RepeatedScalarFieldContainer[str]
+    username: str
+    credential: str
+    def __init__(self, urls: _Optional[_Iterable[str]] = ..., username: _Optional[str] = ..., credential: _Optional[str] = ...) -> None: ...
+
+class RtcSessionBootstrap(_message.Message):
+    __slots__ = ("session_id", "expires_at", "ice_servers", "attach_ttl_seconds")
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    EXPIRES_AT_FIELD_NUMBER: _ClassVar[int]
+    ICE_SERVERS_FIELD_NUMBER: _ClassVar[int]
+    ATTACH_TTL_SECONDS_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    expires_at: str
+    ice_servers: _containers.RepeatedCompositeFieldContainer[RtcIceServer]
+    attach_ttl_seconds: int
+    def __init__(self, session_id: _Optional[str] = ..., expires_at: _Optional[str] = ..., ice_servers: _Optional[_Iterable[_Union[RtcIceServer, _Mapping]]] = ..., attach_ttl_seconds: _Optional[int] = ...) -> None: ...
+
+class RtcSessionDescription(_message.Message):
+    __slots__ = ("type", "sdp")
+    TYPE_FIELD_NUMBER: _ClassVar[int]
+    SDP_FIELD_NUMBER: _ClassVar[int]
+    type: str
+    sdp: str
+    def __init__(self, type: _Optional[str] = ..., sdp: _Optional[str] = ...) -> None: ...
+
+class RtcControlAnswer(_message.Message):
+    __slots__ = ("session_id", "answer")
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    ANSWER_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    answer: RtcSessionDescription
+    def __init__(self, session_id: _Optional[str] = ..., answer: _Optional[_Union[RtcSessionDescription, _Mapping]] = ...) -> None: ...
+
+class RtcIceCandidate(_message.Message):
+    __slots__ = ("candidate", "sdp_mid", "sdp_m_line_index", "username_fragment")
+    CANDIDATE_FIELD_NUMBER: _ClassVar[int]
+    SDP_MID_FIELD_NUMBER: _ClassVar[int]
+    SDP_M_LINE_INDEX_FIELD_NUMBER: _ClassVar[int]
+    USERNAME_FRAGMENT_FIELD_NUMBER: _ClassVar[int]
+    candidate: str
+    sdp_mid: str
+    sdp_m_line_index: int
+    username_fragment: str
+    def __init__(self, candidate: _Optional[str] = ..., sdp_mid: _Optional[str] = ..., sdp_m_line_index: _Optional[int] = ..., username_fragment: _Optional[str] = ...) -> None: ...
+
+class RtcIceCandidatesComplete(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class RtcControlOffer(_message.Message):
+    __slots__ = ("offer", "restart")
+    OFFER_FIELD_NUMBER: _ClassVar[int]
+    RESTART_FIELD_NUMBER: _ClassVar[int]
+    offer: RtcSessionDescription
+    restart: bool
+    def __init__(self, offer: _Optional[_Union[RtcSessionDescription, _Mapping]] = ..., restart: bool = ...) -> None: ...
+
+class RtcControlClose(_message.Message):
+    __slots__ = ("reason",)
+    REASON_FIELD_NUMBER: _ClassVar[int]
+    reason: str
+    def __init__(self, reason: _Optional[str] = ...) -> None: ...
+
+class RtcControlClosed(_message.Message):
+    __slots__ = ("session_id", "reason")
+    SESSION_ID_FIELD_NUMBER: _ClassVar[int]
+    REASON_FIELD_NUMBER: _ClassVar[int]
+    session_id: str
+    reason: str
+    def __init__(self, session_id: _Optional[str] = ..., reason: _Optional[str] = ...) -> None: ...
+
+class RtcSignalingError(_message.Message):
+    __slots__ = ("message",)
+    MESSAGE_FIELD_NUMBER: _ClassVar[int]
+    message: str
+    def __init__(self, message: _Optional[str] = ...) -> None: ...
+
+class RtcWireEvent(_message.Message):
+    __slots__ = ("type", "payload_json")
+    TYPE_FIELD_NUMBER: _ClassVar[int]
+    PAYLOAD_JSON_FIELD_NUMBER: _ClassVar[int]
+    type: str
+    payload_json: str
+    def __init__(self, type: _Optional[str] = ..., payload_json: _Optional[str] = ...) -> None: ...
+
 class ConverseClientMessage(_message.Message):
     __slots__ = ("session_update", "audio_append", "response_cancel", "response_start", "response_delta", "response_commit", "response_replace_text")
     SESSION_UPDATE_FIELD_NUMBER: _ClassVar[int]
@@ -473,7 +569,7 @@ class ConverseClientMessage(_message.Message):
     def __init__(self, session_update: _Optional[_Union[ConversationSessionUpdate, _Mapping]] = ..., audio_append: _Optional[_Union[ConversationAudioAppend, _Mapping]] = ..., response_cancel: _Optional[_Union[ConversationResponseCancel, _Mapping]] = ..., response_start: _Optional[_Union[ConversationResponseStart, _Mapping]] = ..., response_delta: _Optional[_Union[ConversationResponseDelta, _Mapping]] = ..., response_commit: _Optional[_Union[ConversationResponseCommit, _Mapping]] = ..., response_replace_text: _Optional[_Union[ConversationResponseReplaceText, _Mapping]] = ...) -> None: ...
 
 class RtcControlClientMessage(_message.Message):
-    __slots__ = ("attach", "session_update", "response_cancel", "response_start", "response_delta", "response_commit", "client_event", "response_replace_text")
+    __slots__ = ("attach", "session_update", "response_cancel", "response_start", "response_delta", "response_commit", "client_event", "response_replace_text", "offer", "candidate", "candidates_complete", "close")
     ATTACH_FIELD_NUMBER: _ClassVar[int]
     SESSION_UPDATE_FIELD_NUMBER: _ClassVar[int]
     RESPONSE_CANCEL_FIELD_NUMBER: _ClassVar[int]
@@ -482,6 +578,10 @@ class RtcControlClientMessage(_message.Message):
     RESPONSE_COMMIT_FIELD_NUMBER: _ClassVar[int]
     CLIENT_EVENT_FIELD_NUMBER: _ClassVar[int]
     RESPONSE_REPLACE_TEXT_FIELD_NUMBER: _ClassVar[int]
+    OFFER_FIELD_NUMBER: _ClassVar[int]
+    CANDIDATE_FIELD_NUMBER: _ClassVar[int]
+    CANDIDATES_COMPLETE_FIELD_NUMBER: _ClassVar[int]
+    CLOSE_FIELD_NUMBER: _ClassVar[int]
     attach: RtcControlAttach
     session_update: ConversationSessionUpdate
     response_cancel: ConversationResponseCancel
@@ -490,7 +590,33 @@ class RtcControlClientMessage(_message.Message):
     response_commit: ConversationResponseCommit
     client_event: RtcClientEvent
     response_replace_text: ConversationResponseReplaceText
-    def __init__(self, attach: _Optional[_Union[RtcControlAttach, _Mapping]] = ..., session_update: _Optional[_Union[ConversationSessionUpdate, _Mapping]] = ..., response_cancel: _Optional[_Union[ConversationResponseCancel, _Mapping]] = ..., response_start: _Optional[_Union[ConversationResponseStart, _Mapping]] = ..., response_delta: _Optional[_Union[ConversationResponseDelta, _Mapping]] = ..., response_commit: _Optional[_Union[ConversationResponseCommit, _Mapping]] = ..., client_event: _Optional[_Union[RtcClientEvent, _Mapping]] = ..., response_replace_text: _Optional[_Union[ConversationResponseReplaceText, _Mapping]] = ...) -> None: ...
+    offer: RtcControlOffer
+    candidate: RtcIceCandidate
+    candidates_complete: RtcIceCandidatesComplete
+    close: RtcControlClose
+    def __init__(self, attach: _Optional[_Union[RtcControlAttach, _Mapping]] = ..., session_update: _Optional[_Union[ConversationSessionUpdate, _Mapping]] = ..., response_cancel: _Optional[_Union[ConversationResponseCancel, _Mapping]] = ..., response_start: _Optional[_Union[ConversationResponseStart, _Mapping]] = ..., response_delta: _Optional[_Union[ConversationResponseDelta, _Mapping]] = ..., response_commit: _Optional[_Union[ConversationResponseCommit, _Mapping]] = ..., client_event: _Optional[_Union[RtcClientEvent, _Mapping]] = ..., response_replace_text: _Optional[_Union[ConversationResponseReplaceText, _Mapping]] = ..., offer: _Optional[_Union[RtcControlOffer, _Mapping]] = ..., candidate: _Optional[_Union[RtcIceCandidate, _Mapping]] = ..., candidates_complete: _Optional[_Union[RtcIceCandidatesComplete, _Mapping]] = ..., close: _Optional[_Union[RtcControlClose, _Mapping]] = ...) -> None: ...
+
+class RtcControlServerMessage(_message.Message):
+    __slots__ = ("attached", "answer", "candidate", "candidates_complete", "conversation", "error", "closed", "browser_event", "event")
+    ATTACHED_FIELD_NUMBER: _ClassVar[int]
+    ANSWER_FIELD_NUMBER: _ClassVar[int]
+    CANDIDATE_FIELD_NUMBER: _ClassVar[int]
+    CANDIDATES_COMPLETE_FIELD_NUMBER: _ClassVar[int]
+    CONVERSATION_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    CLOSED_FIELD_NUMBER: _ClassVar[int]
+    BROWSER_EVENT_FIELD_NUMBER: _ClassVar[int]
+    EVENT_FIELD_NUMBER: _ClassVar[int]
+    attached: RtcSessionAttached
+    answer: RtcControlAnswer
+    candidate: RtcIceCandidate
+    candidates_complete: RtcIceCandidatesComplete
+    conversation: ConverseServerMessage
+    error: RtcSignalingError
+    closed: RtcControlClosed
+    browser_event: RtcClientEvent
+    event: RtcWireEvent
+    def __init__(self, attached: _Optional[_Union[RtcSessionAttached, _Mapping]] = ..., answer: _Optional[_Union[RtcControlAnswer, _Mapping]] = ..., candidate: _Optional[_Union[RtcIceCandidate, _Mapping]] = ..., candidates_complete: _Optional[_Union[RtcIceCandidatesComplete, _Mapping]] = ..., conversation: _Optional[_Union[ConverseServerMessage, _Mapping]] = ..., error: _Optional[_Union[RtcSignalingError, _Mapping]] = ..., closed: _Optional[_Union[RtcControlClosed, _Mapping]] = ..., browser_event: _Optional[_Union[RtcClientEvent, _Mapping]] = ..., event: _Optional[_Union[RtcWireEvent, _Mapping]] = ...) -> None: ...
 
 class RtcControlAttach(_message.Message):
     __slots__ = ("session_id",)
@@ -499,7 +625,7 @@ class RtcControlAttach(_message.Message):
     def __init__(self, session_id: _Optional[str] = ...) -> None: ...
 
 class ConverseServerMessage(_message.Message):
-    __slots__ = ("session_created", "speech_started", "speech_stopped", "transcript_done", "response_created", "audio_delta", "response_done", "response_cancelled", "state_changed", "error", "response_committed", "audio_clear", "interruption_detected", "interruption_false_positive", "turn_eou_predicted", "rtc_session_attached", "client_event", "transcript_delta")
+    __slots__ = ("session_created", "speech_started", "speech_stopped", "transcript_done", "response_created", "audio_delta", "response_done", "response_cancelled", "state_changed", "error", "response_committed", "audio_clear", "interruption_detected", "interruption_false_positive", "turn_eou_predicted", "transcript_delta")
     SESSION_CREATED_FIELD_NUMBER: _ClassVar[int]
     SPEECH_STARTED_FIELD_NUMBER: _ClassVar[int]
     SPEECH_STOPPED_FIELD_NUMBER: _ClassVar[int]
@@ -515,8 +641,6 @@ class ConverseServerMessage(_message.Message):
     INTERRUPTION_DETECTED_FIELD_NUMBER: _ClassVar[int]
     INTERRUPTION_FALSE_POSITIVE_FIELD_NUMBER: _ClassVar[int]
     TURN_EOU_PREDICTED_FIELD_NUMBER: _ClassVar[int]
-    RTC_SESSION_ATTACHED_FIELD_NUMBER: _ClassVar[int]
-    CLIENT_EVENT_FIELD_NUMBER: _ClassVar[int]
     TRANSCRIPT_DELTA_FIELD_NUMBER: _ClassVar[int]
     session_created: ConversationSessionCreated
     speech_started: ConversationSpeechStarted
@@ -533,10 +657,8 @@ class ConverseServerMessage(_message.Message):
     interruption_detected: ConversationInterruptionDetected
     interruption_false_positive: ConversationInterruptionFalsePositive
     turn_eou_predicted: ConversationTurnEouPredicted
-    rtc_session_attached: RtcSessionAttached
-    client_event: RtcClientEvent
     transcript_delta: ConversationTranscriptDelta
-    def __init__(self, session_created: _Optional[_Union[ConversationSessionCreated, _Mapping]] = ..., speech_started: _Optional[_Union[ConversationSpeechStarted, _Mapping]] = ..., speech_stopped: _Optional[_Union[ConversationSpeechStopped, _Mapping]] = ..., transcript_done: _Optional[_Union[ConversationTranscriptDone, _Mapping]] = ..., response_created: _Optional[_Union[ConversationResponseCreated, _Mapping]] = ..., audio_delta: _Optional[_Union[ConversationAudioDelta, _Mapping]] = ..., response_done: _Optional[_Union[ConversationResponseDone, _Mapping]] = ..., response_cancelled: _Optional[_Union[ConversationResponseCancelled, _Mapping]] = ..., state_changed: _Optional[_Union[ConversationStateChanged, _Mapping]] = ..., error: _Optional[_Union[ConversationError, _Mapping]] = ..., response_committed: _Optional[_Union[ConversationResponseCommitted, _Mapping]] = ..., audio_clear: _Optional[_Union[ConversationAudioClear, _Mapping]] = ..., interruption_detected: _Optional[_Union[ConversationInterruptionDetected, _Mapping]] = ..., interruption_false_positive: _Optional[_Union[ConversationInterruptionFalsePositive, _Mapping]] = ..., turn_eou_predicted: _Optional[_Union[ConversationTurnEouPredicted, _Mapping]] = ..., rtc_session_attached: _Optional[_Union[RtcSessionAttached, _Mapping]] = ..., client_event: _Optional[_Union[RtcClientEvent, _Mapping]] = ..., transcript_delta: _Optional[_Union[ConversationTranscriptDelta, _Mapping]] = ...) -> None: ...
+    def __init__(self, session_created: _Optional[_Union[ConversationSessionCreated, _Mapping]] = ..., speech_started: _Optional[_Union[ConversationSpeechStarted, _Mapping]] = ..., speech_stopped: _Optional[_Union[ConversationSpeechStopped, _Mapping]] = ..., transcript_done: _Optional[_Union[ConversationTranscriptDone, _Mapping]] = ..., response_created: _Optional[_Union[ConversationResponseCreated, _Mapping]] = ..., audio_delta: _Optional[_Union[ConversationAudioDelta, _Mapping]] = ..., response_done: _Optional[_Union[ConversationResponseDone, _Mapping]] = ..., response_cancelled: _Optional[_Union[ConversationResponseCancelled, _Mapping]] = ..., state_changed: _Optional[_Union[ConversationStateChanged, _Mapping]] = ..., error: _Optional[_Union[ConversationError, _Mapping]] = ..., response_committed: _Optional[_Union[ConversationResponseCommitted, _Mapping]] = ..., audio_clear: _Optional[_Union[ConversationAudioClear, _Mapping]] = ..., interruption_detected: _Optional[_Union[ConversationInterruptionDetected, _Mapping]] = ..., interruption_false_positive: _Optional[_Union[ConversationInterruptionFalsePositive, _Mapping]] = ..., turn_eou_predicted: _Optional[_Union[ConversationTurnEouPredicted, _Mapping]] = ..., transcript_delta: _Optional[_Union[ConversationTranscriptDelta, _Mapping]] = ...) -> None: ...
 
 class RtcSessionAttached(_message.Message):
     __slots__ = ("session_id", "provider")

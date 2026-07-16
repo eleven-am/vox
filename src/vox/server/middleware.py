@@ -29,33 +29,37 @@ logger = logging.getLogger("vox.server.request")
 
 HEADER = "X-Request-ID"
 
-_QUIET_PATHS: frozenset[str] = frozenset({
-    "/", "/health", "/healthz", "/readyz", "/v1/health",
-})
+_QUIET_PATHS: frozenset[str] = frozenset(
+    {
+        "/",
+        "/health",
+        "/healthz",
+        "/readyz",
+        "/v1/health",
+    }
+)
 
-_AUTH_EXEMPT_PATHS: frozenset[str] = frozenset({
-    "/", "/health", "/healthz", "/readyz", "/v1/health",
-})
-
-# RTC follow-up routes (offer/candidates/events) authenticate with the
-# per-session client/media tokens issued by POST /v1/rtc/sessions (itself
-# key-protected), so the browser never carries the global API key. The base
-# /v1/rtc/sessions create route has no trailing slash and stays protected.
-_AUTH_EXEMPT_PREFIXES: tuple[str, ...] = ("/v1/rtc/sessions/",)
+_AUTH_EXEMPT_PATHS: frozenset[str] = frozenset(
+    {
+        "/",
+        "/health",
+        "/healthz",
+        "/readyz",
+        "/v1/health",
+    }
+)
 
 
 def _is_auth_exempt(path: str) -> bool:
-    if path in _AUTH_EXEMPT_PATHS:
-        return True
-    return any(path.startswith(prefix) for prefix in _AUTH_EXEMPT_PREFIXES)
+    return path in _AUTH_EXEMPT_PATHS
 
 
 class ApiKeyAuthMiddleware(BaseHTTPMiddleware):
     """Enforce the API key on every HTTP route when one is configured.
 
     When ``VOX_API_KEY`` is unset the server stays open (unchanged behavior).
-    Health/probe paths and the token-authenticated RTC signaling routes are
-    exempt. Websocket connections are authenticated in their own routes.
+    Health/probe paths are exempt. Websocket connections are authenticated in
+    their own routes.
     """
 
     async def dispatch(self, request: Request, call_next) -> Response:
@@ -88,7 +92,10 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         except Exception:
             duration_ms = int((time.perf_counter() - start) * 1000)
             logger.exception(
-                "%s %s failed after %d ms", method, path, duration_ms,
+                "%s %s failed after %d ms",
+                method,
+                path,
+                duration_ms,
             )
             raise
         finally:
@@ -96,6 +103,9 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
             if path not in _QUIET_PATHS:
                 logger.info(
                     "%s %s -> %d (%d ms)",
-                    method, path, status_code, duration_ms,
+                    method,
+                    path,
+                    status_code,
+                    duration_ms,
                 )
             reset_request_id(token)

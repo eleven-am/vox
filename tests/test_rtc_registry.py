@@ -16,70 +16,57 @@ from vox.server.rtc_client_events import (
 from vox.server.rtc_registry import RtcSessionRegistry
 
 
-def test_create_session_returns_lookupable_record_and_token():
-    registry = RtcSessionRegistry(join_token_ttl_s=120)
-    record, token = registry.create_session(now=1000.0)
+def test_create_session_returns_lookupable_record():
+    registry = RtcSessionRegistry(attach_ttl_s=120)
+    record = registry.create_session(control_transport="pondsocket", now=1000.0)
 
     assert record.session_id.startswith("rtc_")
-    assert token.startswith("rtc_client_")
     assert record.expires_at == 1120.0
+    assert record.expected_control_transport == "pondsocket"
     assert registry.get(record.session_id, now=1001.0) is record
 
 
-def test_client_token_is_single_use_and_consumed_on_browser_attach():
+def test_control_owned_browser_attach_is_single_use():
     registry = RtcSessionRegistry()
-    record, token = registry.create_session(now=1000.0)
+    record = registry.create_session(control_transport="pondsocket", now=1000.0)
 
-    attached = registry.consume_client_token(token, now=1001.0)
+    attached = registry.attach_browser_session(record.session_id, now=1001.0)
 
     assert attached is record
     assert attached.browser_attached is True
-    assert attached.client_token_hash == ""
-    assert registry.consume_client_token(token, now=1002.0) is None
-
-
-def test_browser_attach_creates_media_token_and_queues():
-    registry = RtcSessionRegistry()
-    record, token = registry.create_session(now=1000.0)
-
-    attached = registry.attach_browser(token, now=1001.0)
-
-    assert attached is not None
-    attached_record, media_token = attached
-    assert attached_record is record
-    assert media_token.startswith("rtc_media_")
-    assert record.media_token_hash
     assert record.media_events is not None
     assert record.audio_output is not None
-    assert registry.validate_media_token(record.session_id, media_token) is record
+    assert registry.attach_browser_session(record.session_id, now=1002.0) is None
 
 
 def test_unused_session_expires_but_attached_browser_survives_token_ttl():
-    registry = RtcSessionRegistry(join_token_ttl_s=10)
-    unused, _ = registry.create_session(now=1000.0)
-    active, token = registry.create_session(now=1000.0)
+    registry = RtcSessionRegistry(attach_ttl_s=10)
+    unused = registry.create_session(control_transport="pondsocket", now=1000.0)
+    active = registry.create_session(control_transport="pondsocket", now=1000.0)
 
-    assert registry.consume_client_token(token, now=1001.0) is active
+    assert registry.attach_browser_session(active.session_id, now=1001.0) is active
 
     assert registry.get(unused.session_id, now=1011.0) is None
     assert registry.get(active.session_id, now=1011.0) is active
 
 
-def test_control_attach_is_exclusive():
+def test_control_attach_is_exclusive_and_transport_is_lifetime_stable():
     registry = RtcSessionRegistry()
-    record, _ = registry.create_session(now=1000.0)
+    record = registry.create_session(control_transport="pondsocket", now=1000.0)
 
-    assert registry.attach_control(record.session_id, now=1001.0) is record
-    assert registry.attach_control(record.session_id, now=1001.0) is None
+    assert registry.attach_control(record.session_id, transport="pondsocket", now=1001.0) is record
+    assert registry.attach_control(record.session_id, transport="grpc", now=1001.0) is None
 
     registry.detach_control(record.session_id)
-    assert registry.attach_control(record.session_id, now=1001.0) is record
+    assert record.attached_control_transport is None
+    assert registry.attach_control(record.session_id, transport="grpc", now=1001.0) is None
+    assert registry.attach_control(record.session_id, transport="pondsocket", now=1001.0) is record
 
 
 @pytest.mark.asyncio
 async def test_close_tracks_peer_teardown_with_shared_task_owner():
     registry = RtcSessionRegistry()
-    record, _ = registry.create_session(now=1000.0)
+    record = registry.create_session(control_transport="pondsocket", now=1000.0)
 
     closed = asyncio.Event()
 
@@ -99,7 +86,7 @@ async def test_close_tracks_peer_teardown_with_shared_task_owner():
 @pytest.mark.asyncio
 async def test_close_awaits_cancelled_media_task_cleanup():
     registry = RtcSessionRegistry()
-    record, _ = registry.create_session(now=1000.0)
+    record = registry.create_session(control_transport="pondsocket", now=1000.0)
     cleanup_started = asyncio.Event()
     cleanup_release = asyncio.Event()
 
@@ -128,7 +115,7 @@ async def test_close_awaits_cancelled_media_task_cleanup():
 @pytest.mark.asyncio
 async def test_client_disconnect_control_event_is_deduped():
     registry = RtcSessionRegistry()
-    record, _ = registry.create_session(now=1000.0)
+    record = registry.create_session(control_transport="pondsocket", now=1000.0)
 
     await emit_client_disconnected_to_control(
         record,
@@ -163,7 +150,7 @@ async def test_client_disconnect_control_event_is_deduped():
 @pytest.mark.asyncio
 async def test_data_channel_message_emits_browser_event_to_control():
     registry = RtcSessionRegistry()
-    record, _ = registry.create_session(now=1000.0)
+    record = registry.create_session(control_transport="pondsocket", now=1000.0)
 
     await handle_browser_data_channel_message(
         record,
@@ -202,7 +189,7 @@ def test_parse_browser_data_channel_message_drops_malformed_payloads():
 @pytest.mark.asyncio
 async def test_data_channel_message_drops_malformed_browser_events():
     registry = RtcSessionRegistry()
-    record, _ = registry.create_session(now=1000.0)
+    record = registry.create_session(control_transport="pondsocket", now=1000.0)
 
     await handle_browser_data_channel_message(record, record.session_id, b"\xff")
     await handle_browser_data_channel_message(record, record.session_id, "not-json")
@@ -214,7 +201,7 @@ async def test_data_channel_message_drops_malformed_browser_events():
 
 def test_client_events_queue_until_data_channel_opens():
     registry = RtcSessionRegistry()
-    record, _ = registry.create_session(now=1000.0)
+    record = registry.create_session(control_transport="pondsocket", now=1000.0)
 
     send_client_event_to_browser(record, "ui.toast", {"message": "hi"})
 
@@ -240,7 +227,7 @@ def test_client_events_queue_until_data_channel_opens():
 
 def test_flush_pending_client_events_suppresses_send_errors():
     registry = RtcSessionRegistry()
-    record, _ = registry.create_session(now=1000.0)
+    record = registry.create_session(control_transport="pondsocket", now=1000.0)
     send_client_event_to_browser(record, "ui.toast", {"message": "hi"})
 
     class FailingChannel:

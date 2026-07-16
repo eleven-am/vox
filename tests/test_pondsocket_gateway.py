@@ -61,13 +61,17 @@ def _build_app() -> FastAPI:
 
 
 def _send_channel_message(ws, *, action: str, channel_name: str, event: str, payload: dict, request_id: str) -> None:
-    ws.send_text(json.dumps({
-        "action": action,
-        "channelName": channel_name,
-        "requestId": request_id,
-        "event": event,
-        "payload": payload,
-    }))
+    ws.send_text(
+        json.dumps(
+            {
+                "action": action,
+                "channelName": channel_name,
+                "requestId": request_id,
+                "event": event,
+                "payload": payload,
+            }
+        )
+    )
 
 
 def _receive_json(ws) -> dict:
@@ -231,6 +235,37 @@ def test_pondsocket_socket_can_multiplex_conversation_and_rtc_channels():
         assert created["channelName"] == f"/rtc/{rtc_session['session_id']}"
         assert created["payload"]["session_id"] == rtc_session["session_id"]
         assert created["payload"]["session"]["turn_profile"] == "speakerphone"
+
+
+def test_pondsocket_rejects_grpc_owned_session_without_consuming_it():
+    app = _build_app()
+    record = app.state.rtc_registry.create_session(control_transport="grpc")
+    client = TestClient(app)
+
+    with client.websocket_connect("/v1/socket") as ws:
+        _receive_json(ws)
+        _send_channel_message(
+            ws,
+            action="JOIN_CHANNEL",
+            channel_name=f"/rtc/{record.session_id}",
+            event="join",
+            payload={},
+            request_id="join-mismatch",
+        )
+        rejected = _receive_json(ws)
+
+    assert rejected == {
+        "action": "SYSTEM",
+        "event": "UNAUTHORIZED",
+        "channelName": f"/rtc/{record.session_id}",
+        "requestId": "join-mismatch",
+        "payload": {
+            "code": 409,
+            "message": (f"RTC session '{record.session_id}' requires grpc control; received pondsocket"),
+        },
+    }
+    assert app.state.rtc_registry.get(record.session_id) is record
+    assert record.control_attached is False
 
 
 def test_legacy_ws_routes_are_not_mounted():

@@ -2,120 +2,102 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from typing import Any
-
+from vox.conversation.profiles import DEFAULT_TURN_PROFILE
 from vox.grpc import vox_pb2
 from vox.grpc.conversation_policy import conversation_turn_policy_overrides
 from vox.operations.conversation import (
-    ConversationOrchestrator,
+    build_conversation_session_config,
+)
+from vox.operations.conversation_commands import (
+    AudioAppendCommand,
+    ConversationCommand,
+    ResponseCancelCommand,
+    ResponseCommitCommand,
+    ResponseDeltaCommand,
+    ResponseReplaceTextCommand,
+    ResponseStartCommand,
+    SessionUpdateCommand,
     client_event_command_from_payload_json,
-    execute_conversation_command,
-    execute_rtc_control_command,
 )
 from vox.operations.errors import InvalidConfigError
+from vox.operations.rtc_runtime import (
+    RtcCandidateCommand,
+    RtcCloseCommand,
+    RtcCommand,
+    RtcOfferCommand,
+)
+from vox.streaming.eou import DEFAULT_TURN_DETECTOR
+from vox.streaming.types import TARGET_SAMPLE_RATE
 
 
-@dataclass(frozen=True)
-class GrpcConversationCommand:
-    message: dict
-
-
-def conversation_session_update_to_message(
+def conversation_session_update_to_command(
     update: vox_pb2.ConversationSessionUpdate,
-) -> dict:
-    session: dict = {
-        "stt_model": update.stt_model,
-        "tts_model": update.tts_model,
-    }
-    if update.voice:
-        session["voice"] = update.voice
-    if update.language:
-        session["language"] = update.language
-    if update.sample_rate:
-        session["sample_rate"] = update.sample_rate
-    if update.turn_profile:
-        session["turn_profile"] = update.turn_profile
-    if update.vad_backend:
-        session["vad_backend"] = update.vad_backend
-    if update.turn_detector:
-        session["turn_detector"] = update.turn_detector
-    if update.include_word_timestamps:
-        session["include_word_timestamps"] = True
+) -> SessionUpdateCommand:
+    policy_overrides = {}
     if update.HasField("policy"):
         policy_overrides = conversation_turn_policy_overrides(update.policy)
-        if policy_overrides:
-            session["turn_policy"] = policy_overrides
-    return {"type": "session.update", "session": session}
+    return SessionUpdateCommand(
+        config=build_conversation_session_config(
+            stt_model=update.stt_model,
+            tts_model=update.tts_model,
+            voice=update.voice or None,
+            language=update.language or "en",
+            sample_rate=update.sample_rate or TARGET_SAMPLE_RATE,
+            turn_profile=update.turn_profile or DEFAULT_TURN_PROFILE,
+            vad_backend=update.vad_backend or "silero",
+            turn_detector=update.turn_detector or DEFAULT_TURN_DETECTOR,
+            policy_overrides=policy_overrides,
+            include_word_timestamps=update.include_word_timestamps,
+        )
+    )
 
 
 def converse_client_message_to_command(
     client_msg: vox_pb2.ConverseClientMessage,
-) -> GrpcConversationCommand:
+) -> ConversationCommand:
     kind = client_msg.WhichOneof("msg")
     if kind == "session_update":
-        return GrpcConversationCommand(
-            message=conversation_session_update_to_message(client_msg.session_update),
-        )
+        return conversation_session_update_to_command(client_msg.session_update)
     if kind == "audio_append":
-        return GrpcConversationCommand(
-            message={
-                "type": "input_audio_buffer.append",
-                "audio_pcm16": client_msg.audio_append.pcm16,
-                "sample_rate": client_msg.audio_append.sample_rate,
-            },
+        return AudioAppendCommand(
+            pcm16=client_msg.audio_append.pcm16,
+            sample_rate=client_msg.audio_append.sample_rate or None,
         )
     return _response_command(kind, client_msg, unknown_message_label="unknown message kind")
 
 
 def rtc_control_message_to_command(
     client_msg: vox_pb2.RtcControlClientMessage,
-) -> GrpcConversationCommand:
+) -> RtcCommand:
     kind = client_msg.WhichOneof("msg")
-    if kind == "session_update":
-        return GrpcConversationCommand(
-            message=conversation_session_update_to_message(client_msg.session_update),
+    if kind == "offer":
+        return RtcOfferCommand(
+            offer_type=client_msg.offer.offer.type or "offer",
+            sdp=client_msg.offer.offer.sdp,
+            restart=client_msg.offer.restart,
         )
+    if kind == "candidate":
+        candidate = client_msg.candidate
+        return RtcCandidateCommand(
+            candidate=candidate.candidate,
+            sdp_mid=candidate.sdp_mid if candidate.HasField("sdp_mid") else None,
+            sdp_m_line_index=(candidate.sdp_m_line_index if candidate.HasField("sdp_m_line_index") else None),
+            username_fragment=(candidate.username_fragment if candidate.HasField("username_fragment") else None),
+        )
+    if kind == "candidates_complete":
+        return RtcCandidateCommand(candidate=None)
+    if kind == "close":
+        return RtcCloseCommand(reason=client_msg.close.reason or "client_closed")
+    if kind == "session_update":
+        return conversation_session_update_to_command(client_msg.session_update)
     if kind == "client_event":
-        return GrpcConversationCommand(
-            message=client_event_command_from_payload_json(
-                client_msg.client_event.event,
-                client_msg.client_event.payload_json,
-                invalid_json_message="client_event requires valid payload JSON",
-                non_empty_message="client_event requires a non-empty event",
-            ),
+        return client_event_command_from_payload_json(
+            client_msg.client_event.event,
+            client_msg.client_event.payload_json,
+            invalid_json_message="client_event requires valid payload JSON",
+            non_empty_message="client_event requires a non-empty event",
         )
     return _response_command(kind, client_msg, unknown_message_label="unknown control message kind")
-
-
-async def execute_converse_client_message(
-    orchestrator: ConversationOrchestrator,
-    client_msg: vox_pb2.ConverseClientMessage,
-) -> None:
-    command = converse_client_message_to_command(client_msg)
-    await execute_conversation_command(
-        orchestrator,
-        command.message,
-        require_config_message="send session_update first",
-        unknown_message_label="unknown message kind",
-    )
-
-
-async def execute_rtc_control_message(
-    orchestrator: ConversationOrchestrator,
-    client_msg: vox_pb2.RtcControlClientMessage,
-    *,
-    client_event_handler: Callable[[str, Any], Awaitable[None] | None],
-) -> None:
-    command = rtc_control_message_to_command(client_msg)
-    await execute_rtc_control_command(
-        orchestrator,
-        command.message,
-        client_event_handler=client_event_handler,
-        require_config_message="send session_update first",
-        unknown_message_label="unknown control message kind",
-    )
 
 
 def _response_command(
@@ -123,30 +105,35 @@ def _response_command(
     client_msg: vox_pb2.ConverseClientMessage | vox_pb2.RtcControlClientMessage,
     *,
     unknown_message_label: str,
-) -> GrpcConversationCommand:
+) -> ConversationCommand:
     if kind == "response_start":
-        message: dict = {"type": "response.start"}
-        if client_msg.response_start.HasField("allow_interruptions"):
-            message["allow_interruptions"] = client_msg.response_start.allow_interruptions
-        return GrpcConversationCommand(message=message)
+        return ResponseStartCommand(
+            allow_interruptions=(
+                client_msg.response_start.allow_interruptions
+                if client_msg.response_start.HasField("allow_interruptions")
+                else True
+            )
+        )
     if kind == "response_delta":
-        message = {
-            "type": "response.delta",
-            "delta": client_msg.response_delta.delta,
-        }
-        if client_msg.response_delta.HasField("allow_interruptions"):
-            message["allow_interruptions"] = client_msg.response_delta.allow_interruptions
-        return GrpcConversationCommand(message=message)
+        return ResponseDeltaCommand(
+            text=client_msg.response_delta.delta,
+            allow_interruptions=(
+                client_msg.response_delta.allow_interruptions
+                if client_msg.response_delta.HasField("allow_interruptions")
+                else True
+            ),
+        )
     if kind == "response_commit":
-        return GrpcConversationCommand(message={"type": "response.commit"})
+        return ResponseCommitCommand()
     if kind == "response_cancel":
-        return GrpcConversationCommand(message={"type": "response.cancel"})
+        return ResponseCancelCommand()
     if kind == "response_replace_text":
-        message = {
-            "type": "response.replace_text",
-            "text": client_msg.response_replace_text.text,
-        }
-        if client_msg.response_replace_text.HasField("allow_interruptions"):
-            message["allow_interruptions"] = client_msg.response_replace_text.allow_interruptions
-        return GrpcConversationCommand(message=message)
+        return ResponseReplaceTextCommand(
+            text=client_msg.response_replace_text.text,
+            allow_interruptions=(
+                client_msg.response_replace_text.allow_interruptions
+                if client_msg.response_replace_text.HasField("allow_interruptions")
+                else True
+            ),
+        )
     raise InvalidConfigError(f"{unknown_message_label}: {kind!r}")

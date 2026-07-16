@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-
 from vox.grpc import vox_pb2
 from vox.grpc.conversation_policy import conversation_turn_policy_pb
 from vox.grpc.transcript_messages import entity_messages, word_timestamp_messages
@@ -25,37 +23,11 @@ from vox.operations.conversation import (
     ConvTranscriptDeltaEvent,
     ConvTranscriptDoneEvent,
     ConvTurnEouPredictedEvent,
-    control_event_as_client_event,
-    control_event_client_payload_json,
-    rtc_session_attached_payload,
 )
 
 
 def conversation_error_pb(message: str) -> vox_pb2.ConverseServerMessage:
     return vox_pb2.ConverseServerMessage(error=vox_pb2.ConversationError(message=message))
-
-
-def rtc_session_attached_pb(session_id: str) -> vox_pb2.ConverseServerMessage:
-    return vox_pb2.ConverseServerMessage(
-        rtc_session_attached=vox_pb2.RtcSessionAttached(
-            **rtc_session_attached_payload(session_id),
-            provider="webrtc",
-        ),
-    )
-
-
-def rtc_client_event_pb(event_name: str, payload_json: str) -> vox_pb2.ConverseServerMessage:
-    return vox_pb2.ConverseServerMessage(
-        client_event=vox_pb2.RtcClientEvent(
-            event=event_name,
-            payload_json=payload_json,
-        ),
-    )
-
-
-def rtc_client_event_from_control_event(event: dict) -> vox_pb2.ConverseServerMessage:
-    event_name, payload = control_event_as_client_event(event)
-    return rtc_client_event_pb(event_name, control_event_client_payload_json(payload))
 
 
 def conversation_event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage | None:
@@ -99,10 +71,9 @@ def conversation_event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage 
             response_created=vox_pb2.ConversationResponseCreated(response_id=event.response_id),
         )
     if isinstance(event, ConvAudioDeltaEvent):
-        pcm = base64.b64decode(event.audio_b64) if event.audio_b64 else b""
         return vox_pb2.ConverseServerMessage(
             audio_delta=vox_pb2.ConversationAudioDelta(
-                audio=pcm,
+                audio=event.audio,
                 sample_rate=event.sample_rate,
                 response_id=event.response_id,
                 sequence=event.sequence,

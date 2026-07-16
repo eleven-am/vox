@@ -4,33 +4,8 @@ import asyncio
 from contextlib import suppress
 from typing import Any
 
-from vox.core.tasks import drain_task
 from vox.server.rtc_registry import RtcSessionRecord, RtcSessionRegistry
 from vox.server.rtc_tasks import cancel_and_drain_media_tasks
-
-
-async def close_rtc_runtime_resources(
-    *,
-    session_id: str,
-    registry: RtcSessionRegistry,
-    record: RtcSessionRecord,
-    orchestrator: Any | None,
-    emit_task: asyncio.Task | None,
-    client_event_task: asyncio.Task | None,
-) -> None:
-    if orchestrator is not None:
-        with suppress(Exception):
-            await orchestrator.end_of_stream(flush_response=False)
-    await drain_task(emit_task)
-    if record.control_events is not None:
-        await record.control_events.put(None)
-    await drain_task(client_event_task)
-    await close_attached_rtc_resources(
-        session_id=session_id,
-        registry=registry,
-        record=record,
-        orchestrator=orchestrator,
-    )
 
 
 async def close_attached_rtc_resources(
