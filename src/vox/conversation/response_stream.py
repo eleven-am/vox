@@ -16,6 +16,7 @@ class ResponseStream:
     pending_done: bool = False
     allow_interruptions: bool = True
     audio_started: bool = False
+    closed: bool = False
     text_parts: list[str] = field(default_factory=list)
     heard_parts: list[str] = field(default_factory=list)
 
@@ -27,8 +28,14 @@ class ResponseStream:
             allow_interruptions=allow_interruptions,
         )
 
-    async def append_text(self, text: str) -> None:
+    def close(self) -> None:
+        self.closed = True
+
+    async def append_text(self, text: str) -> bool:
+        if self.closed:
+            return False
         await self.queue.put(text)
+        return True
 
     def mark_committed(self) -> bool:
         if self.committed:
@@ -36,8 +43,11 @@ class ResponseStream:
         self.committed = True
         return True
 
-    async def enqueue_end(self) -> None:
+    async def enqueue_end(self) -> bool:
+        if self.closed:
+            return False
         await self.queue.put(RESPONSE_STREAM_END)
+        return True
 
     async def next_text(self) -> str | None:
         item = await self.queue.get()

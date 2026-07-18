@@ -310,6 +310,10 @@ class TestResponseCancellation:
         await asyncio.wait_for(tts.started.wait(), timeout=1.0)
 
         await session.cancel_response()
+        for _ in range(100):
+            if tts.cancelled:
+                break
+            await asyncio.sleep(0.01)
         assert tts.cancelled
 
         await session.submit_response_text("new response.")

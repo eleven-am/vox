@@ -25,7 +25,10 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass
+from functools import partial
+from typing import Any
 
 import numpy as np
 
@@ -45,7 +48,7 @@ from vox.conversation.interruption_detector import (
     InterruptionDecisionAction,
 )
 from vox.conversation.profiles import DEFAULT_TURN_PROFILE, resolve_turn_profile
-from vox.conversation.response_lifecycle import ConversationResponseLifecycle
+from vox.conversation.response_lifecycle import ConversationResponseLifecycle, ResponsePhase
 from vox.conversation.response_synthesis import synthesize_response_stream
 from vox.conversation.speech_guard import AssistantSpeechGuard
 from vox.conversation.state_machine import TurnStateMachine
@@ -141,6 +144,28 @@ class ConversationConfig:
 
 TRANSCRIPT_PENDING_STT_RECHECK_MS = 100
 _RESPONSE_START_STATES = frozenset({TurnState.IDLE, TurnState.THINKING})
+_LIFECYCLE_CRITICAL_ACTIONS = frozenset(
+    {
+        TurnActionType.PAUSE_OUTPUT,
+        TurnActionType.RESUME_OUTPUT,
+        TurnActionType.FLUSH_OUTPUT,
+        TurnActionType.STOP_TTS,
+        TurnActionType.CANCEL_RESPONSE,
+    }
+)
+_TTS_STREAM_EVENT_TYPES = frozenset(
+    {
+        TurnEventType.TTS_AUDIO_STARTED,
+        TurnEventType.TTS_COMPLETED,
+        TurnEventType.TTS_FAILED,
+    }
+)
+
+
+@dataclass
+class _SessionCommand:
+    operation: Callable[[], Awaitable[Any]]
+    done: asyncio.Future
 
 
 class ConversationSession:
@@ -189,14 +214,16 @@ class ConversationSession:
                 transcribe_async_fn=self._pipeline.transcribe_async,
             )
 
-        self._event_queue: asyncio.Queue[TurnEvent] = asyncio.Queue()
+        self._event_queue: asyncio.Queue[TurnEvent | _SessionCommand] = asyncio.Queue()
         self._timer_registry = ConversationTimerRegistry(self._on_timer_expired)
         self._interrupt_timer_candidate_id: int | None = None
         self._tts_task: asyncio.Task | None = None
+        self._tts_reaper_tasks: set[asyncio.Task] = set()
         self._runner: asyncio.Task | None = None
         self._audio_output = ResponseAudioOutput(pace_to_playout=config.pace_response_done_to_audio)
         self._response_lifecycle = ConversationResponseLifecycle()
         self._response_rejection_reported = False
+        self._cancel_emitted_response_id: str | None = None
         self._closed: bool = False
         self._client_sample_rate: int = config.sample_rate
         self._input_resampler = StreamResampler(TARGET_SAMPLE_RATE)
@@ -227,6 +254,8 @@ class ConversationSession:
         self._timer_registry.cancel_all()
 
         await reap_task(self._tts_task)
+        if self._tts_reaper_tasks:
+            await asyncio.gather(*tuple(self._tts_reaper_tasks), return_exceptions=True)
         await reap_task(self._runner)
 
         self._pipeline.shutdown()
@@ -331,7 +360,9 @@ class ConversationSession:
     async def start_response_stream(self, *, allow_interruptions: bool = True) -> str | None:
         if self._closed:
             return None
-        stream = await self._ensure_response_stream(allow_interruptions=allow_interruptions)
+        stream = await self._submit_command(
+            partial(self._ensure_response_stream, allow_interruptions=allow_interruptions)
+        )
         return stream.response_id if stream is not None else None
 
     async def append_response_text(
@@ -343,114 +374,255 @@ class ConversationSession:
     ) -> bool:
         if self._closed or not text or not text.strip():
             return False
-        if expected_response_id is None:
-            stream = await self._ensure_response_stream(allow_interruptions=allow_interruptions)
-        else:
-            stream = self._response_stream
-            if stream is None or stream.committed or stream.response_id != expected_response_id:
-                return False
+        stream = await self._submit_command(
+            partial(
+                self._admit_response_text,
+                allow_interruptions=allow_interruptions,
+                expected_response_id=expected_response_id,
+            )
+        )
         if stream is None:
             return False
-        await stream.append_text(text)
-        return True
+        return await stream.append_text(text)
+
+    async def _admit_response_text(
+        self,
+        *,
+        allow_interruptions: bool,
+        expected_response_id: str | None,
+    ) -> ResponseStream | None:
+        if self._closed:
+            return None
+        if expected_response_id is None:
+            return await self._ensure_response_stream(allow_interruptions=allow_interruptions)
+        return self._response_lifecycle.appendable_stream(expected_response_id)
 
     async def commit_response_stream(self, *, expected_response_id: str | None = None) -> bool:
-        stream = self._response_stream
-        if expected_response_id is not None and (stream is None or stream.response_id != expected_response_id):
+        if self._closed:
             return False
-        if stream is None or not stream.mark_committed():
+        stream = await self._submit_command(
+            partial(self._admit_response_commit, expected_response_id=expected_response_id)
+        )
+        if stream is None:
             return False
+        return await stream.enqueue_end()
 
+    async def _admit_response_commit(self, *, expected_response_id: str | None) -> ResponseStream | None:
+        stream = self._response_lifecycle.stream
+        if expected_response_id is not None and (stream is None or stream.response_id != expected_response_id):
+            return None
+        if stream is None or not self._response_lifecycle.commit_stream(stream):
+            return None
         await self._emit_response_committed(stream.response_id)
-        await stream.enqueue_end()
-        return True
+        return stream
+
+    async def _submit_command(self, operation: Callable[[], Awaitable[Any]], *, default: Any = None) -> Any:
+        runner = self._runner
+        if runner is None or runner.done() or asyncio.current_task() is runner:
+            return await operation()
+        loop = asyncio.get_running_loop()
+        done: asyncio.Future = loop.create_future()
+        await self._event_queue.put(_SessionCommand(operation=operation, done=done))
+        completed, _ = await asyncio.wait({done, runner}, return_when=asyncio.FIRST_COMPLETED)
+        if done not in completed:
+            done.cancel()
+            return default
+        return done.result()
 
     async def cancel_response(self) -> None:
         """Explicit client cancel — orthogonal to barge-in."""
-        if self._closed or self._runner is None or self._runner.done():
+        runner = self._runner
+        if self._closed or runner is None or runner.done():
+            return
+        if asyncio.current_task() is runner:
+            await self._process_turn_event(TurnEvent(type=TurnEventType.CLIENT_CANCEL, payload={}))
             return
         loop = asyncio.get_running_loop()
         done = loop.create_future()
-        has_active_response = self._response_stream is not None or (
-            self._tts_task is not None and not self._tts_task.done()
-        )
         await self._event_queue.put(
             TurnEvent(
                 type=TurnEventType.CLIENT_CANCEL,
-                payload={
-                    "has_active_response": has_active_response,
-                    "_done": done,
-                },
+                payload={"_done": done},
             )
         )
-        runner = self._runner
-        if runner is not None and runner is not asyncio.current_task():
-            completed, _ = await asyncio.wait(
-                {done, runner},
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if done not in completed:
-                return
+        completed, _ = await asyncio.wait(
+            {done, runner},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if done not in completed:
+            return
         await done
 
     async def _run_loop(self) -> None:
         while not self._closed:
             try:
-                event = await self._event_queue.get()
+                item = await self._event_queue.get()
             except asyncio.CancelledError:
                 break
 
-            prev_state = self._sm.state
-            done = event.payload.get("_done") if isinstance(event.payload, dict) else None
-            if self._should_wait_for_final_transcript(event):
-                await self._start_timer(
-                    TimerKey.ENDPOINTING.value,
-                    TRANSCRIPT_PENDING_STT_RECHECK_MS,
-                )
-                self._resolve_event_future(done)
+            if isinstance(item, _SessionCommand):
+                await self._run_session_command(item)
                 continue
+
+            await self._process_turn_event(item)
+
+    async def _process_turn_event(self, event: TurnEvent) -> None:
+        prev_state = self._sm.state
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        done = payload.get("_done")
+        stream_ref = payload.get("_response_stream")
+        if not isinstance(stream_ref, ResponseStream):
+            stream_ref = None
+        if (
+            stream_ref is not None
+            and event.type in _TTS_STREAM_EVENT_TYPES
+            and stream_ref is not self._response_lifecycle.stream
+        ):
+            self._resolve_event_future(done, result=False)
+            return
+        if event.type == TurnEventType.CLIENT_CANCEL and isinstance(event.payload, dict):
+            event.payload["has_active_response"] = self._response_pipeline_engaged()
+        if self._should_wait_for_final_transcript(event):
+            await self._start_timer(
+                TimerKey.ENDPOINTING.value,
+                TRANSCRIPT_PENDING_STT_RECHECK_MS,
+            )
+            self._resolve_event_future(done)
+            return
+        try:
+            accepted = self._accepts_turn_event(event)
+            actions = self._sm.handle(event) if accepted else []
+        except Exception as exc:
+            logger.exception("state machine raised on event %s", event)
+            self._resolve_event_future(done, exc)
+            return
+
+        failed_action: TurnAction | None = None
+        for action in actions:
             try:
-                accepted = self._accepts_turn_event(event)
-                actions = self._sm.handle(event) if accepted else []
-            except Exception as exc:
-                logger.exception("state machine raised on event %s", event)
-                self._resolve_event_future(done, exc)
-                continue
+                await self._execute(action)
+            except Exception:
+                if action.type in _LIFECYCLE_CRITICAL_ACTIONS:
+                    logger.exception(
+                        "lifecycle-critical action %s raised; forcing response pipeline recovery",
+                        action.type.value,
+                    )
+                    failed_action = action
+                    break
+                logger.exception(
+                    "bookkeeping action %s raised; skipped payload=%s",
+                    action.type.value,
+                    action.payload,
+                )
+        if failed_action is not None:
+            await self._recover_from_action_failure(failed_action)
 
-            for action in actions:
-                try:
-                    await self._execute(action)
-                except Exception:
-                    logger.exception("action %s raised", action.type.value)
+        committed_user_turn = (
+            self._sm.state == TurnState.THINKING
+            and prev_state != TurnState.THINKING
+            and event.type
+            in {
+                TurnEventType.USER_TRANSCRIPT_FINAL,
+                TurnEventType.TIMER_ELAPSED,
+            }
+        )
+        if committed_user_turn:
+            await self._emit_pending_transcript_done()
+        elif event.type == TurnEventType.CLIENT_CANCEL and self._sm.state == TurnState.IDLE:
+            self._transcript_finalizer.clear()
 
-            committed_user_turn = (
-                self._sm.state == TurnState.THINKING
-                and prev_state != TurnState.THINKING
-                and event.type
-                in {
-                    TurnEventType.USER_TRANSCRIPT_FINAL,
-                    TurnEventType.TIMER_ELAPSED,
+        if self._sm.state != prev_state:
+            await self._emit(
+                {
+                    "type": WIRE_STATE_CHANGED,
+                    "state": self._sm.state.value,
+                    "previous_state": prev_state.value,
                 }
             )
-            if committed_user_turn:
-                await self._emit_pending_transcript_done()
-            elif event.type == TurnEventType.CLIENT_CANCEL and self._sm.state == TurnState.IDLE:
-                self._transcript_finalizer.clear()
 
-            if self._sm.state != prev_state:
-                await self._emit(
-                    {
-                        "type": WIRE_STATE_CHANGED,
-                        "state": self._sm.state.value,
-                        "previous_state": prev_state.value,
-                    }
-                )
+        if stream_ref is not None:
+            await self._apply_tts_stream_outcome(event, stream_ref, accepted)
 
-            response_stream = event.payload.get("_response_stream")
-            if accepted and event.type == TurnEventType.TTS_COMPLETED and isinstance(response_stream, ResponseStream):
-                await self._finalize_response_stream(response_stream)
+        self._resolve_event_future(done, result=accepted)
 
-            self._resolve_event_future(done, result=accepted)
+    async def _run_session_command(self, command: _SessionCommand) -> None:
+        try:
+            result = await command.operation()
+        except Exception as exc:
+            if command.done.done():
+                logger.exception("session command raised after caller stopped waiting")
+            else:
+                command.done.set_exception(exc)
+            return
+        if not command.done.done():
+            command.done.set_result(result)
+
+    def _response_pipeline_engaged(self) -> bool:
+        if self._response_lifecycle.stream is not None:
+            return True
+        if self._response_lifecycle.phase in {ResponsePhase.DONE, ResponsePhase.CANCELLED}:
+            return False
+        return self._tts_task is not None and not self._tts_task.done()
+
+    async def _apply_tts_stream_outcome(
+        self,
+        event: TurnEvent,
+        stream: ResponseStream,
+        accepted: bool,
+    ) -> None:
+        if event.type == TurnEventType.TTS_COMPLETED:
+            if accepted:
+                await self._finalize_response_stream(stream)
+            else:
+                self._response_lifecycle.clear_finished_stream_if_current(stream)
+        elif event.type == TurnEventType.TTS_FAILED:
+            self._response_lifecycle.fail_stream_if_current(stream)
+
+    def _release_tts_task(self, task: asyncio.Task | None) -> None:
+        if task is None:
+            return
+        task.cancel()
+        reaper = asyncio.create_task(reap_task(task))
+        self._tts_reaper_tasks.add(reaper)
+        reaper.add_done_callback(self._tts_reaper_tasks.discard)
+
+    async def _recover_from_action_failure(self, failed_action: TurnAction) -> None:
+        stream = self._response_lifecycle.stream
+        tts_task = self._tts_task
+        tts_active = tts_task is not None and not tts_task.done()
+        response_was_active = (
+            stream is not None or self._response_lifecycle.active_response_id is not None or tts_active
+        )
+        cancelled_response_id: str | None = None
+        if response_was_active:
+            cancelled_response_id = self._response_lifecycle.remember_cancelled_response()
+            if cancelled_response_id is None:
+                cancelled_response_id = self._response_lifecycle.active_or_cancelled_response_id()
+        await self._emit_error(
+            f"action {failed_action.type.value} failed; response pipeline reset",
+        )
+        with suppress(Exception):
+            self._timer_registry.cancel_all()
+        self._interrupt_timer_candidate_id = None
+        with suppress(Exception):
+            self._audio_output.flush()
+        with suppress(Exception):
+            self._audio_history.clear()
+        terminal_events_already_emitted = (
+            cancelled_response_id is not None and cancelled_response_id == self._cancel_emitted_response_id
+        )
+        if response_was_active and not terminal_events_already_emitted:
+            await self._emit_audio_clear()
+            await self._emit_response_cancelled()
+        if tts_active:
+            self._release_tts_task(tts_task)
+        self._tts_task = None
+        self._response_lifecycle.clear_active_response(stream)
+        with suppress(Exception):
+            self._interrupt_detector.reset()
+        self._speech_guard.mark_speech_ended()
+        self._output_playout_started = False
+        self._sm.handle(TurnEvent(type=TurnEventType.RECOVER))
 
     async def _forward_stream_event(self, stream_event) -> None:
         if self._is_response_uninterruptible():
@@ -691,8 +863,8 @@ class ConversationSession:
                     stream=stream,
                     voice=self._config.voice,
                     language=self._config.language,
-                    on_audio_started=self._notify_tts_audio_started,
-                    on_audio_chunk=self._handle_tts_chunk,
+                    on_audio_started=partial(self._notify_tts_audio_started, stream),
+                    on_audio_chunk=partial(self._handle_tts_chunk, stream),
                 )
 
                 assistant_text = stream.assistant_context_text()
@@ -705,28 +877,42 @@ class ConversationSession:
                     return
                 await self._complete_response_stream(stream)
         except AdapterTypeMismatchError as exc:
-            await self._fail_response(str(exc))
+            await self._fail_response(str(exc), stream)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.exception("TTS synthesis failed")
-            await self._fail_response(str(exc))
-        finally:
-            self._response_lifecycle.clear_finished_stream_if_current(stream)
+            await self._fail_response(str(exc), stream)
 
-    async def _notify_tts_audio_started(self) -> None:
+    async def _notify_tts_audio_started(self, stream: ResponseStream | None = None) -> None:
         loop = asyncio.get_running_loop()
         done = loop.create_future()
+        payload: dict[str, Any] = {"_done": done}
+        if stream is not None:
+            payload["_response_stream"] = stream
         await self._event_queue.put(
             TurnEvent(
                 type=TurnEventType.TTS_AUDIO_STARTED,
-                payload={"_done": done},
+                payload=payload,
             )
         )
         accepted = await done
-        if not accepted or self._sm.state != TurnState.SPEAKING or self._response_stream is None:
-            self._response_lifecycle.remember_cancelled_response()
+        current = self._response_lifecycle.stream
+        rejected = (
+            not accepted
+            or self._sm.state != TurnState.SPEAKING
+            or current is None
+            or (stream is not None and current is not stream)
+        )
+        if rejected:
+            await self._submit_command(partial(self._reject_started_stream, stream))
             raise asyncio.CancelledError
+
+    async def _reject_started_stream(self, stream: ResponseStream | None) -> None:
+        if stream is not None:
+            self._response_lifecycle.fail_stream_if_current(stream)
+        else:
+            self._response_lifecycle.remember_cancelled_response()
 
     def _accepts_turn_event(self, event: TurnEvent) -> bool:
         return self._sm.accepts(event.type)
@@ -753,13 +939,18 @@ class ConversationSession:
         self._response_lifecycle.finish_stream_if_current(stream)
         self._interrupt_detector.reset()
 
-    async def _fail_response(self, message: str) -> None:
+    async def _fail_response(self, message: str, stream: ResponseStream | None = None) -> None:
         self._interrupt_detector.reset()
         await self._emit_error(message)
-        await self._event_queue.put(TurnEvent(type=TurnEventType.TTS_FAILED))
+        payload: dict[str, Any] = {}
+        if stream is not None:
+            payload["_response_stream"] = stream
+        await self._event_queue.put(TurnEvent(type=TurnEventType.TTS_FAILED, payload=payload))
 
-    async def _handle_tts_chunk(self, audio: bytes, sample_rate: int) -> None:
+    async def _handle_tts_chunk(self, stream: ResponseStream, audio: bytes, sample_rate: int) -> None:
         if not audio:
+            return
+        if stream.closed or stream is not self._response_lifecycle.stream:
             return
         output_sample_rate = self._client_sample_rate or self._config.sample_rate
         pcm_audio = np.frombuffer(audio, dtype=np.float32)
@@ -861,8 +1052,11 @@ class ConversationSession:
                 await self._complete_response_stream(stream)
 
         elif action.type == TurnActionType.FLUSH_OUTPUT:
-            if self._response_stream is not None or self._active_response_id is not None:
+            stream = self._response_stream
+            if stream is not None or self._active_response_id is not None:
                 self._response_lifecycle.remember_cancelled_response()
+            if stream is not None:
+                stream.close()
             self._audio_output.flush()
             self._audio_history.clear()
             await self._emit_audio_clear()
@@ -877,7 +1071,7 @@ class ConversationSession:
                 if assistant_text:
                     self._pipeline.add_assistant_turn(assistant_text)
             if self._tts_task and not self._tts_task.done():
-                await reap_task(self._tts_task)
+                self._release_tts_task(self._tts_task)
             self._tts_task = None
             self._audio_output.reset_playout()
             self._response_lifecycle.clear_active_response(stream)
@@ -962,10 +1156,10 @@ class ConversationSession:
         await self._emit_response_event(WIRE_RESPONSE_DONE, response_id)
 
     async def _emit_response_cancelled(self) -> None:
-        await self._emit_response_event(
-            WIRE_RESPONSE_CANCELLED,
-            self._response_lifecycle.active_or_cancelled_response_id(),
-        )
+        response_id = self._response_lifecycle.active_or_cancelled_response_id()
+        if response_id is not None:
+            self._cancel_emitted_response_id = response_id
+        await self._emit_response_event(WIRE_RESPONSE_CANCELLED, response_id)
 
     async def _emit_audio_clear(self) -> None:
         await self._emit_response_event(
@@ -1144,6 +1338,18 @@ class ConversationSession:
     @property
     def state(self) -> TurnState:
         return self._sm.state
+
+    @property
+    def response_active(self) -> bool:
+        return self._response_pipeline_engaged()
+
+    @property
+    def active_response_id(self) -> str | None:
+        return self._response_lifecycle.active_response_id
+
+    @property
+    def response_phase(self) -> ResponsePhase:
+        return self._response_lifecycle.phase
 
     @property
     def pending_audio_count(self) -> int:

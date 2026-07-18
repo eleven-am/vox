@@ -270,6 +270,10 @@ def _on_client_cancel_interrupted(m: TurnStateMachine, e: TurnEvent) -> tuple[Tu
     return TurnState.IDLE, []
 
 
+def _on_recover(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
+    return TurnState.IDLE, []
+
+
 _TRANSITIONS: dict[tuple[TurnState, TurnEventType], _TransitionFn] = {
     (TurnState.IDLE, TurnEventType.SPEECH_STARTED): _on_speech_started_idle,
     (TurnState.LISTENING, TurnEventType.SPEECH_STARTED): _on_speech_started_listening,
@@ -304,4 +308,10 @@ _TRANSITIONS: dict[tuple[TurnState, TurnEventType], _TransitionFn] = {
     (TurnState.SPEAKING, TurnEventType.CLIENT_CANCEL): _on_client_cancel_speaking,
     (TurnState.PAUSED, TurnEventType.CLIENT_CANCEL): _on_client_cancel_paused,
     (TurnState.INTERRUPTED, TurnEventType.CLIENT_CANCEL): _on_client_cancel_interrupted,
+    (TurnState.IDLE, TurnEventType.RECOVER): _on_recover,
+    (TurnState.LISTENING, TurnEventType.RECOVER): _on_recover,
+    (TurnState.THINKING, TurnEventType.RECOVER): _on_recover,
+    (TurnState.SPEAKING, TurnEventType.RECOVER): _on_recover,
+    (TurnState.PAUSED, TurnEventType.RECOVER): _on_recover,
+    (TurnState.INTERRUPTED, TurnEventType.RECOVER): _on_recover,
 }

@@ -31,15 +31,50 @@ must be preserved by all work.
 
 ## Phase 2 — wire contract (design + implement; publish decided separately)
 
-- **F5 Typed errors.** Canonical error event gains `code` (stable string) and
-  `recoverable` (bool); `ConversationError` in vox.proto gains the same. Stale
-  delta/start rejections are recoverable; session-fatal errors are not. Docs
-  updated (conversation-events.md error guidance) so clients stop treating every
-  error frame as fatal.
-- **F6 Generation correlation.** `generation_id` on gRPC command messages and on
-  response lifecycle events; `response.start` gets a correlated acknowledgement
-  (accepted/rejected + generation_id) so SDKs need not fire-and-forget deltas.
-- SDK updates for all four RTC server SDKs after the vox side lands.
+### F5 Typed errors — contract
+
+Wire `error` event gains two fields (additive, backward compatible):
+
+```json
+{ "type": "error", "message": "...", "code": "<stable-slug>", "recoverable": true }
+```
+
+proto: `ConversationError { string message = 1; string code = 2; bool recoverable = 3; }`
+
+Error codes (initial set; codes are stable API, messages are not):
+- `response_rejected_turn_state` (recoverable) — response.start in a state that
+  cannot accept it; retry after the next turn/state event.
+- `response_rejected_user_speech` (recoverable) — start during active user
+  speech; retry on `interruption.false_positive` or `turn.state_changed`.
+- `response_stale_generation` (recoverable) — delta/commit for a generation that
+  is no longer active; stop pumping THIS generation, session remains healthy.
+- `response_already_active` (recoverable) — start while another generation runs.
+- `command_invalid` (recoverable) — malformed payload for one command.
+- `session_failed` (fatal) — unrecoverable session error; client should close.
+- Missing/empty `code` (old servers) => clients must treat as recoverable unless
+  the transport itself closed. Docs guidance in conversation-events.md changes
+  from "move client to error state" to: only `recoverable: false` (or transport
+  close) ends the call UI; recoverable errors are per-command failures.
+
+### F6 Generation correlation — contract
+
+- `generation_id` added to gRPC command messages (Start/Append/Commit/Cancel)
+  mirroring the canonical commands (conversation_commands.py already carries it).
+- Response lifecycle events (`response.created|committed|done|cancelled`,
+  `response.audio.clear`, `interruption.*`) carry `generation_id` alongside
+  `response_id` when known.
+- **Start acknowledgement:** `response.created` is the positive ack and now
+  echoes the caller's `generation_id`; a rejected start emits the typed error
+  above with the same `generation_id`. SDK guidance: after sending
+  `response.start`, gate delta-pumping on `response.created` (or abort on the
+  correlated recoverable error) instead of fire-and-forget.
+
+### Rollout
+
+vox implements both (server accepts commands with or without generation_id;
+events always carry what they know). Then the four RTC server SDKs add: typed
+error surface (code/recoverable), start-ack awaiting, and generation threading.
+Publish decided separately at the end.
 
 ## Phase 3 — adversarial lifecycle suite (grows with each phase)
 

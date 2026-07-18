@@ -53,6 +53,34 @@ def test_response_lifecycle_captures_cancelled_id_and_clears_active_stream():
     assert lifecycle.active_or_cancelled_response_id() == "resp_1"
 
 
+def test_remember_cancelled_response_never_overwrites_remembered_id_with_none():
+    lifecycle = ConversationResponseLifecycle()
+    stream = lifecycle.start_stream()
+
+    assert lifecycle.remember_cancelled_response() == stream.response_id
+    lifecycle.clear_active_response(stream)
+
+    assert lifecycle.remember_cancelled_response() is None
+    assert lifecycle.last_cancelled_response_id == stream.response_id
+    assert lifecycle.active_or_cancelled_response_id() == stream.response_id
+
+
+def test_lifecycle_teardown_paths_close_the_stream():
+    lifecycle = ConversationResponseLifecycle()
+
+    finished = lifecycle.start_stream()
+    lifecycle.finish_stream_if_current(finished)
+    assert finished.closed
+
+    failed = lifecycle.start_stream()
+    lifecycle.fail_stream_if_current(failed)
+    assert failed.closed
+
+    cleared = lifecycle.start_stream()
+    lifecycle.clear_active_response(cleared)
+    assert cleared.closed
+
+
 def test_response_lifecycle_ignores_stale_stream_completion():
     lifecycle = ConversationResponseLifecycle()
     active = lifecycle.start_stream()

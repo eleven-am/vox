@@ -494,11 +494,11 @@ class TestBackchannelRejection:
     @pytest.mark.asyncio
     async def test_paused_output_buffers_audio_until_false_positive_resume(self):
         session, coll, _ = _build()
-        session._active_response_id = "resp_1"
+        stream = session._response_lifecycle.start_stream()
         session._audio_output.pause()
 
         audio = np.full(480, 0.01, dtype=np.float32).tobytes()
-        await session._handle_tts_chunk(audio, 24_000)
+        await session._handle_tts_chunk(stream, audio, 24_000)
 
         assert session.pending_audio_count > 0
         assert not coll.by_type("response.audio.delta")
@@ -513,7 +513,7 @@ class TestBackchannelRejection:
     @pytest.mark.asyncio
     async def test_resume_preserves_audio_order_when_new_chunks_arrive_mid_flush(self):
         session, coll, _ = _build()
-        session._active_response_id = "resp_1"
+        stream = session._response_lifecycle.start_stream()
         session._audio_output.pause()
 
         chunk_a = np.full(480, 0.01, dtype=np.float32).tobytes()
@@ -521,9 +521,9 @@ class TestBackchannelRejection:
         chunk_c = np.full(480, 0.03, dtype=np.float32).tobytes()
         chunk_d = np.full(480, 0.04, dtype=np.float32).tobytes()
 
-        await session._handle_tts_chunk(chunk_a, 24_000)
-        await session._handle_tts_chunk(chunk_b, 24_000)
-        await session._handle_tts_chunk(chunk_c, 24_000)
+        await session._handle_tts_chunk(stream, chunk_a, 24_000)
+        await session._handle_tts_chunk(stream, chunk_b, 24_000)
+        await session._handle_tts_chunk(stream, chunk_c, 24_000)
 
         original_emit = session._on_event
         late_chunk_inserted = False
@@ -533,7 +533,7 @@ class TestBackchannelRejection:
             await original_emit(event)
             if not late_chunk_inserted and event.get("type") == "response.audio.delta" and event.get("sequence") == 1:
                 late_chunk_inserted = True
-                await session._handle_tts_chunk(chunk_d, 24_000)
+                await session._handle_tts_chunk(stream, chunk_d, 24_000)
 
         session._on_event = emit_then_inject_late_chunk
 

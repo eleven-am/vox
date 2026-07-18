@@ -50,6 +50,26 @@ async def test_response_stream_bounded_queue_blocks_when_full():
         await asyncio.wait_for(stream.append_text("second"), timeout=0.05)
 
 
+@pytest.mark.asyncio
+async def test_closed_response_stream_rejects_append_and_end():
+    stream = ResponseStream.create(response_id="resp_1")
+
+    stream.close()
+
+    assert stream.closed is True
+    assert await stream.append_text("late") is False
+    assert await stream.enqueue_end() is False
+    assert stream.queue.empty()
+
+
+@pytest.mark.asyncio
+async def test_open_response_stream_reports_successful_append_and_end():
+    stream = ResponseStream.create(response_id="resp_1")
+
+    assert await stream.append_text("hello") is True
+    assert await stream.enqueue_end() is True
+
+
 def test_response_stream_assistant_context_prefers_heard_text():
     stream = ResponseStream.create(response_id="resp_1")
     stream.text_parts.extend(["unheard ", "text"])

@@ -711,6 +711,16 @@ class ConversationOrchestrator:
         if self._session is not None:
             self._session.observe_output_playout(pcm16, sample_rate)
 
+    @property
+    def response_active(self) -> bool:
+        return self._session is not None and self._session.response_active
+
+    @property
+    def active_generation_id(self) -> str | None:
+        if not self.response_active:
+            return None
+        return self._control_generation_id
+
     async def start_response(
         self,
         *,
@@ -720,7 +730,10 @@ class ConversationOrchestrator:
         if self._session is None:
             raise SessionNotConfiguredError()
         if self._control_response_id is not None:
-            raise InvalidConfigError("response already active")
+            if self._session.response_active:
+                raise InvalidConfigError("response already active")
+            self._control_response_id = None
+            self._control_generation_id = None
         response_id = await self._session.start_response_stream(
             allow_interruptions=allow_interruptions,
         )

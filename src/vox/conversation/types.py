@@ -45,6 +45,7 @@ class TurnEventType(StrEnum):
     TTS_FAILED = "tts_failed"
     CLIENT_CANCEL = "client_cancel"
     TIMER_ELAPSED = "timer_elapsed"
+    RECOVER = "recover"
 
 
 class TurnActionType(StrEnum):
