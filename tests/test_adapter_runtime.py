@@ -35,6 +35,27 @@ def test_activate_runtime_path_prunes_sibling_runtime_paths(monkeypatch, tmp_pat
     assert str(external) in sys.path
 
 
+def test_activate_runtime_path_preserves_sibling_with_loaded_native_extension(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    current = runtime_root / "parakeet-nemo"
+    sibling = runtime_root / "kokoro"
+    native_path = sibling / "spacy" / "tokens" / "doc.cpython-312-x86_64-linux-gnu.so"
+    native_path.parent.mkdir(parents=True)
+    native_path.touch()
+    external = tmp_path / "other"
+
+    native_module = ModuleType("spacy.tokens.doc")
+    native_module.__file__ = str(native_path)
+    monkeypatch.setitem(sys.modules, "spacy.tokens.doc", native_module)
+    monkeypatch.setattr(sys, "path", [str(sibling), str(external), *sys.path])
+
+    adapter_runtime.activate_runtime_path(current, root=runtime_root)
+
+    assert sys.path[0] == str(current)
+    assert str(sibling) in sys.path
+    assert str(external) in sys.path
+
+
 def test_purge_runtime_modules_removes_configured_prefixes(monkeypatch):
     qwen_root = ModuleType("qwen_tts")
     qwen_child = ModuleType("qwen_tts.model")

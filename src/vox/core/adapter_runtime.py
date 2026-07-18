@@ -16,6 +16,7 @@ import sys
 import sysconfig
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from importlib.machinery import EXTENSION_SUFFIXES
 from importlib.util import find_spec
 from pathlib import Path
 
@@ -64,12 +65,16 @@ def activate_runtime_path(
 
     path = str(Path(runtime_path))
     if prune_sibling_runtimes:
-        root_path = str(root or runtime_root())
+        root_path = Path(root or runtime_root()).resolve()
+        protected_runtime_paths = _loaded_native_runtime_paths(root_path)
         retained: list[str] = []
         for entry in sys.path:
             if entry == path:
                 continue
-            if entry.startswith(root_path):
+            entry_path = Path(entry).resolve()
+            if entry_path.is_relative_to(root_path):
+                if entry_path in protected_runtime_paths:
+                    retained.append(entry)
                 continue
             retained.append(entry)
         sys.path[:] = retained
@@ -80,6 +85,21 @@ def activate_runtime_path(
         sys.path.insert(0, path)
     importlib.invalidate_caches()
     return path
+
+
+def _loaded_native_runtime_paths(root_path: Path) -> set[Path]:
+    protected: set[Path] = set()
+    for module in list(sys.modules.values()):
+        module_file = getattr(module, "__file__", None)
+        if not module_file or not any(str(module_file).endswith(suffix) for suffix in EXTENSION_SUFFIXES):
+            continue
+        try:
+            relative_path = Path(module_file).resolve().relative_to(root_path)
+        except (OSError, ValueError):
+            continue
+        if relative_path.parts:
+            protected.add(root_path / relative_path.parts[0])
+    return protected
 
 
 def purge_runtime_modules(prefixes: Iterable[str]) -> None:
