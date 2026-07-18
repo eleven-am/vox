@@ -138,6 +138,7 @@ def _clear_nemo_modules() -> None:
     runtime_root = vox_runtime_root().resolve()
     runtime_dir = _runtime_target_dir().resolve()
     native_module_roots = _loaded_native_module_roots()
+    native_runtime_paths = _loaded_native_runtime_paths(runtime_root)
     for name in list(sys.modules):
         module = sys.modules.get(name)
         module_file = getattr(module, "__file__", None)
@@ -146,7 +147,9 @@ def _clear_nemo_modules() -> None:
             try:
                 module_path = Path(module_file).resolve()
                 if module_path.is_relative_to(runtime_root) and not module_path.is_relative_to(runtime_dir):
-                    if module_root in native_module_roots:
+                    relative_path = module_path.relative_to(runtime_root)
+                    owning_runtime = runtime_root / relative_path.parts[0]
+                    if owning_runtime in native_runtime_paths:
                         continue
                     sys.modules.pop(name, None)
                     continue
@@ -190,6 +193,21 @@ def _loaded_native_module_roots() -> set[str]:
         if module_file and any(str(module_file).endswith(suffix) for suffix in EXTENSION_SUFFIXES):
             roots.add(name.partition(".")[0])
     return roots
+
+
+def _loaded_native_runtime_paths(runtime_root: Path) -> set[Path]:
+    paths: set[Path] = set()
+    for module in list(sys.modules.values()):
+        module_file = getattr(module, "__file__", None)
+        if not module_file or not any(str(module_file).endswith(suffix) for suffix in EXTENSION_SUFFIXES):
+            continue
+        try:
+            relative_path = Path(module_file).resolve().relative_to(runtime_root)
+        except (OSError, ValueError):
+            continue
+        if relative_path.parts:
+            paths.add(runtime_root / relative_path.parts[0])
+    return paths
 
 
 def _prime_lightning_imports() -> None:

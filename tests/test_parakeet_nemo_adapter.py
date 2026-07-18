@@ -533,7 +533,7 @@ def test_clear_nemo_modules_removes_partial_import_resolver_state():
     assert "nv_one_logger.training_telemetry.api.training_telemetry_provider" not in sys.modules
 
 
-def test_clear_nemo_modules_preserves_native_modules_loaded_from_sibling_runtimes(
+def test_clear_nemo_modules_preserves_entire_sibling_runtime_with_loaded_native_modules(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -548,6 +548,7 @@ def test_clear_nemo_modules_preserves_native_modules_loaded_from_sibling_runtime
     parakeet_runtime.mkdir(parents=True)
     kokoro_runtime.mkdir()
     (kokoro_runtime / "packaging.py").write_text("# fake", encoding="utf-8")
+    (kokoro_runtime / "spacy_curated_transformers.py").write_text("# fake", encoding="utf-8")
     (kokoro_runtime / "onnx").mkdir()
     (kokoro_runtime / "onnx" / "__init__.py").write_text("# fake", encoding="utf-8")
     native_path = kokoro_runtime / "onnx" / "onnx_cpp2py_export.cpython-312-x86_64-linux-gnu.so"
@@ -556,23 +557,27 @@ def test_clear_nemo_modules_preserves_native_modules_loaded_from_sibling_runtime
 
     sibling_module = ModuleType("packaging")
     sibling_module.__file__ = str(kokoro_runtime / "packaging.py")
+    sibling_plugin = ModuleType("spacy_curated_transformers")
+    sibling_plugin.__file__ = str(kokoro_runtime / "spacy_curated_transformers.py")
     sibling_native_package = ModuleType("onnx")
     sibling_native_package.__file__ = str(kokoro_runtime / "onnx" / "__init__.py")
     sibling_native_extension = ModuleType("onnx.onnx_cpp2py_export")
     sibling_native_extension.__file__ = str(native_path)
     current_module = ModuleType("nemo")
     current_module.__file__ = str(parakeet_runtime / "nemo.py")
-    sys.modules["packaging"] = sibling_module
-    sys.modules["onnx"] = sibling_native_package
-    sys.modules["onnx.onnx_cpp2py_export"] = sibling_native_extension
-    sys.modules["nemo"] = current_module
+    monkeypatch.setitem(sys.modules, "packaging", sibling_module)
+    monkeypatch.setitem(sys.modules, "spacy_curated_transformers", sibling_plugin)
+    monkeypatch.setitem(sys.modules, "onnx", sibling_native_package)
+    monkeypatch.setitem(sys.modules, "onnx.onnx_cpp2py_export", sibling_native_extension)
+    monkeypatch.setitem(sys.modules, "nemo", current_module)
 
     monkeypatch.setattr(module, "vox_runtime_root", lambda: runtime_root)
     monkeypatch.setattr(module, "_runtime_target_dir", lambda: parakeet_runtime)
 
     module._clear_nemo_modules()
 
-    assert "packaging" not in sys.modules
+    assert sys.modules["packaging"] is sibling_module
+    assert sys.modules["spacy_curated_transformers"] is sibling_plugin
     assert sys.modules["onnx"] is sibling_native_package
     assert sys.modules["onnx.onnx_cpp2py_export"] is sibling_native_extension
     assert "nemo" not in sys.modules
