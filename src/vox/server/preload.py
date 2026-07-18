@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 import os
@@ -32,6 +33,18 @@ def merged_preload_models(explicit_refs: list[str], env_value: str | None) -> li
 
 def should_preload_vad(explicit: bool) -> bool:
     return explicit or env_bool("VOX_PRELOAD_VAD")
+
+
+async def preload_ner() -> None:
+    try:
+        from vox.core.ner import preload_model
+
+        if await asyncio.to_thread(preload_model, "en"):
+            logger.info("Preloaded English NER model")
+        else:
+            logger.warning("Failed to preload English NER model; regex-only annotations remain available")
+    except Exception as exc:
+        logger.warning("Failed to preload English NER model: %s", exc)
 
 
 async def preload_models(scheduler: Any, model_refs: list[str]) -> None:

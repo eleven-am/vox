@@ -52,6 +52,16 @@ async def test_lifespan_prunes_stale_temp_directories_before_scheduler_start(tmp
 
 
 @pytest.mark.asyncio
+async def test_lifespan_preloads_core_ner(_mock_application_ner_preload):
+    app = _make_app(grpc_port=None)
+
+    async with lifespan(app):
+        pass
+
+    _mock_application_ner_preload.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
 async def test_lifespan_stops_grpc_server_and_scheduler_on_shutdown():
     app = _make_app(grpc_port=9090)
     grpc_server = MagicMock(stop=AsyncMock())

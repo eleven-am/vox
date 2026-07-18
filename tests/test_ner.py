@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import sys
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -125,7 +125,7 @@ class TestSpacyRuntimeBootstrap:
         assert calls == [(
             str(tmp_path / "runtime" / "ner"),
             [ner._EN_CORE_WEB_SM_WHEEL],
-            False,
+            True,
         )]
         assert str(tmp_path / "runtime" / "ner") in sys.path
 
@@ -176,6 +176,14 @@ class TestSpacyRuntimeBootstrap:
         assert ner._get_model("en") == {"model": "en_core_web_sm"}
         assert bootstrap_calls == ["en_core_web_sm"]
         assert fake_spacy.loaded == ["en_core_web_sm"]
+
+    def test_preload_model_loads_the_requested_language(self, monkeypatch: pytest.MonkeyPatch):
+        model = object()
+        get_model = MagicMock(return_value=model)
+        monkeypatch.setattr(ner, "_get_model", get_model)
+
+        assert ner.preload_model("en") is True
+        get_model.assert_called_once_with("en")
 
 
 class TestAnnotateWithMockedModel:

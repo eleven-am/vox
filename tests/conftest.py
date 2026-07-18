@@ -4,6 +4,7 @@ import sys
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -17,6 +18,15 @@ for source_dir in reversed(SOURCE_DIRS):
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+def _mock_application_ner_preload(monkeypatch):
+    import vox.server.app as app_module
+
+    preload = AsyncMock()
+    monkeypatch.setattr(app_module, "preload_ner", preload)
+    return preload
 
 
 def _build_index(catalog: dict[str, dict[str, dict[str, Any]]]) -> list[dict[str, Any]]:

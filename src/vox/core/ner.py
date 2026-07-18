@@ -152,7 +152,7 @@ def _bootstrap_spacy_model(model_name: str) -> bool:
     if _spacy_model_installed(runtime_root, model_name):
         return True
 
-    if not _install_runtime_requirements(runtime_path, [wheel], no_deps=False):
+    if not _install_runtime_requirements(runtime_path, [wheel], no_deps=True):
         return False
 
     if not _spacy_model_installed(runtime_root, model_name):
@@ -173,6 +173,12 @@ def _normalize_language(lang: str | None) -> str:
         return "en"
     normalized = lang.strip().lower()
     return _LANGUAGE_ALIASES.get(normalized, normalized)
+
+
+def preload_model(lang: str = "en") -> bool:
+    """Load a core NER pipeline before adapter runtimes can shadow spaCy."""
+
+    return _get_model(lang) is not None
 
 
 def _get_model(lang: str) -> Any | None:

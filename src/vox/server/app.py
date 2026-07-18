@@ -18,6 +18,7 @@ from vox.server.middleware import ApiKeyAuthMiddleware, RequestIdMiddleware
 from vox.server.preload import (
     merged_preload_models,
     preload_models,
+    preload_ner,
     preload_turn_detector,
     preload_vad,
     should_preload_vad,
@@ -41,6 +42,8 @@ async def lifespan(app: FastAPI):
     prune_stale_temp_dirs(services.store.root / "tmp")
     await services.scheduler.start()
     try:
+        await preload_ner()
+
         merged = merged_preload_models(
             list(getattr(app.state, "preload_models", [])),
             os.environ.get("VOX_PRELOAD"),

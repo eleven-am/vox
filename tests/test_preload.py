@@ -14,6 +14,7 @@ from vox.server.preload import (
     merged_preload_models,
     parse_preload_list,
     preload_models,
+    preload_ner,
     preload_turn_detector,
     preload_vad,
     should_preload_vad,
@@ -120,6 +121,22 @@ class TestPreloadModels:
         scheduler = _FakeScheduler()
         await preload_models(scheduler, [])
         assert scheduler.acquired == []
+
+
+class TestPreloadNer:
+    @pytest.mark.asyncio
+    async def test_preloads_english_model_off_event_loop(self):
+        with patch("vox.core.ner.preload_model", return_value=True) as preload:
+            await preload_ner()
+
+        preload.assert_called_once_with("en")
+
+    @pytest.mark.asyncio
+    async def test_failed_preload_is_logged_not_raised(self, caplog):
+        with patch("vox.core.ner.preload_model", side_effect=RuntimeError("broken runtime")):
+            await preload_ner()
+
+        assert any("Failed to preload English NER model" in record.message for record in caplog.records)
 
 
 class TestPreloadVAD:

@@ -533,7 +533,7 @@ def test_clear_nemo_modules_removes_partial_import_resolver_state():
     assert "nv_one_logger.training_telemetry.api.training_telemetry_provider" not in sys.modules
 
 
-def test_clear_nemo_modules_preserves_entire_sibling_runtime_with_loaded_native_modules(
+def test_clear_nemo_modules_preserves_native_modules_loaded_from_sibling_runtimes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -576,8 +576,8 @@ def test_clear_nemo_modules_preserves_entire_sibling_runtime_with_loaded_native_
 
     module._clear_nemo_modules()
 
-    assert sys.modules["packaging"] is sibling_module
-    assert sys.modules["spacy_curated_transformers"] is sibling_plugin
+    assert "packaging" not in sys.modules
+    assert "spacy_curated_transformers" not in sys.modules
     assert sys.modules["onnx"] is sibling_native_package
     assert sys.modules["onnx.onnx_cpp2py_export"] is sibling_native_extension
     assert "nemo" not in sys.modules
