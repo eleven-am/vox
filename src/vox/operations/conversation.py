@@ -6,7 +6,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from vox.conversation import TurnPolicy
@@ -15,6 +15,12 @@ from vox.conversation.profiles import (
     resolve_turn_policy,
 )
 from vox.conversation.session import (
+    ERROR_CODE_COMMAND_INVALID,
+    ERROR_CODE_RESPONSE_ALREADY_ACTIVE,
+    ERROR_CODE_RESPONSE_FAILED,
+    ERROR_CODE_RESPONSE_REJECTED_TURN_STATE,
+    ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH,
+    ERROR_CODE_RESPONSE_STALE_GENERATION,
     WIRE_AUDIO_CLEAR,
     WIRE_AUDIO_DELTA,
     WIRE_ERROR,
@@ -34,6 +40,7 @@ from vox.conversation.session import (
     ConversationSession,
 )
 from vox.operations.errors import (
+    ConversationCommandError,
     InvalidConfigError,
     SessionAlreadyConfiguredError,
     SessionNotConfiguredError,
@@ -145,6 +152,7 @@ class ConvTranscriptDoneEvent:
 @dataclass(frozen=True)
 class ConvResponseCreatedEvent:
     response_id: str = ""
+    generation_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -159,21 +167,25 @@ class ConvAudioDeltaEvent:
 @dataclass(frozen=True)
 class ConvAudioClearEvent:
     response_id: str = ""
+    generation_id: str | None = None
 
 
 @dataclass(frozen=True)
 class ConvResponseDoneEvent:
     response_id: str = ""
+    generation_id: str | None = None
 
 
 @dataclass(frozen=True)
 class ConvResponseCancelledEvent:
     response_id: str = ""
+    generation_id: str | None = None
 
 
 @dataclass(frozen=True)
 class ConvResponseCommittedEvent:
     response_id: str = ""
+    generation_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -182,6 +194,7 @@ class ConvInterruptionDetectedEvent:
     vad_active_ms: int
     partial_transcript: str | None
     reason: str | None = None
+    generation_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -190,6 +203,7 @@ class ConvInterruptionFalsePositiveEvent:
     vad_active_ms: int
     partial_transcript: str | None
     reason: str | None = None
+    generation_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -213,11 +227,43 @@ class ConvStateChangedEvent:
 @dataclass(frozen=True)
 class ConvErrorEvent:
     message: str
+    code: str = ""
+    recoverable: bool = True
+    generation_id: str | None = None
 
 
 @dataclass(frozen=True)
 class ConvDoneEvent:
     pass
+
+
+_START_REJECTION_ERROR_CODES = frozenset(
+    {
+        ERROR_CODE_RESPONSE_REJECTED_TURN_STATE,
+        ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH,
+        ERROR_CODE_RESPONSE_ALREADY_ACTIVE,
+    }
+)
+
+_GENERATION_CORRELATED_EVENT_TYPES = (
+    ConvResponseCommittedEvent,
+    ConvResponseDoneEvent,
+    ConvResponseCancelledEvent,
+    ConvAudioClearEvent,
+    ConvInterruptionDetectedEvent,
+    ConvInterruptionFalsePositiveEvent,
+)
+
+
+def conversation_error_fields(exc: BaseException) -> tuple[str, bool, str | None]:
+    code = getattr(exc, "code", None)
+    recoverable = getattr(exc, "recoverable", True)
+    generation_id = getattr(exc, "generation_id", None)
+    if not isinstance(code, str) or not code:
+        code = ERROR_CODE_COMMAND_INVALID
+    if not isinstance(generation_id, str) or not generation_id:
+        generation_id = None
+    return code, bool(recoverable), generation_id
 
 
 ConvEvent = (
@@ -276,7 +322,10 @@ def serialize_conversation_event(event: ConvEvent) -> dict | None:
             payload["words"] = list(event.words)
         return payload
     if isinstance(event, ConvResponseCreatedEvent):
-        return {"type": WIRE_RESPONSE_CREATED, "response_id": event.response_id}
+        return _with_generation_id(
+            {"type": WIRE_RESPONSE_CREATED, "response_id": event.response_id},
+            event.generation_id,
+        )
     if isinstance(event, ConvAudioDeltaEvent):
         return {
             "type": WIRE_AUDIO_DELTA,
@@ -287,13 +336,25 @@ def serialize_conversation_event(event: ConvEvent) -> dict | None:
             "sequence": event.sequence,
         }
     if isinstance(event, ConvAudioClearEvent):
-        return {"type": WIRE_AUDIO_CLEAR, "response_id": event.response_id}
+        return _with_generation_id(
+            {"type": WIRE_AUDIO_CLEAR, "response_id": event.response_id},
+            event.generation_id,
+        )
     if isinstance(event, ConvResponseDoneEvent):
-        return {"type": WIRE_RESPONSE_DONE, "response_id": event.response_id}
+        return _with_generation_id(
+            {"type": WIRE_RESPONSE_DONE, "response_id": event.response_id},
+            event.generation_id,
+        )
     if isinstance(event, ConvResponseCancelledEvent):
-        return {"type": WIRE_RESPONSE_CANCELLED, "response_id": event.response_id}
+        return _with_generation_id(
+            {"type": WIRE_RESPONSE_CANCELLED, "response_id": event.response_id},
+            event.generation_id,
+        )
     if isinstance(event, ConvResponseCommittedEvent):
-        return {"type": WIRE_RESPONSE_COMMITTED, "response_id": event.response_id}
+        return _with_generation_id(
+            {"type": WIRE_RESPONSE_COMMITTED, "response_id": event.response_id},
+            event.generation_id,
+        )
     if isinstance(event, ConvInterruptionDetectedEvent):
         payload: dict = {
             "type": WIRE_INTERRUPTION_DETECTED,
@@ -303,7 +364,7 @@ def serialize_conversation_event(event: ConvEvent) -> dict | None:
         }
         if event.reason:
             payload["reason"] = event.reason
-        return payload
+        return _with_generation_id(payload, event.generation_id)
     if isinstance(event, ConvInterruptionFalsePositiveEvent):
         payload_fp: dict = {
             "type": WIRE_INTERRUPTION_FALSE_POSITIVE,
@@ -313,7 +374,7 @@ def serialize_conversation_event(event: ConvEvent) -> dict | None:
         }
         if event.reason:
             payload_fp["reason"] = event.reason
-        return payload_fp
+        return _with_generation_id(payload_fp, event.generation_id)
     if isinstance(event, ConvTurnEouPredictedEvent):
         return {
             "type": WIRE_TURN_EOU_PREDICTED,
@@ -333,8 +394,30 @@ def serialize_conversation_event(event: ConvEvent) -> dict | None:
             "previous_state": event.previous_state,
         }
     if isinstance(event, ConvErrorEvent):
-        return {"type": WIRE_ERROR, "message": event.message}
+        return _with_generation_id(
+            {
+                "type": WIRE_ERROR,
+                "message": event.message,
+                "code": event.code,
+                "recoverable": event.recoverable,
+            },
+            event.generation_id,
+        )
     return None
+
+
+def _with_generation_id(payload: dict, generation_id: str | None) -> dict:
+    if generation_id:
+        payload["generation_id"] = generation_id
+    return payload
+
+
+def _wire_generation_id(event: dict) -> str | None:
+    value = event.get("generation_id")
+    if value is None:
+        return None
+    generation_id = str(value).strip()
+    return generation_id or None
 
 
 def conversation_wire_event_payload(wire: dict) -> tuple[str, dict]:
@@ -582,7 +665,10 @@ def parse_conversation_wire_event(event: dict) -> ConvEvent | None:
             words=tuple(event.get("words") or ()),
         )
     if t == WIRE_RESPONSE_CREATED:
-        return ConvResponseCreatedEvent(response_id=str(event.get("response_id") or ""))
+        return ConvResponseCreatedEvent(
+            response_id=str(event.get("response_id") or ""),
+            generation_id=_wire_generation_id(event),
+        )
     if t == WIRE_AUDIO_DELTA:
         raw_audio = event.get("audio_pcm16")
         if raw_audio is not None:
@@ -601,13 +687,25 @@ def parse_conversation_wire_event(event: dict) -> ConvEvent | None:
             sequence=int(event.get("sequence") or 0),
         )
     if t == WIRE_AUDIO_CLEAR:
-        return ConvAudioClearEvent(response_id=str(event.get("response_id") or ""))
+        return ConvAudioClearEvent(
+            response_id=str(event.get("response_id") or ""),
+            generation_id=_wire_generation_id(event),
+        )
     if t == WIRE_RESPONSE_DONE:
-        return ConvResponseDoneEvent(response_id=str(event.get("response_id") or ""))
+        return ConvResponseDoneEvent(
+            response_id=str(event.get("response_id") or ""),
+            generation_id=_wire_generation_id(event),
+        )
     if t == WIRE_RESPONSE_CANCELLED:
-        return ConvResponseCancelledEvent(response_id=str(event.get("response_id") or ""))
+        return ConvResponseCancelledEvent(
+            response_id=str(event.get("response_id") or ""),
+            generation_id=_wire_generation_id(event),
+        )
     if t == WIRE_RESPONSE_COMMITTED:
-        return ConvResponseCommittedEvent(response_id=str(event.get("response_id") or ""))
+        return ConvResponseCommittedEvent(
+            response_id=str(event.get("response_id") or ""),
+            generation_id=_wire_generation_id(event),
+        )
     if t == WIRE_INTERRUPTION_DETECTED:
         return ConvInterruptionDetectedEvent(
             response_id=str(event.get("response_id") or ""),
@@ -616,6 +714,7 @@ def parse_conversation_wire_event(event: dict) -> ConvEvent | None:
                 str(event["partial_transcript"]) if event.get("partial_transcript") is not None else None
             ),
             reason=str(event["reason"]) if event.get("reason") else None,
+            generation_id=_wire_generation_id(event),
         )
     if t == WIRE_INTERRUPTION_FALSE_POSITIVE:
         return ConvInterruptionFalsePositiveEvent(
@@ -625,6 +724,7 @@ def parse_conversation_wire_event(event: dict) -> ConvEvent | None:
                 str(event["partial_transcript"]) if event.get("partial_transcript") is not None else None
             ),
             reason=str(event["reason"]) if event.get("reason") else None,
+            generation_id=_wire_generation_id(event),
         )
     if t == WIRE_TURN_EOU_PREDICTED:
         return ConvTurnEouPredictedEvent(
@@ -643,7 +743,13 @@ def parse_conversation_wire_event(event: dict) -> ConvEvent | None:
             previous_state=str(event.get("previous_state", "")),
         )
     if t == WIRE_ERROR:
-        return ConvErrorEvent(message=str(event.get("message", "")))
+        raw_recoverable = event.get("recoverable")
+        return ConvErrorEvent(
+            message=str(event.get("message", "")),
+            code=str(event.get("code") or ""),
+            recoverable=True if raw_recoverable is None else bool(raw_recoverable),
+            generation_id=_wire_generation_id(event),
+        )
     logger.debug("unmapped conversation wire event: %s", t)
     return None
 
@@ -668,6 +774,8 @@ class ConversationOrchestrator:
         self._events: asyncio.Queue[ConvEvent] = asyncio.Queue()
         self._control_response_id: str | None = None
         self._control_generation_id: str | None = None
+        self._client_generation_id: str | None = None
+        self._pending_start_generation_id: str | None = None
         self._closed = False
 
     @property
@@ -731,15 +839,23 @@ class ConversationOrchestrator:
             raise SessionNotConfiguredError()
         if self._control_response_id is not None:
             if self._session.response_active:
-                raise InvalidConfigError("response already active")
-            self._control_response_id = None
-            self._control_generation_id = None
-        response_id = await self._session.start_response_stream(
-            allow_interruptions=allow_interruptions,
-        )
+                raise ConversationCommandError(
+                    "response already active",
+                    code=ERROR_CODE_RESPONSE_ALREADY_ACTIVE,
+                    generation_id=generation_id,
+                )
+            self._clear_generation_bookkeeping()
+        self._pending_start_generation_id = generation_id
+        try:
+            response_id = await self._session.start_response_stream(
+                allow_interruptions=allow_interruptions,
+            )
+        finally:
+            self._pending_start_generation_id = None
         if response_id is not None:
             self._control_response_id = response_id
             self._control_generation_id = generation_id or response_id
+            self._client_generation_id = generation_id
 
     async def append_response_text(
         self,
@@ -752,7 +868,11 @@ class ConversationOrchestrator:
             raise SessionNotConfiguredError()
         response_id = self._control_response_id
         if response_id is None:
-            raise InvalidConfigError("response.start required before response.delta")
+            raise ConversationCommandError(
+                "response.start required before response.delta",
+                code=ERROR_CODE_RESPONSE_STALE_GENERATION,
+                generation_id=generation_id,
+            )
         self._validate_response_generation(generation_id)
         accepted = await self._session.append_response_text(
             text,
@@ -760,9 +880,12 @@ class ConversationOrchestrator:
             expected_response_id=response_id,
         )
         if not accepted:
-            self._control_response_id = None
-            self._control_generation_id = None
-            raise InvalidConfigError("response generation is no longer active")
+            self._clear_generation_bookkeeping()
+            raise ConversationCommandError(
+                "response generation is no longer active",
+                code=ERROR_CODE_RESPONSE_STALE_GENERATION,
+                generation_id=generation_id,
+            )
 
     async def replace_response_text(self, text: str, *, allow_interruptions: bool = True) -> None:
         if self._session is None:
@@ -774,15 +897,22 @@ class ConversationOrchestrator:
             raise SessionNotConfiguredError()
         response_id = self._control_response_id
         if response_id is None:
-            raise InvalidConfigError("response.start required before response.commit")
+            raise ConversationCommandError(
+                "response.start required before response.commit",
+                code=ERROR_CODE_RESPONSE_STALE_GENERATION,
+                generation_id=generation_id,
+            )
         self._validate_response_generation(generation_id)
         accepted = await self._session.commit_response_stream(
             expected_response_id=response_id,
         )
         if not accepted:
-            self._control_response_id = None
-            self._control_generation_id = None
-            raise InvalidConfigError("response generation is no longer active")
+            self._clear_generation_bookkeeping()
+            raise ConversationCommandError(
+                "response generation is no longer active",
+                code=ERROR_CODE_RESPONSE_STALE_GENERATION,
+                generation_id=generation_id,
+            )
 
     async def cancel_response(self, *, generation_id: str | None = None) -> None:
         if self._session is None:
@@ -791,11 +921,24 @@ class ConversationOrchestrator:
         response_id = self._control_response_id
         await self._session.cancel_response()
         if self._control_response_id == response_id:
-            self._control_response_id = None
-            self._control_generation_id = None
+            self._clear_generation_bookkeeping()
 
-    async def report_error(self, message: str) -> None:
-        await self._events.put(ConvErrorEvent(message=message))
+    async def report_error(
+        self,
+        message: str,
+        *,
+        code: str = ERROR_CODE_COMMAND_INVALID,
+        recoverable: bool = True,
+        generation_id: str | None = None,
+    ) -> None:
+        await self._events.put(
+            ConvErrorEvent(
+                message=message,
+                code=code,
+                recoverable=recoverable,
+                generation_id=generation_id,
+            )
+        )
 
     async def end_of_stream(self, *, flush_response: bool = True) -> None:
         if self._session is not None and flush_response:
@@ -824,23 +967,56 @@ class ConversationOrchestrator:
         mapped = parse_conversation_wire_event(event)
         if mapped is None:
             return
-        if isinstance(mapped, ConvResponseCreatedEvent):
-            self._control_response_id = mapped.response_id or self._control_response_id
-        elif isinstance(mapped, (ConvResponseCancelledEvent, ConvResponseDoneEvent)) and (
-            not mapped.response_id or mapped.response_id == self._control_response_id
-        ):
-            self._control_response_id = None
-            self._control_generation_id = None
+        mapped = self._correlate_generation(mapped)
         if self._audio_sink is not None and isinstance(mapped, ConvAudioDeltaEvent):
             await self._audio_sink(mapped)
             return
         await self._events.put(mapped)
 
+    def _correlate_generation(self, mapped: ConvEvent) -> ConvEvent:
+        if isinstance(mapped, ConvResponseCreatedEvent):
+            self._control_response_id = mapped.response_id or self._control_response_id
+            self._client_generation_id = self._pending_start_generation_id
+            if self._client_generation_id and not mapped.generation_id:
+                mapped = replace(mapped, generation_id=self._client_generation_id)
+            return mapped
+        if isinstance(mapped, _GENERATION_CORRELATED_EVENT_TYPES):
+            if (
+                self._client_generation_id
+                and not mapped.generation_id
+                and mapped.response_id
+                and mapped.response_id == self._control_response_id
+            ):
+                mapped = replace(mapped, generation_id=self._client_generation_id)
+            if isinstance(mapped, (ConvResponseCancelledEvent, ConvResponseDoneEvent)) and (
+                not mapped.response_id or mapped.response_id == self._control_response_id
+            ):
+                self._clear_generation_bookkeeping()
+            return mapped
+        if isinstance(mapped, ConvErrorEvent) and mapped.generation_id is None:
+            generation_id: str | None = None
+            if mapped.code in _START_REJECTION_ERROR_CODES:
+                generation_id = self._pending_start_generation_id
+            elif mapped.code == ERROR_CODE_RESPONSE_FAILED:
+                generation_id = self._client_generation_id
+            if generation_id:
+                mapped = replace(mapped, generation_id=generation_id)
+        return mapped
+
+    def _clear_generation_bookkeeping(self) -> None:
+        self._control_response_id = None
+        self._control_generation_id = None
+        self._client_generation_id = None
+
     def _validate_response_generation(self, generation_id: str | None) -> None:
         if generation_id is None:
             return
         if generation_id != self._control_generation_id:
-            raise InvalidConfigError("stale response generation")
+            raise ConversationCommandError(
+                "stale response generation",
+                code=ERROR_CODE_RESPONSE_STALE_GENERATION,
+                generation_id=generation_id,
+            )
 
 
 def serialize_session_config(config: ConversationSessionConfig) -> dict:

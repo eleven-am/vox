@@ -7,6 +7,7 @@ from typing import Any
 
 from vox.operations.conversation import (
     ConvEvent,
+    conversation_error_fields,
     conversation_wire_event_payload,
     parse_allow_interruptions,
     parse_response_generation_id,
@@ -149,11 +150,25 @@ async def broadcast_rtc_client_events_to_user(
         await try_broadcast_wire_to_user(channel, user_id, event)
 
 
-async def reply_pondsocket_error(ctx: Any, message: str) -> None:
+async def reply_pondsocket_error(
+    ctx: Any,
+    message: str,
+    *,
+    code: str = "command_invalid",
+    recoverable: bool = True,
+    generation_id: str | None = None,
+) -> None:
     if ctx.has_replied():
         return
+    payload: dict[str, Any] = {
+        "message": message,
+        "code": code,
+        "recoverable": recoverable,
+    }
+    if generation_id:
+        payload["generation_id"] = generation_id
     with suppress(Exception):
-        await ctx.reply("error", {"message": message})
+        await ctx.reply("error", payload)
 
 
 def decode_pondsocket_command(event_name: str, payload: Any) -> ConversationCommand | RtcCommand:
@@ -251,7 +266,14 @@ async def handle_pondsocket_control_event(
         command = decode_pondsocket_command(ctx.event_name, ctx.get_payload())
         await runtime.dispatch(command)
     except OperationError as exc:
-        await reply_pondsocket_error(ctx, str(exc))
+        code, recoverable, generation_id = conversation_error_fields(exc)
+        await reply_pondsocket_error(
+            ctx,
+            str(exc),
+            code=code,
+            recoverable=recoverable,
+            generation_id=generation_id,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.exception(error_log_message)
         await reply_pondsocket_error(ctx, str(exc))

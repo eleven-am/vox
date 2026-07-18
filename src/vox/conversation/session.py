@@ -100,6 +100,13 @@ WIRE_INTERRUPTION_FALSE_POSITIVE = "interruption.false_positive"
 WIRE_TURN_EOU_PREDICTED = transcript_finalization.WIRE_TURN_EOU_PREDICTED
 WIRE_STATE_CHANGED = "turn.state_changed"
 WIRE_ERROR = "error"
+ERROR_CODE_RESPONSE_REJECTED_TURN_STATE = "response_rejected_turn_state"
+ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH = "response_rejected_user_speech"
+ERROR_CODE_RESPONSE_STALE_GENERATION = "response_stale_generation"
+ERROR_CODE_RESPONSE_ALREADY_ACTIVE = "response_already_active"
+ERROR_CODE_COMMAND_INVALID = "command_invalid"
+ERROR_CODE_SESSION_FAILED = "session_failed"
+ERROR_CODE_RESPONSE_FAILED = "response_failed"
 RESPONSE_STREAM_QUEUE_MAX = response_streams.RESPONSE_STREAM_QUEUE_MAX
 
 
@@ -299,7 +306,10 @@ class ConversationSession:
                 audio = np.asarray(processed, dtype=np.float32)
             except Exception as exc:
                 logger.exception("audio preprocessor raised")
-                await self._emit_error(f"audio preprocessor failed: {exc}")
+                await self._emit_error(
+                    f"audio preprocessor failed: {exc}",
+                    code=ERROR_CODE_COMMAND_INVALID,
+                )
                 return
 
         if self._is_response_uninterruptible():
@@ -315,7 +325,7 @@ class ConversationSession:
             logger.exception("pipeline.process_audio raised")
             self._awaiting_final_transcript = False
             self._awaiting_final_transcript_started_at = 0.0
-            await self._emit_error(str(exc))
+            await self._emit_error(str(exc), code=ERROR_CODE_COMMAND_INVALID)
             return
 
         if audio.size and self._speech_session is not None:
@@ -600,6 +610,8 @@ class ConversationSession:
                 cancelled_response_id = self._response_lifecycle.active_or_cancelled_response_id()
         await self._emit_error(
             f"action {failed_action.type.value} failed; response pipeline reset",
+            code=ERROR_CODE_SESSION_FAILED,
+            recoverable=False,
         )
         with suppress(Exception):
             self._timer_registry.cancel_all()
@@ -821,14 +833,21 @@ class ConversationSession:
             return existing
         if self._tts_task and not self._tts_task.done():
             logger.warning("response stream requested while response task already active; ignoring")
-            await self._emit_error("response already in flight")
+            await self._emit_error(
+                "response already in flight",
+                code=ERROR_CODE_RESPONSE_ALREADY_ACTIVE,
+            )
             return None
 
-        rejection_reason = self._response_start_rejection_reason()
-        if rejection_reason is not None:
+        rejection = self._response_start_rejection_reason()
+        if rejection is not None:
+            rejection_reason, rejection_code = rejection
             if not self._response_rejection_reported:
                 logger.warning("response stream rejected: %s", rejection_reason)
-                await self._emit_error(f"response rejected: {rejection_reason}")
+                await self._emit_error(
+                    f"response rejected: {rejection_reason}",
+                    code=rejection_code,
+                )
                 self._response_rejection_reported = True
             return None
 
@@ -842,12 +861,12 @@ class ConversationSession:
         self._tts_task = asyncio.create_task(self._run_response_stream(stream))
         return stream
 
-    def _response_start_rejection_reason(self) -> str | None:
+    def _response_start_rejection_reason(self) -> tuple[str, str] | None:
         state = self._sm.state
         if state not in _RESPONSE_START_STATES:
-            return f"turn state is {state.value}"
+            return f"turn state is {state.value}", ERROR_CODE_RESPONSE_REJECTED_TURN_STATE
         if state is TurnState.THINKING and self._input_speech_active:
-            return "user speech is active"
+            return "user speech is active", ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH
         return None
 
     async def _run_response_stream(self, stream: ResponseStream) -> None:
@@ -941,7 +960,7 @@ class ConversationSession:
 
     async def _fail_response(self, message: str, stream: ResponseStream | None = None) -> None:
         self._interrupt_detector.reset()
-        await self._emit_error(message)
+        await self._emit_error(message, code=ERROR_CODE_RESPONSE_FAILED)
         payload: dict[str, Any] = {}
         if stream is not None:
             payload["_response_stream"] = stream
@@ -1140,8 +1159,15 @@ class ConversationSession:
         self._transcript_finalizer.log(payload)
         await self._emit(payload)
 
-    async def _emit_error(self, message: str) -> None:
-        await self._emit({"type": WIRE_ERROR, "message": message})
+    async def _emit_error(self, message: str, *, code: str, recoverable: bool = True) -> None:
+        await self._emit(
+            {
+                "type": WIRE_ERROR,
+                "message": message,
+                "code": code,
+                "recoverable": recoverable,
+            }
+        )
 
     async def _emit_response_event(self, event_type: str, response_id: str | None) -> None:
         await self._emit({"type": event_type, "response_id": response_id})

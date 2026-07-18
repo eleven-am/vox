@@ -360,6 +360,9 @@ message RtcControlClosed {
 
 message RtcSignalingError {
   string message = 1;
+  string code = 2;
+  bool recoverable = 3;
+  string generation_id = 4;
 }
 
 message RtcWireEvent {
@@ -455,6 +458,7 @@ message RtcClientEvent {
 
 message ConversationResponseCommitted {
   string response_id = 1;
+  string generation_id = 2;
 }
 
 message ConversationTurnPolicy {
@@ -496,16 +500,22 @@ message ConversationAudioAppend {
 
 message ConversationResponseStart {
   optional bool allow_interruptions = 1;
+  string generation_id = 2;
 }
 
 message ConversationResponseDelta {
   string delta = 1;
   optional bool allow_interruptions = 2;
+  string generation_id = 3;
 }
 
-message ConversationResponseCommit {}
+message ConversationResponseCommit {
+  string generation_id = 1;
+}
 
-message ConversationResponseCancel {}
+message ConversationResponseCancel {
+  string generation_id = 1;
+}
 
 message ConversationResponseReplaceText {
   string text = 1;
@@ -544,6 +554,7 @@ message ConversationTranscriptDone {
 
 message ConversationResponseCreated {
   string response_id = 1;
+  string generation_id = 2;
 }
 
 message ConversationAudioDelta {
@@ -555,12 +566,14 @@ message ConversationAudioDelta {
 
 message ConversationAudioClear {
   string response_id = 1;
+  string generation_id = 2;
 }
 
 message ConversationInterruptionDetected {
   string response_id = 1;
   uint32 vad_active_ms = 2;
   string partial_transcript = 3;
+  string generation_id = 4;
 }
 
 message ConversationInterruptionFalsePositive {
@@ -568,6 +581,7 @@ message ConversationInterruptionFalsePositive {
   uint32 vad_active_ms = 2;
   string partial_transcript = 3;
   string reason = 4;
+  string generation_id = 5;
 }
 
 message ConversationTurnEouPredicted {
@@ -583,10 +597,12 @@ message ConversationTurnEouPredicted {
 
 message ConversationResponseDone {
   string response_id = 1;
+  string generation_id = 2;
 }
 
 message ConversationResponseCancelled {
   string response_id = 1;
+  string generation_id = 2;
 }
 
 message ConversationStateChanged {
@@ -596,4 +612,7 @@ message ConversationStateChanged {
 
 message ConversationError {
   string message = 1;
+  string code = 2;
+  bool recoverable = 3;
+  string generation_id = 4;
 }

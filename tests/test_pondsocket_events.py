@@ -6,7 +6,7 @@ import pytest
 
 from vox.operations.conversation import ConvDoneEvent, ConvResponseCreatedEvent
 from vox.operations.conversation_commands import ClientEventCommand, UnknownCommand
-from vox.operations.errors import SessionNotConfiguredError
+from vox.operations.errors import ConversationCommandError, SessionNotConfiguredError
 from vox.operations.rtc_runtime import RtcOfferCommand
 from vox.server.pondsocket_events import (
     broadcast_conversation_event_to_user,
@@ -449,7 +449,12 @@ async def test_handle_pondsocket_control_event_replies_when_runtime_missing():
         logger=FakeLogger(),
     )
 
-    assert ctx.replies == [("error", {"message": "session not attached"})]
+    assert ctx.replies == [
+        (
+            "error",
+            {"message": "session not attached", "code": "command_invalid", "recoverable": True},
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -521,7 +526,72 @@ async def test_handle_pondsocket_control_event_replies_with_operation_error():
         logger=FakeLogger(),
     )
 
-    assert ctx.replies == [("error", {"message": "Session not configured"})]
+    assert ctx.replies == [
+        (
+            "error",
+            {"message": "Session not configured", "code": "command_invalid", "recoverable": True},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handle_pondsocket_control_event_replies_with_typed_conversation_error():
+    ctx = FakeContext(event_name="response.delta", payload={"delta": "late"})
+    runtime = FakeRuntime(
+        ConversationCommandError(
+            "stale response generation",
+            code="response_stale_generation",
+            recoverable=True,
+            generation_id="gen-a",
+        )
+    )
+
+    await handle_pondsocket_control_event(
+        ctx,
+        runtime=runtime,
+        missing_message="session not attached",
+        error_log_message="unexpected",
+        logger=FakeLogger(),
+    )
+
+    assert ctx.replies == [
+        (
+            "error",
+            {
+                "message": "stale response generation",
+                "code": "response_stale_generation",
+                "recoverable": True,
+                "generation_id": "gen-a",
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_handle_pondsocket_control_event_replies_with_fatal_error_fields():
+    ctx = FakeContext()
+    runtime = FakeRuntime(
+        ConversationCommandError(
+            "session dead",
+            code="session_failed",
+            recoverable=False,
+        )
+    )
+
+    await handle_pondsocket_control_event(
+        ctx,
+        runtime=runtime,
+        missing_message="session not attached",
+        error_log_message="unexpected",
+        logger=FakeLogger(),
+    )
+
+    assert ctx.replies == [
+        (
+            "error",
+            {"message": "session dead", "code": "session_failed", "recoverable": False},
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -539,4 +609,6 @@ async def test_handle_pondsocket_control_event_logs_unexpected_errors():
     )
 
     assert logger.exceptions == ["unexpected control error"]
-    assert ctx.replies == [("error", {"message": "boom"})]
+    assert ctx.replies == [
+        ("error", {"message": "boom", "code": "command_invalid", "recoverable": True})
+    ]

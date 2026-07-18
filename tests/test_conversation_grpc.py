@@ -15,7 +15,10 @@ from tests.fakes import FakeScheduler
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
 from vox.grpc import vox_pb2
-from vox.grpc.conversation_commands import conversation_session_update_to_command
+from vox.grpc.conversation_commands import (
+    conversation_session_update_to_command,
+    converse_client_message_to_command,
+)
 from vox.grpc.conversation_events import conversation_event_to_pb, conversation_wire_event_to_pb
 from vox.grpc.conversation_servicer import ConversationServicer
 from vox.operations.conversation import ConvAudioClearEvent, ConvTranscriptDoneEvent
@@ -231,6 +234,9 @@ async def test_missing_stt_model_proto_maps_to_error_pb():
     errors = [m for m in out if m.WhichOneof("msg") == "error"]
     assert errors
     assert "stt_model" in errors[0].error.message
+    assert errors[0].error.code == "command_invalid"
+    assert errors[0].error.recoverable is True
+    assert errors[0].error.generation_id == ""
 
 
 @pytest.mark.asyncio
@@ -353,6 +359,129 @@ def test_transcript_done_event_maps_metadata_with_shared_transcript_converters()
     assert list(transcript.topics) == ["travel"]
     assert transcript.words[0].word == "Alice"
     assert transcript.words[0].confidence == pytest.approx(0.91)
+
+
+def test_response_commands_decode_generation_id_with_backward_compat():
+    with_generation = converse_client_message_to_command(
+        vox_pb2.ConverseClientMessage(
+            response_start=vox_pb2.ConversationResponseStart(generation_id="gen-1"),
+        )
+    )
+    assert with_generation.generation_id == "gen-1"
+
+    without_generation = converse_client_message_to_command(
+        vox_pb2.ConverseClientMessage(response_start=vox_pb2.ConversationResponseStart()),
+    )
+    assert without_generation.generation_id is None
+
+    commit = converse_client_message_to_command(
+        vox_pb2.ConverseClientMessage(
+            response_commit=vox_pb2.ConversationResponseCommit(generation_id="gen-1"),
+        )
+    )
+    assert commit.generation_id == "gen-1"
+
+    cancel = converse_client_message_to_command(
+        vox_pb2.ConverseClientMessage(response_cancel=vox_pb2.ConversationResponseCancel()),
+    )
+    assert cancel.generation_id is None
+
+
+@pytest.mark.asyncio
+async def test_response_lifecycle_pb_round_trips_generation_id():
+    servicer = ConversationServicer(
+        store=None,
+        registry=None,
+        scheduler=DummyScheduler(ScriptedTTS(chunks=2)),
+    )
+    out = await _drive_until(
+        servicer,
+        messages=[
+            vox_pb2.ConverseClientMessage(
+                session_update=vox_pb2.ConversationSessionUpdate(
+                    stt_model="x:1",
+                    tts_model="y:1",
+                    voice="default",
+                ),
+            ),
+            vox_pb2.ConverseClientMessage(
+                response_start=vox_pb2.ConversationResponseStart(generation_id="gen-1"),
+            ),
+            vox_pb2.ConverseClientMessage(
+                response_delta=vox_pb2.ConversationResponseDelta(delta="hi there", generation_id="gen-1"),
+            ),
+            vox_pb2.ConverseClientMessage(
+                response_commit=vox_pb2.ConversationResponseCommit(generation_id="gen-1"),
+            ),
+        ],
+        predicate=lambda m: m.WhichOneof("msg") == "response_done",
+    )
+    created = next(m for m in out if m.WhichOneof("msg") == "response_created")
+    committed = next(m for m in out if m.WhichOneof("msg") == "response_committed")
+    done = next(m for m in out if m.WhichOneof("msg") == "response_done")
+    assert created.response_created.generation_id == "gen-1"
+    assert committed.response_committed.generation_id == "gen-1"
+    assert done.response_done.generation_id == "gen-1"
+
+
+@pytest.mark.asyncio
+async def test_stale_generation_delta_maps_to_typed_error_pb():
+    servicer = ConversationServicer(
+        store=None,
+        registry=None,
+        scheduler=DummyScheduler(ScriptedTTS()),
+    )
+    out = await _drive_until(
+        servicer,
+        messages=[
+            vox_pb2.ConverseClientMessage(
+                session_update=vox_pb2.ConversationSessionUpdate(
+                    stt_model="x:1",
+                    tts_model="y:1",
+                    voice="default",
+                ),
+            ),
+            vox_pb2.ConverseClientMessage(
+                response_delta=vox_pb2.ConversationResponseDelta(delta="late", generation_id="gen-a"),
+            ),
+        ],
+        predicate=lambda m: m.WhichOneof("msg") == "error",
+    )
+    errors = [m for m in out if m.WhichOneof("msg") == "error"]
+    assert errors
+    assert errors[0].error.code == "response_stale_generation"
+    assert errors[0].error.recoverable is True
+    assert errors[0].error.generation_id == "gen-a"
+
+
+@pytest.mark.asyncio
+async def test_response_commands_without_generation_id_still_work_end_to_end():
+    servicer = ConversationServicer(
+        store=None,
+        registry=None,
+        scheduler=DummyScheduler(ScriptedTTS(chunks=2)),
+    )
+    out = await _drive_until(
+        servicer,
+        messages=[
+            vox_pb2.ConverseClientMessage(
+                session_update=vox_pb2.ConversationSessionUpdate(
+                    stt_model="x:1",
+                    tts_model="y:1",
+                    voice="default",
+                ),
+            ),
+            vox_pb2.ConverseClientMessage(response_start=vox_pb2.ConversationResponseStart()),
+            vox_pb2.ConverseClientMessage(response_delta=vox_pb2.ConversationResponseDelta(delta="hi there")),
+            vox_pb2.ConverseClientMessage(response_commit=vox_pb2.ConversationResponseCommit()),
+        ],
+        predicate=lambda m: m.WhichOneof("msg") == "response_done",
+    )
+    created = next(m for m in out if m.WhichOneof("msg") == "response_created")
+    done = next(m for m in out if m.WhichOneof("msg") == "response_done")
+    assert created.response_created.generation_id == ""
+    assert done.response_done.generation_id == ""
+    assert done.response_done.response_id
 
 
 def test_audio_clear_event_maps_to_proto_message():

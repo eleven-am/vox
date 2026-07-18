@@ -27,6 +27,9 @@ from vox.conversation import (
     TurnState,
 )
 from vox.conversation.session import (
+    ERROR_CODE_COMMAND_INVALID,
+    ERROR_CODE_RESPONSE_REJECTED_TURN_STATE,
+    ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH,
     WIRE_AUDIO_CLEAR,
     WIRE_AUDIO_DELTA,
     WIRE_ERROR,
@@ -191,14 +194,19 @@ class TestInterruptionEventContracts:
         await session._emit_response_committed("resp_1")
         await session._emit_response_done("resp_1")
         await session._emit_response_cancelled()
-        await session._emit_error("boom")
+        await session._emit_error("boom", code=ERROR_CODE_COMMAND_INVALID)
 
         assert collector.events == [
             {"type": WIRE_RESPONSE_CREATED, "response_id": "resp_1"},
             {"type": WIRE_RESPONSE_COMMITTED, "response_id": "resp_1"},
             {"type": WIRE_RESPONSE_DONE, "response_id": "resp_1"},
             {"type": WIRE_RESPONSE_CANCELLED, "response_id": "resp_1"},
-            {"type": WIRE_ERROR, "message": "boom"},
+            {
+                "type": WIRE_ERROR,
+                "message": "boom",
+                "code": ERROR_CODE_COMMAND_INVALID,
+                "recoverable": True,
+            },
         ]
 
     @pytest.mark.asyncio
@@ -267,6 +275,8 @@ class TestResponseAdmission:
             {
                 "type": WIRE_ERROR,
                 "message": "response rejected: turn state is listening",
+                "code": ERROR_CODE_RESPONSE_REJECTED_TURN_STATE,
+                "recoverable": True,
             }
         ]
         assert adapter.texts == []
@@ -339,6 +349,8 @@ class TestResponseAdmission:
             {
                 "type": WIRE_ERROR,
                 "message": "response rejected: user speech is active",
+                "code": ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH,
+                "recoverable": True,
             }
         ]
         assert adapter.texts == []

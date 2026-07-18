@@ -246,6 +246,10 @@ class TestActionFailureRecovery:
 
         errors = collector.by_type(WIRE_ERROR)
         assert any("flush_output" in event["message"] for event in errors)
+        recovery_errors = [e for e in errors if "response pipeline reset" in e["message"]]
+        assert recovery_errors
+        assert recovery_errors[0]["code"] == "session_failed"
+        assert recovery_errors[0]["recoverable"] is False
         clears = collector.by_type(WIRE_AUDIO_CLEAR)
         cancelled = collector.by_type(WIRE_RESPONSE_CANCELLED)
         assert clears and clears[-1]["response_id"] == response_id

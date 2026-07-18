@@ -105,6 +105,37 @@ from vox.server.pondsocket_events import decode_pondsocket_command
             {},
             vox_pb2.ConverseClientMessage(response_cancel=vox_pb2.ConversationResponseCancel()),
         ),
+        (
+            "response.start",
+            {"generation_id": "gen-1"},
+            vox_pb2.ConverseClientMessage(
+                response_start=vox_pb2.ConversationResponseStart(generation_id="gen-1")
+            ),
+        ),
+        (
+            "response.delta",
+            {"delta": "hello", "generation_id": "gen-1"},
+            vox_pb2.ConverseClientMessage(
+                response_delta=vox_pb2.ConversationResponseDelta(
+                    delta="hello",
+                    generation_id="gen-1",
+                )
+            ),
+        ),
+        (
+            "response.commit",
+            {"generation_id": "gen-1"},
+            vox_pb2.ConverseClientMessage(
+                response_commit=vox_pb2.ConversationResponseCommit(generation_id="gen-1")
+            ),
+        ),
+        (
+            "response.cancel",
+            {"generation_id": "gen-1"},
+            vox_pb2.ConverseClientMessage(
+                response_cancel=vox_pb2.ConversationResponseCancel(generation_id="gen-1")
+            ),
+        ),
     ],
 )
 def test_pondsocket_and_grpc_decode_to_identical_canonical_commands(
@@ -243,6 +274,36 @@ def test_pondsocket_and_grpc_rtc_signaling_decode_identically(
         ConvResponseDoneEvent(response_id="resp_1"),
         ConvStateChangedEvent(state="listening", previous_state="speaking"),
         ConvErrorEvent(message="boom"),
+        ConvErrorEvent(
+            message="stale response generation",
+            code="response_stale_generation",
+            recoverable=True,
+            generation_id="gen-1",
+        ),
+        ConvErrorEvent(
+            message="action failed; response pipeline reset",
+            code="session_failed",
+            recoverable=False,
+        ),
+        ConvResponseCreatedEvent(response_id="resp_1", generation_id="gen-1"),
+        ConvResponseCommittedEvent(response_id="resp_1", generation_id="gen-1"),
+        ConvResponseDoneEvent(response_id="resp_1", generation_id="gen-1"),
+        ConvResponseCancelledEvent(response_id="resp_1", generation_id="gen-1"),
+        ConvAudioClearEvent(response_id="resp_1", generation_id="gen-1"),
+        ConvInterruptionDetectedEvent(
+            response_id="resp_1",
+            vad_active_ms=420,
+            partial_transcript="wait",
+            reason="speech_evidence",
+            generation_id="gen-1",
+        ),
+        ConvInterruptionFalsePositiveEvent(
+            response_id="resp_1",
+            vad_active_ms=420,
+            partial_transcript="anyway",
+            reason="insufficient_evidence",
+            generation_id="gen-1",
+        ),
     ],
 )
 def test_json_and_protobuf_edges_encode_the_same_canonical_event(event):

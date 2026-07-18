@@ -443,6 +443,37 @@ Minimal PondSocket event sequence:
 
 Vox may begin TTS before `response.commit` when text reaches a good chunk boundary. Do not assume audio only starts after commit.
 
+### Generation Correlation
+
+`response.start`, `response.delta`, `response.commit`, and `response.cancel`
+accept an optional caller-chosen `generation_id` (gRPC: the `generation_id`
+field on the matching command messages). When supplied:
+
+- `response.created` is the positive start acknowledgement and echoes the
+  caller's `generation_id`.
+- A rejected start emits a typed `error` event carrying the same
+  `generation_id`.
+- Response lifecycle events (`response.committed`, `response.done`,
+  `response.cancelled`, `response.audio.clear`, `interruption.detected`,
+  `interruption.false_positive`) carry `generation_id` alongside `response_id`
+  when it is known.
+- `response.delta`/`response.commit` for a generation that is no longer active
+  fail with a `response_stale_generation` error instead of silently writing
+  into a newer response.
+
+Recommended SDK flow: after sending `response.start`, gate delta pumping on the
+matching `response.created` (or abort on the correlated recoverable error)
+instead of fire-and-forget.
+
+Commands without `generation_id` behave exactly as before, and events then omit
+the field (gRPC: empty string).
+
+```json
+{"type":"response.start","generation_id":"gen-42"}
+{"type":"response.delta","delta":"Hello.","generation_id":"gen-42"}
+{"type":"response.commit","generation_id":"gen-42"}
+```
+
 ## Client Playback Rules
 
 Maintain an output playback queue for `response.audio.delta`.
@@ -668,12 +699,21 @@ Client behavior:
 
 ### `response.created`
 
-Vox accepted a new assistant response stream.
+Vox accepted a new assistant response stream. This is the positive
+acknowledgement of `response.start`.
+
+Payload includes:
+
+- `response_id`
+- optional `generation_id`, echoing the caller's `response.start`
+  `generation_id`
 
 Client behavior:
 
 - Associate later audio and lifecycle events with this response.
 - Store the `response_id`. Newer Vox events include this ID on response audio, clear, commit, cancel, and done events.
+- If you sent a `generation_id`, treat this event as the go-ahead to pump
+  deltas for that generation.
 
 ### `response.committed`
 
@@ -795,12 +835,42 @@ Client behavior:
 
 ### `error`
 
-The session hit an error.
+A command failed or the session hit an error.
+
+Payload includes:
+
+- `message`: human-readable description. Messages are not stable API.
+- `code`: stable machine-readable slug. Codes are stable API.
+- `recoverable`: whether the session remains usable after this error.
+- optional `generation_id`: present when the error pertains to a specific
+  caller-supplied response generation (for example a rejected or stale
+  `response.start`/`response.delta`/`response.commit`).
+
+Error codes:
+
+| Code | Recoverable | Meaning and client action |
+| --- | --- | --- |
+| `response_rejected_turn_state` | yes | `response.start` arrived in a turn state that cannot accept it. Retry after the next turn/state event. |
+| `response_rejected_user_speech` | yes | `response.start` arrived during active user speech. Retry on `interruption.false_positive` or the next `turn.state_changed`. |
+| `response_stale_generation` | yes | `response.delta`/`response.commit` referenced a generation that is no longer active. Stop pumping that generation; the session remains healthy. |
+| `response_already_active` | yes | `response.start` while another generation is running. Cancel or finish the active response first. |
+| `response_failed` | yes | TTS synthesis failed for the active response. That response is over; the session remains usable. |
+| `command_invalid` | yes | One malformed or inapplicable command payload. Fix the payload and continue. |
+| `session_failed` | no | Unrecoverable session error. Close and recreate the conversation session. |
+
+`response_failed` is a Vox extension beyond the initial stabilization contract
+code set: a TTS failure ends one response, not the session, so it must not be
+reported as `session_failed`.
 
 Client behavior:
 
-- Log/display the message.
-- Depending on severity, close and recreate the conversation session.
+- Only `recoverable: false` (or the transport itself closing) should end the
+  call UI. Recoverable errors are per-command failures; handle them and keep
+  the session running.
+- Old Vox servers omit `code` and `recoverable`. Treat a missing or empty
+  `code` as recoverable unless the transport itself closed.
+- When `generation_id` is present, scope the failure to that generation: stop
+  sending its deltas and wait for the next opportunity to start a response.
 
 ## Recommended Client State Machine
 
@@ -835,7 +905,8 @@ Recommended transitions:
 | `response.cancelled` | Mark response cancelled; stop sending deltas for it. |
 | `turn.state_changed: interrupted` | Move to `interrupted`; wait for the user's transcript or next listening/thinking state. |
 | `response.done` | Mark response complete. |
-| `error` | Move to `error`; usually close and reconnect. |
+| `error` with `recoverable: false` | Move to `error`; close and reconnect. |
+| `error` with `recoverable: true` (or no `code`) | Per-command failure: abort the affected generation if `generation_id` matches, otherwise log and stay in the current state. |
 
 ## Important Rules
 

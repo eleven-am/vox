@@ -181,6 +181,21 @@ class InvalidConfigError(OperationError):
         super().__init__(message)
 
 
+class ConversationCommandError(InvalidConfigError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "command_invalid",
+        recoverable: bool = True,
+        generation_id: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.recoverable = recoverable
+        self.generation_id = generation_id
+
+
 def classify_operation_error(exc: OperationError) -> OperationErrorKind:
     if isinstance(
         exc,

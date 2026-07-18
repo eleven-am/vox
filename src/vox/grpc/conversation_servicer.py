@@ -16,7 +16,7 @@ from vox.core.store import BlobStore
 from vox.grpc import vox_pb2, vox_pb2_grpc
 from vox.grpc.conversation_commands import converse_client_message_to_command
 from vox.grpc.conversation_events import (
-    conversation_error_pb,
+    conversation_error_pb_from_exception,
     conversation_event_to_pb,
 )
 from vox.grpc.streaming_queue import close_grpc_output_queue, iter_grpc_stream_lifecycle
@@ -65,7 +65,7 @@ class ConversationServicer(vox_pb2_grpc.ConversationServiceServicer):
                     try:
                         await runtime.dispatch(converse_client_message_to_command(client_msg))
                     except OperationError as exc:
-                        await out_queue.put(conversation_error_pb(str(exc)))
+                        await out_queue.put(conversation_error_pb_from_exception(exc))
             finally:
                 await runtime.end_input()
 

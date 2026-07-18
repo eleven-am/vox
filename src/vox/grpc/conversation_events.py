@@ -23,11 +23,35 @@ from vox.operations.conversation import (
     ConvTranscriptDeltaEvent,
     ConvTranscriptDoneEvent,
     ConvTurnEouPredictedEvent,
+    conversation_error_fields,
 )
 
 
-def conversation_error_pb(message: str) -> vox_pb2.ConverseServerMessage:
-    return vox_pb2.ConverseServerMessage(error=vox_pb2.ConversationError(message=message))
+def conversation_error_pb(
+    message: str,
+    *,
+    code: str = "",
+    recoverable: bool = True,
+    generation_id: str | None = None,
+) -> vox_pb2.ConverseServerMessage:
+    return vox_pb2.ConverseServerMessage(
+        error=vox_pb2.ConversationError(
+            message=message,
+            code=code,
+            recoverable=recoverable,
+            generation_id=generation_id or "",
+        )
+    )
+
+
+def conversation_error_pb_from_exception(exc: BaseException) -> vox_pb2.ConverseServerMessage:
+    code, recoverable, generation_id = conversation_error_fields(exc)
+    return conversation_error_pb(
+        str(exc),
+        code=code,
+        recoverable=recoverable,
+        generation_id=generation_id,
+    )
 
 
 def conversation_event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage | None:
@@ -68,7 +92,10 @@ def conversation_event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage 
         return vox_pb2.ConverseServerMessage(transcript_done=msg)
     if isinstance(event, ConvResponseCreatedEvent):
         return vox_pb2.ConverseServerMessage(
-            response_created=vox_pb2.ConversationResponseCreated(response_id=event.response_id),
+            response_created=vox_pb2.ConversationResponseCreated(
+                response_id=event.response_id,
+                generation_id=event.generation_id or "",
+            ),
         )
     if isinstance(event, ConvAudioDeltaEvent):
         return vox_pb2.ConverseServerMessage(
@@ -81,19 +108,31 @@ def conversation_event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage 
         )
     if isinstance(event, ConvAudioClearEvent):
         return vox_pb2.ConverseServerMessage(
-            audio_clear=vox_pb2.ConversationAudioClear(response_id=event.response_id),
+            audio_clear=vox_pb2.ConversationAudioClear(
+                response_id=event.response_id,
+                generation_id=event.generation_id or "",
+            ),
         )
     if isinstance(event, ConvResponseDoneEvent):
         return vox_pb2.ConverseServerMessage(
-            response_done=vox_pb2.ConversationResponseDone(response_id=event.response_id),
+            response_done=vox_pb2.ConversationResponseDone(
+                response_id=event.response_id,
+                generation_id=event.generation_id or "",
+            ),
         )
     if isinstance(event, ConvResponseCancelledEvent):
         return vox_pb2.ConverseServerMessage(
-            response_cancelled=vox_pb2.ConversationResponseCancelled(response_id=event.response_id),
+            response_cancelled=vox_pb2.ConversationResponseCancelled(
+                response_id=event.response_id,
+                generation_id=event.generation_id or "",
+            ),
         )
     if isinstance(event, ConvResponseCommittedEvent):
         return vox_pb2.ConverseServerMessage(
-            response_committed=vox_pb2.ConversationResponseCommitted(response_id=event.response_id),
+            response_committed=vox_pb2.ConversationResponseCommitted(
+                response_id=event.response_id,
+                generation_id=event.generation_id or "",
+            ),
         )
     if isinstance(event, ConvInterruptionDetectedEvent):
         return vox_pb2.ConverseServerMessage(
@@ -101,6 +140,7 @@ def conversation_event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage 
                 response_id=event.response_id,
                 vad_active_ms=event.vad_active_ms,
                 partial_transcript=event.partial_transcript or "",
+                generation_id=event.generation_id or "",
             ),
         )
     if isinstance(event, ConvInterruptionFalsePositiveEvent):
@@ -110,6 +150,7 @@ def conversation_event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage 
                 vad_active_ms=event.vad_active_ms,
                 partial_transcript=event.partial_transcript or "",
                 reason=event.reason or "",
+                generation_id=event.generation_id or "",
             ),
         )
     if isinstance(event, ConvTurnEouPredictedEvent):
@@ -133,7 +174,12 @@ def conversation_event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage 
             ),
         )
     if isinstance(event, ConvErrorEvent):
-        return conversation_error_pb(event.message)
+        return conversation_error_pb(
+            event.message,
+            code=event.code,
+            recoverable=event.recoverable,
+            generation_id=event.generation_id,
+        )
     return None
 
 

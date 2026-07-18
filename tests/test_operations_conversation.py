@@ -7,6 +7,14 @@ from typing import Any
 import numpy as np
 import pytest
 
+from vox.conversation.session import (
+    ERROR_CODE_RESPONSE_ALREADY_ACTIVE,
+    ERROR_CODE_RESPONSE_REJECTED_TURN_STATE,
+    ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH,
+    ERROR_CODE_RESPONSE_STALE_GENERATION,
+    ERROR_CODE_SESSION_FAILED,
+)
+from vox.conversation.types import TurnEvent, TurnEventType
 from vox.core.adapter import TTSAdapter
 from vox.core.types import (
     AdapterInfo,
@@ -32,7 +40,10 @@ from vox.operations.conversation import (
     ConversationOrchestrator,
     ConvInterruptionDetectedEvent,
     ConvInterruptionFalsePositiveEvent,
+    ConvResponseCancelledEvent,
+    ConvResponseCommittedEvent,
     ConvResponseCreatedEvent,
+    ConvResponseDoneEvent,
     ConvSessionCreatedEvent,
     ConvTranscriptDeltaEvent,
     ConvTranscriptDoneEvent,
@@ -51,6 +62,7 @@ from vox.operations.conversation import (
     session_update_payload,
 )
 from vox.operations.errors import (
+    ConversationCommandError,
     InvalidConfigError,
     SessionAlreadyConfiguredError,
 )
@@ -449,7 +461,109 @@ def test_serialize_conversation_event_uses_operation_wire_error_constant():
     assert serialize_conversation_event(ConvErrorEvent(message="boom")) == {
         "type": "error",
         "message": "boom",
+        "code": "",
+        "recoverable": True,
     }
+
+
+def test_serialize_error_event_always_emits_code_and_recoverable():
+    assert serialize_conversation_event(
+        ConvErrorEvent(
+            message="pipeline reset",
+            code=ERROR_CODE_SESSION_FAILED,
+            recoverable=False,
+        )
+    ) == {
+        "type": "error",
+        "message": "pipeline reset",
+        "code": ERROR_CODE_SESSION_FAILED,
+        "recoverable": False,
+    }
+
+
+def test_serialize_error_event_includes_generation_id_when_known():
+    assert serialize_conversation_event(
+        ConvErrorEvent(
+            message="response rejected: user speech is active",
+            code=ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH,
+            recoverable=True,
+            generation_id="gen-1",
+        )
+    ) == {
+        "type": "error",
+        "message": "response rejected: user speech is active",
+        "code": ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH,
+        "recoverable": True,
+        "generation_id": "gen-1",
+    }
+
+
+def test_parse_error_wire_event_defaults_missing_code_to_recoverable():
+    event = parse_conversation_wire_event({"type": "error", "message": "legacy boom"})
+    assert isinstance(event, ConvErrorEvent)
+    assert event.code == ""
+    assert event.recoverable is True
+    assert event.generation_id is None
+
+
+def test_parse_error_wire_event_round_trips_typed_fields():
+    event = parse_conversation_wire_event(
+        {
+            "type": "error",
+            "message": "stale",
+            "code": ERROR_CODE_RESPONSE_STALE_GENERATION,
+            "recoverable": True,
+            "generation_id": "gen-9",
+        }
+    )
+    assert isinstance(event, ConvErrorEvent)
+    assert event.code == ERROR_CODE_RESPONSE_STALE_GENERATION
+    assert event.recoverable is True
+    assert event.generation_id == "gen-9"
+
+
+def test_serialize_lifecycle_events_carry_generation_id_only_when_known():
+    assert serialize_conversation_event(
+        ConvResponseCreatedEvent(response_id="resp_1", generation_id="gen-1")
+    ) == {
+        "type": "response.created",
+        "response_id": "resp_1",
+        "generation_id": "gen-1",
+    }
+    assert serialize_conversation_event(ConvResponseCreatedEvent(response_id="resp_1")) == {
+        "type": "response.created",
+        "response_id": "resp_1",
+    }
+    assert serialize_conversation_event(
+        ConvAudioClearEvent(response_id="resp_1", generation_id="gen-1")
+    ) == {
+        "type": "response.audio.clear",
+        "response_id": "resp_1",
+        "generation_id": "gen-1",
+    }
+    detected = serialize_conversation_event(
+        ConvInterruptionDetectedEvent(
+            response_id="resp_1",
+            vad_active_ms=200,
+            partial_transcript="wait",
+            reason="stable_partial",
+            generation_id="gen-1",
+        )
+    )
+    assert detected is not None
+    assert detected["generation_id"] == "gen-1"
+
+
+def test_parse_lifecycle_wire_events_round_trip_generation_id():
+    created = parse_conversation_wire_event(
+        {"type": "response.created", "response_id": "resp_1", "generation_id": "gen-1"}
+    )
+    assert isinstance(created, ConvResponseCreatedEvent)
+    assert created.generation_id == "gen-1"
+
+    legacy = parse_conversation_wire_event({"type": "response.created", "response_id": "resp_1"})
+    assert isinstance(legacy, ConvResponseCreatedEvent)
+    assert legacy.generation_id is None
 
 
 def test_audio_clear_wire_event_maps_to_operation_event():
@@ -686,4 +800,144 @@ async def test_report_error_emits_error_event():
     async for event in orchestrator.events():
         events.append(event)
     assert any(isinstance(e, ConvErrorEvent) and e.message == "boom" for e in events)
+    await orchestrator.close()
+
+
+async def _collect_orchestrator_events(orchestrator: ConversationOrchestrator) -> list:
+    events: list = []
+    async for event in orchestrator.events():
+        events.append(event)
+    return events
+
+
+async def _started_orchestrator(adapter: Any) -> ConversationOrchestrator:
+    orchestrator = ConversationOrchestrator(scheduler=DummyScheduler(adapter))
+    config = parse_session_update(
+        {
+            "session": {"stt_model": "x:1", "tts_model": "y:1", "voice": "default"},
+        }
+    )
+    await orchestrator.start_session(config)
+    return orchestrator
+
+
+@pytest.mark.asyncio
+async def test_response_lifecycle_events_echo_callers_generation_id():
+    orchestrator = await _started_orchestrator(ScriptedTTS(chunks=2))
+    await orchestrator.start_response(generation_id="gen-1")
+    await orchestrator.append_response_text("hi there", generation_id="gen-1")
+    await orchestrator.commit_response(generation_id="gen-1")
+    await orchestrator.end_of_stream()
+
+    events = await _collect_orchestrator_events(orchestrator)
+    created = next(e for e in events if isinstance(e, ConvResponseCreatedEvent))
+    committed = next(e for e in events if isinstance(e, ConvResponseCommittedEvent))
+    done = next(e for e in events if isinstance(e, ConvResponseDoneEvent))
+    assert created.generation_id == "gen-1"
+    assert committed.generation_id == "gen-1"
+    assert done.generation_id == "gen-1"
+    assert created.response_id == committed.response_id == done.response_id
+    await orchestrator.close()
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_events_omit_generation_id_without_client_correlation():
+    orchestrator = await _started_orchestrator(ScriptedTTS(chunks=2))
+    await orchestrator.start_response()
+    await orchestrator.append_response_text("hi there")
+    await orchestrator.commit_response()
+    await orchestrator.end_of_stream()
+
+    events = await _collect_orchestrator_events(orchestrator)
+    created = next(e for e in events if isinstance(e, ConvResponseCreatedEvent))
+    done = next(e for e in events if isinstance(e, ConvResponseDoneEvent))
+    assert created.generation_id is None
+    assert done.generation_id is None
+    wire = serialize_conversation_event(created)
+    assert wire is not None
+    assert "generation_id" not in wire
+    await orchestrator.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_response_event_carries_generation_id():
+    orchestrator = await _started_orchestrator(ScriptedTTS(chunks=5))
+    await orchestrator.start_response(generation_id="gen-1")
+    await orchestrator.append_response_text("a long reply", generation_id="gen-1")
+    await orchestrator.cancel_response(generation_id="gen-1")
+    await orchestrator.end_of_stream(flush_response=False)
+
+    events = await _collect_orchestrator_events(orchestrator)
+    cancelled = [e for e in events if isinstance(e, ConvResponseCancelledEvent)]
+    assert cancelled
+    assert cancelled[0].generation_id == "gen-1"
+    await orchestrator.close()
+
+
+@pytest.mark.asyncio
+async def test_rejected_start_error_event_carries_callers_generation_id():
+    orchestrator = await _started_orchestrator(ScriptedTTS())
+    session = orchestrator._session
+    assert session is not None
+    await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
+
+    await orchestrator.start_response(generation_id="gen-rejected")
+    await orchestrator.end_of_stream(flush_response=False)
+
+    events = await _collect_orchestrator_events(orchestrator)
+    errors = [e for e in events if isinstance(e, ConvErrorEvent)]
+    assert errors
+    assert errors[0].code == ERROR_CODE_RESPONSE_REJECTED_TURN_STATE
+    assert errors[0].recoverable is True
+    assert errors[0].generation_id == "gen-rejected"
+    await orchestrator.close()
+
+
+@pytest.mark.asyncio
+async def test_start_while_active_raises_already_active_with_generation_id():
+    orchestrator = await _started_orchestrator(ScriptedTTS(chunks=5))
+    await orchestrator.start_response(generation_id="gen-1")
+
+    with pytest.raises(ConversationCommandError, match="response already active") as exc_info:
+        await orchestrator.start_response(generation_id="gen-2")
+
+    assert exc_info.value.code == ERROR_CODE_RESPONSE_ALREADY_ACTIVE
+    assert exc_info.value.recoverable is True
+    assert exc_info.value.generation_id == "gen-2"
+    await orchestrator.close()
+
+
+@pytest.mark.asyncio
+async def test_delta_and_commit_without_start_raise_stale_generation():
+    orchestrator = await _started_orchestrator(ScriptedTTS())
+
+    with pytest.raises(ConversationCommandError, match="response.start required") as delta_exc:
+        await orchestrator.append_response_text("stale delta", generation_id="gen-a")
+    with pytest.raises(ConversationCommandError, match="response.start required") as commit_exc:
+        await orchestrator.commit_response(generation_id="gen-a")
+
+    assert delta_exc.value.code == ERROR_CODE_RESPONSE_STALE_GENERATION
+    assert delta_exc.value.generation_id == "gen-a"
+    assert commit_exc.value.code == ERROR_CODE_RESPONSE_STALE_GENERATION
+    assert commit_exc.value.generation_id == "gen-a"
+    await orchestrator.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_generation_delta_and_commit_raise_typed_errors():
+    orchestrator = await _started_orchestrator(ScriptedTTS(chunks=5))
+    await orchestrator.start_response(generation_id="gen-a")
+    await orchestrator.cancel_response(generation_id="gen-a")
+    await orchestrator.start_response(generation_id="gen-b")
+
+    with pytest.raises(ConversationCommandError, match="stale response generation") as delta_exc:
+        await orchestrator.append_response_text("late delta", generation_id="gen-a")
+    with pytest.raises(ConversationCommandError, match="stale response generation") as commit_exc:
+        await orchestrator.commit_response(generation_id="gen-a")
+
+    assert delta_exc.value.code == ERROR_CODE_RESPONSE_STALE_GENERATION
+    assert delta_exc.value.recoverable is True
+    assert delta_exc.value.generation_id == "gen-a"
+    assert commit_exc.value.code == ERROR_CODE_RESPONSE_STALE_GENERATION
+    assert commit_exc.value.generation_id == "gen-a"
     await orchestrator.close()

@@ -12,6 +12,7 @@ from vox.grpc.conversation_commands import rtc_control_message_to_command
 from vox.grpc.rtc_messages import (
     rtc_create_session_request_from_pb,
     rtc_error_pb,
+    rtc_error_pb_from_exception,
     rtc_runtime_event_pb,
     rtc_session_bootstrap_pb,
 )
@@ -81,7 +82,7 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                     try:
                         await runtime.dispatch(rtc_control_message_to_command(client_msg))
                     except OperationError as exc:
-                        await out_queue.put(rtc_error_pb(str(exc)))
+                        await out_queue.put(rtc_error_pb_from_exception(exc))
             finally:
                 if runtime is not None:
                     await runtime.close(reason="transport_closed")

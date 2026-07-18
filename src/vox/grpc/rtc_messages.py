@@ -10,6 +10,7 @@ from vox.grpc.conversation_events import conversation_wire_event_to_pb
 from vox.operations.conversation import (
     control_event_as_client_event,
     control_event_client_payload_json,
+    conversation_error_fields,
     conversation_wire_event_payload,
 )
 from vox.operations.rtc_signaling import (
@@ -103,8 +104,31 @@ def rtc_runtime_event_pb(event: dict[str, Any]) -> vox_pb2.RtcControlServerMessa
     )
 
 
-def rtc_error_pb(message: str) -> vox_pb2.RtcControlServerMessage:
-    return vox_pb2.RtcControlServerMessage(error=vox_pb2.RtcSignalingError(message=message))
+def rtc_error_pb(
+    message: str,
+    *,
+    code: str = "",
+    recoverable: bool = True,
+    generation_id: str | None = None,
+) -> vox_pb2.RtcControlServerMessage:
+    return vox_pb2.RtcControlServerMessage(
+        error=vox_pb2.RtcSignalingError(
+            message=message,
+            code=code,
+            recoverable=recoverable,
+            generation_id=generation_id or "",
+        )
+    )
+
+
+def rtc_error_pb_from_exception(exc: BaseException) -> vox_pb2.RtcControlServerMessage:
+    code, recoverable, generation_id = conversation_error_fields(exc)
+    return rtc_error_pb(
+        str(exc),
+        code=code,
+        recoverable=recoverable,
+        generation_id=generation_id,
+    )
 
 
 def _rtc_candidate_pb(candidate: Any) -> vox_pb2.RtcIceCandidate:

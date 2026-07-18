@@ -49,8 +49,13 @@ Error codes (initial set; codes are stable API, messages are not):
 - `response_stale_generation` (recoverable) — delta/commit for a generation that
   is no longer active; stop pumping THIS generation, session remains healthy.
 - `response_already_active` (recoverable) — start while another generation runs.
-- `command_invalid` (recoverable) — malformed payload for one command.
+- `command_invalid` (recoverable) — malformed payload for one command (also
+  covers audio-ingest failures; session stays healthy).
+- `response_failed` (recoverable) — TTS synthesis/adapter failure for one
+  response; the session survives, start a new response.
 - `session_failed` (fatal) — unrecoverable session error; client should close.
+- Delta/commit with no started generation maps to `response_stale_generation`
+  (that is what an SDK sees after a rejected or finished start).
 - Missing/empty `code` (old servers) => clients must treat as recoverable unless
   the transport itself closed. Docs guidance in conversation-events.md changes
   from "move client to error state" to: only `recoverable: false` (or transport

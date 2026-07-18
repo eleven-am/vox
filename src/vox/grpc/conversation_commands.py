@@ -112,7 +112,8 @@ def _response_command(
                 client_msg.response_start.allow_interruptions
                 if client_msg.response_start.HasField("allow_interruptions")
                 else True
-            )
+            ),
+            generation_id=client_msg.response_start.generation_id or None,
         )
     if kind == "response_delta":
         return ResponseDeltaCommand(
@@ -122,11 +123,12 @@ def _response_command(
                 if client_msg.response_delta.HasField("allow_interruptions")
                 else True
             ),
+            generation_id=client_msg.response_delta.generation_id or None,
         )
     if kind == "response_commit":
-        return ResponseCommitCommand()
+        return ResponseCommitCommand(generation_id=client_msg.response_commit.generation_id or None)
     if kind == "response_cancel":
-        return ResponseCancelCommand()
+        return ResponseCancelCommand(generation_id=client_msg.response_cancel.generation_id or None)
     if kind == "response_replace_text":
         return ResponseReplaceTextCommand(
             text=client_msg.response_replace_text.text,
