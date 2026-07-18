@@ -152,7 +152,7 @@ class TestBackchannelRejection:
         session, coll, _ = _build()
         await session.start()
         session._sm._state = TurnState.THINKING
-        response_id = await session.start_response_stream()
+        response_id = (await session.start_response_stream()).response_id
         assert response_id is not None
 
         voice = _voice_signal(0.10, amp=0.08, freq=330)
@@ -177,7 +177,7 @@ class TestBackchannelRejection:
         session, coll, _ = _build()
         await session.start()
         session._sm._state = TurnState.THINKING
-        response_id = await session.start_response_stream()
+        response_id = (await session.start_response_stream()).response_id
         assert response_id is not None
 
         _replace_mic_audio(session, _voice_signal(0.60, amp=0.15, freq=330))

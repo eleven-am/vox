@@ -881,15 +881,12 @@ async def test_rejected_start_error_event_carries_callers_generation_id():
     assert session is not None
     await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
 
-    await orchestrator.start_response(generation_id="gen-rejected")
-    await orchestrator.end_of_stream(flush_response=False)
+    with pytest.raises(ConversationCommandError) as exc_info:
+        await orchestrator.start_response(generation_id="gen-rejected")
 
-    events = await _collect_orchestrator_events(orchestrator)
-    errors = [e for e in events if isinstance(e, ConvErrorEvent)]
-    assert errors
-    assert errors[0].code == ERROR_CODE_RESPONSE_REJECTED_TURN_STATE
-    assert errors[0].recoverable is True
-    assert errors[0].generation_id == "gen-rejected"
+    assert exc_info.value.code == ERROR_CODE_RESPONSE_REJECTED_TURN_STATE
+    assert exc_info.value.recoverable is True
+    assert exc_info.value.generation_id == "gen-rejected"
     await orchestrator.close()
 
 

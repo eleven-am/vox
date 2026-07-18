@@ -538,6 +538,58 @@ class TestStartRejectedDuringUserSpeech:
             "response.done",
         ]
 
+    def test_retry_succeeds_after_acoustic_false_positive_before_vad_stops(self, transport_factory):
+        transport = transport_factory(FakeScheduler(ScriptedTTSAdapter(chunks=3, inter_chunk_delay=0.005)))
+        transport.send("session.update", _session_payload(min_interrupt_duration_ms=5_000))
+        transport.expect(_is("session.created"))
+
+        transport.run_on_session_loop(_commit_user_turn(transport.session))
+        transport.expect(_is("turn.state_changed", state="thinking"))
+        transport.run_on_session_loop(_begin_user_speech(transport.session, utterance_id=8, timestamp_ms=3_000))
+        transport.expect(_is("input_audio_buffer.speech_started"))
+
+        transport.send("response.start", {"generation_id": "gen-reject"})
+        transport.expect(
+            _is(
+                "error",
+                code="response_rejected_user_speech",
+                generation_id="gen-reject",
+            )
+        )
+
+        transport.run_on_session_loop(transport.session._evaluate_interrupt_candidate())
+        false_positive = transport.expect(_is("interruption.false_positive"))
+        assert false_positive.get("reason") == "insufficient_acoustic_evidence"
+        assert transport.session._input_speech_active is True
+
+        transport.send("response.start", {"generation_id": "gen-retry"})
+        transport.expect(_is("response.created", generation_id="gen-retry"))
+        transport.send("response.delta", {"delta": "The retry was admitted.", "generation_id": "gen-retry"})
+        transport.send("response.commit", {"generation_id": "gen-retry"})
+        transport.expect(_is("response.committed", generation_id="gen-retry"))
+        transport.expect(_is("response.done", generation_id="gen-retry"))
+
+    def test_every_rejected_start_has_a_correlated_error(self, transport_factory):
+        transport = transport_factory(FakeScheduler(ScriptedTTSAdapter(chunks=1)))
+        transport.send("session.update", _session_payload())
+        transport.expect(_is("session.created"))
+
+        transport.run_on_session_loop(_commit_user_turn(transport.session))
+        transport.expect(_is("turn.state_changed", state="thinking"))
+        transport.run_on_session_loop(_begin_user_speech(transport.session, utterance_id=9, timestamp_ms=4_000))
+        transport.expect(_is("input_audio_buffer.speech_started"))
+
+        for generation_id in ("gen-reject-1", "gen-reject-2"):
+            transport.send("response.start", {"generation_id": generation_id})
+            rejected = transport.expect(
+                _is(
+                    "error",
+                    code="response_rejected_user_speech",
+                    generation_id=generation_id,
+                )
+            )
+            assert rejected["recoverable"] is True
+
 
 class TestRecoverableVsFatalErrors:
     def test_stale_delta_without_start_is_recoverable_and_session_survives(self, transport_factory):

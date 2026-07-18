@@ -95,7 +95,7 @@ class TestControlPlaneVsInterruption:
 
         await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
         await _drain_events(session)
-        response_id = await session.start_response_stream()
+        response_id = (await session.start_response_stream()).response_id
         assert response_id is not None
         assert await session.append_response_text(
             "A long reply that keeps going on.",
@@ -155,14 +155,15 @@ class TestControlPlaneVsInterruption:
         await session.start()
 
         await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
-        response_id = await session.start_response_stream()
+        result = await session.start_response_stream()
         await _drain_events(session)
 
-        assert response_id is None
+        assert result.response_id is None
+        assert result.rejection is not None
         assert session.state == TurnState.LISTENING
         assert not session.response_active
         assert adapter.texts == []
-        assert collector.by_type(WIRE_ERROR)
+        assert collector.by_type(WIRE_ERROR) == []
 
         await session.close()
 
@@ -400,7 +401,7 @@ class TestAppendIntoDeadStream:
 
         await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
         await _drain_events(session)
-        response_id = await session.start_response_stream()
+        response_id = (await session.start_response_stream()).response_id
         assert response_id is not None
         stream = session._response_stream
         assert stream is not None
@@ -461,7 +462,7 @@ class TestSlowTeardownDoesNotStallLoop:
         assert session._tts_task is None
         assert not old_task.done()
 
-        new_response_id = await asyncio.wait_for(session.start_response_stream(), timeout=1.0)
+        new_response_id = (await asyncio.wait_for(session.start_response_stream(), timeout=1.0)).response_id
         elapsed = time.monotonic() - started
         assert elapsed < 1.0
         assert new_response_id is not None

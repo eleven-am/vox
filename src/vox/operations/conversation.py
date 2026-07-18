@@ -847,15 +847,35 @@ class ConversationOrchestrator:
             self._clear_generation_bookkeeping()
         self._pending_start_generation_id = generation_id
         try:
-            response_id = await self._session.start_response_stream(
+            result = await self._session.start_response_stream(
                 allow_interruptions=allow_interruptions,
             )
         finally:
             self._pending_start_generation_id = None
-        if response_id is not None:
-            self._control_response_id = response_id
-            self._control_generation_id = generation_id or response_id
-            self._client_generation_id = generation_id
+        context = result.context
+        logger.info(
+            "response start generation_id=%s accepted=%s response_id=%s state=%s "
+            "input_speech_active=%s candidate_id=%s candidate_status=%s candidate_reason=%s",
+            generation_id,
+            result.accepted,
+            result.response_id,
+            context.turn_state.value,
+            context.input_speech_active,
+            context.candidate_id,
+            context.candidate_status.value if context.candidate_status is not None else None,
+            context.candidate_reason,
+        )
+        if result.rejection is not None:
+            raise ConversationCommandError(
+                result.rejection.message,
+                code=result.rejection.code,
+                generation_id=generation_id,
+            )
+        if result.response_id is None:
+            raise RuntimeError("response start returned neither an id nor a rejection")
+        self._control_response_id = result.response_id
+        self._control_generation_id = generation_id or result.response_id
+        self._client_generation_id = generation_id
 
     async def append_response_text(
         self,

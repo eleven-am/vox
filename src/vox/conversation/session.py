@@ -44,6 +44,7 @@ from vox.conversation.interrupt import (
 from vox.conversation.interruption_detector import (
     EvidenceBasedInterruptDetector,
     InterruptDetector,
+    InterruptionCandidateStatus,
     InterruptionDecision,
     InterruptionDecisionAction,
 )
@@ -112,6 +113,36 @@ RESPONSE_STREAM_QUEUE_MAX = response_streams.RESPONSE_STREAM_QUEUE_MAX
 
 EventEmitter = Callable[[dict], Awaitable[None]]
 AudioPreprocessor = Callable[[np.ndarray, int], np.ndarray | Awaitable[np.ndarray]]
+
+
+@dataclass(frozen=True, slots=True)
+class ResponseStartContext:
+    turn_state: TurnState
+    input_speech_active: bool
+    candidate_id: int | None
+    candidate_status: InterruptionCandidateStatus | None
+    candidate_reason: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ResponseStartRejection:
+    message: str
+    code: str
+
+
+@dataclass(frozen=True, slots=True)
+class ResponseStartResult:
+    context: ResponseStartContext
+    response_id: str | None = None
+    rejection: ResponseStartRejection | None = None
+
+    def __post_init__(self) -> None:
+        if (self.response_id is None) == (self.rejection is None):
+            raise ValueError("response start result must be either accepted or rejected")
+
+    @property
+    def accepted(self) -> bool:
+        return self.response_id is not None
 
 
 @dataclass
@@ -229,7 +260,6 @@ class ConversationSession:
         self._runner: asyncio.Task | None = None
         self._audio_output = ResponseAudioOutput(pace_to_playout=config.pace_response_done_to_audio)
         self._response_lifecycle = ConversationResponseLifecycle()
-        self._response_rejection_reported = False
         self._cancel_emitted_response_id: str | None = None
         self._closed: bool = False
         self._client_sample_rate: int = config.sample_rate
@@ -367,13 +397,18 @@ class ConversationSession:
         await self.cancel_response()
         await self.submit_response_text(text, allow_interruptions=allow_interruptions)
 
-    async def start_response_stream(self, *, allow_interruptions: bool = True) -> str | None:
+    async def start_response_stream(self, *, allow_interruptions: bool = True) -> ResponseStartResult:
         if self._closed:
-            return None
-        stream = await self._submit_command(
-            partial(self._ensure_response_stream, allow_interruptions=allow_interruptions)
+            return ResponseStartResult(
+                context=self._response_start_context(),
+                rejection=ResponseStartRejection(
+                    message="response rejected: session is closed",
+                    code=ERROR_CODE_RESPONSE_REJECTED_TURN_STATE,
+                ),
+            )
+        return await self._submit_command(
+            partial(self._attempt_response_start, allow_interruptions=allow_interruptions)
         )
-        return stream.response_id if stream is not None else None
 
     async def append_response_text(
         self,
@@ -404,7 +439,17 @@ class ConversationSession:
         if self._closed:
             return None
         if expected_response_id is None:
-            return await self._ensure_response_stream(allow_interruptions=allow_interruptions)
+            result = await self._attempt_response_start(allow_interruptions=allow_interruptions)
+            if result.rejection is not None:
+                self._log_response_start_rejection(result.context, result.rejection)
+                await self._emit_error(
+                    result.rejection.message,
+                    code=result.rejection.code,
+                )
+                return None
+            if result.response_id is None:
+                return None
+            return self._response_lifecycle.appendable_stream(result.response_id)
         return self._response_lifecycle.appendable_stream(expected_response_id)
 
     async def commit_response_stream(self, *, expected_response_id: str | None = None) -> bool:
@@ -783,7 +828,7 @@ class ConversationSession:
                 )
                 await self._apply_interrupt_decision(interrupt_decision, resume_on_reject=True)
                 if interrupt_decision.action is not InterruptionDecisionAction.CONFIRM:
-                    if stream_event.utterance_id:
+                    if stream_event.utterance_id and not self._input_speech_active:
                         self._interrupt_detector.finish(stream_event.utterance_id)
                     return
 
@@ -823,50 +868,75 @@ class ConversationSession:
             )
             self._interrupt_detector.finish(stream_event.utterance_id)
 
-    async def _ensure_response_stream(
+    async def _attempt_response_start(
         self,
         *,
         allow_interruptions: bool = True,
-    ) -> ResponseStream | None:
+    ) -> ResponseStartResult:
+        context = self._response_start_context()
         existing = self._response_lifecycle.open_uncommitted_stream()
         if existing is not None:
-            return existing
+            return ResponseStartResult(context=context, response_id=existing.response_id)
         if self._tts_task and not self._tts_task.done():
-            logger.warning("response stream requested while response task already active; ignoring")
-            await self._emit_error(
-                "response already in flight",
+            rejection = ResponseStartRejection(
+                message="response already in flight",
                 code=ERROR_CODE_RESPONSE_ALREADY_ACTIVE,
             )
-            return None
+            return ResponseStartResult(context=context, rejection=rejection)
 
         rejection = self._response_start_rejection_reason()
         if rejection is not None:
             rejection_reason, rejection_code = rejection
-            if not self._response_rejection_reported:
-                logger.warning("response stream rejected: %s", rejection_reason)
-                await self._emit_error(
-                    f"response rejected: {rejection_reason}",
-                    code=rejection_code,
-                )
-                self._response_rejection_reported = True
-            return None
+            rejected = ResponseStartRejection(
+                message=f"response rejected: {rejection_reason}",
+                code=rejection_code,
+            )
+            return ResponseStartResult(context=context, rejection=rejected)
 
         stream = self._response_lifecycle.start_stream(allow_interruptions=allow_interruptions)
-        self._response_rejection_reported = False
-        self._interrupt_detector.reset()
+        if not (context.input_speech_active and context.candidate_status is InterruptionCandidateStatus.REJECTED):
+            self._interrupt_detector.reset()
         self._output_playout_started = False
         self._audio_output.reset_for_response()
         await self._event_queue.put(TurnEvent(type=TurnEventType.RESPONSE_STARTED))
         await self._emit_response_created(stream.response_id)
         self._tts_task = asyncio.create_task(self._run_response_stream(stream))
-        return stream
+        return ResponseStartResult(context=context, response_id=stream.response_id)
+
+    def _response_start_context(self) -> ResponseStartContext:
+        candidate = self._interrupt_detector.current()
+        return ResponseStartContext(
+            turn_state=self._sm.state,
+            input_speech_active=self._input_speech_active,
+            candidate_id=candidate.candidate_id if candidate is not None else None,
+            candidate_status=candidate.status if candidate is not None else None,
+            candidate_reason=candidate.decision_reason if candidate is not None else None,
+        )
+
+    @staticmethod
+    def _log_response_start_rejection(
+        context: ResponseStartContext,
+        rejection: ResponseStartRejection,
+    ) -> None:
+        logger.warning(
+            "response stream rejected code=%s state=%s input_speech_active=%s "
+            "candidate_id=%s candidate_status=%s candidate_reason=%s",
+            rejection.code,
+            context.turn_state.value,
+            context.input_speech_active,
+            context.candidate_id,
+            context.candidate_status.value if context.candidate_status is not None else None,
+            context.candidate_reason,
+        )
 
     def _response_start_rejection_reason(self) -> tuple[str, str] | None:
         state = self._sm.state
         if state not in _RESPONSE_START_STATES:
             return f"turn state is {state.value}", ERROR_CODE_RESPONSE_REJECTED_TURN_STATE
         if state is TurnState.THINKING and self._input_speech_active:
-            return "user speech is active", ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH
+            candidate = self._interrupt_detector.current()
+            if candidate is None or candidate.status is not InterruptionCandidateStatus.REJECTED:
+                return "user speech is active", ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH
         return None
 
     async def _run_response_stream(self, stream: ResponseStream) -> None:

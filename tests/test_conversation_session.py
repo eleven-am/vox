@@ -151,12 +151,18 @@ class _AcceptAllClassifier:
         return True
 
 
+class _RejectAllClassifier(_AcceptAllClassifier):
+    async def is_real_interrupt(self, audio, partial_transcript, eou, duration_ms, sample_rate):
+        return False
+
+
 def _build_session(
     *,
     adapter: TTSAdapter | None = None,
     policy: TurnPolicy | None = None,
     audio_preprocessor=None,
     pace_response_done_to_audio: bool = False,
+    interrupt_classifier=None,
 ) -> tuple[ConversationSession, EventCollector, ScriptedTTSAdapter]:
     tts = adapter or ScriptedTTSAdapter()
     scheduler = MockScheduler(tts)
@@ -168,7 +174,7 @@ def _build_session(
         voice="default",
         language="en",
         policy=policy or TurnPolicy(min_interrupt_duration_ms=50, max_endpointing_delay_ms=200),
-        interrupt_classifier=_AcceptAllClassifier(),
+        interrupt_classifier=interrupt_classifier or _AcceptAllClassifier(),
         audio_preprocessor=audio_preprocessor,
         pace_response_done_to_audio=pace_response_done_to_audio,
     )
@@ -307,7 +313,7 @@ class TestResponseAdmission:
         await _drain_events(session)
         assert session.state == TurnState.THINKING
 
-        response_id = await session.start_response_stream()
+        response_id = (await session.start_response_stream()).response_id
         assert response_id is not None
         assert await session.append_response_text(
             "The first phrase.",
@@ -354,6 +360,103 @@ class TestResponseAdmission:
             }
         ]
         assert adapter.texts == []
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_response_retry_is_admitted_after_interruption_evidence_rejects_active_vad(self):
+        session, collector, _ = _build_session(interrupt_classifier=_RejectAllClassifier())
+        await session.start()
+        await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
+        await _drain_events(session)
+        assert session.state == TurnState.THINKING
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=2_000, utterance_id=7))
+        await _drain_events(session)
+        assert session._input_speech_active is True
+
+        rejected = await session.start_response_stream()
+        assert rejected.response_id is None
+        assert rejected.rejection is not None
+        assert rejected.rejection.code == ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH
+        await session._evaluate_interrupt_candidate()
+        await _drain_events(session)
+
+        false_positives = collector.by_type(WIRE_INTERRUPTION_FALSE_POSITIVE)
+        assert false_positives[-1]["reason"] == "insufficient_acoustic_evidence"
+        assert session._input_speech_active is True
+
+        response_id = (await session.start_response_stream()).response_id
+        assert response_id is not None
+        assert collector.by_type(WIRE_ERROR) == []
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_rejected_final_remains_authoritative_until_vad_stops(self):
+        session, collector, _ = _build_session(interrupt_classifier=_RejectAllClassifier())
+        await session.start()
+        await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
+        await _drain_events(session)
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=2_000, utterance_id=7))
+        await _drain_events(session)
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="",
+                is_partial=False,
+                start_ms=2_000,
+                end_ms=2_220,
+                audio_duration_ms=220,
+                utterance_id=7,
+            )
+        )
+        await _drain_events(session)
+
+        false_positives = collector.by_type(WIRE_INTERRUPTION_FALSE_POSITIVE)
+        assert false_positives[-1]["reason"] == "empty_final"
+        assert session._input_speech_active is True
+
+        result = await session.start_response_stream()
+        assert result.response_id is not None
+        assert result.context.candidate_status.value == "rejected"
+        candidate = session._interrupt_detector.current()
+        assert candidate is not None
+        assert candidate.status.value == "rejected"
+
+        await session._forward_stream_event(
+            SpeechStopped(timestamp_ms=2_300, expects_transcript=False, utterance_id=7)
+        )
+        await _drain_events(session)
+        assert session._interrupt_detector.current() is None
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_rejected_candidate_does_not_admit_a_later_utterance(self):
+        session, _, _ = _build_session(interrupt_classifier=_RejectAllClassifier())
+        await session.start()
+        await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
+        await _drain_events(session)
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=2_000, utterance_id=7))
+        await _drain_events(session)
+        await session._evaluate_interrupt_candidate()
+        await _drain_events(session)
+
+        await session._forward_stream_event(
+            SpeechStopped(timestamp_ms=2_300, expects_transcript=False, utterance_id=7)
+        )
+        await _drain_events(session)
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=3_000, utterance_id=8))
+        await _drain_events(session)
+
+        result = await session.start_response_stream()
+        assert result.response_id is None
+        assert result.rejection is not None
+        assert result.rejection.code == ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH
+        assert result.context.candidate_id is not None
+        assert result.context.candidate_status.value == "pending"
 
         await session.close()
 
@@ -1217,7 +1320,7 @@ class TestClientCancel:
         await _drain_events(thinking_session)
         assert thinking_session.state == TurnState.THINKING
 
-        thinking_response_id = await thinking_session.start_response_stream()
+        thinking_response_id = (await thinking_session.start_response_stream()).response_id
         assert thinking_response_id is not None
         thinking_before = len(thinking_events.events)
         await thinking_session.cancel_response()
