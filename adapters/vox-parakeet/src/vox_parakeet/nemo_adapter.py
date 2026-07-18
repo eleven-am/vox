@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 import time
+from importlib.machinery import EXTENSION_SUFFIXES
 from pathlib import Path
 from typing import Any
 
@@ -136,18 +137,24 @@ def _remove_stale_runtime_repair_targets(runtime_dir: Path) -> bool:
 def _clear_nemo_modules() -> None:
     runtime_root = vox_runtime_root().resolve()
     runtime_dir = _runtime_target_dir().resolve()
+    native_module_roots = _loaded_native_module_roots()
     for name in list(sys.modules):
         module = sys.modules.get(name)
         module_file = getattr(module, "__file__", None)
+        module_root = name.partition(".")[0]
         if module_file:
             try:
                 module_path = Path(module_file).resolve()
                 if module_path.is_relative_to(runtime_root) and not module_path.is_relative_to(runtime_dir):
+                    if module_root in native_module_roots:
+                        continue
                     sys.modules.pop(name, None)
                     continue
             except OSError:
                 pass
 
+        if module_root in native_module_roots:
+            continue
         if (
             name == "nemo"
             or name.startswith("nemo.")
@@ -174,6 +181,15 @@ def _clear_nemo_modules() -> None:
         ):
             sys.modules.pop(name, None)
     importlib.invalidate_caches()
+
+
+def _loaded_native_module_roots() -> set[str]:
+    roots: set[str] = set()
+    for name, module in list(sys.modules.items()):
+        module_file = getattr(module, "__file__", None)
+        if module_file and any(str(module_file).endswith(suffix) for suffix in EXTENSION_SUFFIXES):
+            roots.add(name.partition(".")[0])
+    return roots
 
 
 def _prime_lightning_imports() -> None:

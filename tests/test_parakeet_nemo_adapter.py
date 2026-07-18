@@ -14,8 +14,16 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _restore_torch_and_nemo_modules():
-    poisoned_keys = ("torch", "nemo", "nemo.collections", "nemo.collections.asr",
-                     "vox_parakeet", "vox_parakeet.nemo_adapter")
+    poisoned_keys = (
+        "torch",
+        "nemo",
+        "nemo.collections",
+        "nemo.collections.asr",
+        "onnx",
+        "onnx.onnx_cpp2py_export",
+        "vox_parakeet",
+        "vox_parakeet.nemo_adapter",
+    )
     saved = {k: sys.modules.get(k) for k in poisoned_keys}
     yield
     for k, v in saved.items():
@@ -525,7 +533,7 @@ def test_clear_nemo_modules_removes_partial_import_resolver_state():
     assert "nv_one_logger.training_telemetry.api.training_telemetry_provider" not in sys.modules
 
 
-def test_clear_nemo_modules_removes_modules_loaded_from_sibling_runtimes(
+def test_clear_nemo_modules_preserves_native_modules_loaded_from_sibling_runtimes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -540,13 +548,23 @@ def test_clear_nemo_modules_removes_modules_loaded_from_sibling_runtimes(
     parakeet_runtime.mkdir(parents=True)
     kokoro_runtime.mkdir()
     (kokoro_runtime / "packaging.py").write_text("# fake", encoding="utf-8")
+    (kokoro_runtime / "onnx").mkdir()
+    (kokoro_runtime / "onnx" / "__init__.py").write_text("# fake", encoding="utf-8")
+    native_path = kokoro_runtime / "onnx" / "onnx_cpp2py_export.cpython-312-x86_64-linux-gnu.so"
+    native_path.touch()
     (parakeet_runtime / "nemo.py").write_text("# fake", encoding="utf-8")
 
     sibling_module = ModuleType("packaging")
     sibling_module.__file__ = str(kokoro_runtime / "packaging.py")
+    sibling_native_package = ModuleType("onnx")
+    sibling_native_package.__file__ = str(kokoro_runtime / "onnx" / "__init__.py")
+    sibling_native_extension = ModuleType("onnx.onnx_cpp2py_export")
+    sibling_native_extension.__file__ = str(native_path)
     current_module = ModuleType("nemo")
     current_module.__file__ = str(parakeet_runtime / "nemo.py")
     sys.modules["packaging"] = sibling_module
+    sys.modules["onnx"] = sibling_native_package
+    sys.modules["onnx.onnx_cpp2py_export"] = sibling_native_extension
     sys.modules["nemo"] = current_module
 
     monkeypatch.setattr(module, "vox_runtime_root", lambda: runtime_root)
@@ -555,6 +573,8 @@ def test_clear_nemo_modules_removes_modules_loaded_from_sibling_runtimes(
     module._clear_nemo_modules()
 
     assert "packaging" not in sys.modules
+    assert sys.modules["onnx"] is sibling_native_package
+    assert sys.modules["onnx.onnx_cpp2py_export"] is sibling_native_extension
     assert "nemo" not in sys.modules
 
 
