@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from contextlib import asynccontextmanager
 
 import numpy as np
 import pytest
@@ -91,6 +93,25 @@ class ScriptedTTSAdapter(TTSAdapter):
 
 
 MockScheduler = FakeScheduler
+
+
+class HangingReleaseScheduler(FakeScheduler):
+    def __init__(self, adapter: TTSAdapter) -> None:
+        super().__init__(adapter)
+        self.release_started = asyncio.Event()
+        self.release_gate = asyncio.Event()
+
+    @asynccontextmanager
+    async def acquire(self, name: str):
+        try:
+            yield self._default_adapter
+        finally:
+            self.release_started.set()
+            while not self.release_gate.is_set():
+                try:
+                    await self.release_gate.wait()
+                except asyncio.CancelledError:
+                    continue
 
 
 class EventCollector:
@@ -869,6 +890,68 @@ class TestBargeIn:
         await session.close()
 
     @pytest.mark.asyncio
+    async def test_confirmed_interrupt_emits_clear_and_cancelled_before_slow_tts_teardown(self):
+        tts = ScriptedTTSAdapter(chunks=20, inter_chunk_delay=0.02)
+        scheduler = HangingReleaseScheduler(tts)
+        collector = EventCollector()
+        config = ConversationConfig(
+            stt_model="fake-stt:latest",
+            tts_model="fake-tts:latest",
+            voice="default",
+            language="en",
+            policy=TurnPolicy(min_interrupt_duration_ms=50, max_endpointing_delay_ms=200),
+            interrupt_classifier=_AcceptAllClassifier(),
+        )
+        session = ConversationSession(scheduler=scheduler, config=config, on_event=collector)
+        await session.start()
+
+        await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
+        await _drain_events(session)
+        await session.submit_response_text("long reply")
+        await asyncio.sleep(0.05)
+        assert session.state == TurnState.SPEAKING
+        tts_task = session._tts_task
+        assert tts_task is not None
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
+        await asyncio.sleep(0.01)
+        started = time.monotonic()
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="I need",
+                is_partial=True,
+                start_ms=1000,
+                end_ms=1500,
+                audio_duration_ms=500,
+                utterance_id=1,
+            )
+        )
+        while time.monotonic() - started < 2.0:
+            if collector.by_type(WIRE_AUDIO_CLEAR) and collector.by_type(WIRE_RESPONSE_CANCELLED):
+                break
+            await asyncio.sleep(0.005)
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 2.0
+        response_id = collector.by_type(WIRE_RESPONSE_CREATED)[-1]["response_id"]
+        audio_clear = collector.by_type(WIRE_AUDIO_CLEAR)
+        cancelled = collector.by_type(WIRE_RESPONSE_CANCELLED)
+        assert audio_clear
+        assert cancelled
+        assert audio_clear[-1]["response_id"] == response_id
+        assert cancelled[-1]["response_id"] == response_id
+        assert session.state == TurnState.INTERRUPTED
+        assert not tts_task.done()
+
+        await asyncio.wait_for(scheduler.release_started.wait(), timeout=2.0)
+        assert not tts_task.done()
+
+        scheduler.release_gate.set()
+        await asyncio.sleep(0.05)
+        await _drain_events(session)
+        await session.close()
+
+    @pytest.mark.asyncio
     async def test_false_interrupt_resumes_tts(self):
         tts = ScriptedTTSAdapter(chunks=20, inter_chunk_delay=0.02)
         session, collector, _ = _build_session(
@@ -1113,6 +1196,45 @@ class TestClientCancel:
         assert tts.cancelled_at_chunk is not None
 
         await session.close()
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_thinking_flushes_output_like_speaking_cancel(self):
+        thinking_session, thinking_events, _ = _build_session()
+        await thinking_session.start()
+        await thinking_session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
+        await _drain_events(thinking_session)
+        assert thinking_session.state == TurnState.THINKING
+
+        thinking_response_id = await thinking_session.start_response_stream()
+        assert thinking_response_id is not None
+        thinking_before = len(thinking_events.events)
+        await thinking_session.cancel_response()
+        thinking_tail = [e["type"] for e in thinking_events.events[thinking_before:]]
+
+        speaking_session, speaking_events, _ = _build_session(
+            adapter=ScriptedTTSAdapter(chunks=20, inter_chunk_delay=0.02),
+        )
+        await speaking_session.start()
+        await speaking_session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
+        await _drain_events(speaking_session)
+        await speaking_session.submit_response_text("reply")
+        await asyncio.sleep(0.05)
+        assert speaking_session.state == TurnState.SPEAKING
+        speaking_before = len(speaking_events.events)
+        await speaking_session.cancel_response()
+        speaking_tail = [
+            e["type"] for e in speaking_events.events[speaking_before:] if e["type"] != WIRE_AUDIO_DELTA
+        ]
+
+        assert thinking_tail == [WIRE_AUDIO_CLEAR, WIRE_RESPONSE_CANCELLED, WIRE_STATE_CHANGED]
+        assert speaking_tail == thinking_tail
+        assert thinking_session.state == TurnState.IDLE
+        assert thinking_session.pending_audio_count == 0
+        assert thinking_events.by_type(WIRE_AUDIO_CLEAR)[-1]["response_id"] == thinking_response_id
+        assert thinking_events.by_type(WIRE_RESPONSE_CANCELLED)[-1]["response_id"] == thinking_response_id
+
+        await thinking_session.close()
+        await speaking_session.close()
 
     @pytest.mark.asyncio
     async def test_cancel_in_idle_is_noop(self):

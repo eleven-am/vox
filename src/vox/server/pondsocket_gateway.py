@@ -137,6 +137,7 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
                 event,
                 channel=channel,
                 user_id=user_id,
+                session_id=session_id,
             )
         )
         return _ConversationRuntime(
@@ -160,6 +161,7 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
                 channel,
                 user_id,
                 wire,
+                session_id=session_id,
             ),
         )
 

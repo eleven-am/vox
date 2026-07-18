@@ -81,13 +81,10 @@ def _on_speech_started_listening(m: TurnStateMachine, e: TurnEvent) -> tuple[Tur
 
 
 def _on_speech_started_thinking(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
-
     if not m.policy.allow_interrupt_while_speaking:
         return None, []
-    return TurnState.LISTENING, [
-        act(TurnActionType.STOP_TTS),
-        act(TurnActionType.CANCEL_RESPONSE),
-    ]
+    confirm_ms = int(e.payload.get("confirm_window_ms", m.policy.min_interrupt_duration_ms))
+    return None, [start_timer(TimerKey.CONFIRM_INTERRUPT, confirm_ms)]
 
 
 def _on_speech_started_speaking(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
@@ -213,18 +210,26 @@ def _on_timer_endpointing(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState 
     return TurnState.THINKING, []
 
 
+def _invalidate_response_actions() -> list[TurnAction]:
+    return [
+        act(TurnActionType.FLUSH_OUTPUT),
+        act(TurnActionType.CANCEL_RESPONSE),
+        act(TurnActionType.STOP_TTS),
+    ]
+
+
 def _on_timer_confirm_interrupt(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
     if e.payload.get("key") != TimerKey.CONFIRM_INTERRUPT.value:
         return None, []
-    return TurnState.INTERRUPTED, [
-        act(TurnActionType.STOP_TTS),
-        act(TurnActionType.CANCEL_RESPONSE),
-        act(TurnActionType.FLUSH_OUTPUT),
-    ]
+    return TurnState.INTERRUPTED, _invalidate_response_actions()
 
 
 def _on_timer_elapsed_listening(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
     return _on_timer_endpointing(m, e)
+
+
+def _on_timer_elapsed_thinking(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
+    return _on_timer_confirm_interrupt(m, e)
 
 
 def _on_timer_elapsed_paused(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
@@ -237,11 +242,7 @@ def _on_timer_elapsed_speaking(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnS
 
 def _on_client_cancel_idle(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
     if e.payload.get("has_active_response"):
-        return None, [
-            act(TurnActionType.STOP_TTS),
-            act(TurnActionType.CANCEL_RESPONSE),
-            act(TurnActionType.FLUSH_OUTPUT),
-        ]
+        return None, _invalidate_response_actions()
     return None, []
 
 
@@ -250,26 +251,17 @@ def _on_client_cancel_listening(m: TurnStateMachine, e: TurnEvent) -> tuple[Turn
 
 
 def _on_client_cancel_thinking(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
-    return TurnState.IDLE, [
-        act(TurnActionType.STOP_TTS),
-        act(TurnActionType.CANCEL_RESPONSE),
-    ]
+    return TurnState.IDLE, _invalidate_response_actions()
 
 
 def _on_client_cancel_speaking(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
-    return TurnState.IDLE, [
-        act(TurnActionType.STOP_TTS),
-        act(TurnActionType.CANCEL_RESPONSE),
-        act(TurnActionType.FLUSH_OUTPUT),
-    ]
+    return TurnState.IDLE, _invalidate_response_actions()
 
 
 def _on_client_cancel_paused(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
     return TurnState.IDLE, [
         cancel_timer(TimerKey.CONFIRM_INTERRUPT),
-        act(TurnActionType.STOP_TTS),
-        act(TurnActionType.CANCEL_RESPONSE),
-        act(TurnActionType.FLUSH_OUTPUT),
+        *_invalidate_response_actions(),
     ]
 
 
@@ -303,6 +295,7 @@ _TRANSITIONS: dict[tuple[TurnState, TurnEventType], _TransitionFn] = {
     (TurnState.PAUSED, TurnEventType.TTS_FAILED): _on_tts_failed_paused,
     (TurnState.INTERRUPTED, TurnEventType.TTS_FAILED): _on_tts_failed_interrupted,
     (TurnState.LISTENING, TurnEventType.TIMER_ELAPSED): _on_timer_elapsed_listening,
+    (TurnState.THINKING, TurnEventType.TIMER_ELAPSED): _on_timer_elapsed_thinking,
     (TurnState.SPEAKING, TurnEventType.TIMER_ELAPSED): _on_timer_elapsed_speaking,
     (TurnState.PAUSED, TurnEventType.TIMER_ELAPSED): _on_timer_elapsed_paused,
     (TurnState.IDLE, TurnEventType.CLIENT_CANCEL): _on_client_cancel_idle,

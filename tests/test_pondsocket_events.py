@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from vox.operations.conversation import ConvDoneEvent, ConvResponseCreatedEvent
@@ -12,6 +14,7 @@ from vox.server.pondsocket_events import (
     broadcast_rtc_control_event_to_user,
     broadcast_wire_to_user,
     decline_if_channel_attached,
+    deliver_wire_to_user,
     handle_pondsocket_control_event,
     pondsocket_route_or_channel_session_id,
     reply_pondsocket_error,
@@ -21,12 +24,18 @@ from vox.server.rtc_timeline import RtcTurnTimeline
 
 
 class FakeChannel:
-    def __init__(self, *, fail: bool = False) -> None:
+    def __init__(self, *, fail: bool = False, fail_times: int = 0) -> None:
         self.fail = fail
+        self.fail_times = fail_times
+        self.attempts: list[str] = []
         self.broadcasts: list[tuple[str, dict, str]] = []
 
     async def broadcast_to(self, event_name: str, payload: dict, user_id: str) -> None:
+        self.attempts.append(event_name)
         if self.fail:
+            raise RuntimeError("broadcast failed")
+        if self.fail_times > 0:
+            self.fail_times -= 1
             raise RuntimeError("broadcast failed")
         self.broadcasts.append((event_name, payload, user_id))
 
@@ -198,6 +207,79 @@ async def test_try_broadcast_wire_to_user_reports_suppressed_failure():
 
     assert sent is False
     assert channel.broadcasts == []
+
+
+@pytest.mark.asyncio
+async def test_try_broadcast_wire_to_user_logs_warning_with_event_type(caplog):
+    channel = FakeChannel(fail=True)
+
+    with caplog.at_level(logging.WARNING, logger="vox.server.pondsocket_events"):
+        sent = await try_broadcast_wire_to_user(
+            channel,
+            "user-1",
+            {"type": "response.cancelled", "response_id": "resp_1"},
+            session_id="sess_1",
+        )
+
+    assert sent is False
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "response.cancelled" in warnings[0].getMessage()
+    assert "sess_1" in warnings[0].getMessage()
+    assert "user-1" in warnings[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_deliver_wire_to_user_retries_critical_event_once_and_delivers():
+    channel = FakeChannel(fail_times=1)
+
+    delivered = await deliver_wire_to_user(
+        channel,
+        "user-1",
+        {"type": "response.audio.clear", "response_id": "resp_1"},
+        session_id="sess_1",
+    )
+
+    assert delivered is True
+    assert channel.attempts == ["response.audio.clear", "response.audio.clear"]
+    assert channel.broadcasts == [("response.audio.clear", {"response_id": "resp_1"}, "user-1")]
+
+
+@pytest.mark.asyncio
+async def test_deliver_wire_to_user_logs_error_when_critical_event_lost(caplog):
+    channel = FakeChannel(fail=True)
+
+    with caplog.at_level(logging.WARNING, logger="vox.server.pondsocket_events"):
+        delivered = await deliver_wire_to_user(
+            channel,
+            "user-1",
+            {"type": "interruption.detected", "response_id": "resp_1"},
+            session_id="sess_1",
+        )
+
+    assert delivered is False
+    assert channel.attempts == ["interruption.detected", "interruption.detected"]
+    errors = [record for record in caplog.records if record.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert "interruption.detected" in errors[0].getMessage()
+    assert "sess_1" in errors[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_deliver_wire_to_user_does_not_retry_non_critical_events(caplog):
+    channel = FakeChannel(fail=True)
+
+    with caplog.at_level(logging.WARNING, logger="vox.server.pondsocket_events"):
+        delivered = await deliver_wire_to_user(
+            channel,
+            "user-1",
+            {"type": "response.audio.delta", "response_id": "resp_1", "delta": "AAAA"},
+            session_id="sess_1",
+        )
+
+    assert delivered is False
+    assert channel.attempts == ["response.audio.delta"]
+    assert [record for record in caplog.records if record.levelno == logging.ERROR] == []
 
 
 @pytest.mark.asyncio

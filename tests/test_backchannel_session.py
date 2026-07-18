@@ -148,6 +148,63 @@ def _replace_output_audio(session: ConversationSession, audio: np.ndarray) -> No
 
 class TestBackchannelRejection:
     @pytest.mark.asyncio
+    async def test_false_positive_while_thinking_preserves_response_generation(self):
+        session, coll, _ = _build()
+        await session.start()
+        session._sm._state = TurnState.THINKING
+        response_id = await session.start_response_stream()
+        assert response_id is not None
+
+        voice = _voice_signal(0.10, amp=0.08, freq=330)
+        silence = np.zeros(int(0.30 * 16_000), dtype=np.float32)
+        _replace_mic_audio(session, np.concatenate([voice, silence]))
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
+        await asyncio.sleep(0.25)
+
+        assert session.state == TurnState.THINKING
+        assert coll.by_type("interruption.false_positive")
+        assert not coll.by_type("response.cancelled")
+        assert await session.append_response_text(
+            "The response is still alive.",
+            expected_response_id=response_id,
+        )
+        assert await session.commit_response_stream(expected_response_id=response_id)
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_meaningful_partial_while_thinking_cancels_response_generation(self):
+        session, coll, _ = _build()
+        await session.start()
+        session._sm._state = TurnState.THINKING
+        response_id = await session.start_response_stream()
+        assert response_id is not None
+
+        _replace_mic_audio(session, _voice_signal(0.60, amp=0.15, freq=330))
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="Please stop now",
+                is_partial=True,
+                start_ms=1000,
+                end_ms=1600,
+                audio_duration_ms=600,
+                utterance_id=1,
+            )
+        )
+        await asyncio.sleep(0.10)
+
+        assert session.state == TurnState.INTERRUPTED
+        assert coll.by_type("interruption.detected")
+        assert coll.by_type("response.cancelled")
+        assert not await session.append_response_text(
+            "This delta must be rejected.",
+            expected_response_id=response_id,
+        )
+
+        await session.close()
+
+    @pytest.mark.asyncio
     async def test_mhmm_does_not_interrupt(self):
         """User says something like 'mhmm' — short voice burst followed by
         silence. The audio ring shows a quiet tail when the confirm timer

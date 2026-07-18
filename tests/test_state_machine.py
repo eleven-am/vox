@@ -141,9 +141,9 @@ class TestBargeIn:
         actions = m.handle(timer_event(TimerKey.CONFIRM_INTERRUPT))
         assert m.state == TurnState.INTERRUPTED
         assert _action_types(actions) == [
-            TurnActionType.STOP_TTS,
-            TurnActionType.CANCEL_RESPONSE,
             TurnActionType.FLUSH_OUTPUT,
+            TurnActionType.CANCEL_RESPONSE,
+            TurnActionType.STOP_TTS,
         ]
 
     def test_tts_complete_while_paused_does_not_cancel_confirm_timer(self):
@@ -204,18 +204,29 @@ class TestBargeIn:
         assert m.state == TurnState.SPEAKING
         assert actions == []
 
-    def test_speech_during_thinking_cancels_response(self):
-        """User starts speaking while LLM is generating — treat as interrupt.
-
-        Also stops the TTS worker because streaming responses can have a TTS
-        task reading from the delta queue even before audio has started.
-        """
+    def test_speech_during_thinking_waits_for_interrupt_evidence(self):
         m = _machine(TurnState.THINKING)
-        actions = m.handle(ev(TurnEventType.SPEECH_STARTED))
-        assert m.state == TurnState.LISTENING
+        actions = m.handle(
+            TurnEvent(
+                type=TurnEventType.SPEECH_STARTED,
+                payload={"confirm_window_ms": 320},
+            )
+        )
+        assert m.state == TurnState.THINKING
+        assert _action_types(actions) == [TurnActionType.START_TIMER]
+        assert actions[0].payload == {
+            "key": TimerKey.CONFIRM_INTERRUPT.value,
+            "duration_ms": 320,
+        }
+
+    def test_confirmed_interruption_during_thinking_cancels_response(self):
+        m = _machine(TurnState.THINKING)
+        actions = m.handle(timer_event(TimerKey.CONFIRM_INTERRUPT))
+        assert m.state == TurnState.INTERRUPTED
         assert _action_types(actions) == [
-            TurnActionType.STOP_TTS,
+            TurnActionType.FLUSH_OUTPUT,
             TurnActionType.CANCEL_RESPONSE,
+            TurnActionType.STOP_TTS,
         ]
 
     def test_policy_disables_interrupt_during_thinking(self):
@@ -239,14 +250,14 @@ class TestClientCancel:
         assert m.state == TurnState.IDLE
         assert _action_types(actions) == [TurnActionType.CANCEL_TIMER]
 
-    def test_cancel_in_thinking_stops_tts_and_cancels_response(self):
-
+    def test_cancel_in_thinking_flushes_output_and_cancels_response(self):
         m = _machine(TurnState.THINKING)
         actions = m.handle(ev(TurnEventType.CLIENT_CANCEL))
         assert m.state == TurnState.IDLE
         assert _action_types(actions) == [
-            TurnActionType.STOP_TTS,
+            TurnActionType.FLUSH_OUTPUT,
             TurnActionType.CANCEL_RESPONSE,
+            TurnActionType.STOP_TTS,
         ]
 
     def test_cancel_in_speaking_stops_tts_and_response(self):
@@ -254,9 +265,19 @@ class TestClientCancel:
         actions = m.handle(ev(TurnEventType.CLIENT_CANCEL))
         assert m.state == TurnState.IDLE
         assert _action_types(actions) == [
-            TurnActionType.STOP_TTS,
-            TurnActionType.CANCEL_RESPONSE,
             TurnActionType.FLUSH_OUTPUT,
+            TurnActionType.CANCEL_RESPONSE,
+            TurnActionType.STOP_TTS,
+        ]
+
+    def test_cancel_in_idle_with_active_response_flushes_and_cancels(self):
+        m = _machine(TurnState.IDLE)
+        actions = m.handle(ev(TurnEventType.CLIENT_CANCEL, has_active_response=True))
+        assert m.state == TurnState.IDLE
+        assert _action_types(actions) == [
+            TurnActionType.FLUSH_OUTPUT,
+            TurnActionType.CANCEL_RESPONSE,
+            TurnActionType.STOP_TTS,
         ]
 
     def test_cancel_in_paused_stops_everything(self):
@@ -265,9 +286,9 @@ class TestClientCancel:
         assert m.state == TurnState.IDLE
         assert _action_types(actions) == [
             TurnActionType.CANCEL_TIMER,
-            TurnActionType.STOP_TTS,
-            TurnActionType.CANCEL_RESPONSE,
             TurnActionType.FLUSH_OUTPUT,
+            TurnActionType.CANCEL_RESPONSE,
+            TurnActionType.STOP_TTS,
         ]
 
     def test_cancel_in_interrupted_settles_to_idle(self):
@@ -386,3 +407,27 @@ class TestActionPayloads:
         for action in actions:
             if action.type in (TurnActionType.STOP_TTS, TurnActionType.CANCEL_RESPONSE, TurnActionType.FLUSH_OUTPUT):
                 assert action.payload == {}
+
+
+class TestOutputInvalidationOrdering:
+    @pytest.mark.parametrize(
+        ("state", "event_factory"),
+        [
+            (TurnState.THINKING, lambda: timer_event(TimerKey.CONFIRM_INTERRUPT)),
+            (TurnState.SPEAKING, lambda: timer_event(TimerKey.CONFIRM_INTERRUPT)),
+            (TurnState.PAUSED, lambda: timer_event(TimerKey.CONFIRM_INTERRUPT)),
+            (TurnState.IDLE, lambda: ev(TurnEventType.CLIENT_CANCEL, has_active_response=True)),
+            (TurnState.THINKING, lambda: ev(TurnEventType.CLIENT_CANCEL)),
+            (TurnState.SPEAKING, lambda: ev(TurnEventType.CLIENT_CANCEL)),
+            (TurnState.PAUSED, lambda: ev(TurnEventType.CLIENT_CANCEL)),
+        ],
+    )
+    def test_every_response_teardown_flushes_and_cancels_before_stop_tts(self, state, event_factory):
+        m = _machine(state)
+        types = _action_types(m.handle(event_factory()))
+        assert TurnActionType.STOP_TTS in types
+        assert TurnActionType.FLUSH_OUTPUT in types
+        assert TurnActionType.CANCEL_RESPONSE in types
+        stop_index = types.index(TurnActionType.STOP_TTS)
+        assert types.index(TurnActionType.FLUSH_OUTPUT) < stop_index
+        assert types.index(TurnActionType.CANCEL_RESPONSE) < stop_index

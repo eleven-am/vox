@@ -28,12 +28,15 @@ from vox.operations.conversation_commands import (
 )
 from vox.operations.errors import InvalidConfigError, OperationError
 from vox.operations.rtc_runtime import (
+    LIFECYCLE_CRITICAL_WIRE_TYPES,
     RtcCandidateCommand,
     RtcCloseCommand,
     RtcCommand,
     RtcOfferCommand,
 )
 from vox.server.rtc_timeline import RtcTurnTimeline, rtc_audio_stats
+
+logger = logging.getLogger(__name__)
 
 
 def pondsocket_route_or_channel_session_id(ctx: Any) -> str:
@@ -53,10 +56,47 @@ async def broadcast_wire_to_user(channel: Any, user_id: str, wire: dict[str, Any
     await channel.broadcast_to(event_name, payload, user_id)
 
 
-async def try_broadcast_wire_to_user(channel: Any, user_id: str, wire: dict[str, Any]) -> bool:
-    with suppress(Exception):
+async def try_broadcast_wire_to_user(
+    channel: Any,
+    user_id: str,
+    wire: dict[str, Any],
+    *,
+    session_id: str | None = None,
+) -> bool:
+    try:
         await broadcast_wire_to_user(channel, user_id, wire)
         return True
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "PondSocket broadcast failed for event %s (session=%s, user=%s): %s",
+            wire.get("type"),
+            session_id,
+            user_id,
+            exc,
+        )
+        return False
+
+
+async def deliver_wire_to_user(
+    channel: Any,
+    user_id: str,
+    wire: dict[str, Any],
+    *,
+    session_id: str | None = None,
+) -> bool:
+    if await try_broadcast_wire_to_user(channel, user_id, wire, session_id=session_id):
+        return True
+    event_type = str(wire.get("type") or "")
+    if event_type not in LIFECYCLE_CRITICAL_WIRE_TYPES:
+        return False
+    if await try_broadcast_wire_to_user(channel, user_id, wire, session_id=session_id):
+        return True
+    logger.error(
+        "Lost lifecycle event %s for session %s (user=%s) after retry",
+        event_type,
+        session_id,
+        user_id,
+    )
     return False
 
 
@@ -65,10 +105,11 @@ async def broadcast_conversation_event_to_user(
     *,
     channel: Any,
     user_id: str,
+    session_id: str | None = None,
 ) -> None:
     wire = serialize_conversation_event(event)
     if wire is not None:
-        await try_broadcast_wire_to_user(channel, user_id, wire)
+        await deliver_wire_to_user(channel, user_id, wire, session_id=session_id)
 
 
 async def broadcast_rtc_control_event_to_user(
@@ -83,13 +124,13 @@ async def broadcast_rtc_control_event_to_user(
 ) -> bool:
     prepared = prepare_event(record=record, session_id=session_id, event=event)
     if prepared.wire is not None:
-        await try_broadcast_wire_to_user(channel, user_id, prepared.wire)
+        await deliver_wire_to_user(channel, user_id, prepared.wire, session_id=session_id)
         timing = timeline.observe(
             prepared.wire,
             audio_stats=rtc_audio_stats(record),
         )
         if timing is not None:
-            await try_broadcast_wire_to_user(channel, user_id, timing)
+            await deliver_wire_to_user(channel, user_id, timing, session_id=session_id)
     return prepared.done
 
 

@@ -8,6 +8,14 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+from vox.conversation.session import (
+    WIRE_AUDIO_CLEAR,
+    WIRE_ERROR,
+    WIRE_INTERRUPTION_DETECTED,
+    WIRE_INTERRUPTION_FALSE_POSITIVE,
+    WIRE_RESPONSE_CANCELLED,
+    WIRE_RESPONSE_DONE,
+)
 from vox.core.scheduler import Scheduler
 from vox.operations.conversation import ConvEvent
 from vox.operations.conversation_commands import (
@@ -34,7 +42,18 @@ from vox.server.rtc_conversation import create_rtc_orchestrator, prepare_rtc_con
 from vox.server.rtc_registry import RtcControlTransport, RtcSessionRegistry
 from vox.server.rtc_timeline import RtcTurnTimeline, rtc_audio_stats
 
-RtcEventHandler = Callable[[dict[str, Any]], Awaitable[None]]
+RtcEventHandler = Callable[[dict[str, Any]], Awaitable[Any]]
+
+LIFECYCLE_CRITICAL_WIRE_TYPES = frozenset(
+    {
+        WIRE_RESPONSE_CANCELLED,
+        WIRE_AUDIO_CLEAR,
+        WIRE_RESPONSE_DONE,
+        WIRE_INTERRUPTION_DETECTED,
+        WIRE_INTERRUPTION_FALSE_POSITIVE,
+        WIRE_ERROR,
+    }
+)
 
 logger = logging.getLogger(__name__)
 
@@ -233,13 +252,27 @@ class RtcRuntime:
             event=event,
         )
         if prepared.wire is not None:
-            await self._emit(prepared.wire)
+            await self._emit_wire(prepared.wire)
             timing = self._timeline.observe(
                 prepared.wire,
                 audio_stats=rtc_audio_stats(self.record),
             )
             if timing is not None:
-                await self._emit(timing)
+                await self._emit_wire(timing)
+
+    async def _emit_wire(self, wire: dict[str, Any]) -> None:
+        if await self._emit(wire) is not False:
+            return
+        event_type = str(wire.get("type") or "")
+        if event_type not in LIFECYCLE_CRITICAL_WIRE_TYPES:
+            return
+        if await self._emit(wire) is not False:
+            return
+        logger.error(
+            "Lost lifecycle event %s for RTC session %s after retry",
+            event_type,
+            self.session_id,
+        )
 
     async def _pump_media_events(self) -> None:
         queue = self.record.media_events

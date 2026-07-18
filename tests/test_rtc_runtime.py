@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 
@@ -317,6 +318,105 @@ async def test_runtime_emits_closed_after_conversation_cleanup(monkeypatch):
         "rtc.session.closed",
     ]
     assert runtime.is_closed is True
+
+
+class _PreparedWire:
+    def __init__(self, wire: dict) -> None:
+        self.wire = wire
+        self.done = False
+
+
+def _runtime_with_emit(registry: RtcSessionRegistry, record, emit) -> RtcRuntime:
+    return RtcRuntime(
+        scheduler=FakeScheduler(),
+        registry=registry,
+        session_id=record.session_id,
+        transport="pondsocket",
+        emit=emit,
+    )
+
+
+@pytest.mark.asyncio
+async def test_runtime_retries_lifecycle_critical_emit_once(monkeypatch):
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket")
+    attempts: list[str] = []
+    failures = {"response.cancelled": 1}
+
+    async def emit(event: dict) -> bool:
+        event_type = event["type"]
+        attempts.append(event_type)
+        if failures.get(event_type, 0) > 0:
+            failures[event_type] -= 1
+            return False
+        return True
+
+    monkeypatch.setattr(
+        rtc_runtime_module,
+        "prepare_rtc_control_event",
+        lambda **_kwargs: _PreparedWire({"type": "response.cancelled", "response_id": "resp_1"}),
+    )
+    runtime = _runtime_with_emit(registry, record, emit)
+
+    await runtime._emit_conversation_event(object())
+
+    assert attempts == ["response.cancelled", "response.cancelled", "rtc.turn_timing"]
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_logs_error_when_critical_emit_lost_after_retry(monkeypatch, caplog):
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket")
+    attempts: list[str] = []
+
+    async def emit(event: dict) -> bool:
+        attempts.append(event["type"])
+        return event["type"] != "response.audio.clear"
+
+    monkeypatch.setattr(
+        rtc_runtime_module,
+        "prepare_rtc_control_event",
+        lambda **_kwargs: _PreparedWire({"type": "response.audio.clear", "response_id": "resp_1"}),
+    )
+    runtime = _runtime_with_emit(registry, record, emit)
+
+    with caplog.at_level(logging.ERROR, logger="vox.operations.rtc_runtime"):
+        await runtime._emit_conversation_event(object())
+
+    assert attempts.count("response.audio.clear") == 2
+    errors = [entry for entry in caplog.records if entry.levelno == logging.ERROR]
+    assert len(errors) == 1
+    assert "response.audio.clear" in errors[0].getMessage()
+    assert record.session_id in errors[0].getMessage()
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_does_not_retry_non_critical_emit(monkeypatch, caplog):
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket")
+    attempts: list[str] = []
+
+    async def emit(event: dict) -> bool:
+        attempts.append(event["type"])
+        return False
+
+    monkeypatch.setattr(
+        rtc_runtime_module,
+        "prepare_rtc_control_event",
+        lambda **_kwargs: _PreparedWire(
+            {"type": "response.audio.delta", "response_id": "resp_1", "delta": "AAAA"}
+        ),
+    )
+    runtime = _runtime_with_emit(registry, record, emit)
+
+    with caplog.at_level(logging.ERROR, logger="vox.operations.rtc_runtime"):
+        await runtime._emit_conversation_event(object())
+
+    assert attempts == ["response.audio.delta"]
+    assert [entry for entry in caplog.records if entry.levelno == logging.ERROR] == []
+    await runtime.close()
 
 
 async def _append(events: list[dict], event: dict) -> None:

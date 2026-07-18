@@ -466,7 +466,8 @@ class ConversationSession:
                 }
             )
 
-            if self._sm.state in {TurnState.SPEAKING, TurnState.PAUSED} and stream_event.utterance_id <= 0:
+            interruption_states = {TurnState.THINKING, TurnState.SPEAKING, TurnState.PAUSED}
+            if self._sm.state in interruption_states and stream_event.utterance_id <= 0:
                 logger.warning("ignoring interruption candidate without utterance identity")
                 await self._emit_interruption_false_positive(
                     vad_active_ms=0,
@@ -475,7 +476,7 @@ class ConversationSession:
                 )
                 return
 
-            if self._sm.state in {TurnState.SPEAKING, TurnState.PAUSED}:
+            if self._sm.state in interruption_states:
                 self._interrupt_detector.begin(
                     utterance_id=stream_event.utterance_id,
                     response_id=self._active_response_id,
@@ -860,6 +861,8 @@ class ConversationSession:
                 await self._complete_response_stream(stream)
 
         elif action.type == TurnActionType.FLUSH_OUTPUT:
+            if self._response_stream is not None or self._active_response_id is not None:
+                self._response_lifecycle.remember_cancelled_response()
             self._audio_output.flush()
             self._audio_history.clear()
             await self._emit_audio_clear()
