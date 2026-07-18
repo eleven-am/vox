@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from vox.core.adapter import STTAdapter, TTSAdapter, TurnDetectorAdapter
+from vox.core.adapter_runtime import run_with_adapter_runtime_lock
 from vox.core.device_placement import (
     LoadedModelView,
     Placement,
@@ -388,7 +389,13 @@ class Scheduler:
         try:
             logger.info(f"Loading {full_name} on {device}")
             start = time.perf_counter()
-            await asyncio.to_thread(adapter.load, str(model_path), device, **load_kwargs)
+            await asyncio.to_thread(
+                run_with_adapter_runtime_lock,
+                adapter.load,
+                str(model_path),
+                device,
+                **load_kwargs,
+            )
             elapsed = time.perf_counter() - start
             logger.info(f"Loaded {full_name} in {elapsed:.2f}s on {device}")
         except Exception as e:
@@ -399,7 +406,13 @@ class Scheduler:
                 load_kwargs.pop("_placement_tier", None)
                 load_kwargs.pop("_placement_extras", None)
                 try:
-                    await asyncio.to_thread(adapter.load, str(model_path), device, **load_kwargs)
+                    await asyncio.to_thread(
+                        run_with_adapter_runtime_lock,
+                        adapter.load,
+                        str(model_path),
+                        device,
+                        **load_kwargs,
+                    )
                 except Exception as e2:
                     raise ModelLoadError(f"Failed to load {full_name}: {e2}") from e2
             else:
@@ -475,6 +488,7 @@ class Scheduler:
         if not items:
             return
         await asyncio.to_thread(
+            run_with_adapter_runtime_lock,
             _teardown_adapters_blocking,
             [(name, loaded.adapter, reason) for name, loaded, reason in items],
         )

@@ -2,12 +2,38 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from importlib.machinery import ModuleSpec
 from types import ModuleType
 
 import pytest
 
 from vox.core import adapter_runtime
+
+
+def test_adapter_runtime_lock_serializes_dependency_graph_mutations():
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    second_entered = threading.Event()
+
+    def first_operation() -> None:
+        first_entered.set()
+        assert release_first.wait(timeout=2)
+
+    def second_operation() -> None:
+        second_entered.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(adapter_runtime.run_with_adapter_runtime_lock, first_operation)
+        assert first_entered.wait(timeout=2)
+        second = executor.submit(adapter_runtime.run_with_adapter_runtime_lock, second_operation)
+        assert not second_entered.wait(timeout=0.05)
+        release_first.set()
+        first.result(timeout=2)
+        second.result(timeout=2)
+
+    assert second_entered.is_set()
 
 
 def test_target_runtime_uses_vox_home(monkeypatch, tmp_path):

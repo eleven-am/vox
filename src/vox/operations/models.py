@@ -7,6 +7,7 @@ from collections.abc import AsyncIterator
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from vox.core.adapter_runtime import run_with_adapter_runtime_lock
 from vox.core.capabilities import incompatible_pull_allowed
 from vox.core.hf_runtime import configure_hf_runtime
 from vox.core.model_resolution import parse_model_variant_ref, resolve_catalog_entry
@@ -267,7 +268,12 @@ def pull_model(
 
             if adapter_name:
                 yield PullEvent(status=f"preparing adapter runtime {adapter_name}")
-                await asyncio.to_thread(_prepare_adapter_runtime, registry, adapter_name)
+                await asyncio.to_thread(
+                    run_with_adapter_runtime_lock,
+                    _prepare_adapter_runtime,
+                    registry,
+                    adapter_name,
+                )
                 yield PullEvent(status=f"adapter runtime {adapter_name} ready")
 
             manifest = Manifest(

@@ -14,6 +14,7 @@ import os
 import subprocess
 import sys
 import sysconfig
+import threading
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from importlib.machinery import EXTENSION_SUFFIXES
@@ -26,11 +27,20 @@ InstallRunner = Callable[[list[str], int], "subprocess.CompletedProcess[str]"]
 ModuleProbe = Callable[[str], bool]
 InstallerName = str
 
+_ADAPTER_RUNTIME_LOCK = threading.RLock()
+
 
 @dataclass(frozen=True)
 class TargetRuntime:
     name: str
     path: Path
+
+
+def run_with_adapter_runtime_lock(operation: Callable[..., object], /, *args: object, **kwargs: object) -> object:
+    """Run one dependency-graph mutation without racing another adapter lifecycle."""
+
+    with _ADAPTER_RUNTIME_LOCK:
+        return operation(*args, **kwargs)
 
 
 def vox_home() -> Path:
