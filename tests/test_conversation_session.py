@@ -43,6 +43,7 @@ from vox.conversation.session import (
     WIRE_TRANSCRIPT_DELTA,
     WIRE_TRANSCRIPT_DONE,
     WIRE_TURN_EOU_PREDICTED,
+    AppendResult,
     ConversationConfig,
     ConversationSession,
 )
@@ -315,9 +316,12 @@ class TestResponseAdmission:
 
         response_id = (await session.start_response_stream()).response_id
         assert response_id is not None
-        assert await session.append_response_text(
-            "The first phrase.",
-            expected_response_id=response_id,
+        assert (
+            await session.append_response_text(
+                "The first phrase.",
+                expected_response_id=response_id,
+            )
+            is AppendResult.ACCEPTED
         )
 
         # A raw VAD edge can race with the first playout frame when the
@@ -327,13 +331,16 @@ class TestResponseAdmission:
         await asyncio.sleep(0.05)
 
         assert session.state == TurnState.SPEAKING
-        assert await session.append_response_text(
-            " The response continues.",
-            expected_response_id=response_id,
+        assert (
+            await session.append_response_text(
+                " The response continues.",
+                expected_response_id=response_id,
+            )
+            is AppendResult.ACCEPTED
         )
 
         session._input_speech_active = False
-        assert await session.commit_response_stream(expected_response_id=response_id)
+        assert await session.commit_response_stream(expected_response_id=response_id) is AppendResult.ACCEPTED
         await session.close()
 
     @pytest.mark.asyncio

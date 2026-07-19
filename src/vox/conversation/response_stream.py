@@ -2,10 +2,24 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Final
 
 RESPONSE_STREAM_END: Final = object()
 RESPONSE_STREAM_QUEUE_MAX = 1024
+
+
+class AppendResult(StrEnum):
+    ACCEPTED = "accepted"
+    SESSION_CLOSED = "session_closed"
+    NO_ACTIVE_RESPONSE = "no_active_response"
+    RESPONSE_MISMATCH = "response_mismatch"
+    RESPONSE_COMMITTED = "response_committed"
+    STREAM_ENDED = "stream_ended"
+
+    @property
+    def is_accepted(self) -> bool:
+        return self is AppendResult.ACCEPTED
 
 
 @dataclass
@@ -31,11 +45,11 @@ class ResponseStream:
     def close(self) -> None:
         self.closed = True
 
-    async def append_text(self, text: str) -> bool:
+    async def append_text(self, text: str) -> AppendResult:
         if self.closed:
-            return False
+            return AppendResult.STREAM_ENDED
         await self.queue.put(text)
-        return True
+        return AppendResult.ACCEPTED
 
     def mark_committed(self) -> bool:
         if self.committed:
@@ -43,11 +57,11 @@ class ResponseStream:
         self.committed = True
         return True
 
-    async def enqueue_end(self) -> bool:
+    async def enqueue_end(self) -> AppendResult:
         if self.closed:
-            return False
+            return AppendResult.STREAM_ENDED
         await self.queue.put(RESPONSE_STREAM_END)
-        return True
+        return AppendResult.ACCEPTED
 
     async def next_text(self) -> str | None:
         item = await self.queue.get()

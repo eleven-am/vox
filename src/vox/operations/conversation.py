@@ -36,6 +36,7 @@ from vox.conversation.session import (
     WIRE_TRANSCRIPT_DELTA,
     WIRE_TRANSCRIPT_DONE,
     WIRE_TURN_EOU_PREDICTED,
+    AppendResult,
     ConversationConfig,
     ConversationSession,
 )
@@ -242,6 +243,36 @@ _START_REJECTION_ERROR_CODES = frozenset(
         ERROR_CODE_RESPONSE_REJECTED_TURN_STATE,
         ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH,
         ERROR_CODE_RESPONSE_ALREADY_ACTIVE,
+    }
+)
+
+_APPEND_RESULT_WIRE_ERRORS: dict[AppendResult, tuple[str, str]] = {
+    AppendResult.SESSION_CLOSED: (
+        ERROR_CODE_RESPONSE_REJECTED_TURN_STATE,
+        "session is closed",
+    ),
+    AppendResult.NO_ACTIVE_RESPONSE: (
+        ERROR_CODE_RESPONSE_STALE_GENERATION,
+        "no active response for this generation",
+    ),
+    AppendResult.RESPONSE_MISMATCH: (
+        ERROR_CODE_RESPONSE_STALE_GENERATION,
+        "response id does not match the active response",
+    ),
+    AppendResult.RESPONSE_COMMITTED: (
+        ERROR_CODE_RESPONSE_STALE_GENERATION,
+        "response is already committed",
+    ),
+    AppendResult.STREAM_ENDED: (
+        ERROR_CODE_RESPONSE_STALE_GENERATION,
+        "response stream has ended",
+    ),
+}
+
+_APPEND_RESULTS_CLEARING_BOOKKEEPING = frozenset(
+    {
+        AppendResult.SESSION_CLOSED,
+        AppendResult.STREAM_ENDED,
     }
 )
 
@@ -894,18 +925,12 @@ class ConversationOrchestrator:
                 generation_id=generation_id,
             )
         self._validate_response_generation(generation_id)
-        accepted = await self._session.append_response_text(
+        result = await self._session.append_response_text(
             text,
             allow_interruptions=allow_interruptions,
             expected_response_id=response_id,
         )
-        if not accepted:
-            self._clear_generation_bookkeeping()
-            raise ConversationCommandError(
-                "response generation is no longer active",
-                code=ERROR_CODE_RESPONSE_STALE_GENERATION,
-                generation_id=generation_id,
-            )
+        self._raise_for_append_result(result, generation_id=generation_id)
 
     async def replace_response_text(self, text: str, *, allow_interruptions: bool = True) -> None:
         if self._session is None:
@@ -923,16 +948,10 @@ class ConversationOrchestrator:
                 generation_id=generation_id,
             )
         self._validate_response_generation(generation_id)
-        accepted = await self._session.commit_response_stream(
+        result = await self._session.commit_response_stream(
             expected_response_id=response_id,
         )
-        if not accepted:
-            self._clear_generation_bookkeeping()
-            raise ConversationCommandError(
-                "response generation is no longer active",
-                code=ERROR_CODE_RESPONSE_STALE_GENERATION,
-                generation_id=generation_id,
-            )
+        self._raise_for_append_result(result, generation_id=generation_id)
 
     async def cancel_response(self, *, generation_id: str | None = None) -> None:
         if self._session is None:
@@ -1022,6 +1041,18 @@ class ConversationOrchestrator:
             if generation_id:
                 mapped = replace(mapped, generation_id=generation_id)
         return mapped
+
+    def _raise_for_append_result(self, result: AppendResult, *, generation_id: str | None) -> None:
+        if result is AppendResult.ACCEPTED:
+            return
+        if result in _APPEND_RESULTS_CLEARING_BOOKKEEPING:
+            self._clear_generation_bookkeeping()
+        code, message = _APPEND_RESULT_WIRE_ERRORS[result]
+        raise ConversationCommandError(
+            message,
+            code=code,
+            generation_id=generation_id,
+        )
 
     def _clear_generation_bookkeeping(self) -> None:
         self._control_response_id = None

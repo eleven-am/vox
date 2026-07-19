@@ -23,7 +23,7 @@ import numpy as np
 import pytest
 
 from vox.conversation import TurnAction, TurnActionType, TurnPolicy, TurnState
-from vox.conversation.session import ConversationConfig, ConversationSession
+from vox.conversation.session import AppendResult, ConversationConfig, ConversationSession
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
 from vox.streaming.types import SpeechStarted, SpeechStopped, StreamTranscript
@@ -164,11 +164,14 @@ class TestBackchannelRejection:
         assert session.state == TurnState.THINKING
         assert coll.by_type("interruption.false_positive")
         assert not coll.by_type("response.cancelled")
-        assert await session.append_response_text(
-            "The response is still alive.",
-            expected_response_id=response_id,
+        assert (
+            await session.append_response_text(
+                "The response is still alive.",
+                expected_response_id=response_id,
+            )
+            is AppendResult.ACCEPTED
         )
-        assert await session.commit_response_stream(expected_response_id=response_id)
+        assert await session.commit_response_stream(expected_response_id=response_id) is AppendResult.ACCEPTED
 
         await session.close()
 
@@ -197,9 +200,12 @@ class TestBackchannelRejection:
         assert session.state == TurnState.INTERRUPTED
         assert coll.by_type("interruption.detected")
         assert coll.by_type("response.cancelled")
-        assert not await session.append_response_text(
-            "This delta must be rejected.",
-            expected_response_id=response_id,
+        assert (
+            await session.append_response_text(
+                "This delta must be rejected.",
+                expected_response_id=response_id,
+            )
+            is AppendResult.NO_ACTIVE_RESPONSE
         )
 
         await session.close()

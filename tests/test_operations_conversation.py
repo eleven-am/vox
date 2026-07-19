@@ -938,3 +938,24 @@ async def test_stale_generation_delta_and_commit_raise_typed_errors():
     assert commit_exc.value.code == ERROR_CODE_RESPONSE_STALE_GENERATION
     assert commit_exc.value.generation_id == "gen-a"
     await orchestrator.close()
+
+
+@pytest.mark.asyncio
+async def test_whitespace_delta_is_preserved_for_active_generation():
+    adapter = ScriptedTTS(chunks=2)
+    orchestrator = await _started_orchestrator(adapter)
+    await orchestrator.start_response(generation_id="gen-live")
+
+    await orchestrator.append_response_text("Hello", generation_id="gen-live")
+    await orchestrator.append_response_text(" ", generation_id="gen-live")
+
+    assert orchestrator.active_generation_id == "gen-live"
+    await orchestrator.append_response_text("world.", generation_id="gen-live")
+    await orchestrator.commit_response(generation_id="gen-live")
+    await orchestrator.end_of_stream()
+
+    events = await _collect_orchestrator_events(orchestrator)
+    assert not [event for event in events if isinstance(event, ConvErrorEvent)]
+    assert any(isinstance(event, ConvResponseDoneEvent) for event in events)
+    assert adapter.texts == ["Hello world."]
+    await orchestrator.close()

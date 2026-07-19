@@ -502,6 +502,81 @@ class TestConfirmedBargeInMidStream:
         )
 
 
+class TestStreamingResponseDeltas:
+    def test_whitespace_only_delta_preserves_active_generation(self, transport_factory):
+        transport = transport_factory(FakeScheduler(ScriptedTTSAdapter(chunks=2, inter_chunk_delay=0.005)))
+        transport.send("session.update", _session_payload())
+        transport.expect(_is("session.created"))
+        transport.run_on_session_loop(_commit_user_turn(transport.session))
+        transport.expect(_is("turn.state_changed", state="thinking"))
+
+        transport.send("response.start", {"generation_id": "gen-live"})
+        transport.expect(_is("response.created", generation_id="gen-live"))
+        transport.send("response.delta", {"delta": "Hello", "generation_id": "gen-live"})
+        transport.send("response.delta", {"delta": " ", "generation_id": "gen-live"})
+        transport.send("response.delta", {"delta": "world.", "generation_id": "gen-live"})
+        transport.send("response.commit", {"generation_id": "gen-live"})
+
+        transport.expect(_is("response.committed", generation_id="gen-live"))
+        transport.expect(_is("response.done", generation_id="gen-live"))
+        assert not [wire for wire in transport.events if wire["type"] == "error"]
+
+    def test_whitespace_first_delta_after_confirmed_interruption_completes_second_response(
+        self, transport_factory
+    ):
+        transport = transport_factory(FakeScheduler(ScriptedTTSAdapter(chunks=60, inter_chunk_delay=0.01)))
+        transport.send("session.update", _session_payload())
+        transport.expect(_is("session.created"))
+
+        transport.send("response.start", {"generation_id": "gen-1"})
+        created_1 = transport.expect(_is("response.created", generation_id="gen-1"))
+        transport.send(
+            "response.delta",
+            {"delta": "A long reply that keeps going with plenty of sentences.", "generation_id": "gen-1"},
+        )
+        transport.expect(_is("turn.state_changed", state="speaking"))
+        transport.expect(_is("response.audio.delta"))
+
+        transport.run_on_session_loop(_begin_user_speech(transport.session, utterance_id=1, timestamp_ms=1_000))
+        transport.run_on_session_loop(
+            _push_confirming_partial(
+                transport.session,
+                utterance_id=1,
+                text="wait please stop",
+                start_ms=1_000,
+                end_ms=1_600,
+            )
+        )
+        transport.expect(_is("interruption.detected", generation_id="gen-1"))
+        cancelled = transport.expect(_is("response.cancelled", generation_id="gen-1"))
+        assert cancelled["response_id"] == created_1["response_id"]
+
+        transport.run_on_session_loop(
+            _end_user_speech_without_transcript(transport.session, utterance_id=1, timestamp_ms=1_800)
+        )
+        transport.run_on_session_loop(_commit_user_turn(transport.session))
+        transport.expect(_is("turn.state_changed", state="thinking"))
+
+        transport.send("response.start", {"generation_id": "gen-2"})
+        created_2 = transport.expect(_is("response.created", generation_id="gen-2"))
+        assert created_2["response_id"] != created_1["response_id"]
+        transport.send("response.delta", {"delta": "\n", "generation_id": "gen-2"})
+        transport.send("response.delta", {"delta": "Fresh reply after the interruption.", "generation_id": "gen-2"})
+        transport.send("response.commit", {"generation_id": "gen-2"})
+
+        transport.expect(_is("response.committed", generation_id="gen-2"))
+        done = transport.expect(_is("response.done", generation_id="gen-2"))
+        assert done["response_id"] == created_2["response_id"]
+        state_changes = [wire["state"] for wire in transport.events if wire["type"] == "turn.state_changed"]
+        assert state_changes[-1] == "idle"
+        assert not [wire for wire in transport.events if wire["type"] == "error"]
+        assert not [
+            wire
+            for wire in transport.events
+            if wire["type"] == "response.cancelled" and wire.get("generation_id") == "gen-2"
+        ]
+
+
 class TestStartRejectedDuringUserSpeech:
     def test_typed_rejection_then_retry_succeeds_after_false_positive(self, transport_factory):
         transport = transport_factory(FakeScheduler(ScriptedTTSAdapter(chunks=3, inter_chunk_delay=0.005)))

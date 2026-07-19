@@ -28,17 +28,24 @@ from tests.test_conversation_session import (
 from vox.conversation import TurnEvent, TurnEventType, TurnPolicy, TurnState
 from vox.conversation.response_lifecycle import ResponsePhase
 from vox.conversation.session import (
+    ERROR_CODE_RESPONSE_STALE_GENERATION,
     WIRE_AUDIO_CLEAR,
     WIRE_AUDIO_DELTA,
     WIRE_ERROR,
     WIRE_RESPONSE_CANCELLED,
+    WIRE_RESPONSE_COMMITTED,
     WIRE_RESPONSE_DONE,
+    AppendResult,
     ConversationConfig,
     ConversationSession,
 )
 from vox.core.types import SynthesizeChunk
-from vox.operations.conversation import ConversationOrchestrator, parse_session_update
-from vox.operations.errors import InvalidConfigError
+from vox.operations.conversation import (
+    ConversationOrchestrator,
+    ConvResponseDoneEvent,
+    parse_session_update,
+)
+from vox.operations.errors import ConversationCommandError, InvalidConfigError
 from vox.streaming.types import SpeechStarted, StreamTranscript
 
 
@@ -97,13 +104,16 @@ class TestControlPlaneVsInterruption:
         await _drain_events(session)
         response_id = (await session.start_response_stream()).response_id
         assert response_id is not None
-        assert await session.append_response_text(
-            "A long reply that keeps going on.",
-            expected_response_id=response_id,
+        assert (
+            await session.append_response_text(
+                "A long reply that keeps going on.",
+                expected_response_id=response_id,
+            )
+            is AppendResult.ACCEPTED
         )
         assert await _wait_for(lambda: session.state == TurnState.SPEAKING)
 
-        results: list[bool] = []
+        results: list[AppendResult] = []
 
         async def spam_appends() -> None:
             for index in range(40):
@@ -135,16 +145,24 @@ class TestControlPlaneVsInterruption:
         assert not session.response_active
         assert collector.by_type(WIRE_RESPONSE_CANCELLED)
 
-        if False in results:
-            first_rejected = results.index(False)
-            assert all(result is False for result in results[first_rejected:])
+        rejections = [result for result in results if result is not AppendResult.ACCEPTED]
+        if rejections:
+            first_rejected = results.index(rejections[0])
+            assert all(result is not AppendResult.ACCEPTED for result in results[first_rejected:])
+            assert set(rejections) <= {AppendResult.NO_ACTIVE_RESPONSE, AppendResult.STREAM_ENDED}
 
-        assert not await session.append_response_text(
-            "into the void",
-            expected_response_id=response_id,
+        assert (
+            await session.append_response_text(
+                "into the void",
+                expected_response_id=response_id,
+            )
+            is AppendResult.NO_ACTIVE_RESPONSE
         )
         assert session.response_phase == ResponsePhase.CANCELLED
-        assert not await session.commit_response_stream(expected_response_id=response_id)
+        assert (
+            await session.commit_response_stream(expected_response_id=response_id)
+            is AppendResult.NO_ACTIVE_RESPONSE
+        )
         assert not collector.by_type(WIRE_RESPONSE_DONE)
 
         await session.close()
@@ -408,7 +426,7 @@ class TestAppendIntoDeadStream:
 
         original_append = stream.append_text
 
-        async def cancel_then_append(text: str) -> bool:
+        async def cancel_then_append(text: str) -> AppendResult:
             stream.append_text = original_append
             await session.cancel_response()
             assert stream.closed
@@ -416,19 +434,68 @@ class TestAppendIntoDeadStream:
 
         stream.append_text = cancel_then_append
 
-        assert not await session.append_response_text("lost delta", expected_response_id=response_id)
+        assert (
+            await session.append_response_text("lost delta", expected_response_id=response_id)
+            is AppendResult.STREAM_ENDED
+        )
         assert stream.queue.empty()
         assert session.response_phase == ResponsePhase.CANCELLED
 
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_commit_response_stream_returns_false_after_close(self):
+    async def test_commit_response_stream_reports_session_closed_after_close(self):
         session, _, _ = _build_session()
         await session.start()
         await session.close()
 
-        assert not await session.commit_response_stream()
+        assert await session.commit_response_stream() is AppendResult.SESSION_CLOSED
+
+
+class TestCloseRacesQueuedCommit:
+    @pytest.mark.asyncio
+    async def test_queued_commit_drained_during_close_reports_session_closed(self):
+        tts = GatedTTS()
+        session, collector, _ = _build_session(adapter=tts)
+        await session.start()
+
+        await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
+        await _drain_events(session)
+        response_id = (await session.start_response_stream()).response_id
+        assert response_id is not None
+        assert (
+            await session.append_response_text(
+                "reply awaiting commit.",
+                expected_response_id=response_id,
+            )
+            is AppendResult.ACCEPTED
+        )
+        assert await _wait_for(tts.started.is_set)
+        assert session._tts_task is not None and not session._tts_task.done()
+        assert await _wait_for(session._event_queue.empty)
+
+        original_admit = session._admit_response_commit
+        admissions: list[object] = []
+
+        async def recording_admit(**kwargs):
+            result = await original_admit(**kwargs)
+            admissions.append(result)
+            return result
+
+        session._admit_response_commit = recording_admit
+
+        commit_task = asyncio.create_task(
+            session.commit_response_stream(expected_response_id=response_id)
+        )
+        await asyncio.sleep(0)
+        assert not session._event_queue.empty()
+        assert not session._closed
+
+        await session.close()
+
+        assert await commit_task is AppendResult.SESSION_CLOSED
+        assert admissions == [AppendResult.SESSION_CLOSED]
+        assert collector.by_type(WIRE_RESPONSE_COMMITTED) == []
 
 
 class TestSlowTeardownDoesNotStallLoop:
@@ -578,6 +645,114 @@ class TestOrchestratorSessionAgreement:
             await orchestrator.commit_response(generation_id="gen-1")
 
         assert not session.response_active
+
+        await orchestrator.close()
+
+    @pytest.mark.asyncio
+    async def test_rejected_delta_after_commit_keeps_live_generation_correlated(self):
+        adapter = GatedTTS()
+        orchestrator = ConversationOrchestrator(scheduler=FakeScheduler(adapter))
+        await orchestrator.start_session(_session_config())
+
+        await orchestrator.start_response(generation_id="gen-live")
+        await orchestrator.append_response_text("Streaming sentence one.", generation_id="gen-live")
+        assert await _wait_for(adapter.started.is_set)
+        await orchestrator.commit_response(generation_id="gen-live")
+
+        with pytest.raises(ConversationCommandError, match="already committed") as exc_info:
+            await orchestrator.append_response_text("late tail", generation_id="gen-live")
+        assert exc_info.value.code == ERROR_CODE_RESPONSE_STALE_GENERATION
+        assert exc_info.value.generation_id == "gen-live"
+        assert orchestrator.response_active
+        assert orchestrator.active_generation_id == "gen-live"
+
+        adapter.finish_gate.set()
+        await orchestrator.end_of_stream()
+        events = []
+        async for event in orchestrator.events():
+            events.append(event)
+        done_events = [event for event in events if isinstance(event, ConvResponseDoneEvent)]
+        assert done_events
+        assert done_events[0].generation_id == "gen-live"
+
+        await orchestrator.close()
+
+    @pytest.mark.asyncio
+    async def test_stale_generation_mismatch_leaves_live_generation_untouched(self):
+        adapter = GatedTTS()
+        orchestrator = ConversationOrchestrator(scheduler=FakeScheduler(adapter))
+        await orchestrator.start_session(_session_config())
+        session = orchestrator._session
+        assert session is not None
+
+        await orchestrator.start_response(generation_id="gen-a")
+        stale_response_id = orchestrator._control_response_id
+        assert stale_response_id is not None
+
+        original_append = session.append_response_text
+        swap_completed = asyncio.Event()
+
+        async def swap_then_append(text: str, **kwargs):
+            session.append_response_text = original_append
+            await orchestrator.cancel_response(generation_id="gen-a")
+            await orchestrator.start_response(generation_id="gen-b")
+            swap_completed.set()
+            return await original_append(text, **kwargs)
+
+        session.append_response_text = swap_then_append
+
+        with pytest.raises(
+            ConversationCommandError,
+            match="response id does not match the active response",
+        ) as exc_info:
+            await orchestrator.append_response_text("late for gen-a", generation_id="gen-a")
+
+        assert swap_completed.is_set()
+        assert exc_info.value.code == ERROR_CODE_RESPONSE_STALE_GENERATION
+        assert exc_info.value.generation_id == "gen-a"
+
+        live_response_id = orchestrator._control_response_id
+        assert live_response_id is not None
+        assert live_response_id != stale_response_id
+        assert orchestrator.response_active
+        assert orchestrator.active_generation_id == "gen-b"
+        assert session.active_response_id == live_response_id
+
+        assert (
+            await session.append_response_text(
+                "stale delta",
+                expected_response_id=stale_response_id,
+            )
+            is AppendResult.RESPONSE_MISMATCH
+        )
+        assert (
+            await session.commit_response_stream(expected_response_id=stale_response_id)
+            is AppendResult.RESPONSE_MISMATCH
+        )
+        with pytest.raises(ConversationCommandError) as commit_exc:
+            await orchestrator.commit_response(generation_id="gen-a")
+        assert commit_exc.value.code == ERROR_CODE_RESPONSE_STALE_GENERATION
+        assert orchestrator.response_active
+        assert orchestrator.active_generation_id == "gen-b"
+
+        assert (
+            await session.append_response_text(
+                "Sentence for gen-b.",
+                expected_response_id=live_response_id,
+            )
+            is AppendResult.ACCEPTED
+        )
+        assert await _wait_for(adapter.started.is_set)
+        adapter.finish_gate.set()
+        await orchestrator.commit_response(generation_id="gen-b")
+        await orchestrator.end_of_stream()
+        events = []
+        async for event in orchestrator.events():
+            events.append(event)
+        done_events = [event for event in events if isinstance(event, ConvResponseDoneEvent)]
+        assert done_events
+        assert done_events[-1].generation_id == "gen-b"
+        assert done_events[-1].response_id == live_response_id
 
         await orchestrator.close()
 

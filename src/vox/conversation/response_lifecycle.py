@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
-from vox.conversation.response_stream import ResponseStream
+from vox.conversation.response_stream import AppendResult, ResponseStream
 
 
 class ResponsePhase(StrEnum):
@@ -36,10 +36,16 @@ class ConversationResponseLifecycle:
             return self.stream
         return None
 
-    def appendable_stream(self, expected_response_id: str) -> ResponseStream | None:
-        stream = self.open_uncommitted_stream()
-        if stream is None or stream.response_id != expected_response_id:
-            return None
+    def appendable_stream(self, expected_response_id: str) -> ResponseStream | AppendResult:
+        stream = self.stream
+        if stream is None:
+            return AppendResult.NO_ACTIVE_RESPONSE
+        if stream.response_id != expected_response_id:
+            return AppendResult.RESPONSE_MISMATCH
+        if stream.committed:
+            return AppendResult.RESPONSE_COMMITTED
+        if stream.closed or self.phase is not ResponsePhase.STARTED:
+            return AppendResult.STREAM_ENDED
         return stream
 
     def start_stream(self, *, allow_interruptions: bool = True) -> ResponseStream:

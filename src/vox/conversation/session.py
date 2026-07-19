@@ -84,6 +84,7 @@ from vox.streaming.vad import VADConfig
 
 logger = logging.getLogger(__name__)
 ResponseStream = response_streams.ResponseStream
+AppendResult = response_streams.AppendResult
 
 
 WIRE_SPEECH_STARTED = "input_audio_buffer.speech_started"
@@ -416,28 +417,34 @@ class ConversationSession:
         *,
         allow_interruptions: bool = True,
         expected_response_id: str | None = None,
-    ) -> bool:
-        if self._closed or not text or not text.strip():
-            return False
-        stream = await self._submit_command(
+    ) -> AppendResult:
+        if self._closed:
+            return AppendResult.SESSION_CLOSED
+        if expected_response_id is None and not text.strip():
+            return AppendResult.NO_ACTIVE_RESPONSE
+        admitted = await self._submit_command(
             partial(
                 self._admit_response_text,
                 allow_interruptions=allow_interruptions,
                 expected_response_id=expected_response_id,
             )
         )
-        if stream is None:
-            return False
-        return await stream.append_text(text)
+        if admitted is None:
+            return AppendResult.SESSION_CLOSED
+        if isinstance(admitted, AppendResult):
+            return admitted
+        if not text:
+            return AppendResult.ACCEPTED
+        return await admitted.append_text(text)
 
     async def _admit_response_text(
         self,
         *,
         allow_interruptions: bool,
         expected_response_id: str | None,
-    ) -> ResponseStream | None:
+    ) -> ResponseStream | AppendResult:
         if self._closed:
-            return None
+            return AppendResult.SESSION_CLOSED
         if expected_response_id is None:
             result = await self._attempt_response_start(allow_interruptions=allow_interruptions)
             if result.rejection is not None:
@@ -446,28 +453,36 @@ class ConversationSession:
                     result.rejection.message,
                     code=result.rejection.code,
                 )
-                return None
+                return AppendResult.NO_ACTIVE_RESPONSE
             if result.response_id is None:
-                return None
+                return AppendResult.NO_ACTIVE_RESPONSE
             return self._response_lifecycle.appendable_stream(result.response_id)
         return self._response_lifecycle.appendable_stream(expected_response_id)
 
-    async def commit_response_stream(self, *, expected_response_id: str | None = None) -> bool:
+    async def commit_response_stream(self, *, expected_response_id: str | None = None) -> AppendResult:
         if self._closed:
-            return False
-        stream = await self._submit_command(
+            return AppendResult.SESSION_CLOSED
+        admitted = await self._submit_command(
             partial(self._admit_response_commit, expected_response_id=expected_response_id)
         )
-        if stream is None:
-            return False
-        return await stream.enqueue_end()
+        if admitted is None:
+            return AppendResult.SESSION_CLOSED
+        if isinstance(admitted, AppendResult):
+            return admitted
+        return await admitted.enqueue_end()
 
-    async def _admit_response_commit(self, *, expected_response_id: str | None) -> ResponseStream | None:
+    async def _admit_response_commit(self, *, expected_response_id: str | None) -> ResponseStream | AppendResult:
+        if self._closed:
+            return AppendResult.SESSION_CLOSED
         stream = self._response_lifecycle.stream
-        if expected_response_id is not None and (stream is None or stream.response_id != expected_response_id):
-            return None
-        if stream is None or not self._response_lifecycle.commit_stream(stream):
-            return None
+        if stream is None:
+            return AppendResult.NO_ACTIVE_RESPONSE
+        if expected_response_id is not None and stream.response_id != expected_response_id:
+            return AppendResult.RESPONSE_MISMATCH
+        if stream.committed:
+            return AppendResult.RESPONSE_COMMITTED
+        if stream.closed or not self._response_lifecycle.commit_stream(stream):
+            return AppendResult.STREAM_ENDED
         await self._emit_response_committed(stream.response_id)
         return stream
 

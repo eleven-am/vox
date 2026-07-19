@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from vox.conversation.response_stream import RESPONSE_STREAM_QUEUE_MAX, ResponseStream
+from vox.conversation.response_stream import RESPONSE_STREAM_QUEUE_MAX, AppendResult, ResponseStream
 
 
 def test_response_stream_create_uses_bounded_queue_and_response_metadata():
@@ -57,8 +57,8 @@ async def test_closed_response_stream_rejects_append_and_end():
     stream.close()
 
     assert stream.closed is True
-    assert await stream.append_text("late") is False
-    assert await stream.enqueue_end() is False
+    assert await stream.append_text("late") is AppendResult.STREAM_ENDED
+    assert await stream.enqueue_end() is AppendResult.STREAM_ENDED
     assert stream.queue.empty()
 
 
@@ -66,8 +66,10 @@ async def test_closed_response_stream_rejects_append_and_end():
 async def test_open_response_stream_reports_successful_append_and_end():
     stream = ResponseStream.create(response_id="resp_1")
 
-    assert await stream.append_text("hello") is True
-    assert await stream.enqueue_end() is True
+    assert await stream.append_text("hello") is AppendResult.ACCEPTED
+    assert await stream.enqueue_end() is AppendResult.ACCEPTED
+    assert AppendResult.ACCEPTED.is_accepted
+    assert not AppendResult.STREAM_ENDED.is_accepted
 
 
 def test_response_stream_assistant_context_prefers_heard_text():
