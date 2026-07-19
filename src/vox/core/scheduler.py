@@ -449,6 +449,17 @@ class Scheduler:
         while True:
             async with self._lock:
                 loaded = self._models.get(full_name)
+                if loaded is not None and not loaded.adapter.is_loaded:
+                    if loaded.ref_count == 0:
+                        logger.warning("Evicting %s from cache: adapter reports unloaded", full_name)
+                        del self._models[full_name]
+                        loaded = None
+                    else:
+                        logger.warning(
+                            "Adapter for %s reports unloaded but has %d active references; deferring eviction",
+                            full_name,
+                            loaded.ref_count,
+                        )
                 if loaded is not None:
                     loaded.ref_count += 1
                     loaded.last_used = time.time()
@@ -470,10 +481,9 @@ class Scheduler:
             yield loaded.adapter
         finally:
             async with self._lock:
-                if full_name in self._models:
-                    loaded_model = self._models[full_name]
-                    loaded_model.ref_count -= 1
-                    loaded_model.last_used = time.time()
+                loaded.ref_count -= 1
+                if self._models.get(full_name) is loaded:
+                    loaded.last_used = time.time()
 
     async def preload(self, model_name: str) -> None:
         """Pre-load a model into memory."""

@@ -207,6 +207,66 @@ async def test_acquire_reuses_already_loaded_model(scheduler: Scheduler):
 
 
 @pytest.mark.asyncio
+async def test_acquire_evicts_dead_cached_adapter_and_reloads(scheduler: Scheduler):
+    async with scheduler.acquire("whisper:large-v3") as first_adapter:
+        pass
+
+    first_adapter._loaded = False
+
+    async with scheduler.acquire("whisper:large-v3") as second_adapter:
+        assert second_adapter is not first_adapter
+        assert second_adapter.is_loaded
+        assert len(second_adapter.load_calls) == 1
+
+    loaded = scheduler.list_loaded()
+    assert len(loaded) == 1
+    assert loaded[0].ref_count == 0
+
+
+@pytest.mark.asyncio
+async def test_dead_adapter_not_evicted_while_held(scheduler: Scheduler):
+    async with scheduler.acquire("whisper:large-v3") as held_adapter:
+        held_adapter._loaded = False
+
+        async with scheduler.acquire("whisper:large-v3") as second_adapter:
+            assert second_adapter is held_adapter
+            loaded_list = scheduler.list_loaded()
+            assert len(loaded_list) == 1
+            assert loaded_list[0].ref_count == 2
+
+        loaded_list = scheduler.list_loaded()
+        assert loaded_list[0].ref_count == 1
+
+    assert scheduler._models["whisper:large-v3"].ref_count == 0
+
+    async with scheduler.acquire("whisper:large-v3") as fresh_adapter:
+        assert fresh_adapter is not held_adapter
+        assert fresh_adapter.is_loaded
+
+    loaded_list = scheduler.list_loaded()
+    assert len(loaded_list) == 1
+    assert loaded_list[0].ref_count == 0
+
+
+@pytest.mark.asyncio
+async def test_release_after_supersede_decrements_original_only(scheduler: Scheduler):
+    full_name = "whisper:large-v3"
+    async with scheduler.acquire(full_name):
+        original = scheduler._models[full_name]
+        assert original.ref_count == 1
+        async with scheduler._lock:
+            del scheduler._models[full_name]
+        await scheduler.preload(full_name)
+        replacement = scheduler._models[full_name]
+        assert replacement is not original
+        assert replacement.ref_count == 0
+
+    assert scheduler._models[full_name] is replacement
+    assert replacement.ref_count == 0
+    assert original.ref_count == 0
+
+
+@pytest.mark.asyncio
 async def test_acquire_increments_and_decrements_ref_count(scheduler: Scheduler):
     """ref_count should be 1 inside the context and 0 after exiting."""
     async with scheduler.acquire("whisper:large-v3"):
