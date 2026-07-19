@@ -46,7 +46,7 @@ _RUNTIME_DEPENDENCIES = (
     "llvmlite>=0.44,<0.49",
     "matplotlib>=3.9,<3.10",
 )
-_BASE_FRAMEWORK_RUNTIME_GLOBS = (
+_APP_RUNTIME_SHADOW_GLOBS = (
     "torch",
     "torch-*.dist-info",
     "torchaudio",
@@ -55,6 +55,12 @@ _BASE_FRAMEWORK_RUNTIME_GLOBS = (
     "torchvision-*.dist-info",
     "nvidia",
     "nvidia_*.dist-info",
+    "cffi",
+    "cffi-*.dist-info",
+    "_cffi_backend*.so",
+    "_cffi_backend*.pyd",
+    "pycparser",
+    "pycparser-*.dist-info",
 )
 _STALE_RUNTIME_REPAIR_GLOBS = (
     "matplotlib",
@@ -100,9 +106,9 @@ def _runtime_module_available(name: str) -> bool:
         return False
 
 
-def _remove_base_framework_shadows(runtime_dir: Path) -> bool:
+def _remove_app_runtime_shadows(runtime_dir: Path) -> bool:
     removed = False
-    for pattern in _BASE_FRAMEWORK_RUNTIME_GLOBS:
+    for pattern in _APP_RUNTIME_SHADOW_GLOBS:
         for path in runtime_dir.glob(pattern):
             if not path.exists():
                 continue
@@ -111,12 +117,12 @@ def _remove_base_framework_shadows(runtime_dir: Path) -> bool:
             else:
                 path.unlink(missing_ok=True)
             removed = True
-            logger.info("Removed base framework shadow from Parakeet NeMo runtime: %s", path.name)
+            logger.info("Removed app-runtime shadow from Parakeet NeMo runtime: %s", path.name)
     return removed
 
 
-def _runtime_has_base_framework_shadows(runtime_dir: Path) -> bool:
-    return any(any(runtime_dir.glob(pattern)) for pattern in _BASE_FRAMEWORK_RUNTIME_GLOBS)
+def _runtime_has_app_shadows(runtime_dir: Path) -> bool:
+    return any(any(runtime_dir.glob(pattern)) for pattern in _APP_RUNTIME_SHADOW_GLOBS)
 
 
 def _remove_stale_runtime_repair_targets(runtime_dir: Path) -> bool:
@@ -208,14 +214,14 @@ def _prime_lightning_imports() -> None:
 def _install_nemo_runtime() -> None:
     runtime_dir = _ensure_runtime_target_on_path()
     sentinel = runtime_dir / _RUNTIME_SENTINEL
-    if _runtime_has_base_framework_shadows(runtime_dir):
-        _remove_base_framework_shadows(runtime_dir)
+    if _runtime_has_app_shadows(runtime_dir):
+        _remove_app_runtime_shadows(runtime_dir)
         _clear_nemo_modules()
 
     if (
         sentinel.is_file()
         and _runtime_module_available("nemo.collections.asr")
-        and not _runtime_has_base_framework_shadows(runtime_dir)
+        and not _runtime_has_app_shadows(runtime_dir)
     ):
         return
 
@@ -234,7 +240,7 @@ def _install_nemo_runtime() -> None:
         raise RuntimeError(
             "Failed to install Parakeet NeMo runtime dependencies."
         )
-    _remove_base_framework_shadows(runtime_dir)
+    _remove_app_runtime_shadows(runtime_dir)
     _clear_nemo_modules()
     if not _runtime_module_available("nemo.collections.asr"):
         raise RuntimeError("Parakeet NeMo runtime installed but nemo.collections.asr is unavailable")

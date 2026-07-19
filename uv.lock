@@ -2564,12 +2564,13 @@ wheels = [
 
 [[package]]
 name = "vox-runtime"
-version = "0.2.108"
+version = "0.2.109"
 source = { editable = "." }
 dependencies = [
     { name = "aioice" },
     { name = "aiortc" },
     { name = "audioop-lts", marker = "python_full_version >= '3.13'" },
+    { name = "cffi" },
     { name = "click" },
     { name = "fastapi" },
     { name = "grpcio" },
@@ -2621,6 +2622,7 @@ requires-dist = [
     { name = "aioice", specifier = "==0.10.2" },
     { name = "aiortc", specifier = "==1.14.0" },
     { name = "audioop-lts", marker = "python_full_version >= '3.13'", specifier = ">=0.2.1" },
+    { name = "cffi", specifier = ">=2.0,<3.0" },
     { name = "click", specifier = ">=8.1.0" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "grpcio", specifier = ">=1.80.0" },

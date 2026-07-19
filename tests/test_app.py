@@ -62,6 +62,30 @@ async def test_lifespan_preloads_core_ner(_mock_application_ner_preload):
 
 
 @pytest.mark.asyncio
+async def test_lifespan_preloads_core_native_modules_before_ner(
+    _mock_application_ner_preload,
+):
+    app = _make_app(grpc_port=None)
+    preload_order: list[str] = []
+
+    def preload_native() -> None:
+        preload_order.append("native")
+
+    async def preload_ner() -> None:
+        preload_order.append("ner")
+
+    _mock_application_ner_preload.side_effect = preload_ner
+    with patch(
+        "vox.server.app.preload_core_native_modules",
+        side_effect=preload_native,
+    ):
+        async with lifespan(app):
+            pass
+
+    assert preload_order == ["native", "ner"]
+
+
+@pytest.mark.asyncio
 async def test_lifespan_stops_grpc_server_and_scheduler_on_shutdown():
     app = _make_app(grpc_port=9090)
     grpc_server = MagicMock(stop=AsyncMock())

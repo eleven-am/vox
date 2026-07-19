@@ -1,12 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import inspect
 import logging
 import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def preload_core_native_modules() -> None:
+    """Pin ABI-coupled base modules before adapter runtime paths are activated."""
+
+    cffi = importlib.import_module("cffi")
+    backend = importlib.import_module("_cffi_backend")
+    cffi_version = getattr(cffi, "__version__", None)
+    backend_version = getattr(backend, "__version__", None)
+    if not cffi_version or cffi_version != backend_version:
+        raise RuntimeError(
+            "Vox base cffi wrapper/backend mismatch: "
+            f"cffi={cffi_version or 'unknown'}, _cffi_backend={backend_version or 'unknown'}"
+        )
+    logger.info("Preloaded base cffi ABI modules (version=%s)", cffi_version)
 
 
 def parse_preload_list(value: str | None) -> list[str]:

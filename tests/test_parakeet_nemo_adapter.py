@@ -354,7 +354,7 @@ def test_install_nemo_runtime_uses_python312_compatible_pins(tmp_path: Path, mon
     assert (tmp_path / "runtime" / ".vox-parakeet-nemo-runtime-ready").is_file()
 
 
-def test_install_nemo_runtime_removes_base_framework_shadows_but_keeps_runtime_triton(
+def test_install_nemo_runtime_removes_app_runtime_shadows_but_keeps_runtime_triton(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -372,6 +372,11 @@ def test_install_nemo_runtime_removes_base_framework_shadows_but_keeps_runtime_t
         (runtime_dir / "triton-3.5.1.dist-info").mkdir()
         (runtime_dir / "nvidia").mkdir()
         (runtime_dir / "nvidia_cublas_cu12-12.8.4.1.dist-info").mkdir()
+        (runtime_dir / "cffi").mkdir()
+        (runtime_dir / "cffi-2.1.0.dist-info").mkdir()
+        (runtime_dir / "pycparser").mkdir()
+        (runtime_dir / "pycparser-3.0.dist-info").mkdir()
+        (runtime_dir / "_cffi_backend.cpython-312-x86_64-linux-gnu.so").touch()
         mock = MagicMock()
         mock.stderr = ""
         mock.stdout = ""
@@ -403,10 +408,15 @@ def test_install_nemo_runtime_removes_base_framework_shadows_but_keeps_runtime_t
     assert (runtime_dir / "triton-3.5.1.dist-info").exists()
     assert not (runtime_dir / "nvidia").exists()
     assert not (runtime_dir / "nvidia_cublas_cu12-12.8.4.1.dist-info").exists()
+    assert not (runtime_dir / "cffi").exists()
+    assert not (runtime_dir / "cffi-2.1.0.dist-info").exists()
+    assert not (runtime_dir / "pycparser").exists()
+    assert not (runtime_dir / "pycparser-3.0.dist-info").exists()
+    assert not (runtime_dir / "_cffi_backend.cpython-312-x86_64-linux-gnu.so").exists()
     assert (runtime_dir / ".vox-parakeet-nemo-runtime-ready").is_file()
 
 
-def test_install_nemo_runtime_repairs_stale_framework_shadows(
+def test_install_nemo_runtime_repairs_stale_app_runtime_shadows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -420,6 +430,10 @@ def test_install_nemo_runtime_repairs_stale_framework_shadows(
     (runtime_dir / ".vox-parakeet-nemo-runtime-ready").touch()
     (runtime_dir / "torch").mkdir()
     (runtime_dir / "torch-2.9.1.dist-info").mkdir()
+    (runtime_dir / "cffi").mkdir()
+    (runtime_dir / "cffi-2.1.0.dist-info").mkdir()
+    (runtime_dir / "pycparser").mkdir()
+    (runtime_dir / "_cffi_backend.cpython-312-x86_64-linux-gnu.so").touch()
     install = MagicMock(return_value=True)
 
     monkeypatch.setattr(module, "_runtime_target_dir", lambda: runtime_dir)
@@ -430,6 +444,10 @@ def test_install_nemo_runtime_repairs_stale_framework_shadows(
 
     assert not (runtime_dir / "torch").exists()
     assert not (runtime_dir / "torch-2.9.1.dist-info").exists()
+    assert not (runtime_dir / "cffi").exists()
+    assert not (runtime_dir / "cffi-2.1.0.dist-info").exists()
+    assert not (runtime_dir / "pycparser").exists()
+    assert not (runtime_dir / "_cffi_backend.cpython-312-x86_64-linux-gnu.so").exists()
     install.assert_not_called()
 
 

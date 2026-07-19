@@ -17,6 +17,7 @@ from vox.server.app_services import app_pondsocket, app_rtc_registry, app_servic
 from vox.server.middleware import ApiKeyAuthMiddleware, RequestIdMiddleware
 from vox.server.preload import (
     merged_preload_models,
+    preload_core_native_modules,
     preload_models,
     preload_ner,
     preload_turn_detector,
@@ -42,6 +43,7 @@ async def lifespan(app: FastAPI):
     prune_stale_temp_dirs(services.store.root / "tmp")
     await services.scheduler.start()
     try:
+        preload_core_native_modules()
         await preload_ner()
 
         merged = merged_preload_models(

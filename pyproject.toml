@@ -1,6 +1,6 @@
 [project]
 name = "vox-runtime"
-version = "0.2.108"
+version = "0.2.109"
 description = "Universal local runtime for STT and TTS models"
 readme = { file = "README.md", content-type = "text/markdown" }
 requires-python = ">=3.11"
@@ -10,6 +10,7 @@ dependencies = [
     "uvicorn[standard]>=0.34.0",
     "websockets>=16.0",
     "click>=8.1.0",
+    "cffi>=2.0,<3.0",
     "numpy>=1.26.0,<2.4",
     "soundfile>=0.13.1",
     "soxr>=0.5.0",

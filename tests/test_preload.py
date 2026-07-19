@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,12 +13,43 @@ from vox.server.preload import (
     env_bool,
     merged_preload_models,
     parse_preload_list,
+    preload_core_native_modules,
     preload_models,
     preload_ner,
     preload_turn_detector,
     preload_vad,
     should_preload_vad,
 )
+
+
+class TestPreloadCoreNativeModules:
+    def test_imports_matching_cffi_wrapper_and_backend_in_order(self):
+        cffi = MagicMock(__version__="2.0.0")
+        backend = MagicMock(__version__="2.0.0")
+
+        with patch(
+            "vox.server.preload.importlib.import_module",
+            side_effect=[cffi, backend],
+        ) as import_module:
+            preload_core_native_modules()
+
+        assert import_module.call_args_list == [call("cffi"), call("_cffi_backend")]
+
+    def test_rejects_mismatched_cffi_wrapper_and_backend(self):
+        cffi = MagicMock(__version__="2.1.0")
+        backend = MagicMock(__version__="2.0.0")
+
+        with (
+            patch(
+                "vox.server.preload.importlib.import_module",
+                side_effect=[cffi, backend],
+            ),
+            pytest.raises(
+                RuntimeError,
+                match=r"cffi=2\.1\.0, _cffi_backend=2\.0\.0",
+            ),
+        ):
+            preload_core_native_modules()
 
 
 class TestParsePreloadList:
