@@ -40,7 +40,6 @@ from vox.server.rtc_cleanup import close_attached_rtc_resources
 from vox.server.rtc_client_events import send_client_event_to_browser
 from vox.server.rtc_conversation import create_rtc_orchestrator, prepare_rtc_control_event
 from vox.server.rtc_registry import RtcControlTransport, RtcSessionRegistry
-from vox.server.rtc_timeline import RtcTurnTimeline, rtc_audio_stats
 
 RtcEventHandler = Callable[[dict[str, Any]], Awaitable[Any]]
 
@@ -118,7 +117,6 @@ class RtcRuntime:
         self._terminal_close_task: asyncio.Task[None] | None = None
         self._started = False
         self._closed = False
-        self._timeline = RtcTurnTimeline(session_id=session_id)
 
         orchestrator = create_rtc_orchestrator(scheduler=scheduler, record=record)
         self.conversation = ConversationRuntime(
@@ -253,12 +251,6 @@ class RtcRuntime:
         )
         if prepared.wire is not None:
             await self._emit_wire(prepared.wire)
-            timing = self._timeline.observe(
-                prepared.wire,
-                audio_stats=rtc_audio_stats(self.record),
-            )
-            if timing is not None:
-                await self._emit_wire(timing)
 
     async def _emit_wire(self, wire: dict[str, Any]) -> None:
         if await self._emit(wire) is not False:

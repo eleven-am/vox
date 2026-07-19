@@ -46,19 +46,14 @@ class InterruptionDecision:
 class InterruptionCandidate:
     candidate_id: int
     utterance_id: int
-    response_id: str | None
     started_at: float
-    speech_started_ms: int
     assistant_text: str
     last_observed_at: float
-    speech_active: bool = True
     stopped_at: float | None = None
-    speech_stopped_ms: int | None = None
     cumulative_transcript: str = ""
     partial_revisions: int = 0
     latest_partial_duration_ms: int = 0
     final_transcript: str = ""
-    final_eou_probability: float | None = None
     status: InterruptionCandidateStatus = InterruptionCandidateStatus.PENDING
     decision_reason: str | None = None
 
@@ -79,9 +74,7 @@ class InterruptDetector(Protocol):
         self,
         *,
         utterance_id: int,
-        response_id: str | None,
         started_at: float,
-        speech_started_ms: int,
         assistant_text: str,
     ) -> InterruptionCandidate: ...
 
@@ -90,7 +83,6 @@ class InterruptDetector(Protocol):
         *,
         utterance_id: int,
         stopped_at: float,
-        speech_stopped_ms: int,
         expects_transcript: bool,
     ) -> InterruptionDecision: ...
 
@@ -159,9 +151,7 @@ class EvidenceBasedInterruptDetector:
         self,
         *,
         utterance_id: int,
-        response_id: str | None,
         started_at: float,
-        speech_started_ms: int,
         assistant_text: str,
     ) -> InterruptionCandidate:
         current = self._candidate
@@ -172,9 +162,7 @@ class EvidenceBasedInterruptDetector:
         self._candidate = InterruptionCandidate(
             candidate_id=self._candidate_sequence,
             utterance_id=utterance_id,
-            response_id=response_id,
             started_at=started_at,
-            speech_started_ms=speech_started_ms,
             assistant_text=assistant_text,
             last_observed_at=started_at,
         )
@@ -185,7 +173,6 @@ class EvidenceBasedInterruptDetector:
         *,
         utterance_id: int,
         stopped_at: float,
-        speech_stopped_ms: int,
         expects_transcript: bool,
     ) -> InterruptionDecision:
         candidate = self._candidate_for(utterance_id)
@@ -194,10 +181,8 @@ class EvidenceBasedInterruptDetector:
         if candidate.status is not InterruptionCandidateStatus.PENDING:
             return self._terminal(candidate)
 
-        candidate.speech_active = False
         candidate.stopped_at = stopped_at
         candidate.last_observed_at = stopped_at
-        candidate.speech_stopped_ms = speech_stopped_ms
         if not expects_transcript:
             return self._decide(candidate, InterruptionDecisionAction.REJECT, "no_transcript")
         return self._defer("awaiting_final_transcript", candidate)
@@ -265,7 +250,6 @@ class EvidenceBasedInterruptDetector:
         text = transcript.text.strip()
         candidate.last_observed_at = now
         candidate.final_transcript = text
-        candidate.final_eou_probability = transcript.eou_probability
         candidate.assistant_text = assistant_text
         duration_ms = max(
             transcript_duration_ms(transcript),

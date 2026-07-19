@@ -110,6 +110,10 @@ class TestCodecsEdgeCases:
         result = pcm16_to_float32(b"")
         assert len(result) == 0
 
+    def test_pcm16_tolerates_odd_length_bytes(self):
+        result = pcm16_to_float32(b"\x00\x10\x7f")
+        assert result.shape == (1,)
+
     def test_pcm16_single_sample(self):
         pcm = np.array([16384], dtype=np.int16).tobytes()
         result = pcm16_to_float32(pcm)

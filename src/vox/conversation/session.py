@@ -723,9 +723,7 @@ class ConversationSession:
             if self._sm.state in interruption_states:
                 self._interrupt_detector.begin(
                     utterance_id=stream_event.utterance_id,
-                    response_id=self._active_response_id,
                     started_at=time.monotonic(),
-                    speech_started_ms=stream_event.timestamp_ms,
                     assistant_text=self._active_assistant_text(),
                 )
 
@@ -762,7 +760,6 @@ class ConversationSession:
             interrupt_decision = self._interrupt_detector.mark_speech_stopped(
                 utterance_id=stream_event.utterance_id,
                 stopped_at=self._last_speech_stopped_at,
-                speech_stopped_ms=stream_event.timestamp_ms,
                 expects_transcript=stream_event.expects_transcript,
             )
             await self._apply_interrupt_decision(interrupt_decision, resume_on_reject=False)

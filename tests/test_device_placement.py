@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import patch
 
 from vox.core.device_placement import (
     LoadedModelView,
@@ -11,7 +10,6 @@ from vox.core.device_placement import (
     PlacementTier,
     auto_device_for_model,
     decide_placement,
-    runtime_profile_for_alias,
     select_tier,
 )
 from vox.core.runtime import RuntimeCapabilities
@@ -84,47 +82,6 @@ class TestAutoDeviceForModel:
     def test_unknown_format_returns_cpu(self):
         info = _make_info(fmt=ModelFormat.GGUF)
         assert auto_device_for_model(info, _caps(torch_cuda=True)) == "cpu"
-
-
-class TestRuntimeProfileForAlias:
-    def test_returns_default_for_non_linux(self, monkeypatch):
-        monkeypatch.setattr(
-            "vox.core.device_placement.platform.machine", lambda: "arm64"
-        )
-        with patch(
-            "vox.core.device_placement.infer_runtime_profile",
-            return_value="default",
-        ):
-            assert runtime_profile_for_alias(device_hint="auto") == "default"
-
-    def test_forces_spark_when_cuda_hint_on_arm64(self, monkeypatch):
-        monkeypatch.setattr(
-            "vox.core.device_placement.platform.machine", lambda: "arm64"
-        )
-        assert runtime_profile_for_alias(device_hint="cuda") == "spark"
-
-    def test_forces_spark_when_cuda_hint_on_aarch64(self, monkeypatch):
-        monkeypatch.setattr(
-            "vox.core.device_placement.platform.machine", lambda: "aarch64"
-        )
-        assert runtime_profile_for_alias(device_hint="cuda") == "spark"
-
-    def test_delegates_to_infer_runtime_profile_for_other_hints(self, monkeypatch):
-        monkeypatch.setattr(
-            "vox.core.device_placement.platform.machine", lambda: "x86_64"
-        )
-        with patch(
-            "vox.core.device_placement.infer_runtime_profile",
-            return_value="spark",
-        ):
-            assert runtime_profile_for_alias(device_hint="auto") == "spark"
-
-    def test_reads_vox_device_env_when_no_hint(self, monkeypatch):
-        monkeypatch.setenv("VOX_DEVICE", "cuda")
-        monkeypatch.setattr(
-            "vox.core.device_placement.platform.machine", lambda: "arm64"
-        )
-        assert runtime_profile_for_alias() == "spark"
 
 
 class TestSelectTier:

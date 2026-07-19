@@ -1,13 +1,11 @@
 from __future__ import annotations
 
 import logging
-import os
-import platform
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
-from vox.core.runtime import RuntimeCapabilities, detect_runtime_capabilities, infer_runtime_profile
+from vox.core.runtime import RuntimeCapabilities, detect_runtime_capabilities
 from vox.core.types import ModelFormat, ModelInfo
 
 logger = logging.getLogger(__name__)
@@ -39,14 +37,6 @@ class Placement:
     evict: list[str] = field(default_factory=list)
     tier: str | None = None
     notes: dict[str, Any] = field(default_factory=dict)
-
-
-def runtime_profile_for_alias(*, device_hint: str | None = None) -> str:
-    device = (device_hint or os.environ.get("VOX_DEVICE", "auto")).strip().lower()
-    machine = platform.machine().strip().lower()
-    if device == "cuda" and machine in {"arm64", "aarch64"}:
-        return "spark"
-    return infer_runtime_profile(device_hint=device)
 
 
 def auto_device_for_model(info: ModelInfo, capabilities: RuntimeCapabilities) -> str:
@@ -234,7 +224,5 @@ __all__ = [
     "auto_device_for_model",
     "decide_placement",
     "detect_capabilities",
-    "infer_runtime_profile",
-    "runtime_profile_for_alias",
     "select_tier",
 ]

@@ -61,11 +61,6 @@ class RtcCandidateResult:
     ok: bool
 
 
-@dataclass(frozen=True)
-class RtcCloseResult:
-    closed: bool
-
-
 def create_rtc_session(
     *,
     registry: RtcSessionRegistry,
@@ -142,18 +137,6 @@ async def _add_rtc_candidate(
     except InvalidIceCandidateError as exc:
         raise InvalidRtcCandidateError() from exc
     return RtcCandidateResult(ok=bool(result["ok"]))
-
-
-def close_rtc_session(
-    *,
-    registry: RtcSessionRegistry,
-    session_id: str,
-) -> RtcCloseResult:
-    record = registry.get(session_id)
-    if record is None:
-        return RtcCloseResult(closed=False)
-    registry.close(session_id)
-    return RtcCloseResult(closed=True)
 
 
 def rtc_session_bootstrap_payload(result: RtcSessionBootstrap) -> dict[str, Any]:

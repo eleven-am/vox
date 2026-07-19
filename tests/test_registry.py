@@ -86,15 +86,9 @@ class TestLookup:
 
         assert registry.lookup("whisper-stt-ct2", "no-such-tag") is None
 
-    def test_lookup_routes_bare_family_through_alias_resolver(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_lookup_routes_bare_family_through_alias_resolver(self, tmp_path: Path):
         store = _make_store(tmp_path)
         registry = _make_registry(store)
-        monkeypatch.setenv("VOX_DEVICE", "cuda")
-        monkeypatch.setattr(
-            "vox.core.device_placement.platform.machine", lambda: "arm64"
-        )
 
         entry = registry.lookup("parakeet")
         assert entry == CATALOG["parakeet-stt"]["tdt-0.6b-v3"]

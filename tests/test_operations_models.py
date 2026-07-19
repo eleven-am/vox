@@ -222,8 +222,6 @@ def test_pull_model_unknown_catalog_raises(tmp_path: Path):
 
 
 def test_pull_model_blocks_incompatible_model(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("VOX_HAS_TORCH", "0")
-    monkeypatch.setenv("VOX_RUNTIME_OVERRIDE", "1")
     monkeypatch.delenv("VOX_ALLOW_INCOMPATIBLE", raising=False)
     store = BlobStore(root=tmp_path)
     registry = _registry_mock()
@@ -231,7 +229,13 @@ def test_pull_model_blocks_incompatible_model(tmp_path: Path, monkeypatch):
         "architecture": "fake", "type": "tts", "adapter": "qwen3-tts-torch",
         "format": "pytorch", "source": "owner/repo", "parameters": {}, "adapter_package": "vox-qwen",
     }
-    with pytest.raises(ModelIncompatibleError, match="PyTorch"):
+    with (
+        patch(
+            "vox.core.model_resolution.detect_runtime_capabilities",
+            return_value=_runtime_caps(torch_installed=False, torch_cuda=False, torch_mps_available=False, mps=False),
+        ),
+        pytest.raises(ModelIncompatibleError, match="PyTorch"),
+    ):
         pull_model(
             store=store,
             scheduler=MagicMock(),
@@ -241,8 +245,6 @@ def test_pull_model_blocks_incompatible_model(tmp_path: Path, monkeypatch):
 
 
 def test_pull_model_override_allows_incompatible_model(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("VOX_HAS_TORCH", "0")
-    monkeypatch.setenv("VOX_RUNTIME_OVERRIDE", "1")
     monkeypatch.setenv("VOX_ALLOW_INCOMPATIBLE", "1")
     store = BlobStore(root=tmp_path)
     registry = _registry_mock()
@@ -251,19 +253,21 @@ def test_pull_model_override_allows_incompatible_model(tmp_path: Path, monkeypat
         "format": "pytorch", "source": "owner/repo", "parameters": {}, "adapter_package": "vox-qwen",
     }
     # gate is bypassed -> pull_model returns the async generator without raising
-    events = pull_model(
-        store=store,
-        scheduler=MagicMock(),
-        registry=registry,
-        request=model_reference_request_from_fields(name="qwen3-tts:0.6b"),
-    )
+    with patch(
+        "vox.core.model_resolution.detect_runtime_capabilities",
+        return_value=_runtime_caps(torch_installed=False, torch_cuda=False, torch_mps_available=False, mps=False),
+    ):
+        events = pull_model(
+            store=store,
+            scheduler=MagicMock(),
+            registry=registry,
+            request=model_reference_request_from_fields(name="qwen3-tts:0.6b"),
+        )
     assert events is not None
 
 
 @pytest.mark.asyncio
 async def test_pull_model_override_emits_missing_capability_warning(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("VOX_HAS_TORCH", "0")
-    monkeypatch.setenv("VOX_RUNTIME_OVERRIDE", "1")
     monkeypatch.setenv("VOX_ALLOW_INCOMPATIBLE", "1")
     store = BlobStore(root=tmp_path)
     registry = _registry_mock()
@@ -282,7 +286,13 @@ async def test_pull_model_override_emits_missing_capability_warning(tmp_path: Pa
     downloaded = tmp_path / "model.bin"
     downloaded.write_bytes(b"hello")
 
-    with patch("huggingface_hub.hf_hub_download", return_value=str(downloaded)):
+    with (
+        patch("huggingface_hub.hf_hub_download", return_value=str(downloaded)),
+        patch(
+            "vox.core.model_resolution.detect_runtime_capabilities",
+            return_value=_runtime_caps(torch_installed=False, torch_cuda=False, torch_mps_available=False, mps=False),
+        ),
+    ):
         events = pull_model(
             store=store,
             scheduler=scheduler,
@@ -298,9 +308,7 @@ async def test_pull_model_override_emits_missing_capability_warning(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_pull_model_yields_progress_and_success(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("VOX_RUNTIME_OVERRIDE", "1")
-    monkeypatch.setenv("VOX_HAS_ONNXRUNTIME", "1")
+async def test_pull_model_yields_progress_and_success(tmp_path: Path):
     store = BlobStore(root=tmp_path)
     registry = _registry_mock()
     registry.lookup.return_value = {
@@ -320,6 +328,7 @@ async def test_pull_model_yields_progress_and_success(tmp_path: Path, monkeypatc
     with (
         patch("huggingface_hub.HfApi") as mock_api_cls,
         patch("huggingface_hub.hf_hub_download", return_value=str(downloaded)),
+        patch("vox.core.model_resolution.detect_runtime_capabilities", return_value=_runtime_caps()),
     ):
         mock_api_cls.return_value.repo_info.return_value = MagicMock(
             siblings=[MagicMock(rfilename="model.bin")]
@@ -341,9 +350,7 @@ async def test_pull_model_yields_progress_and_success(tmp_path: Path, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_pull_model_prepares_adapter_runtime_after_download(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("VOX_RUNTIME_OVERRIDE", "1")
-    monkeypatch.setenv("VOX_HAS_ONNXRUNTIME", "1")
+async def test_pull_model_prepares_adapter_runtime_after_download(tmp_path: Path):
     store = BlobStore(root=tmp_path)
     registry = _registry_mock()
     registry.lookup.return_value = {
@@ -368,7 +375,10 @@ async def test_pull_model_prepares_adapter_runtime_after_download(tmp_path: Path
     downloaded = tmp_path / "model.bin"
     downloaded.write_bytes(b"hello")
 
-    with patch("huggingface_hub.hf_hub_download", return_value=str(downloaded)):
+    with (
+        patch("huggingface_hub.hf_hub_download", return_value=str(downloaded)),
+        patch("vox.core.model_resolution.detect_runtime_capabilities", return_value=_runtime_caps()),
+    ):
         events = pull_model(
             store=store,
             scheduler=scheduler,
@@ -386,10 +396,7 @@ async def test_pull_model_prepares_adapter_runtime_after_download(tmp_path: Path
 @pytest.mark.asyncio
 async def test_pull_model_does_not_save_manifest_when_runtime_prepare_fails(
     tmp_path: Path,
-    monkeypatch,
 ):
-    monkeypatch.setenv("VOX_RUNTIME_OVERRIDE", "1")
-    monkeypatch.setenv("VOX_HAS_ONNXRUNTIME", "1")
     store = BlobStore(root=tmp_path)
     registry = _registry_mock()
     registry.lookup.return_value = {
@@ -413,7 +420,10 @@ async def test_pull_model_does_not_save_manifest_when_runtime_prepare_fails(
     downloaded = tmp_path / "model.bin"
     downloaded.write_bytes(b"hello")
 
-    with patch("huggingface_hub.hf_hub_download", return_value=str(downloaded)):
+    with (
+        patch("huggingface_hub.hf_hub_download", return_value=str(downloaded)),
+        patch("vox.core.model_resolution.detect_runtime_capabilities", return_value=_runtime_caps()),
+    ):
         events = pull_model(
             store=store,
             scheduler=scheduler,
@@ -431,10 +441,7 @@ async def test_pull_model_does_not_save_manifest_when_runtime_prepare_fails(
 @pytest.mark.asyncio
 async def test_pull_model_resolves_logical_variant_and_records_runtime_metadata(
     tmp_path: Path,
-    monkeypatch,
 ):
-    monkeypatch.setenv("VOX_RUNTIME_OVERRIDE", "1")
-    monkeypatch.setenv("VOX_HAS_ONNXRUNTIME", "1")
     store = BlobStore(root=tmp_path)
     registry = _registry_mock()
     registry.lookup.return_value = {
@@ -481,7 +488,13 @@ async def test_pull_model_resolves_logical_variant_and_records_runtime_metadata(
     downloaded = tmp_path / "model.bin"
     downloaded.write_bytes(b"hello")
 
-    with patch("huggingface_hub.hf_hub_download", return_value=str(downloaded)):
+    with (
+        patch("huggingface_hub.hf_hub_download", return_value=str(downloaded)),
+        patch(
+            "vox.core.model_resolution.detect_runtime_capabilities",
+            return_value=_runtime_caps(torch_cuda=False, nvidia_device=False),
+        ),
+    ):
         events = pull_model(
             store=store,
             scheduler=scheduler,

@@ -17,7 +17,6 @@ from vox.streaming.vad import (
     SILERO_ONNX_CONTEXT_SAMPLES,
     SILERO_ONNX_WINDOW_SAMPLES,
     SileroOnnxVAD,
-    SileroVAD,
     TenVAD,
     VADConfig,
     _frames_to_timestamps,
@@ -34,9 +33,6 @@ class TestVADBackends:
         assert isinstance(create_vad_backend("silero"), SileroOnnxVAD)
         assert isinstance(create_vad_backend(""), SileroOnnxVAD)
         assert isinstance(create_vad_backend("silero-onnx"), SileroOnnxVAD)
-
-    def test_silero_torch_backend_selectable(self):
-        assert isinstance(create_vad_backend("silero-torch"), SileroVAD)
 
     def test_silero_onnx_uses_16khz_window_and_context(self):
         assert SILERO_ONNX_WINDOW_SAMPLES == 512

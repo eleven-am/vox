@@ -98,63 +98,6 @@ def _frames_to_timestamps(
     return [ts for ts in timestamps if ts["end"] - ts["start"] >= min_speech_samples]
 
 
-class SileroVAD:
-    _instance: SileroVAD | None = None
-    _model = None
-    _get_speech_timestamps = None
-    _lock = threading.Lock()
-
-    def __new__(cls) -> SileroVAD:
-        with cls._lock:
-            if cls._instance is None:
-                cls._instance = super().__new__(cls)
-            return cls._instance
-
-    def _ensure_model(self) -> None:
-        if SileroVAD._model is not None:
-            return
-        with SileroVAD._lock:
-            if SileroVAD._model is None:
-                import torch
-
-                logger.info("Loading Silero VAD model from torch.hub")
-                model, utils = torch.hub.load(
-                    repo_or_dir="snakers4/silero-vad:master",
-                    model="silero_vad",
-                    force_reload=False,
-                    onnx=False,
-                )
-                SileroVAD._model = model
-                SileroVAD._get_speech_timestamps = utils[0]
-                warmup_audio = torch.zeros(TARGET_SAMPLE_RATE)
-                SileroVAD._get_speech_timestamps(
-                    warmup_audio, SileroVAD._model, sampling_rate=TARGET_SAMPLE_RATE
-                )
-                logger.info("Silero VAD model loaded")
-
-    def get_speech_timestamps(
-        self,
-        audio: NDArray[np.float32],
-        threshold: float = 0.5,
-        min_silence_duration_ms: int = 500,
-        speech_pad_ms: int = 100,
-        min_speech_duration_ms: int = 250,
-    ) -> list[dict[str, int]]:
-        import torch
-
-        self._ensure_model()
-        audio_tensor = torch.from_numpy(audio)
-        return SileroVAD._get_speech_timestamps(
-            audio_tensor,
-            SileroVAD._model,
-            threshold=threshold,
-            min_silence_duration_ms=min_silence_duration_ms,
-            speech_pad_ms=speech_pad_ms,
-            min_speech_duration_ms=min_speech_duration_ms,
-            sampling_rate=TARGET_SAMPLE_RATE,
-        )
-
-
 # Silero v5 at 16 kHz: 512-sample windows, each fed to the model with the
 # previous window's trailing 64 samples of context prepended.
 SILERO_ONNX_WINDOW_SAMPLES = 512
@@ -164,14 +107,12 @@ SILERO_ONNX_CONTEXT_SAMPLES = 64
 class SileroOnnxVAD:
     """Default VAD backend: the Silero model run on onnxruntime (no torch).
 
-    Uses the bundled ``silero_vad.onnx`` — the same model the torch backend
-    loads — but avoids the ~2GB torch dependency and the runtime torch.hub
-    download. Replicates Silero's own preprocessing: 512-sample windows at
-    16 kHz, each prepended with the previous window's last 64 samples of
-    context, carrying the recurrent state across windows. The onnxruntime
-    session is a process-wide singleton; each ``get_speech_timestamps`` call
-    starts from fresh context/state, matching the torch utility's per-call
-    behavior.
+    Uses the bundled ``silero_vad.onnx`` and replicates Silero's own
+    preprocessing: 512-sample windows at 16 kHz, each prepended with the
+    previous window's last 64 samples of context, carrying the recurrent
+    state across windows. The onnxruntime session is a process-wide
+    singleton; each ``get_speech_timestamps`` call starts from fresh
+    context/state.
     """
 
     _session = None
@@ -304,8 +245,6 @@ def create_vad_backend(name: str) -> VADBackend:
     normalized = (name or "silero").strip().lower().replace("_", "-")
     if normalized in {"silero", "silero-onnx"}:
         return SileroOnnxVAD()
-    if normalized in {"silero-torch", "silero-pytorch"}:
-        return SileroVAD()
     if normalized in {"ten", "ten-vad", "tenvad"}:
         return TenVAD()
     raise ValueError(f"unknown VAD backend: {name}")

@@ -38,10 +38,6 @@ class RuntimeCapabilities:
     nvidia_driver_version: str | None = None
     driver_cuda_version: str | None = None
 
-    @property
-    def has_gpu_accelerator(self) -> bool:
-        return self.torch_cuda or self.onnx_cuda or self.nvidia_device
-
 
 @dataclass(frozen=True)
 class _TorchProbe:
@@ -282,19 +278,3 @@ def detect_runtime_capabilities() -> RuntimeCapabilities:
         nvidia_driver_version=nvidia_smi.driver_version,
         driver_cuda_version=nvidia_smi.cuda_version or torch.cuda_version,
     )
-
-
-def infer_runtime_profile(*, device_hint: str | None = None) -> str:
-    hint = (device_hint or os.environ.get("VOX_DEVICE", "auto")).strip().lower()
-    capabilities = detect_runtime_capabilities()
-
-    if capabilities.system != "linux":
-        return "default"
-
-    if capabilities.machine not in {"arm64", "aarch64"}:
-        return "default"
-
-    if hint == "cuda":
-        return "spark"
-
-    return "spark" if capabilities.has_gpu_accelerator else "default"

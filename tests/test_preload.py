@@ -172,22 +172,20 @@ class TestPreloadNer:
 
 class TestPreloadVAD:
     @pytest.mark.asyncio
-    async def test_warm_calls_ensure_model(self):
-        fake_vad = MagicMock()
-        fake_cls = MagicMock(return_value=fake_vad)
+    async def test_warm_calls_ensure_session(self):
+        fake_cls = MagicMock()
 
-        with patch("vox.streaming.vad.SileroVAD", fake_cls):
+        with patch("vox.streaming.vad.SileroOnnxVAD", fake_cls):
             await preload_vad()
 
-        fake_cls.assert_called_once()
-        fake_vad._ensure_model.assert_called_once()
+        fake_cls._ensure_session.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_warm_failure_is_logged_not_raised(self, caplog):
-        fake_vad = MagicMock()
-        fake_vad._ensure_model.side_effect = RuntimeError("no torch")
+        fake_cls = MagicMock()
+        fake_cls._ensure_session.side_effect = RuntimeError("no onnxruntime")
 
-        with patch("vox.streaming.vad.SileroVAD", return_value=fake_vad):
+        with patch("vox.streaming.vad.SileroOnnxVAD", fake_cls):
             await preload_vad()
 
         assert any("Failed to preload VAD" in r.message for r in caplog.records)
@@ -281,11 +279,11 @@ class TestLifespanIntegration:
         app.state.scheduler = fake_sched
         app.state.grpc_port = None
 
-        fake_vad = MagicMock()
-        with patch("vox.streaming.vad.SileroVAD", return_value=fake_vad), TestClient(app) as _:
+        fake_cls = MagicMock()
+        with patch("vox.streaming.vad.SileroOnnxVAD", fake_cls), TestClient(app) as _:
             pass
 
-        fake_vad._ensure_model.assert_called_once()
+        fake_cls._ensure_session.assert_called_once()
 
 
 class TestCLISignature:

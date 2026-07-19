@@ -31,8 +31,7 @@ override and debug escape hatches only, never the default source of truth.
   core Vox and catalog metadata, not adapter code, unless we deliberately change
   that order.
 - `src/vox/core/capabilities.py`: current gate. Infers runtime needs from
-  `format` and adapter naming. Lets `VOX_HAS_TORCH` / `VOX_HAS_ONNXRUNTIME`
-  silently override reality (to be fixed).
+  `format` and adapter naming; runtime probing is the only truth source.
 - `src/vox/core/runtime.py`: `detect_runtime_capabilities()` already probes
   `system`, `machine`, `torch_cuda`, `onnx_cuda`, `onnx_coreml`, `mps`, and
   `nvidia_device`. It does not yet probe versions, device count, compute
@@ -85,8 +84,7 @@ Detection is layered and best effort: torch when present, then `nvidia-smi` /
 value. The lean torch-free image genuinely cannot always report VRAM or compute
 capability, and the resolver must handle that.
 
-Env policy: probing is authoritative. `VOX_HAS_TORCH` / `VOX_HAS_ONNXRUNTIME`
-apply only when `VOX_RUNTIME_OVERRIDE=1` is set. `VOX_ALLOW_INCOMPATIBLE=1` still
+Env policy: probing is authoritative. `VOX_ALLOW_INCOMPATIBLE=1`
 bypasses hard pull blocking, and the warning names exactly what is missing.
 
 ## Requirement model
@@ -99,10 +97,7 @@ class RuntimeRequirement:
     accelerators: tuple[str, ...] = ()   # "cuda" | "mps" | "onnx_cuda" | "cpu"
     systems: tuple[str, ...] = ()        # "linux" | "darwin" | "windows"
     machines: tuple[str, ...] = ()       # "x86_64" | "arm64" | "aarch64"
-    min_compute_capability: int | None = None   # 80 = sm_80
-    min_cuda_version: str | None = None
     min_vram_gb: float | None = None
-    min_ram_gb: float | None = None
     notes: tuple[str, ...] = ()
 
 
@@ -121,8 +116,7 @@ Matching semantics:
 - `accelerators`: at least one required accelerator present (note `cuda` for
   torch CUDA is distinct from `onnx_cuda` for the ONNX CUDA provider).
 - `systems` / `machines`: membership.
-- ordered fields (`min_compute_capability`, `min_cuda_version`, `min_vram_gb`,
-  `min_ram_gb`): detected value at or above the minimum.
+- `min_vram_gb`: detected value at or above the minimum.
 - `UNKNOWN` fails an ordered constraint by default, with the reason logged, so the
   resolver falls back to a safer variant instead of guessing. A forced
   `variant` request or `VOX_ALLOW_INCOMPATIBLE=1` can force past it.
@@ -140,7 +134,7 @@ Pull-time variants (Kokoro, different download per hardware):
   "type": "tts",
   "variants": [
     { "id": "cuda", "priority": 100,
-      "requires": { "accelerators": ["cuda"], "python_modules": ["torch"], "min_compute_capability": 70 },
+      "requires": { "accelerators": ["cuda"], "python_modules": ["torch"] },
       "adapter": "kokoro-tts-torch", "adapter_package": "vox-kokoro",
       "format": "pytorch", "source": "hexgrad/Kokoro-82M" },
     { "id": "mps", "priority": 90,
@@ -298,7 +292,7 @@ block is optional and diagnostic.
 
 ## Phases
 
-1. Runtime snapshot + layered detection (+ env override policy). Tests.
+1. Runtime snapshot + layered detection. Tests.
 2. `RuntimeRequirement` / `CapabilityCheck` + matching + pull-time resolver.
    Pure, unit-tested.
 3. Registry: logical entries with `variants` and `backends`, forced `variant`
@@ -316,7 +310,6 @@ Phases 1 to 4 land in this repo before any registry-repo change.
 ## Testing
 
 - Runtime snapshot construction with mocked modules.
-- Env overrides do not apply unless `VOX_RUNTIME_OVERRIDE=1`.
 - `pytorch` model blocks when torch is truly missing.
 - `onnx` model blocks when onnxruntime is missing.
 - vLLM model blocks without CUDA.
@@ -325,7 +318,7 @@ Phases 1 to 4 land in this repo before any registry-repo change.
 - Kokoro pull resolves to the ONNX variant on a torch-free box and the Torch
   variant on CUDA.
 - `min_versions` blocks a preferred backend when torch is present but too old.
-- `UNKNOWN` VRAM/compute fails a gated variant and falls back.
+- `UNKNOWN` VRAM fails a gated variant and falls back.
 - Manifest records the diagnostic runtime metadata.
 - Load-time `vox-qwen` chooses the faster backend only when available and falls
   back to `qwen_tts` otherwise.
@@ -345,10 +338,9 @@ Phases 1 to 4 land in this repo before any registry-repo change.
 
 - Pull UX: logical auto-resolve, `--variant` override, concrete
   names still work.
-- Requirements: full set from day one, including compute capability, VRAM, RAM,
-  plus `min_versions`.
+- Requirements: modules, versions, accelerators, system/machine, and VRAM.
 - Scope: resolve for the local machine only.
-- Env vars: probing authoritative; overrides only under `VOX_RUNTIME_OVERRIDE=1`.
+- Env vars: probing authoritative; no capability overrides.
 - Manifest: store resolved variant and preferred backend as diagnostic only;
   load-time is authoritative.
 - Qwen on CPU/MPS: allowed as a slow fallback, report fast mode unavailable.

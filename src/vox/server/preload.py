@@ -75,9 +75,9 @@ async def preload_models(scheduler: Any, model_refs: list[str]) -> None:
 
 async def preload_vad() -> None:
     try:
-        from vox.streaming.vad import SileroVAD
+        from vox.streaming.vad import SileroOnnxVAD
 
-        SileroVAD()._ensure_model()
+        SileroOnnxVAD._ensure_session()
         logger.info("Preloaded Silero VAD")
     except Exception as exc:
         logger.warning("Failed to preload VAD: %s", exc)

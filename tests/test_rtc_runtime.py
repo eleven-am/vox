@@ -360,7 +360,7 @@ async def test_runtime_retries_lifecycle_critical_emit_once(monkeypatch):
 
     await runtime._emit_conversation_event(object())
 
-    assert attempts == ["response.cancelled", "response.cancelled", "rtc.turn_timing"]
+    assert attempts == ["response.cancelled", "response.cancelled"]
     await runtime.close()
 
 

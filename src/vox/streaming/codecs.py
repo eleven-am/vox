@@ -4,6 +4,10 @@ import numpy as np
 import soxr
 from numpy.typing import NDArray
 
+from vox.audio.resampler import resample as resample_audio
+
+__all__ = ["StreamResampler", "float32_to_pcm16", "pcm16_to_float32", "resample_audio"]
+
 
 def pcm16_to_float32(pcm_bytes: bytes) -> NDArray[np.float32]:
     if len(pcm_bytes) % 2:
@@ -14,12 +18,6 @@ def pcm16_to_float32(pcm_bytes: bytes) -> NDArray[np.float32]:
 def float32_to_pcm16(audio: NDArray[np.float32]) -> bytes:
     clamped = np.clip(audio, -1.0, 1.0)
     return (clamped * 32767).astype(np.int16).tobytes()
-
-
-def resample_audio(audio: NDArray[np.float32], source_rate: int, target_rate: int) -> NDArray[np.float32]:
-    if source_rate == target_rate:
-        return audio
-    return soxr.resample(audio, source_rate, target_rate).astype(np.float32)
 
 
 class StreamResampler:

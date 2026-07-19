@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from unittest.mock import patch
+import dataclasses
 
 import pytest
 
@@ -15,59 +15,22 @@ from vox.core.alias_resolution import (
 
 
 class TestBareNameResolution:
-    def test_bare_name_uses_default_profile_off_spark(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("VOX_DEVICE", "auto")
-        monkeypatch.setattr("vox.core.device_placement.platform.machine", lambda: "arm64")
-
+    def test_bare_name_resolves_family_default(self):
         assert resolve_family_alias("parakeet") == ("parakeet-stt", "tdt-0.6b-v3")
         assert resolve_family_alias("kokoro") == ("kokoro-tts", "v1.0")
         assert resolve_family_alias("voxtral-stt") == ("voxtral-stt", "mini-3b")
         assert resolve_family_alias("voxtral-tts") == ("voxtral-tts", "4b")
 
-    def test_bare_name_resolution_reports_family_alias_metadata(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        monkeypatch.setenv("VOX_DEVICE", "auto")
-        monkeypatch.setattr("vox.core.device_placement.platform.machine", lambda: "arm64")
-
+    def test_bare_name_resolution_reports_family_alias_metadata(self):
         resolution = resolve_model_alias("parakeet")
 
         assert resolution.kind is AliasResolutionKind.FAMILY
         assert resolution.rewritten is True
         assert resolution.original_name == "parakeet"
         assert resolution.original_tag == "latest"
-        assert resolution.profile == "default"
-        assert resolution.resolved_profile == "default"
         assert (resolution.name, resolution.tag) == ("parakeet-stt", "tdt-0.6b-v3")
 
-    def test_bare_name_uses_spark_profile_when_cuda_on_arm(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("VOX_DEVICE", "cuda")
-        monkeypatch.setattr("vox.core.device_placement.platform.machine", lambda: "arm64")
-
-        assert resolve_family_alias("parakeet") == ("parakeet-stt", "tdt-0.6b-v3")
-        assert resolve_family_alias("kokoro") == ("kokoro-tts", "v1.0")
-        assert resolve_family_alias("parakeet-stt") == ("parakeet-stt", "tdt-0.6b-v3")
-        assert resolve_family_alias("kokoro-tts") == ("kokoro-tts", "v1.0")
-
-    def test_bare_name_falls_back_to_default_when_profile_missing(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        monkeypatch.setenv("VOX_DEVICE", "auto")
-        monkeypatch.setattr("vox.core.device_placement.platform.machine", lambda: "x86_64")
-        with patch(
-            "vox.core.device_placement.infer_runtime_profile",
-            return_value="unknown-profile",
-        ):
-            resolution = resolve_model_alias("kokoro")
-
-        assert resolution.profile == "unknown-profile"
-        assert resolution.resolved_profile == "default"
-        assert (resolution.name, resolution.tag) == ("kokoro-tts", "v1.0")
-
-    def test_all_bare_family_names_resolve(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("VOX_DEVICE", "cuda")
-        monkeypatch.setattr("vox.core.device_placement.platform.machine", lambda: "arm64")
-
+    def test_all_bare_family_names_resolve(self):
         assert resolve_family_alias("whisper") == ("whisper-stt", "base.en")
         assert resolve_family_alias("whisper-stt") == ("whisper-stt", "base.en")
         assert resolve_family_alias("piper") == ("piper-tts", "en-us-lessac-medium")
@@ -94,50 +57,14 @@ class TestBareNameResolution:
         assert resolve_family_alias("xtts") == ("xtts-tts", "v2")
 
 
-class TestProfileInference:
-    def test_inferred_spark_profile_used_without_explicit_flag(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        monkeypatch.setenv("VOX_DEVICE", "auto")
-        monkeypatch.setattr("vox.core.device_placement.platform.machine", lambda: "x86_64")
-        with patch(
-            "vox.core.device_placement.infer_runtime_profile",
-            return_value="spark",
-        ):
-            parakeet = resolve_model_alias("parakeet")
-            kokoro = resolve_model_alias("kokoro")
-
-        assert parakeet.resolved_profile == "spark"
-        assert kokoro.resolved_profile == "spark"
-        assert (parakeet.name, parakeet.tag) == ("parakeet-stt", "tdt-0.6b-v3")
-        assert (kokoro.name, kokoro.tag) == ("kokoro-tts", "v1.0")
-
-    def test_cuda_hint_on_arm_forces_spark_regardless_of_inference(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        monkeypatch.setenv("VOX_DEVICE", "cuda")
-        monkeypatch.setattr("vox.core.device_placement.platform.machine", lambda: "aarch64")
-        with patch(
-            "vox.core.device_placement.infer_runtime_profile",
-            return_value="default",
-        ):
-            assert resolve_family_alias("parakeet") == ("parakeet-stt", "tdt-0.6b-v3")
-
-
 class TestExplicitTags:
-    def test_explicit_latest_is_not_rewritten(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("VOX_DEVICE", "cuda")
-        monkeypatch.setattr("vox.core.device_placement.platform.machine", lambda: "arm64")
-
+    def test_explicit_latest_is_not_rewritten(self):
         assert resolve_family_alias("parakeet", "latest", explicit_tag=True) == (
             "parakeet",
             "latest",
         )
 
-    def test_explicit_legacy_pair_still_rewrites(self, monkeypatch: pytest.MonkeyPatch):
-        monkeypatch.setenv("VOX_DEVICE", "cuda")
-        monkeypatch.setattr("vox.core.device_placement.platform.machine", lambda: "arm64")
-
+    def test_explicit_legacy_pair_still_rewrites(self):
         assert resolve_family_alias("kokoro", "v1.0", explicit_tag=True) == (
             "kokoro-tts",
             "v1.0",
@@ -222,8 +149,9 @@ class TestLegacyAliasRewrite:
     def test_family_alias_policy_is_read_only(self):
         parakeet = next(policy for policy in family_alias_policy() if policy.name == "parakeet")
 
-        with pytest.raises(TypeError):
-            parakeet.profiles["default"] = ("different", "latest")
+        assert (parakeet.target_name, parakeet.target_tag) == ("parakeet-stt", "tdt-0.6b-v3")
+        with pytest.raises(dataclasses.FrozenInstanceError):
+            parakeet.target_name = "different"
 
 
 class TestUnknownNameFallthrough:
@@ -243,10 +171,5 @@ class TestUnknownNameFallthrough:
         assert resolution.original_tag == "v9"
         assert (resolution.name, resolution.tag) == ("does-not-exist", "v9")
 
-    def test_unknown_bare_name_with_latest_passes_through(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
-        monkeypatch.setenv("VOX_DEVICE", "cuda")
-        monkeypatch.setattr("vox.core.device_placement.platform.machine", lambda: "arm64")
-
+    def test_unknown_bare_name_with_latest_passes_through(self):
         assert resolve_family_alias("nope") == ("nope", "latest")

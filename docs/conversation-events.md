@@ -337,10 +337,8 @@ bounded by `max_endpointing_delay_ms`.
 
 `vad_backend` defaults to `silero`, which runs the Silero VAD model on
 onnxruntime — no PyTorch dependency and no runtime model download (the model
-ships with the package). `silero-torch` selects the legacy PyTorch loader
-(`torch.hub`) and is kept only as a fallback; it needs `torch` installed.
-`ten-vad` is an experimental alternative that needs the optional `ten-vad`
-package. Both non-default backends should be tested against your own audio
+ships with the package). `ten-vad` is an experimental alternative that needs
+the optional `ten-vad` package and should be tested against your own audio
 before use.
 
 `turn_detector` defaults to `livekit`, Vox's lightweight semantic EOU detector.

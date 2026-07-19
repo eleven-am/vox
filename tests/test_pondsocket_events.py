@@ -10,8 +10,6 @@ from vox.operations.errors import ConversationCommandError, SessionNotConfigured
 from vox.operations.rtc_runtime import RtcOfferCommand
 from vox.server.pondsocket_events import (
     broadcast_conversation_event_to_user,
-    broadcast_rtc_client_events_to_user,
-    broadcast_rtc_control_event_to_user,
     broadcast_wire_to_user,
     decline_if_channel_attached,
     deliver_wire_to_user,
@@ -20,7 +18,6 @@ from vox.server.pondsocket_events import (
     reply_pondsocket_error,
     try_broadcast_wire_to_user,
 )
-from vox.server.rtc_timeline import RtcTurnTimeline
 
 
 class FakeChannel:
@@ -125,27 +122,6 @@ class FakeOrchestrator:
     async def events(self):
         for event in self._events:
             yield event
-
-
-class FakePreparedEvent:
-    def __init__(self, wire: dict | None, *, done: bool = False) -> None:
-        self.wire = wire
-        self.done = done
-
-
-class FakeControlQueue:
-    def __init__(self, *events) -> None:
-        self._events = list(events)
-
-    async def get(self):
-        if self._events:
-            return self._events.pop(0)
-        return None
-
-
-class FakeRecord:
-    def __init__(self, control_events) -> None:
-        self.control_events = control_events
 
 
 def test_pondsocket_route_or_channel_session_id_prefers_route_params():
@@ -311,112 +287,6 @@ async def test_broadcast_conversation_event_to_user_suppresses_channel_failures(
     )
 
     assert channel.broadcasts == []
-
-
-@pytest.mark.asyncio
-async def test_broadcast_rtc_control_event_to_user_uses_prepared_wire_and_reports_done():
-    channel = FakeChannel()
-    seen = []
-
-    def prepare_event(*, record, session_id, event):
-        seen.append((record, session_id, event))
-        return FakePreparedEvent(
-            {"type": "rtc.event", "value": event},
-            done=event == "done",
-        )
-
-    record = object()
-    timeline = RtcTurnTimeline(session_id="rtc_1")
-    done_values = []
-    for event in ("first", "done"):
-        done_values.append(
-            await broadcast_rtc_control_event_to_user(
-                event,
-                channel=channel,
-                user_id="user-1",
-                record=record,
-                session_id="rtc_1",
-                prepare_event=prepare_event,
-                timeline=timeline,
-            )
-        )
-
-    assert seen == [(record, "rtc_1", "first"), (record, "rtc_1", "done")]
-    assert done_values == [False, True]
-    assert channel.broadcasts == [
-        ("rtc.event", {"value": "first"}, "user-1"),
-        ("rtc.event", {"value": "done"}, "user-1"),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_broadcast_rtc_control_event_includes_turn_timing_diagnostics():
-    channel = FakeChannel()
-
-    def prepare_event(*, record, session_id, event):
-        wires = {
-            "started": {"type": "input_audio_buffer.speech_started", "timestamp_ms": 10},
-            "interrupted": {
-                "type": "interruption.detected",
-                "response_id": "resp_1",
-                "reason": "partial_keyword",
-            },
-            "done": {"type": "response.done", "response_id": "resp_1"},
-        }
-        return FakePreparedEvent(wires[event], done=event == "done")
-
-    record = object()
-    timeline = RtcTurnTimeline(session_id="rtc_1")
-    for event in ("started", "interrupted", "done"):
-        await broadcast_rtc_control_event_to_user(
-            event,
-            channel=channel,
-            user_id="user-1",
-            record=record,
-            session_id="rtc_1",
-            prepare_event=prepare_event,
-            timeline=timeline,
-        )
-
-    event_names = [name for name, _, _ in channel.broadcasts]
-    assert event_names == [
-        "input_audio_buffer.speech_started",
-        "rtc.turn_timing",
-        "interruption.detected",
-        "rtc.turn_timing",
-        "response.done",
-        "rtc.turn_timing",
-    ]
-    interruption_timing = channel.broadcasts[3][1]["data"]
-    assert interruption_timing["source_event"] == "interruption.detected"
-    assert interruption_timing["response_id"] == "resp_1"
-    assert interruption_timing["ms_since_speech_started"] >= 0
-
-
-@pytest.mark.asyncio
-async def test_broadcast_rtc_client_events_to_user_drains_control_queue_until_sentinel():
-    channel = FakeChannel()
-    record = FakeRecord(
-        FakeControlQueue(
-            {"type": "browser.event", "event": "ui.select", "payload": {"id": "a"}},
-            None,
-            {"type": "browser.event", "event": "ignored", "payload": {}},
-        )
-    )
-
-    await broadcast_rtc_client_events_to_user(
-        record=record,
-        channel=channel,
-        user_id="user-1",
-    )
-
-    assert channel.broadcasts == [
-        (
-            "browser.event",
-            {"event": "ui.select", "payload": {"id": "a"}},
-            "user-1",
-        )
-    ]
 
 
 @pytest.mark.asyncio

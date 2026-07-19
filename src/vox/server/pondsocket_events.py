@@ -35,7 +35,6 @@ from vox.operations.rtc_runtime import (
     RtcCommand,
     RtcOfferCommand,
 )
-from vox.server.rtc_timeline import RtcTurnTimeline, rtc_audio_stats
 
 logger = logging.getLogger(__name__)
 
@@ -111,43 +110,6 @@ async def broadcast_conversation_event_to_user(
     wire = serialize_conversation_event(event)
     if wire is not None:
         await deliver_wire_to_user(channel, user_id, wire, session_id=session_id)
-
-
-async def broadcast_rtc_control_event_to_user(
-    event: ConvEvent,
-    *,
-    channel: Any,
-    user_id: str,
-    record: Any,
-    session_id: str,
-    prepare_event: Any,
-    timeline: RtcTurnTimeline,
-) -> bool:
-    prepared = prepare_event(record=record, session_id=session_id, event=event)
-    if prepared.wire is not None:
-        await deliver_wire_to_user(channel, user_id, prepared.wire, session_id=session_id)
-        timing = timeline.observe(
-            prepared.wire,
-            audio_stats=rtc_audio_stats(record),
-        )
-        if timing is not None:
-            await deliver_wire_to_user(channel, user_id, timing, session_id=session_id)
-    return prepared.done
-
-
-async def broadcast_rtc_client_events_to_user(
-    *,
-    record: Any,
-    channel: Any,
-    user_id: str,
-) -> None:
-    if record.control_events is None:
-        return
-    while True:
-        event = await record.control_events.get()
-        if event is None:
-            return
-        await try_broadcast_wire_to_user(channel, user_id, event)
 
 
 async def reply_pondsocket_error(

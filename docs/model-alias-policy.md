@@ -55,11 +55,6 @@ like `parakeet-stt` resolves to its ONNX variant on CPU and its NeMo variant on
 CUDA. Family aliases only choose the default model and tag for a bare family
 name.
 
-If the runtime profile cannot be matched, family alias resolution falls back to
-the `default` profile. This fallback is part of the alias policy and is exposed
-in `ModelAliasResolution.resolved_profile`; callers can compare it with
-`ModelAliasResolution.profile` to see that fallback occurred.
-
 ### Legacy Model Reference Aliases
 
 Legacy model reference aliases rewrite older `(name, tag)` pairs to canonical
@@ -102,7 +97,5 @@ alias resolution from becoming a hidden fallback layer.
 
 `resolve_model_alias(...)` returns structured metadata describing whether a
 reference was rewritten and which alias class performed the rewrite.
-For family aliases, `profile` records the inferred/requested runtime profile and
-`resolved_profile` records the profile entry that was actually used.
 `resolve_family_alias(...)` remains as the tuple-returning compatibility wrapper
 for existing call sites.

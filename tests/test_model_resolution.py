@@ -48,7 +48,6 @@ def _logical_kokoro_entry():
                 "requires": {
                     "python_modules": ["torch"],
                     "accelerators": ["cuda"],
-                    "min_compute_capability": 70,
                 },
                 "adapter": "kokoro-tts-torch",
                 "adapter_package": "vox-kokoro",

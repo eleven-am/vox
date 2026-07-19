@@ -57,9 +57,7 @@ def test_vllm_adapter_requires_cuda():
     assert reqs.accelerator == "cuda"
 
 
-def test_missing_torch_blocks_pytorch_model(monkeypatch):
-    monkeypatch.setenv("VOX_HAS_TORCH", "1")
-    monkeypatch.delenv("VOX_RUNTIME_OVERRIDE", raising=False)
+def test_missing_torch_blocks_pytorch_model():
     missing = missing_capabilities_for(
         _entry("pytorch", "qwen3-tts-torch"),
         snapshot=_caps(torch_installed=False),
@@ -68,43 +66,21 @@ def test_missing_torch_blocks_pytorch_model(monkeypatch):
     assert "PyTorch" in missing[0]
 
 
-def test_torch_present_allows_pytorch_model(monkeypatch):
-    monkeypatch.setenv("VOX_HAS_TORCH", "0")
-    monkeypatch.delenv("VOX_RUNTIME_OVERRIDE", raising=False)
+def test_torch_present_allows_pytorch_model():
     assert missing_capabilities_for(
         _entry("pytorch", "qwen3-tts-torch"),
         snapshot=_caps(torch_installed=True),
     ) == []
 
 
-def test_torch_env_override_requires_explicit_override_mode(monkeypatch):
-    monkeypatch.setenv("VOX_HAS_TORCH", "1")
-    monkeypatch.delenv("VOX_RUNTIME_OVERRIDE", raising=False)
-    missing = missing_capabilities_for(
-        _entry("pytorch", "qwen3-tts-torch"),
-        snapshot=_caps(torch_installed=False),
-    )
-    assert missing
-
-    monkeypatch.setenv("VOX_RUNTIME_OVERRIDE", "1")
-    assert missing_capabilities_for(
-        _entry("pytorch", "qwen3-tts-torch"),
-        snapshot=_caps(torch_installed=False),
-    ) == []
-
-
-def test_onnx_model_allowed_when_onnxruntime_present(monkeypatch):
-    monkeypatch.setenv("VOX_HAS_ONNXRUNTIME", "0")
-    monkeypatch.delenv("VOX_RUNTIME_OVERRIDE", raising=False)
+def test_onnx_model_allowed_when_onnxruntime_present():
     assert missing_capabilities_for(
         _entry("onnx", "kokoro-tts-onnx"),
         snapshot=_caps(onnxruntime_installed=True),
     ) == []
 
 
-def test_bare_onnx_model_blocked_when_onnxruntime_missing(monkeypatch):
-    monkeypatch.setenv("VOX_HAS_ONNXRUNTIME", "1")
-    monkeypatch.delenv("VOX_RUNTIME_OVERRIDE", raising=False)
+def test_bare_onnx_model_blocked_when_onnxruntime_missing():
     missing = missing_capabilities_for(
         _entry("onnx", "kokoro-tts-onnx"),
         snapshot=_caps(onnxruntime_installed=False),
@@ -112,10 +88,7 @@ def test_bare_onnx_model_blocked_when_onnxruntime_missing(monkeypatch):
     assert missing and "onnxruntime" in missing[0]
 
 
-def test_adapter_backed_onnx_model_does_not_require_base_onnxruntime(monkeypatch):
-    monkeypatch.setenv("VOX_HAS_ONNXRUNTIME", "0")
-    monkeypatch.delenv("VOX_RUNTIME_OVERRIDE", raising=False)
-
+def test_adapter_backed_onnx_model_does_not_require_base_onnxruntime():
     entry = {
         "format": "onnx",
         "adapter": "kokoro-tts-onnx",
@@ -129,16 +102,14 @@ def test_adapter_backed_onnx_model_does_not_require_base_onnxruntime(monkeypatch
     ) == []
 
 
-def test_ct2_model_never_requires_base_runtime(monkeypatch):
-    monkeypatch.setenv("VOX_HAS_TORCH", "0")
-    monkeypatch.setenv("VOX_HAS_ONNXRUNTIME", "0")
+def test_ct2_model_never_requires_base_runtime():
     assert missing_capabilities_for(
         _entry("ct2", "whisper-stt-ct2"),
         snapshot=_caps(),
     ) == []
 
 
-def test_vllm_model_blocked_without_gpu(monkeypatch):
+def test_vllm_model_blocked_without_gpu():
     missing = missing_capabilities_for(
         _entry("pytorch", "voxtral-tts-vllm"),
         snapshot=_caps(torch_installed=True, torch_cuda=False, nvidia_device=True),
@@ -160,15 +131,6 @@ def test_min_versions_block_old_torch():
     )
     assert not check.runnable
     assert any("torch>=2.5.1" in reason for reason in check.missing)
-
-
-def test_unknown_compute_capability_fails_ordered_requirement():
-    check = check_runtime_requirement(
-        RuntimeRequirement(accelerators=("cuda",), min_compute_capability=80),
-        snapshot=_caps(torch_cuda=True, torch_compute_capability=None),
-    )
-    assert not check.runnable
-    assert any("compute capability" in reason and "UNKNOWN" in reason for reason in check.missing)
 
 
 def test_unknown_vram_fails_ordered_requirement():

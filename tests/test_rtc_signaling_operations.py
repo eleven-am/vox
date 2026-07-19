@@ -9,7 +9,6 @@ from vox.operations.rtc_signaling import (
     RtcOfferRequest,
     RtcSessionBootstrapRequest,
     add_server_rtc_candidate,
-    close_rtc_session,
     create_rtc_session,
     exchange_server_rtc_offer,
     rtc_session_bootstrap_payload,
@@ -105,10 +104,3 @@ async def test_invalid_candidate_is_a_transport_neutral_operation_error(monkeypa
             request=RtcCandidateRequest(record.session_id, "candidate:not-valid"),
         )
 
-
-def test_close_rtc_session_is_idempotent():
-    registry = RtcSessionRegistry()
-    record = registry.create_session(control_transport="pondsocket")
-
-    assert close_rtc_session(registry=registry, session_id=record.session_id).closed is True
-    assert close_rtc_session(registry=registry, session_id=record.session_id).closed is False

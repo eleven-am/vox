@@ -86,26 +86,13 @@ def prepare_rtc_control_event(
 
 
 def create_rtc_orchestrator(*, scheduler: Any, record: Any) -> ConversationOrchestrator:
-    return create_rtc_orchestrator_with(
-        scheduler=scheduler,
-        record=record,
-        orchestrator_cls=ConversationOrchestrator,
-    )
-
-
-def create_rtc_orchestrator_with(
-    *,
-    scheduler: Any,
-    record: Any,
-    orchestrator_cls: type[ConversationOrchestrator],
-) -> ConversationOrchestrator:
     async def send_rtc_audio(event: ConvAudioDeltaEvent) -> None:
         await enqueue_rtc_audio(record, event)
 
     async def wait_for_rtc_playout() -> None:
         await wait_until_rtc_audio_drained(record)
 
-    orchestrator = orchestrator_cls(
+    orchestrator = ConversationOrchestrator(
         scheduler=scheduler,
         pace_response_done_to_audio=True,
         audio_sink=send_rtc_audio,

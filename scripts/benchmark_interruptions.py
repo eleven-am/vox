@@ -381,9 +381,7 @@ def _begin(
 ) -> None:
     detector.begin(
         utterance_id=utterance_id,
-        response_id=response_id,
         started_at=started_at,
-        speech_started_ms=int(started_at * 1000),
         assistant_text=ASSISTANT_TEXT,
     )
 
@@ -397,14 +395,12 @@ async def _new_decision(case: BenchmarkCase) -> tuple[bool, float | None, str]:
         _begin(
             detector,
             utterance_id=2,
-            response_id="resp_2" if case.path == "restart" else "resp_1",
             started_at=11.0,
         )
     elif case.path == "repeated":
         detector.mark_speech_stopped(
             utterance_id=1,
             stopped_at=10.2,
-            speech_stopped_ms=10_200,
             expects_transcript=False,
         )
         detector.finish(1)
@@ -455,7 +451,6 @@ async def _new_decision(case: BenchmarkCase) -> tuple[bool, float | None, str]:
             detector.mark_speech_stopped(
                 utterance_id=utterance_id,
                 stopped_at=10.0 + case.duration_ms / 1000,
-                speech_stopped_ms=10_000 + case.duration_ms,
                 expects_transcript=True,
             )
         decision = await detector.observe_final(

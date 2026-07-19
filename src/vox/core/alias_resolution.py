@@ -1,12 +1,7 @@
 from __future__ import annotations
 
-import os
-from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from types import MappingProxyType
-
-from vox.core.device_placement import runtime_profile_for_alias
 
 
 class AliasResolutionKind(StrEnum):
@@ -23,8 +18,6 @@ class ModelAliasResolution:
     kind: AliasResolutionKind
     original_name: str
     original_tag: str
-    profile: str | None = None
-    resolved_profile: str | None = None
 
     @property
     def rewritten(self) -> bool:
@@ -34,7 +27,8 @@ class ModelAliasResolution:
 @dataclass(frozen=True)
 class FamilyAliasPolicy:
     name: str
-    profiles: Mapping[str, tuple[str, str]]
+    target_name: str
+    target_tag: str
 
 
 @dataclass(frozen=True)
@@ -51,163 +45,46 @@ class LegacyNameAliasPolicy:
     target_name: str
 
 
-_IMPLICIT_MODEL_ALIASES: dict[str, dict[str, tuple[str, str]]] = {
-    "parakeet": {
-        "spark": ("parakeet-stt", "tdt-0.6b-v3"),
-        "default": ("parakeet-stt", "tdt-0.6b-v3"),
-    },
-    "parakeet-stt": {
-        "spark": ("parakeet-stt", "tdt-0.6b-v3"),
-        "default": ("parakeet-stt", "tdt-0.6b-v3"),
-    },
-    "kokoro": {
-        "spark": ("kokoro-tts", "v1.0"),
-        "default": ("kokoro-tts", "v1.0"),
-    },
-    "kokoro-tts": {
-        "spark": ("kokoro-tts", "v1.0"),
-        "default": ("kokoro-tts", "v1.0"),
-    },
-    "whisper": {
-        "spark": ("whisper-stt", "base.en"),
-        "default": ("whisper-stt", "base.en"),
-    },
-    "whisper-stt": {
-        "spark": ("whisper-stt", "base.en"),
-        "default": ("whisper-stt", "base.en"),
-    },
-    "piper": {
-        "spark": ("piper-tts", "en-us-lessac-medium"),
-        "default": ("piper-tts", "en-us-lessac-medium"),
-    },
-    "piper-tts": {
-        "spark": ("piper-tts", "en-us-lessac-medium"),
-        "default": ("piper-tts", "en-us-lessac-medium"),
-    },
-    "openvoice": {
-        "spark": ("openvoice-tts", "v1"),
-        "default": ("openvoice-tts", "v1"),
-    },
-    "openvoice-tts": {
-        "spark": ("openvoice-tts", "v1"),
-        "default": ("openvoice-tts", "v1"),
-    },
-    "chatterbox": {
-        "spark": ("chatterbox-tts-turbo", "0.1.7"),
-        "default": ("chatterbox-tts-turbo", "0.1.7"),
-    },
-    "chatterbox-tts": {
-        "spark": ("chatterbox-tts-turbo", "0.1.7"),
-        "default": ("chatterbox-tts-turbo", "0.1.7"),
-    },
-    "chatterbox-multilingual": {
-        "spark": ("chatterbox-tts-multilingual", "0.1.7"),
-        "default": ("chatterbox-tts-multilingual", "0.1.7"),
-    },
-    "cosyvoice": {
-        "spark": ("cosyvoice2-tts", "0.5b"),
-        "default": ("cosyvoice2-tts", "0.5b"),
-    },
-    "cosyvoice2": {
-        "spark": ("cosyvoice2-tts", "0.5b"),
-        "default": ("cosyvoice2-tts", "0.5b"),
-    },
-    "cosyvoice-tts": {
-        "spark": ("cosyvoice2-tts", "0.5b"),
-        "default": ("cosyvoice2-tts", "0.5b"),
-    },
-    "orpheus": {
-        "spark": ("orpheus-tts", "medium-3b"),
-        "default": ("orpheus-tts", "medium-3b"),
-    },
-    "orpheus-tts": {
-        "spark": ("orpheus-tts", "medium-3b"),
-        "default": ("orpheus-tts", "medium-3b"),
-    },
-    "indextts": {
-        "spark": ("indextts-tts", "2"),
-        "default": ("indextts-tts", "2"),
-    },
-    "indextts-tts": {
-        "spark": ("indextts-tts", "2"),
-        "default": ("indextts-tts", "2"),
-    },
-    "spark": {
-        "spark": ("spark-tts", "0.5b"),
-        "default": ("spark-tts", "0.5b"),
-    },
-    "spark-tts": {
-        "spark": ("spark-tts", "0.5b"),
-        "default": ("spark-tts", "0.5b"),
-    },
-    "neutts": {
-        "spark": ("neutts-air-tts", "air"),
-        "default": ("neutts-air-tts", "air"),
-    },
-    "neutts-air": {
-        "spark": ("neutts-air-tts", "air"),
-        "default": ("neutts-air-tts", "air"),
-    },
-    "neutts-tts": {
-        "spark": ("neutts-air-tts", "air"),
-        "default": ("neutts-air-tts", "air"),
-    },
-    "dia": {
-        "spark": ("dia-tts", "1.6b"),
-        "default": ("dia-tts", "1.6b"),
-    },
-    "dia-tts": {
-        "spark": ("dia-tts", "1.6b"),
-        "default": ("dia-tts", "1.6b"),
-    },
-    "sesame": {
-        "spark": ("sesame-tts", "csm-1b"),
-        "default": ("sesame-tts", "csm-1b"),
-    },
-    "sesame-tts": {
-        "spark": ("sesame-tts", "csm-1b"),
-        "default": ("sesame-tts", "csm-1b"),
-    },
-    "speecht5-stt": {
-        "spark": ("speecht5-stt", "base"),
-        "default": ("speecht5-stt", "base"),
-    },
-    "speecht5-tts": {
-        "spark": ("speecht5-tts", "base"),
-        "default": ("speecht5-tts", "base"),
-    },
-    "vibevoice": {
-        "spark": ("vibevoice-tts", "realtime-0.5b"),
-        "default": ("vibevoice-tts", "realtime-0.5b"),
-    },
-    "vibevoice-tts": {
-        "spark": ("vibevoice-tts", "realtime-0.5b"),
-        "default": ("vibevoice-tts", "realtime-0.5b"),
-    },
-    "qwen3-stt": {
-        "spark": ("qwen3-stt", "0.6b"),
-        "default": ("qwen3-stt", "0.6b"),
-    },
-    "qwen3-tts": {
-        "spark": ("qwen3-tts", "0.6b"),
-        "default": ("qwen3-tts", "0.6b"),
-    },
-    "xtts": {
-        "spark": ("xtts-tts", "v2"),
-        "default": ("xtts-tts", "v2"),
-    },
-    "xtts-tts": {
-        "spark": ("xtts-tts", "v2"),
-        "default": ("xtts-tts", "v2"),
-    },
-    "voxtral-stt": {
-        "spark": ("voxtral-stt", "mini-3b"),
-        "default": ("voxtral-stt", "mini-3b"),
-    },
-    "voxtral-tts": {
-        "spark": ("voxtral-tts", "4b"),
-        "default": ("voxtral-tts", "4b"),
-    },
+_IMPLICIT_MODEL_ALIASES: dict[str, tuple[str, str]] = {
+    "parakeet": ("parakeet-stt", "tdt-0.6b-v3"),
+    "parakeet-stt": ("parakeet-stt", "tdt-0.6b-v3"),
+    "kokoro": ("kokoro-tts", "v1.0"),
+    "kokoro-tts": ("kokoro-tts", "v1.0"),
+    "whisper": ("whisper-stt", "base.en"),
+    "whisper-stt": ("whisper-stt", "base.en"),
+    "piper": ("piper-tts", "en-us-lessac-medium"),
+    "piper-tts": ("piper-tts", "en-us-lessac-medium"),
+    "openvoice": ("openvoice-tts", "v1"),
+    "openvoice-tts": ("openvoice-tts", "v1"),
+    "chatterbox": ("chatterbox-tts-turbo", "0.1.7"),
+    "chatterbox-tts": ("chatterbox-tts-turbo", "0.1.7"),
+    "chatterbox-multilingual": ("chatterbox-tts-multilingual", "0.1.7"),
+    "cosyvoice": ("cosyvoice2-tts", "0.5b"),
+    "cosyvoice2": ("cosyvoice2-tts", "0.5b"),
+    "cosyvoice-tts": ("cosyvoice2-tts", "0.5b"),
+    "orpheus": ("orpheus-tts", "medium-3b"),
+    "orpheus-tts": ("orpheus-tts", "medium-3b"),
+    "indextts": ("indextts-tts", "2"),
+    "indextts-tts": ("indextts-tts", "2"),
+    "spark": ("spark-tts", "0.5b"),
+    "spark-tts": ("spark-tts", "0.5b"),
+    "neutts": ("neutts-air-tts", "air"),
+    "neutts-air": ("neutts-air-tts", "air"),
+    "neutts-tts": ("neutts-air-tts", "air"),
+    "dia": ("dia-tts", "1.6b"),
+    "dia-tts": ("dia-tts", "1.6b"),
+    "sesame": ("sesame-tts", "csm-1b"),
+    "sesame-tts": ("sesame-tts", "csm-1b"),
+    "speecht5-stt": ("speecht5-stt", "base"),
+    "speecht5-tts": ("speecht5-tts", "base"),
+    "vibevoice": ("vibevoice-tts", "realtime-0.5b"),
+    "vibevoice-tts": ("vibevoice-tts", "realtime-0.5b"),
+    "qwen3-stt": ("qwen3-stt", "0.6b"),
+    "qwen3-tts": ("qwen3-tts", "0.6b"),
+    "xtts": ("xtts-tts", "v2"),
+    "xtts-tts": ("xtts-tts", "v2"),
+    "voxtral-stt": ("voxtral-stt", "mini-3b"),
+    "voxtral-tts": ("voxtral-tts", "4b"),
 }
 
 _LEGACY_MODEL_REF_ALIASES: dict[tuple[str, str], tuple[str, str]] = {
@@ -251,11 +128,6 @@ _LEGACY_NAME_ALIASES: dict[str, str] = {
 }
 
 
-def _runtime_profile() -> str:
-    device = os.environ.get("VOX_DEVICE", "auto").strip().lower()
-    return runtime_profile_for_alias(device_hint=device)
-
-
 def resolve_family_alias(
     name: str, tag: str = "latest", *, explicit_tag: bool = False
 ) -> tuple[str, str]:
@@ -267,9 +139,10 @@ def family_alias_policy() -> tuple[FamilyAliasPolicy, ...]:
     return tuple(
         FamilyAliasPolicy(
             name=name,
-            profiles=MappingProxyType(dict(profiles)),
+            target_name=target_name,
+            target_tag=target_tag,
         )
-        for name, profiles in sorted(_IMPLICIT_MODEL_ALIASES.items())
+        for name, (target_name, target_tag) in sorted(_IMPLICIT_MODEL_ALIASES.items())
     )
 
 
@@ -297,19 +170,15 @@ def resolve_model_alias(
     name: str, tag: str = "latest", *, explicit_tag: bool = False
 ) -> ModelAliasResolution:
     if not explicit_tag and tag == "latest":
-        aliases = _IMPLICIT_MODEL_ALIASES.get(name)
-        if aliases is not None:
-            profile = _runtime_profile()
-            resolved_profile = profile if profile in aliases else "default"
-            resolved_name, resolved_tag = aliases[resolved_profile]
+        alias = _IMPLICIT_MODEL_ALIASES.get(name)
+        if alias is not None:
+            resolved_name, resolved_tag = alias
             return ModelAliasResolution(
                 name=resolved_name,
                 tag=resolved_tag,
                 kind=AliasResolutionKind.FAMILY,
                 original_name=name,
                 original_tag=tag,
-                profile=profile,
-                resolved_profile=resolved_profile,
             )
 
     exact_alias = _LEGACY_MODEL_REF_ALIASES.get((name, tag))

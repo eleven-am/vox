@@ -46,9 +46,7 @@ def _detector(**policy_overrides) -> EvidenceBasedInterruptDetector:
 def _begin(detector: EvidenceBasedInterruptDetector, *, utterance_id: int = 1) -> None:
     detector.begin(
         utterance_id=utterance_id,
-        response_id="resp_1",
         started_at=10.0,
-        speech_started_ms=1000,
         assistant_text="The assistant is still speaking.",
     )
 
@@ -252,9 +250,7 @@ async def test_stale_final_cannot_confirm_a_new_candidate() -> None:
     _begin(detector, utterance_id=1)
     detector.begin(
         utterance_id=2,
-        response_id="resp_1",
         started_at=11.0,
-        speech_started_ms=2000,
         assistant_text="The assistant is still speaking.",
     )
 
@@ -306,7 +302,6 @@ def test_speech_stop_without_transcript_rejects_candidate() -> None:
     decision = detector.mark_speech_stopped(
         utterance_id=1,
         stopped_at=10.4,
-        speech_stopped_ms=1400,
         expects_transcript=False,
     )
 
