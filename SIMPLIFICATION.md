@@ -71,10 +71,16 @@ R2a and R2b share `conversation/session.py` and are strictly sequential.
 - env-override snapshot layer (`VOX_RUNTIME_OVERRIDE`, `VOX_HAS_*`) —
   VERIFIED: referenced only in docs/model-resolution-design.md, absent from
   all deploy surfaces; owner confirms unused. Delete layer + update that doc.
-- scheduler VRAM-budget subsystem (~120 LOC) — owner confirms `max_vram_bytes`
-  is never set; approved. NOTE: this also removes the `vox serve --max-vram`
-  and `--vram-headroom` CLI flags (user-visible surface, owner-approved
-  2026-07-20).
+- scheduler VRAM-budget subsystem — **DEFERRED 2026-07-20 (implementation
+  STOP)**: the subsystem has live consumers the audit missed — registered
+  endpoints `POST /v1/system/enforce-memory-budget` and `POST /v1/system/trim`,
+  the `GET /v1/system/memory` policy payload, CLI flags `--idle-trim-ttl` and
+  `--memory-over-budget` beyond the two approved, plus doc/test pins in
+  vox-dia. Deleting registered HTTP surface exceeds the recorded approval.
+  OWNER DECISION NEEDED: (a) delete the whole budget vertical including its
+  endpoint, flags, and memory-payload policy block, keeping `/v1/system/trim`
+  as an independently useful op; (b) delete both verticals including trim; or
+  (c) keep as-is. Executed in a later batch once decided.
 
 Gate: full suite + lint, nothing else changes.
 
