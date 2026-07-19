@@ -49,7 +49,11 @@ from vox.conversation.interruption_detector import (
     InterruptionDecisionAction,
 )
 from vox.conversation.profiles import DEFAULT_TURN_PROFILE, resolve_turn_profile
-from vox.conversation.response_lifecycle import ConversationResponseLifecycle, ResponsePhase
+from vox.conversation.response_lifecycle import (
+    ConversationResponseLifecycle,
+    TerminalReason,
+    TerminalRecord,
+)
 from vox.conversation.response_synthesis import synthesize_response_stream
 from vox.conversation.speech_guard import AssistantSpeechGuard
 from vox.conversation.state_machine import TurnStateMachine
@@ -129,6 +133,7 @@ class ResponseStartContext:
 class ResponseStartRejection:
     message: str
     code: str
+    generation_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,7 +266,6 @@ class ConversationSession:
         self._runner: asyncio.Task | None = None
         self._audio_output = ResponseAudioOutput(pace_to_playout=config.pace_response_done_to_audio)
         self._response_lifecycle = ConversationResponseLifecycle()
-        self._cancel_emitted_response_id: str | None = None
         self._closed: bool = False
         self._client_sample_rate: int = config.sample_rate
         self._input_resampler = StreamResampler(TARGET_SAMPLE_RATE)
@@ -398,17 +402,27 @@ class ConversationSession:
         await self.cancel_response()
         await self.submit_response_text(text, allow_interruptions=allow_interruptions)
 
-    async def start_response_stream(self, *, allow_interruptions: bool = True) -> ResponseStartResult:
+    async def start_response_stream(
+        self,
+        *,
+        allow_interruptions: bool = True,
+        generation_id: str | None = None,
+    ) -> ResponseStartResult:
         if self._closed:
             return ResponseStartResult(
                 context=self._response_start_context(),
                 rejection=ResponseStartRejection(
                     message="response rejected: session is closed",
                     code=ERROR_CODE_RESPONSE_REJECTED_TURN_STATE,
+                    generation_id=generation_id,
                 ),
             )
         return await self._submit_command(
-            partial(self._attempt_response_start, allow_interruptions=allow_interruptions)
+            partial(
+                self._attempt_response_start,
+                allow_interruptions=allow_interruptions,
+                generation_id=generation_id,
+            )
         )
 
     async def append_response_text(
@@ -481,9 +495,9 @@ class ConversationSession:
             return AppendResult.RESPONSE_MISMATCH
         if stream.committed:
             return AppendResult.RESPONSE_COMMITTED
-        if stream.closed or not self._response_lifecycle.commit_stream(stream):
+        if not self._response_lifecycle.commit_stream(stream):
             return AppendResult.STREAM_ENDED
-        await self._emit_response_committed(stream.response_id)
+        await self._emit_response_committed(stream)
         return stream
 
     async def _submit_command(self, operation: Callable[[], Awaitable[Any]], *, default: Any = None) -> Any:
@@ -568,9 +582,10 @@ class ConversationSession:
             return
 
         failed_action: TurnAction | None = None
+        teardown: tuple[ResponseStream, TerminalRecord] | None = None
         for action in actions:
             try:
-                await self._execute(action)
+                teardown = await self._execute(action, teardown)
             except Exception:
                 if action.type in _LIFECYCLE_CRITICAL_ACTIONS:
                     logger.exception(
@@ -630,7 +645,7 @@ class ConversationSession:
     def _response_pipeline_engaged(self) -> bool:
         if self._response_lifecycle.stream is not None:
             return True
-        if self._response_lifecycle.phase in {ResponsePhase.DONE, ResponsePhase.CANCELLED}:
+        if self._response_lifecycle.terminal is not None:
             return False
         return self._tts_task is not None and not self._tts_task.done()
 
@@ -642,11 +657,14 @@ class ConversationSession:
     ) -> None:
         if event.type == TurnEventType.TTS_COMPLETED:
             if accepted:
-                await self._finalize_response_stream(stream)
-            else:
-                self._response_lifecycle.clear_finished_stream_if_current(stream)
+                record = self._response_lifecycle.terminalize(stream, "done")
+                if record is not None:
+                    await self._emit_response_done(record)
+                    self._interrupt_detector.reset()
+            elif not stream.pending_done:
+                self._response_lifecycle.terminalize(stream, "done")
         elif event.type == TurnEventType.TTS_FAILED:
-            self._response_lifecycle.fail_stream_if_current(stream)
+            self._response_lifecycle.terminalize(stream, "failed")
 
     def _release_tts_task(self, task: asyncio.Task | None) -> None:
         if task is None:
@@ -660,14 +678,9 @@ class ConversationSession:
         stream = self._response_lifecycle.stream
         tts_task = self._tts_task
         tts_active = tts_task is not None and not tts_task.done()
-        response_was_active = (
-            stream is not None or self._response_lifecycle.active_response_id is not None or tts_active
-        )
-        cancelled_response_id: str | None = None
-        if response_was_active:
-            cancelled_response_id = self._response_lifecycle.remember_cancelled_response()
-            if cancelled_response_id is None:
-                cancelled_response_id = self._response_lifecycle.active_or_cancelled_response_id()
+        record: TerminalRecord | None = None
+        if stream is not None:
+            record = self._response_lifecycle.terminalize(stream, "cancelled")
         await self._emit_error(
             f"action {failed_action.type.value} failed; response pipeline reset",
             code=ERROR_CODE_SESSION_FAILED,
@@ -680,16 +693,12 @@ class ConversationSession:
             self._audio_output.flush()
         with suppress(Exception):
             self._audio_history.clear()
-        terminal_events_already_emitted = (
-            cancelled_response_id is not None and cancelled_response_id == self._cancel_emitted_response_id
-        )
-        if response_was_active and not terminal_events_already_emitted:
-            await self._emit_audio_clear()
-            await self._emit_response_cancelled()
+        if record is not None:
+            await self._emit_audio_clear(record)
+            await self._emit_response_cancelled(record)
         if tts_active:
             self._release_tts_task(tts_task)
         self._tts_task = None
-        self._response_lifecycle.clear_active_response(stream)
         with suppress(Exception):
             self._interrupt_detector.reset()
         self._speech_guard.mark_speech_ended()
@@ -884,6 +893,7 @@ class ConversationSession:
         self,
         *,
         allow_interruptions: bool = True,
+        generation_id: str | None = None,
     ) -> ResponseStartResult:
         context = self._response_start_context()
         existing = self._response_lifecycle.open_uncommitted_stream()
@@ -893,6 +903,7 @@ class ConversationSession:
             rejection = ResponseStartRejection(
                 message="response already in flight",
                 code=ERROR_CODE_RESPONSE_ALREADY_ACTIVE,
+                generation_id=generation_id,
             )
             return ResponseStartResult(context=context, rejection=rejection)
 
@@ -902,16 +913,20 @@ class ConversationSession:
             rejected = ResponseStartRejection(
                 message=f"response rejected: {rejection_reason}",
                 code=rejection_code,
+                generation_id=generation_id,
             )
             return ResponseStartResult(context=context, rejection=rejected)
 
-        stream = self._response_lifecycle.start_stream(allow_interruptions=allow_interruptions)
+        stream = self._response_lifecycle.start_stream(
+            allow_interruptions=allow_interruptions,
+            generation_id=generation_id,
+        )
         if not (context.input_speech_active and context.candidate_status is InterruptionCandidateStatus.REJECTED):
             self._interrupt_detector.reset()
         self._output_playout_started = False
         self._audio_output.reset_for_response()
         await self._event_queue.put(TurnEvent(type=TurnEventType.RESPONSE_STARTED))
-        await self._emit_response_created(stream.response_id)
+        await self._emit_response_created(stream)
         self._tts_task = asyncio.create_task(self._run_response_stream(stream))
         return ResponseStartResult(context=context, response_id=stream.response_id)
 
@@ -1011,9 +1026,7 @@ class ConversationSession:
 
     async def _reject_started_stream(self, stream: ResponseStream | None) -> None:
         if stream is not None:
-            self._response_lifecycle.fail_stream_if_current(stream)
-        else:
-            self._response_lifecycle.remember_cancelled_response()
+            self._response_lifecycle.terminalize(stream, "cancelled")
 
     def _accepts_turn_event(self, event: TurnEvent) -> bool:
         return self._sm.accepts(event.type)
@@ -1033,16 +1046,13 @@ class ConversationSession:
         if asyncio.current_task() is not self._runner:
             await done
 
-    async def _finalize_response_stream(self, stream: ResponseStream) -> None:
-        if self._response_stream is not stream:
-            return
-        await self._emit_response_done(stream.response_id)
-        self._response_lifecycle.finish_stream_if_current(stream)
-        self._interrupt_detector.reset()
-
     async def _fail_response(self, message: str, stream: ResponseStream | None = None) -> None:
         self._interrupt_detector.reset()
-        await self._emit_error(message, code=ERROR_CODE_RESPONSE_FAILED)
+        await self._emit_error(
+            message,
+            code=ERROR_CODE_RESPONSE_FAILED,
+            generation_id=stream.generation_id if stream is not None else None,
+        )
         payload: dict[str, Any] = {}
         if stream is not None:
             payload["_response_stream"] = stream
@@ -1136,11 +1146,15 @@ class ConversationSession:
     def _looks_like_current_output_echo(self) -> bool:
         return self._audio_history.looks_like_current_output_echo()
 
-    async def _execute(self, action: TurnAction) -> None:
+    async def _execute(
+        self,
+        action: TurnAction,
+        teardown: tuple[ResponseStream, TerminalRecord] | None = None,
+    ) -> tuple[ResponseStream, TerminalRecord] | None:
         if action.type == TurnActionType.PAUSE_OUTPUT:
             self._audio_output.pause()
             if bool(action.payload.get("clear", True)):
-                await self._emit_audio_clear()
+                await self._emit_audio_clear(self._response_stream)
 
         elif action.type == TurnActionType.RESUME_OUTPUT:
             stream = self._response_stream
@@ -1153,33 +1167,30 @@ class ConversationSession:
                 await self._complete_response_stream(stream)
 
         elif action.type == TurnActionType.FLUSH_OUTPUT:
-            stream = self._response_stream
-            if stream is not None or self._active_response_id is not None:
-                self._response_lifecycle.remember_cancelled_response()
-            if stream is not None:
-                stream.close()
             self._audio_output.flush()
             self._audio_history.clear()
-            await self._emit_audio_clear()
+            teardown = self._terminalize_current_stream("cancelled", teardown)
+            if teardown is not None:
+                await self._emit_audio_clear(teardown[1])
 
         elif action.type == TurnActionType.STOP_TTS:
             self._mark_agent_speech_ended()
             self._output_playout_started = False
-            stream = self._response_stream
-            self._response_lifecycle.remember_cancelled_response()
-            if stream is not None:
-                assistant_text = stream.assistant_context_text()
+            teardown = self._terminalize_current_stream("cancelled", teardown)
+            if teardown is not None:
+                assistant_text = teardown[0].assistant_context_text()
                 if assistant_text:
                     self._pipeline.add_assistant_turn(assistant_text)
             if self._tts_task and not self._tts_task.done():
                 self._release_tts_task(self._tts_task)
             self._tts_task = None
             self._audio_output.reset_playout()
-            self._response_lifecycle.clear_active_response(stream)
             self._interrupt_detector.reset()
 
         elif action.type == TurnActionType.CANCEL_RESPONSE:
-            await self._emit_response_cancelled()
+            teardown = self._terminalize_current_stream("cancelled", teardown)
+            if teardown is not None:
+                await self._emit_response_cancelled(teardown[1])
 
         elif action.type == TurnActionType.START_TIMER:
             key = action.payload["key"]
@@ -1188,6 +1199,21 @@ class ConversationSession:
 
         elif action.type == TurnActionType.CANCEL_TIMER:
             await self._cancel_timer(action.payload["key"])
+
+        return teardown
+
+    def _terminalize_current_stream(
+        self,
+        reason: TerminalReason,
+        teardown: tuple[ResponseStream, TerminalRecord] | None,
+    ) -> tuple[ResponseStream, TerminalRecord] | None:
+        stream = self._response_lifecycle.stream
+        if stream is None:
+            return teardown
+        record = self._response_lifecycle.terminalize(stream, reason)
+        if record is None:
+            return teardown
+        return stream, record
 
     @staticmethod
     def _resolve_event_future(
@@ -1241,39 +1267,51 @@ class ConversationSession:
         self._transcript_finalizer.log(payload)
         await self._emit(payload)
 
-    async def _emit_error(self, message: str, *, code: str, recoverable: bool = True) -> None:
-        await self._emit(
-            {
-                "type": WIRE_ERROR,
-                "message": message,
-                "code": code,
-                "recoverable": recoverable,
-            }
-        )
+    async def _emit_error(
+        self,
+        message: str,
+        *,
+        code: str,
+        recoverable: bool = True,
+        generation_id: str | None = None,
+    ) -> None:
+        payload = {
+            "type": WIRE_ERROR,
+            "message": message,
+            "code": code,
+            "recoverable": recoverable,
+        }
+        if generation_id:
+            payload["generation_id"] = generation_id
+        await self._emit(payload)
 
-    async def _emit_response_event(self, event_type: str, response_id: str | None) -> None:
-        await self._emit({"type": event_type, "response_id": response_id})
+    async def _emit_response_event(
+        self,
+        event_type: str,
+        source: ResponseStream | TerminalRecord | None,
+    ) -> None:
+        payload: dict[str, Any] = {
+            "type": event_type,
+            "response_id": source.response_id if source is not None else None,
+        }
+        if source is not None and source.generation_id:
+            payload["generation_id"] = source.generation_id
+        await self._emit(payload)
 
-    async def _emit_response_created(self, response_id: str) -> None:
-        await self._emit_response_event(WIRE_RESPONSE_CREATED, response_id)
+    async def _emit_response_created(self, stream: ResponseStream) -> None:
+        await self._emit_response_event(WIRE_RESPONSE_CREATED, stream)
 
-    async def _emit_response_committed(self, response_id: str) -> None:
-        await self._emit_response_event(WIRE_RESPONSE_COMMITTED, response_id)
+    async def _emit_response_committed(self, stream: ResponseStream) -> None:
+        await self._emit_response_event(WIRE_RESPONSE_COMMITTED, stream)
 
-    async def _emit_response_done(self, response_id: str) -> None:
-        await self._emit_response_event(WIRE_RESPONSE_DONE, response_id)
+    async def _emit_response_done(self, record: TerminalRecord) -> None:
+        await self._emit_response_event(WIRE_RESPONSE_DONE, record)
 
-    async def _emit_response_cancelled(self) -> None:
-        response_id = self._response_lifecycle.active_or_cancelled_response_id()
-        if response_id is not None:
-            self._cancel_emitted_response_id = response_id
-        await self._emit_response_event(WIRE_RESPONSE_CANCELLED, response_id)
+    async def _emit_response_cancelled(self, record: TerminalRecord) -> None:
+        await self._emit_response_event(WIRE_RESPONSE_CANCELLED, record)
 
-    async def _emit_audio_clear(self) -> None:
-        await self._emit_response_event(
-            WIRE_AUDIO_CLEAR,
-            self._response_lifecycle.active_or_cancelled_response_id(),
-        )
+    async def _emit_audio_clear(self, source: ResponseStream | TerminalRecord | None) -> None:
+        await self._emit_response_event(WIRE_AUDIO_CLEAR, source)
 
     async def _emit_interruption_detected(
         self,
@@ -1289,13 +1327,12 @@ class ConversationSession:
             partial_transcript,
         )
         await self._emit(
-            {
-                "type": WIRE_INTERRUPTION_DETECTED,
-                "response_id": self._active_response_id,
-                "vad_active_ms": vad_active_ms,
-                "partial_transcript": partial_transcript,
-                "reason": reason,
-            }
+            self._interruption_event_payload(
+                WIRE_INTERRUPTION_DETECTED,
+                vad_active_ms=vad_active_ms,
+                partial_transcript=partial_transcript,
+                reason=reason,
+            )
         )
 
     async def _emit_interruption_false_positive(
@@ -1312,14 +1349,33 @@ class ConversationSession:
             partial_transcript,
         )
         await self._emit(
-            {
-                "type": WIRE_INTERRUPTION_FALSE_POSITIVE,
-                "response_id": self._active_response_id,
-                "vad_active_ms": vad_active_ms,
-                "partial_transcript": partial_transcript,
-                "reason": reason,
-            }
+            self._interruption_event_payload(
+                WIRE_INTERRUPTION_FALSE_POSITIVE,
+                vad_active_ms=vad_active_ms,
+                partial_transcript=partial_transcript,
+                reason=reason,
+            )
         )
+
+    def _interruption_event_payload(
+        self,
+        event_type: str,
+        *,
+        vad_active_ms: int,
+        partial_transcript: str | None,
+        reason: str,
+    ) -> dict[str, Any]:
+        stream = self._response_stream
+        payload: dict[str, Any] = {
+            "type": event_type,
+            "response_id": stream.response_id if stream is not None else None,
+            "vad_active_ms": vad_active_ms,
+            "partial_transcript": partial_transcript,
+            "reason": reason,
+        }
+        if stream is not None and stream.generation_id:
+            payload["generation_id"] = stream.generation_id
+        return payload
 
     def _active_assistant_text(self) -> str:
         return self._response_lifecycle.assistant_context_text(separator=" ")
@@ -1431,17 +1487,10 @@ class ConversationSession:
     def _response_stream(self) -> ResponseStream | None:
         return self._response_lifecycle.stream
 
-    @_response_stream.setter
-    def _response_stream(self, stream: ResponseStream | None) -> None:
-        self._response_lifecycle.stream = stream
-
     @property
     def _active_response_id(self) -> str | None:
-        return self._response_lifecycle.active_response_id
-
-    @_active_response_id.setter
-    def _active_response_id(self, response_id: str | None) -> None:
-        self._response_lifecycle.active_response_id = response_id
+        stream = self._response_lifecycle.stream
+        return stream.response_id if stream is not None else None
 
     @property
     def state(self) -> TurnState:
@@ -1453,11 +1502,16 @@ class ConversationSession:
 
     @property
     def active_response_id(self) -> str | None:
-        return self._response_lifecycle.active_response_id
+        return self._active_response_id
 
     @property
-    def response_phase(self) -> ResponsePhase:
-        return self._response_lifecycle.phase
+    def active_generation_id(self) -> str | None:
+        stream = self._response_lifecycle.stream
+        return stream.generation_id if stream is not None else None
+
+    @property
+    def terminal_record(self) -> TerminalRecord | None:
+        return self._response_lifecycle.terminal
 
     @property
     def pending_audio_count(self) -> int:

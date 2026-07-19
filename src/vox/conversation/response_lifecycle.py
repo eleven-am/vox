@@ -1,39 +1,34 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from enum import StrEnum
+from dataclasses import dataclass
+from typing import Literal
 
 from vox.conversation.response_stream import AppendResult, ResponseStream
 
-
-class ResponsePhase(StrEnum):
-    NONE = "none"
-    STARTED = "started"
-    COMMITTED = "committed"
-    CANCELLED = "cancelled"
-    DONE = "done"
+TerminalReason = Literal["done", "cancelled", "failed"]
 
 
-_LIVE_PHASES = frozenset({ResponsePhase.STARTED, ResponsePhase.COMMITTED})
+@dataclass(frozen=True)
+class TerminalRecord:
+    response_id: str
+    generation_id: str | None
+    reason: TerminalReason
 
 
 @dataclass
 class ConversationResponseLifecycle:
-    """Tracks the active assistant response stream and response identifiers."""
-
     counter: int = 0
     stream: ResponseStream | None = None
-    active_response_id: str | None = None
-    last_cancelled_response_id: str | None = None
-    phase: ResponsePhase = field(default=ResponsePhase.NONE)
+    terminal: TerminalRecord | None = None
 
     @property
     def response_active(self) -> bool:
-        return self.stream is not None and self.phase in _LIVE_PHASES
+        return self.stream is not None and not self.stream.closed
 
     def open_uncommitted_stream(self) -> ResponseStream | None:
-        if self.stream is not None and not self.stream.committed and self.phase is ResponsePhase.STARTED:
-            return self.stream
+        stream = self.stream
+        if stream is not None and not stream.committed and not stream.closed:
+            return stream
         return None
 
     def appendable_stream(self, expected_response_id: str) -> ResponseStream | AppendResult:
@@ -44,71 +39,43 @@ class ConversationResponseLifecycle:
             return AppendResult.RESPONSE_MISMATCH
         if stream.committed:
             return AppendResult.RESPONSE_COMMITTED
-        if stream.closed or self.phase is not ResponsePhase.STARTED:
+        if stream.closed:
             return AppendResult.STREAM_ENDED
         return stream
 
-    def start_stream(self, *, allow_interruptions: bool = True) -> ResponseStream:
+    def start_stream(
+        self,
+        *,
+        allow_interruptions: bool = True,
+        generation_id: str | None = None,
+    ) -> ResponseStream:
         self.counter += 1
-        response_id = f"resp_{self.counter}"
         stream = ResponseStream.create(
-            response_id=response_id,
+            response_id=f"resp_{self.counter}",
             allow_interruptions=allow_interruptions,
+            generation_id=generation_id,
         )
         self.stream = stream
-        self.active_response_id = response_id
-        self.last_cancelled_response_id = None
-        self.phase = ResponsePhase.STARTED
+        self.terminal = None
         return stream
 
     def commit_stream(self, stream: ResponseStream) -> bool:
-        if self.stream is not stream or self.phase is not ResponsePhase.STARTED:
+        if self.stream is not stream or stream.closed:
             return False
-        if not stream.mark_committed():
-            return False
-        self.phase = ResponsePhase.COMMITTED
-        return True
+        return stream.mark_committed()
 
-    def finish_stream_if_current(self, stream: ResponseStream) -> None:
-        stream.close()
-        if self.stream is stream:
-            self.stream = None
-            self.phase = ResponsePhase.DONE
-        if self.active_response_id == stream.response_id:
-            self.active_response_id = None
-
-    def clear_finished_stream_if_current(self, stream: ResponseStream) -> None:
-        if not stream.pending_done:
-            self.finish_stream_if_current(stream)
-
-    def fail_stream_if_current(self, stream: ResponseStream) -> None:
-        stream.close()
-        if self.stream is stream:
-            self.stream = None
-            self.phase = ResponsePhase.CANCELLED
-            self.last_cancelled_response_id = stream.response_id
-        if self.active_response_id == stream.response_id:
-            self.active_response_id = None
-
-    def remember_cancelled_response(self) -> str | None:
-        response_id = self.stream.response_id if self.stream is not None else self.active_response_id
-        if response_id is None:
+    def terminalize(self, stream: ResponseStream, reason: TerminalReason) -> TerminalRecord | None:
+        if stream is not self.stream:
             return None
-        self.last_cancelled_response_id = response_id
-        self.phase = ResponsePhase.CANCELLED
-        return response_id
-
-    def clear_active_response(self, stream: ResponseStream | None) -> None:
-        if stream is not None:
-            stream.close()
-        if self.stream is not None:
-            self.stream.close()
-        if stream is not None and self.active_response_id == stream.response_id:
-            self.active_response_id = None
+        record = TerminalRecord(
+            response_id=stream.response_id,
+            generation_id=stream.generation_id,
+            reason=reason,
+        )
+        self.terminal = record
+        stream.close()
         self.stream = None
-
-    def active_or_cancelled_response_id(self) -> str | None:
-        return self.active_response_id or self.last_cancelled_response_id
+        return record
 
     def assistant_context_text(self, *, separator: str = "") -> str:
         if self.stream is None:

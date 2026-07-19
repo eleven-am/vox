@@ -10,6 +10,8 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+import inspect
+import re
 import threading
 import time
 
@@ -26,7 +28,8 @@ from tests.test_conversation_session import (
     _drain_events,
 )
 from vox.conversation import TurnEvent, TurnEventType, TurnPolicy, TurnState
-from vox.conversation.response_lifecycle import ResponsePhase
+from vox.conversation import session as session_module
+from vox.conversation.response_lifecycle import TerminalRecord
 from vox.conversation.session import (
     ERROR_CODE_RESPONSE_STALE_GENERATION,
     WIRE_AUDIO_CLEAR,
@@ -141,7 +144,10 @@ class TestControlPlaneVsInterruption:
         assert await _wait_for(lambda: session.state == TurnState.INTERRUPTED)
         await spam
 
-        assert session.response_phase == ResponsePhase.CANCELLED
+        record = session.terminal_record
+        assert record is not None
+        assert record.reason == "cancelled"
+        assert record.response_id == response_id
         assert not session.response_active
         assert collector.by_type(WIRE_RESPONSE_CANCELLED)
 
@@ -158,7 +164,7 @@ class TestControlPlaneVsInterruption:
             )
             is AppendResult.NO_ACTIVE_RESPONSE
         )
-        assert session.response_phase == ResponsePhase.CANCELLED
+        assert session.terminal_record is record
         assert (
             await session.commit_response_stream(expected_response_id=response_id)
             is AppendResult.NO_ACTIVE_RESPONSE
@@ -259,7 +265,10 @@ class TestActionFailureRecovery:
 
         assert session.state == TurnState.IDLE
         assert not session.response_active
-        assert session.response_phase == ResponsePhase.CANCELLED
+        record = session.terminal_record
+        assert record is not None
+        assert record.reason == "cancelled"
+        assert record.response_id == response_id
         assert session._tts_task is None or session._tts_task.done()
         assert session.pending_audio_count == 0
 
@@ -439,7 +448,10 @@ class TestAppendIntoDeadStream:
             is AppendResult.STREAM_ENDED
         )
         assert stream.queue.empty()
-        assert session.response_phase == ResponsePhase.CANCELLED
+        record = session.terminal_record
+        assert record is not None
+        assert record.reason == "cancelled"
+        assert record.response_id == response_id
 
         await session.close()
 
@@ -635,7 +647,10 @@ class TestOrchestratorSessionAgreement:
         await orchestrator.cancel_response(generation_id="gen-1")
 
         assert not session.response_active
-        assert session.response_phase == ResponsePhase.CANCELLED
+        record = session.terminal_record
+        assert record is not None
+        assert record.reason == "cancelled"
+        assert record.generation_id == "gen-1"
         assert not orchestrator.response_active
         assert orchestrator.active_generation_id is None
 
@@ -686,7 +701,7 @@ class TestOrchestratorSessionAgreement:
         assert session is not None
 
         await orchestrator.start_response(generation_id="gen-a")
-        stale_response_id = orchestrator._control_response_id
+        stale_response_id = session.active_response_id
         assert stale_response_id is not None
 
         original_append = session.append_response_text
@@ -711,7 +726,7 @@ class TestOrchestratorSessionAgreement:
         assert exc_info.value.code == ERROR_CODE_RESPONSE_STALE_GENERATION
         assert exc_info.value.generation_id == "gen-a"
 
-        live_response_id = orchestrator._control_response_id
+        live_response_id = session.active_response_id
         assert live_response_id is not None
         assert live_response_id != stale_response_id
         assert orchestrator.response_active
@@ -779,3 +794,205 @@ class TestOrchestratorSessionAgreement:
         assert not orchestrator.response_active
 
         await orchestrator.close()
+
+
+def _assert_orchestrator_session_agreement(orchestrator, session) -> None:
+    assert orchestrator.response_active == session.response_active
+    assert orchestrator.active_generation_id == session.active_generation_id
+    if session._response_stream is None:
+        assert orchestrator.active_generation_id is None
+        assert session.active_response_id is None
+
+
+class TestOwnershipInvariantI2:
+    @pytest.mark.asyncio
+    async def test_orchestrator_view_matches_session_across_lifecycle_sequences(self):
+        sequences = [
+            ("start", "append", "commit", "settle"),
+            ("start", "append", "cancel"),
+            ("start", "cancel", "start", "append", "commit", "settle"),
+            ("start", "append", "cancel", "start", "append", "commit", "settle"),
+            ("cancel", "start", "append", "commit", "settle"),
+            ("start", "append", "commit", "settle", "cancel", "start", "append", "cancel"),
+        ]
+        for sequence in sequences:
+            adapter = ScriptedTTSAdapter(chunks=2, inter_chunk_delay=0.005)
+            orchestrator = ConversationOrchestrator(scheduler=FakeScheduler(adapter))
+            await orchestrator.start_session(_session_config())
+            session = orchestrator._session
+            assert session is not None
+            generation = 0
+            generation_id = None
+            for op in sequence:
+                if op == "start":
+                    generation += 1
+                    generation_id = f"gen-{generation}"
+                    await orchestrator.start_response(generation_id=generation_id)
+                elif op == "append":
+                    await orchestrator.append_response_text(
+                        "A reply sentence.", generation_id=generation_id
+                    )
+                elif op == "commit":
+                    await orchestrator.commit_response(generation_id=generation_id)
+                elif op == "cancel":
+                    await orchestrator.cancel_response()
+                elif op == "settle":
+                    await session.wait_until_settled()
+                _assert_orchestrator_session_agreement(orchestrator, session)
+            await orchestrator.close()
+
+    @pytest.mark.asyncio
+    async def test_agreement_holds_through_completion_cancel_races(self):
+        for delay_s in (0.0, 0.002, 0.005, 0.01):
+            tts = GatedTTS()
+            orchestrator = ConversationOrchestrator(scheduler=FakeScheduler(tts))
+            await orchestrator.start_session(_session_config())
+            session = orchestrator._session
+            assert session is not None
+
+            await orchestrator.start_response(generation_id="gen-race")
+            await orchestrator.append_response_text("racy reply.", generation_id="gen-race")
+            await orchestrator.commit_response(generation_id="gen-race")
+            assert await _wait_for(tts.started.is_set)
+            _assert_orchestrator_session_agreement(orchestrator, session)
+
+            tts.finish_gate.set()
+            if delay_s:
+                await asyncio.sleep(delay_s)
+            await orchestrator.cancel_response()
+            _assert_orchestrator_session_agreement(orchestrator, session)
+
+            await session.wait_until_settled()
+            _assert_orchestrator_session_agreement(orchestrator, session)
+            assert not orchestrator.response_active
+            record = session.terminal_record
+            assert record is not None
+            assert record.reason in {"done", "cancelled"}
+            assert record.generation_id == "gen-race"
+
+            with pytest.raises(ConversationCommandError):
+                await orchestrator.append_response_text("after death", generation_id="gen-race")
+            _assert_orchestrator_session_agreement(orchestrator, session)
+
+            await orchestrator.close()
+
+
+class TestTerminalizeIdentity:
+    @pytest.mark.asyncio
+    async def test_stale_stream_outcome_cannot_terminalize_or_emit(self):
+        session, collector, _ = _build_session()
+        stale = session._response_lifecycle.start_stream(generation_id="gen-old")
+        first_record = session._response_lifecycle.terminalize(stale, "cancelled")
+        assert first_record is not None
+        live = session._response_lifecycle.start_stream(generation_id="gen-new")
+
+        events_before = list(collector.events)
+        await session._apply_tts_stream_outcome(
+            TurnEvent(type=TurnEventType.TTS_COMPLETED),
+            stale,
+            True,
+        )
+
+        assert collector.events == events_before
+        assert session._response_lifecycle.stream is live
+        assert not live.closed
+        assert session.terminal_record is None
+
+    @pytest.mark.asyncio
+    async def test_paused_pending_done_stream_survives_unaccepted_tts_completion(self):
+        session, _, _ = _build_session()
+        stream = session._response_lifecycle.start_stream()
+        stream.pending_done = True
+
+        await session._apply_tts_stream_outcome(
+            TurnEvent(type=TurnEventType.TTS_COMPLETED),
+            stream,
+            False,
+        )
+
+        assert session._response_lifecycle.stream is stream
+        assert not stream.closed
+        assert session.terminal_record is None
+
+
+class TestEmissionIdempotence:
+    @pytest.mark.asyncio
+    async def test_cancel_after_teardown_emits_no_second_terminal_events(self):
+        tts = ScriptedTTSAdapter(chunks=40, inter_chunk_delay=0.01)
+        session, collector, _ = _build_session(adapter=tts)
+        await session.start()
+
+        await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
+        await _drain_events(session)
+        await session.submit_response_text("long reply.")
+        assert await _wait_for(lambda: session.state == TurnState.SPEAKING)
+        response_id = session.active_response_id
+        assert response_id is not None
+
+        await session.cancel_response()
+        assert len(collector.by_type(WIRE_RESPONSE_CANCELLED)) == 1
+        assert len(collector.by_type(WIRE_AUDIO_CLEAR)) == 1
+
+        await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
+        await _drain_events(session)
+        assert session.state == TurnState.THINKING
+        await session.cancel_response()
+
+        assert session.state == TurnState.IDLE
+        cancelled = collector.by_type(WIRE_RESPONSE_CANCELLED)
+        clears = collector.by_type(WIRE_AUDIO_CLEAR)
+        assert len(cancelled) == 1
+        assert len(clears) == 1
+        assert cancelled[0]["response_id"] == response_id
+        assert clears[0]["response_id"] == response_id
+
+        await session.close()
+
+
+class TestTerminalEventUnrepresentability:
+    def test_no_terminal_emit_call_site_passes_raw_ids(self):
+        source = inspect.getsource(session_module)
+        assert not re.search(r"_emit_response_(?:created|committed|done|cancelled)\(\s*[\"']", source)
+        assert not re.search(r"_emit_audio_clear\(\s*[\"']", source)
+        assert not re.search(r"_emit_response_event\(\s*WIRE_[A-Z_]+\s*,\s*[\"']", source)
+
+        hints = inspect.get_annotations(session_module.ConversationSession._emit_response_done)
+        assert hints["record"] == "TerminalRecord"
+        hints = inspect.get_annotations(session_module.ConversationSession._emit_response_cancelled)
+        assert hints["record"] == "TerminalRecord"
+
+    @pytest.mark.asyncio
+    async def test_teardown_events_carry_the_records_exact_identity_pair(self):
+        tts = ScriptedTTSAdapter(chunks=40, inter_chunk_delay=0.01)
+        session, collector, _ = _build_session(adapter=tts)
+        await session.start()
+
+        await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
+        await _drain_events(session)
+        result = await session.start_response_stream(generation_id="gen-pair")
+        assert result.response_id is not None
+        assert (
+            await session.append_response_text(
+                "A long reply that keeps going on.",
+                expected_response_id=result.response_id,
+            )
+            is AppendResult.ACCEPTED
+        )
+        assert await _wait_for(lambda: session.state == TurnState.SPEAKING)
+
+        await session.cancel_response()
+
+        record = session.terminal_record
+        assert record == TerminalRecord(
+            response_id=result.response_id,
+            generation_id="gen-pair",
+            reason="cancelled",
+        )
+        cancelled = collector.by_type(WIRE_RESPONSE_CANCELLED)
+        clears = collector.by_type(WIRE_AUDIO_CLEAR)
+        assert cancelled and clears
+        for event in (cancelled[-1], clears[-1]):
+            assert event["response_id"] == record.response_id
+            assert event["generation_id"] == record.generation_id
+
+        await session.close()

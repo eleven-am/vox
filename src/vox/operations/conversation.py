@@ -6,7 +6,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any
 
 from vox.conversation import TurnPolicy
@@ -17,9 +17,7 @@ from vox.conversation.profiles import (
 from vox.conversation.session import (
     ERROR_CODE_COMMAND_INVALID,
     ERROR_CODE_RESPONSE_ALREADY_ACTIVE,
-    ERROR_CODE_RESPONSE_FAILED,
     ERROR_CODE_RESPONSE_REJECTED_TURN_STATE,
-    ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH,
     ERROR_CODE_RESPONSE_STALE_GENERATION,
     WIRE_AUDIO_CLEAR,
     WIRE_AUDIO_DELTA,
@@ -238,14 +236,6 @@ class ConvDoneEvent:
     pass
 
 
-_START_REJECTION_ERROR_CODES = frozenset(
-    {
-        ERROR_CODE_RESPONSE_REJECTED_TURN_STATE,
-        ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH,
-        ERROR_CODE_RESPONSE_ALREADY_ACTIVE,
-    }
-)
-
 _APPEND_RESULT_WIRE_ERRORS: dict[AppendResult, tuple[str, str]] = {
     AppendResult.SESSION_CLOSED: (
         ERROR_CODE_RESPONSE_REJECTED_TURN_STATE,
@@ -268,22 +258,6 @@ _APPEND_RESULT_WIRE_ERRORS: dict[AppendResult, tuple[str, str]] = {
         "response stream has ended",
     ),
 }
-
-_APPEND_RESULTS_CLEARING_BOOKKEEPING = frozenset(
-    {
-        AppendResult.SESSION_CLOSED,
-        AppendResult.STREAM_ENDED,
-    }
-)
-
-_GENERATION_CORRELATED_EVENT_TYPES = (
-    ConvResponseCommittedEvent,
-    ConvResponseDoneEvent,
-    ConvResponseCancelledEvent,
-    ConvAudioClearEvent,
-    ConvInterruptionDetectedEvent,
-    ConvInterruptionFalsePositiveEvent,
-)
 
 
 def conversation_error_fields(exc: BaseException) -> tuple[str, bool, str | None]:
@@ -803,10 +777,6 @@ class ConversationOrchestrator:
         self._session: ConversationSession | None = None
         self._config: ConversationSessionConfig | None = None
         self._events: asyncio.Queue[ConvEvent] = asyncio.Queue()
-        self._control_response_id: str | None = None
-        self._control_generation_id: str | None = None
-        self._client_generation_id: str | None = None
-        self._pending_start_generation_id: str | None = None
         self._closed = False
 
     @property
@@ -856,9 +826,9 @@ class ConversationOrchestrator:
 
     @property
     def active_generation_id(self) -> str | None:
-        if not self.response_active:
+        if self._session is None:
             return None
-        return self._control_generation_id
+        return self._session.active_generation_id
 
     async def start_response(
         self,
@@ -868,21 +838,16 @@ class ConversationOrchestrator:
     ) -> None:
         if self._session is None:
             raise SessionNotConfiguredError()
-        if self._control_response_id is not None:
-            if self._session.response_active:
-                raise ConversationCommandError(
-                    "response already active",
-                    code=ERROR_CODE_RESPONSE_ALREADY_ACTIVE,
-                    generation_id=generation_id,
-                )
-            self._clear_generation_bookkeeping()
-        self._pending_start_generation_id = generation_id
-        try:
-            result = await self._session.start_response_stream(
-                allow_interruptions=allow_interruptions,
+        if self._session.response_active:
+            raise ConversationCommandError(
+                "response already active",
+                code=ERROR_CODE_RESPONSE_ALREADY_ACTIVE,
+                generation_id=generation_id,
             )
-        finally:
-            self._pending_start_generation_id = None
+        result = await self._session.start_response_stream(
+            allow_interruptions=allow_interruptions,
+            generation_id=generation_id,
+        )
         context = result.context
         logger.info(
             "response start generation_id=%s accepted=%s response_id=%s state=%s "
@@ -900,13 +865,10 @@ class ConversationOrchestrator:
             raise ConversationCommandError(
                 result.rejection.message,
                 code=result.rejection.code,
-                generation_id=generation_id,
+                generation_id=result.rejection.generation_id,
             )
         if result.response_id is None:
             raise RuntimeError("response start returned neither an id nor a rejection")
-        self._control_response_id = result.response_id
-        self._control_generation_id = generation_id or result.response_id
-        self._client_generation_id = generation_id
 
     async def append_response_text(
         self,
@@ -917,14 +879,7 @@ class ConversationOrchestrator:
     ) -> None:
         if self._session is None:
             raise SessionNotConfiguredError()
-        response_id = self._control_response_id
-        if response_id is None:
-            raise ConversationCommandError(
-                "response.start required before response.delta",
-                code=ERROR_CODE_RESPONSE_STALE_GENERATION,
-                generation_id=generation_id,
-            )
-        self._validate_response_generation(generation_id)
+        response_id = self._admitted_response_id(self._session, generation_id, command="delta")
         result = await self._session.append_response_text(
             text,
             allow_interruptions=allow_interruptions,
@@ -940,14 +895,7 @@ class ConversationOrchestrator:
     async def commit_response(self, *, generation_id: str | None = None) -> None:
         if self._session is None:
             raise SessionNotConfiguredError()
-        response_id = self._control_response_id
-        if response_id is None:
-            raise ConversationCommandError(
-                "response.start required before response.commit",
-                code=ERROR_CODE_RESPONSE_STALE_GENERATION,
-                generation_id=generation_id,
-            )
-        self._validate_response_generation(generation_id)
+        response_id = self._admitted_response_id(self._session, generation_id, command="commit")
         result = await self._session.commit_response_stream(
             expected_response_id=response_id,
         )
@@ -956,11 +904,13 @@ class ConversationOrchestrator:
     async def cancel_response(self, *, generation_id: str | None = None) -> None:
         if self._session is None:
             raise SessionNotConfiguredError()
-        self._validate_response_generation(generation_id)
-        response_id = self._control_response_id
+        if generation_id is not None and generation_id != self._live_generation_identity():
+            raise ConversationCommandError(
+                "stale response generation",
+                code=ERROR_CODE_RESPONSE_STALE_GENERATION,
+                generation_id=generation_id,
+            )
         await self._session.cancel_response()
-        if self._control_response_id == response_id:
-            self._clear_generation_bookkeeping()
 
     async def report_error(
         self,
@@ -1006,68 +956,44 @@ class ConversationOrchestrator:
         mapped = parse_conversation_wire_event(event)
         if mapped is None:
             return
-        mapped = self._correlate_generation(mapped)
         if self._audio_sink is not None and isinstance(mapped, ConvAudioDeltaEvent):
             await self._audio_sink(mapped)
             return
         await self._events.put(mapped)
 
-    def _correlate_generation(self, mapped: ConvEvent) -> ConvEvent:
-        if isinstance(mapped, ConvResponseCreatedEvent):
-            self._control_response_id = mapped.response_id or self._control_response_id
-            self._client_generation_id = self._pending_start_generation_id
-            if self._client_generation_id and not mapped.generation_id:
-                mapped = replace(mapped, generation_id=self._client_generation_id)
-            return mapped
-        if isinstance(mapped, _GENERATION_CORRELATED_EVENT_TYPES):
-            if (
-                self._client_generation_id
-                and not mapped.generation_id
-                and mapped.response_id
-                and mapped.response_id == self._control_response_id
-            ):
-                mapped = replace(mapped, generation_id=self._client_generation_id)
-            if isinstance(mapped, (ConvResponseCancelledEvent, ConvResponseDoneEvent)) and (
-                not mapped.response_id or mapped.response_id == self._control_response_id
-            ):
-                self._clear_generation_bookkeeping()
-            return mapped
-        if isinstance(mapped, ConvErrorEvent) and mapped.generation_id is None:
-            generation_id: str | None = None
-            if mapped.code in _START_REJECTION_ERROR_CODES:
-                generation_id = self._pending_start_generation_id
-            elif mapped.code == ERROR_CODE_RESPONSE_FAILED:
-                generation_id = self._client_generation_id
-            if generation_id:
-                mapped = replace(mapped, generation_id=generation_id)
-        return mapped
+    def _live_generation_identity(self) -> str | None:
+        if self._session is None:
+            return None
+        response_id = self._session.active_response_id
+        if response_id is None:
+            return None
+        return self._session.active_generation_id or response_id
+
+    def _admitted_response_id(self, session: ConversationSession, generation_id: str | None, *, command: str) -> str:
+        response_id = session.active_response_id
+        if response_id is None:
+            raise ConversationCommandError(
+                f"response.start required before response.{command}",
+                code=ERROR_CODE_RESPONSE_STALE_GENERATION,
+                generation_id=generation_id,
+            )
+        if generation_id is not None and generation_id != (session.active_generation_id or response_id):
+            raise ConversationCommandError(
+                "stale response generation",
+                code=ERROR_CODE_RESPONSE_STALE_GENERATION,
+                generation_id=generation_id,
+            )
+        return response_id
 
     def _raise_for_append_result(self, result: AppendResult, *, generation_id: str | None) -> None:
         if result is AppendResult.ACCEPTED:
             return
-        if result in _APPEND_RESULTS_CLEARING_BOOKKEEPING:
-            self._clear_generation_bookkeeping()
         code, message = _APPEND_RESULT_WIRE_ERRORS[result]
         raise ConversationCommandError(
             message,
             code=code,
             generation_id=generation_id,
         )
-
-    def _clear_generation_bookkeeping(self) -> None:
-        self._control_response_id = None
-        self._control_generation_id = None
-        self._client_generation_id = None
-
-    def _validate_response_generation(self, generation_id: str | None) -> None:
-        if generation_id is None:
-            return
-        if generation_id != self._control_generation_id:
-            raise ConversationCommandError(
-                "stale response generation",
-                code=ERROR_CODE_RESPONSE_STALE_GENERATION,
-                generation_id=generation_id,
-            )
 
 
 def serialize_session_config(config: ConversationSessionConfig) -> dict:

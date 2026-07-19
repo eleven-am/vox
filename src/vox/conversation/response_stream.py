@@ -26,6 +26,7 @@ class AppendResult(StrEnum):
 class ResponseStream:
     queue: asyncio.Queue[str | object]
     response_id: str
+    generation_id: str | None = None
     committed: bool = False
     pending_done: bool = False
     allow_interruptions: bool = True
@@ -35,10 +36,17 @@ class ResponseStream:
     heard_parts: list[str] = field(default_factory=list)
 
     @classmethod
-    def create(cls, *, response_id: str, allow_interruptions: bool = True) -> ResponseStream:
+    def create(
+        cls,
+        *,
+        response_id: str,
+        allow_interruptions: bool = True,
+        generation_id: str | None = None,
+    ) -> ResponseStream:
         return cls(
             queue=asyncio.Queue(maxsize=RESPONSE_STREAM_QUEUE_MAX),
             response_id=response_id,
+            generation_id=generation_id,
             allow_interruptions=allow_interruptions,
         )
 
