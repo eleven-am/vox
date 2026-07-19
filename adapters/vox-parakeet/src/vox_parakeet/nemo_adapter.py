@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import importlib
 import logging
-import shutil
+import os
 import subprocess
 import sys
 import tempfile
 import threading
 import time
-from importlib.machinery import EXTENSION_SUFFIXES
 from pathlib import Path
 from typing import Any
 
@@ -17,13 +15,11 @@ import soundfile as sf
 from numpy.typing import NDArray
 
 from vox.core.adapter import STTAdapter
-from vox.core.adapter_runtime import (
-    activate_runtime_path,
-    install_target_runtime_requirements,
-)
+from vox.core.adapter_runtime import install_target_runtime_requirements
 from vox.core.adapter_runtime import (
     runtime_root as vox_runtime_root,
 )
+from vox.core.errors import ModelLoadError
 from vox.core.types import (
     AdapterInfo,
     ModelFormat,
@@ -32,13 +28,24 @@ from vox.core.types import (
     TranscriptSegment,
     WordTimestamp,
 )
+from vox.core.worker_host import WorkerHost
+from vox_parakeet.nemo_worker import RUNTIME_IMPORT_ERROR_MARKER
 
 logger = logging.getLogger(__name__)
 
 PARAKEET_SAMPLE_RATE = 16_000
 DEFAULT_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 DEFAULT_VRAM_BYTES = 2_500_000_000
+DEFAULT_STARTUP_TIMEOUT_SECONDS = 1800.0
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 600.0
+STARTUP_TIMEOUT_ENV = "VOX_PARAKEET_STARTUP_TIMEOUT_S"
+REQUEST_TIMEOUT_ENV = "VOX_PARAKEET_REQUEST_TIMEOUT_S"
+WORKER_DEVICE_ENV = "VOX_PARAKEET_DEVICE"
 _RUNTIME_SENTINEL = ".vox-parakeet-nemo-runtime-ready"
+_RUNTIME_EXPECTED_RELATIVE_PATHS = (
+    Path("nemo") / "__init__.py",
+    Path("nemo") / "collections" / "asr" / "__init__.py",
+)
 _RUNTIME_DEPENDENCIES = (
     "nemo-toolkit[asr]==2.7.3",
     "numpy>=1.26,<2",
@@ -46,193 +53,46 @@ _RUNTIME_DEPENDENCIES = (
     "llvmlite>=0.44,<0.49",
     "matplotlib>=3.9,<3.10",
 )
-_APP_RUNTIME_SHADOW_GLOBS = (
-    "torch",
-    "torch-*.dist-info",
-    "torchaudio",
-    "torchaudio-*.dist-info",
-    "torchvision",
-    "torchvision-*.dist-info",
-    "nvidia",
-    "nvidia_*.dist-info",
-    "cffi",
-    "cffi-*.dist-info",
-    "_cffi_backend*.so",
-    "_cffi_backend*.pyd",
-    "pycparser",
-    "pycparser-*.dist-info",
+_WORKER_ENV_NAMES = (
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "LD_LIBRARY_PATH",
+    "XDG_CACHE_HOME",
+    "TORCH_HOME",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
 )
-_STALE_RUNTIME_REPAIR_GLOBS = (
-    "matplotlib",
-    "matplotlib-*.dist-info",
-    "matplotlib.libs",
-)
-
-
-_CUDA_GRAPH_ERROR_MARKERS = (
-    "cudagraph",
-    "cuda graph",
-    "graph capture",
-    "preceding successful capture",
-)
-
-
-def _torch_module() -> Any:
-    try:
-        return importlib.import_module("torch")
-    except ImportError as exc:  # pragma: no cover - runtime-image dependent
-        raise RuntimeError("Parakeet NeMo requires torch to be installed in the runtime image") from exc
+_WORKER_ENV_PREFIXES = ("CUDA_", "NVIDIA_", "HF_", "HUGGINGFACE_")
 
 
 def _runtime_target_dir() -> Path:
     return vox_runtime_root() / "parakeet-nemo"
 
 
-def _ensure_runtime_target_on_path() -> Path:
+def _run_install_command(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+
+
+def _install_nemo_runtime() -> Path:
     runtime_dir = _runtime_target_dir()
     runtime_dir.mkdir(parents=True, exist_ok=True)
-    activate_runtime_path(runtime_dir, root=runtime_dir.parent)
-    return runtime_dir
-
-
-def _runtime_module_available(name: str) -> bool:
-    try:
-        module = importlib.import_module(name)
-        if name == "nemo.collections.asr":
-            models = getattr(module, "models", None)
-            return hasattr(models, "ASRModel")
-        return True
-    except Exception:
-        return False
-
-
-def _remove_app_runtime_shadows(runtime_dir: Path) -> bool:
-    removed = False
-    for pattern in _APP_RUNTIME_SHADOW_GLOBS:
-        for path in runtime_dir.glob(pattern):
-            if not path.exists():
-                continue
-            if path.is_dir():
-                shutil.rmtree(path, ignore_errors=True)
-            else:
-                path.unlink(missing_ok=True)
-            removed = True
-            logger.info("Removed app-runtime shadow from Parakeet NeMo runtime: %s", path.name)
-    return removed
-
-
-def _runtime_has_app_shadows(runtime_dir: Path) -> bool:
-    return any(any(runtime_dir.glob(pattern)) for pattern in _APP_RUNTIME_SHADOW_GLOBS)
-
-
-def _remove_stale_runtime_repair_targets(runtime_dir: Path) -> bool:
-    removed = False
-    for pattern in _STALE_RUNTIME_REPAIR_GLOBS:
-        for path in runtime_dir.glob(pattern):
-            if not path.exists():
-                continue
-            if path.is_dir():
-                shutil.rmtree(path, ignore_errors=True)
-            else:
-                path.unlink(missing_ok=True)
-            removed = True
-            logger.info("Removed stale Parakeet NeMo runtime package before repair: %s", path.name)
-    return removed
-
-
-def _clear_nemo_modules() -> None:
-    runtime_root = vox_runtime_root().resolve()
-    runtime_dir = _runtime_target_dir().resolve()
-    native_module_roots = _loaded_native_module_roots()
-    for name in list(sys.modules):
-        module = sys.modules.get(name)
-        module_file = getattr(module, "__file__", None)
-        module_root = name.partition(".")[0]
-        if module_file:
-            try:
-                module_path = Path(module_file).resolve()
-                if module_path.is_relative_to(runtime_root) and not module_path.is_relative_to(runtime_dir):
-                    if module_root in native_module_roots:
-                        continue
-                    sys.modules.pop(name, None)
-                    continue
-            except OSError:
-                pass
-
-        if module_root in native_module_roots:
-            continue
-        if (
-            name == "nemo"
-            or name.startswith("nemo.")
-            or name == "lightning"
-            or name.startswith("lightning.")
-            or name == "torchmetrics"
-            or name.startswith("torchmetrics.")
-            or name == "matplotlib"
-            or name.startswith("matplotlib.")
-            or name == "omegaconf"
-            or name.startswith("omegaconf.")
-            or name == "hydra"
-            or name.startswith("hydra.")
-            or name == "hydra_plugins"
-            or name.startswith("hydra_plugins.")
-            or name == "packaging"
-            or name.startswith("packaging.")
-            or name == "fiddle"
-            or name.startswith("fiddle.")
-            or name == "transformers"
-            or name.startswith("transformers.")
-            or name == "nv_one_logger"
-            or name.startswith("nv_one_logger.")
-        ):
-            sys.modules.pop(name, None)
-    importlib.invalidate_caches()
-
-
-def _loaded_native_module_roots() -> set[str]:
-    roots: set[str] = set()
-    for name, module in list(sys.modules.items()):
-        module_file = getattr(module, "__file__", None)
-        if module_file and any(str(module_file).endswith(suffix) for suffix in EXTENSION_SUFFIXES):
-            roots.add(name.partition(".")[0])
-    return roots
-
-
-def _prime_lightning_imports() -> None:
-    """Preload Lightning utility modules so NeMo sees a fully populated package tree."""
-    try:
-        lightning_pytorch = importlib.import_module("lightning.pytorch")
-        utilities_module = importlib.import_module("lightning.pytorch.utilities")
-        lightning_pytorch.utilities = utilities_module
-
-        imports_module = importlib.import_module("lightning.pytorch.utilities.imports")
-        utilities_module.imports = imports_module
-    except Exception:
-        return
-
-
-def _install_nemo_runtime() -> None:
-    runtime_dir = _ensure_runtime_target_on_path()
     sentinel = runtime_dir / _RUNTIME_SENTINEL
-    if _runtime_has_app_shadows(runtime_dir):
-        _remove_app_runtime_shadows(runtime_dir)
-        _clear_nemo_modules()
-
-    if (
-        sentinel.is_file()
-        and _runtime_module_available("nemo.collections.asr")
-        and not _runtime_has_app_shadows(runtime_dir)
-    ):
-        return
-
-    _remove_stale_runtime_repair_targets(runtime_dir)
-    _clear_nemo_modules()
+    if sentinel.is_file():
+        return runtime_dir
 
     if not install_target_runtime_requirements(
         runtime_dir,
         _RUNTIME_DEPENDENCIES,
         upgrade=False,
         timeout=1800,
+        expected_paths=tuple(runtime_dir / relative for relative in _RUNTIME_EXPECTED_RELATIVE_PATHS),
         installer_order=("uv",),
         install_runner=_run_install_command,
         context="Parakeet NeMo runtime install",
@@ -240,39 +100,8 @@ def _install_nemo_runtime() -> None:
         raise RuntimeError(
             "Failed to install Parakeet NeMo runtime dependencies."
         )
-    _remove_app_runtime_shadows(runtime_dir)
-    _clear_nemo_modules()
-    if not _runtime_module_available("nemo.collections.asr"):
-        raise RuntimeError("Parakeet NeMo runtime installed but nemo.collections.asr is unavailable")
     sentinel.touch()
-
-
-def _run_install_command(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-
-
-def _load_asr_model_class() -> Any:
-    try:
-        nemo_asr = importlib.import_module("nemo.collections.asr")
-    except Exception:
-        _clear_nemo_modules()
-        _ensure_runtime_target_on_path()
-        _install_nemo_runtime()
-        _clear_nemo_modules()
-        _prime_lightning_imports()
-        try:
-            nemo_asr = importlib.import_module("nemo.collections.asr")
-        except Exception as exc:  # pragma: no cover - runtime-image dependent
-            raise RuntimeError(
-                "Parakeet NeMo could not import nemo-toolkit[asr] after adapter-local bootstrap"
-            ) from exc
-
-    try:
-        return nemo_asr.models.ASRModel
-    except AttributeError as exc:  # pragma: no cover - defensive
-        raise RuntimeError(
-            "Parakeet NeMo requires nemo.collections.asr.models.ASRModel"
-        ) from exc
+    return runtime_dir
 
 
 def _resolve_model_ref(model_path: str, source: str | None) -> tuple[str, Path | None]:
@@ -291,128 +120,59 @@ def _resolve_model_ref(model_path: str, source: str | None) -> tuple[str, Path |
     return model_path, None
 
 
-def _time_stride_seconds(model: Any) -> float:
-    cfg = getattr(model, "cfg", None)
-    preprocessor = getattr(cfg, "preprocessor", None)
-    window_stride = getattr(preprocessor, "window_stride", None)
-    if window_stride is None:
-        return 0.01
-    return float(window_stride) * 8.0
-
-
-def _extract_text(result: Any) -> str:
-    text = getattr(result, "text", result)
-    if isinstance(text, (list, tuple)):
-        text = text[0] if text else ""
-    return str(text or "").strip()
-
-
-def _extract_timestamp_dict(result: Any) -> dict[str, Any]:
-    timestamp = getattr(result, "timestamp", None)
-    if isinstance(timestamp, dict):
-        return timestamp
-
-    timestep = getattr(result, "timestep", None)
-    if isinstance(timestep, dict):
-        return timestep
-
-    return {}
-
-
-def _extract_word_timestamps(result: Any, model: Any) -> list[WordTimestamp]:
-    timestamp_dict = _extract_timestamp_dict(result)
-    entries = timestamp_dict.get("word") or []
-    time_stride = _time_stride_seconds(model)
-    words: list[WordTimestamp] = []
-
-    for entry in entries:
-        if isinstance(entry, dict):
-            word = entry.get("word") or entry.get("char") or entry.get("segment") or ""
-            start_offset = entry.get("start_offset", entry.get("start"))
-            end_offset = entry.get("end_offset", entry.get("end"))
-        else:
-            word = getattr(entry, "word", None) or getattr(entry, "char", None) or getattr(entry, "segment", "")
-            start_offset = getattr(entry, "start_offset", getattr(entry, "start", None))
-            end_offset = getattr(entry, "end_offset", getattr(entry, "end", None))
-
-        if not word or start_offset is None or end_offset is None:
-            continue
-
-        words.append(
-            WordTimestamp(
-                word=str(word),
-                start_ms=int(float(start_offset) * time_stride * 1000),
-                end_ms=int(float(end_offset) * time_stride * 1000),
-            )
-        )
-
-    return words
-
-
 def _to_numpy_audio(audio: NDArray[np.float32]) -> NDArray[np.float32]:
     return np.asarray(audio, dtype=np.float32).reshape(-1)
 
 
-def _iter_decoding_objects(model: Any) -> list[Any]:
-    objects: list[Any] = []
-    decoding = getattr(model, "decoding", None)
-    if decoding is not None:
-        objects.append(decoding)
-        inner = getattr(decoding, "decoding", None)
-        if inner is not None:
-            objects.append(inner)
-            computer = getattr(inner, "decoding_computer", None)
-            if computer is not None:
-                objects.append(computer)
-    return objects
+def _worker_python_paths(runtime_dir: Path) -> list[str]:
+    import vox
+
+    candidates = [
+        str(runtime_dir),
+        str(Path(vox.__file__).resolve().parents[1]),
+        str(Path(__file__).resolve().parents[1]),
+    ]
+    paths: list[str] = []
+    for candidate in candidates:
+        if candidate not in paths:
+            paths.append(candidate)
+    return paths
 
 
-def _disable_cuda_graph_decoding(model: Any) -> bool:
-    disabled = False
-    for obj in _iter_decoding_objects(model):
-        disable = getattr(obj, "disable_cuda_graphs", None)
-        if callable(disable):
-            try:
-                disabled = bool(disable()) or disabled
-                logger.info("Disabled Parakeet NeMo CUDA graph decoding via %s", type(obj).__name__)
-            except Exception:
-                logger.warning(
-                    "Failed to disable Parakeet NeMo CUDA graph decoding via %s",
-                    type(obj).__name__,
-                    exc_info=True,
-                )
-
-        for attr in ("use_cuda_graph_decoder", "allow_cuda_graphs", "cuda_graph_decoder"):
-            if hasattr(obj, attr):
-                try:
-                    setattr(obj, attr, False)
-                    disabled = True
-                except Exception:
-                    logger.debug(
-                        "Could not set %s=False on %s",
-                        attr,
-                        type(obj).__name__,
-                        exc_info=True,
-                    )
-    return disabled
+def _worker_env(runtime_dir: Path, device: str) -> dict[str, str]:
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if name in _WORKER_ENV_NAMES or name.startswith(_WORKER_ENV_PREFIXES)
+    }
+    env["PYTHONPATH"] = os.pathsep.join(_worker_python_paths(runtime_dir))
+    env[WORKER_DEVICE_ENV] = device
+    return env
 
 
-def _has_cuda_graph_error(exc: BaseException) -> bool:
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        message = str(current).lower()
-        if any(marker in message for marker in _CUDA_GRAPH_ERROR_MARKERS):
-            return True
-        current = current.__cause__ or current.__context__
-    return False
+def _worker_argv(model_id: str, checkpoint_path: Path | None) -> list[str]:
+    argv = [sys.executable, "-m", "vox_parakeet.nemo_worker", "--model-id", model_id]
+    if checkpoint_path is not None:
+        argv.extend(["--checkpoint", str(checkpoint_path)])
+    return argv
+
+
+def _env_timeout_seconds(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a number of seconds, got {raw!r}") from exc
+    if value <= 0:
+        raise RuntimeError(f"{name} must be positive, got {raw!r}")
+    return value
 
 
 class ParakeetNemoAdapter(STTAdapter):
     def __init__(self) -> None:
-        self._model: Any | None = None
-        self._loaded = False
+        self._host: WorkerHost | None = None
         self._model_id: str = DEFAULT_MODEL_ID
         self._device: str = "cuda"
         self._lock = threading.RLock()
@@ -435,8 +195,11 @@ class ParakeetNemoAdapter(STTAdapter):
 
     def load(self, model_path: str, device: str, **kwargs: Any) -> None:
         with self._lock:
-            if self._loaded:
-                return
+            if self._host is not None:
+                if self._host.alive:
+                    return
+                self._host.close()
+                self._host = None
 
             if device not in ("cuda", "auto"):
                 raise RuntimeError(
@@ -445,41 +208,42 @@ class ParakeetNemoAdapter(STTAdapter):
             self._device = "cuda"
             source = kwargs.pop("_source", None)
             self._model_id, checkpoint_path = _resolve_model_ref(model_path, source)
-            ASRModel = _load_asr_model_class()
+            runtime_dir = _install_nemo_runtime()
 
             logger.info("Loading Parakeet NeMo model: %s (device=%s)", self._model_id, self._device)
             start = time.perf_counter()
-
-            if checkpoint_path is not None:
-                model = ASRModel.restore_from(restore_path=str(checkpoint_path))
-            else:
-                model = ASRModel.from_pretrained(model_name=self._model_id)
-
-            if hasattr(model, "to"):
-                model = model.to(self._device)
-            if hasattr(model, "eval"):
-                model.eval()
-
-            _disable_cuda_graph_decoding(model)
-            self._model = model
+            try:
+                self._host = WorkerHost(
+                    _worker_argv(self._model_id, checkpoint_path),
+                    env=_worker_env(runtime_dir, self._device),
+                    name="parakeet-nemo",
+                    startup_timeout=_env_timeout_seconds(STARTUP_TIMEOUT_ENV, DEFAULT_STARTUP_TIMEOUT_SECONDS),
+                )
+            except ModelLoadError as error:
+                if RUNTIME_IMPORT_ERROR_MARKER in str(error):
+                    logger.warning(
+                        "Parakeet NeMo runtime failed to import inside the worker; clearing runtime sentinel "
+                        "so the next load() reinstalls it"
+                    )
+                    (runtime_dir / _RUNTIME_SENTINEL).unlink(missing_ok=True)
+                raise
             elapsed = time.perf_counter() - start
             logger.info("Parakeet NeMo model loaded in %.2fs", elapsed)
-            self._loaded = True
 
     def unload(self) -> None:
         with self._lock:
-            self._model = None
-            self._loaded = False
+            host = self._host
+            self._host = None
             self._model_id = DEFAULT_MODEL_ID
             self._device = "cuda"
-            torch = _torch_module()
-            if torch.cuda.is_available() and hasattr(torch.cuda, "empty_cache"):
-                torch.cuda.empty_cache()
+            if host is not None:
+                host.close()
         logger.info("Parakeet NeMo adapter unloaded")
 
     @property
     def is_loaded(self) -> bool:
-        return self._loaded
+        host = self._host
+        return host is not None and host.alive
 
     def transcribe(
         self,
@@ -490,7 +254,8 @@ class ParakeetNemoAdapter(STTAdapter):
         initial_prompt: str | None = None,
         temperature: float = 0.0,
     ) -> TranscribeResult:
-        if not self._loaded or self._model is None:
+        host = self._host
+        if host is None or not host.alive:
             raise RuntimeError("Parakeet NeMo model is not loaded — call load() first")
 
         if initial_prompt:
@@ -513,91 +278,68 @@ class ParakeetNemoAdapter(STTAdapter):
         temp_write_ms = int((time.perf_counter() - temp_write_start) * 1000)
 
         try:
-            transcribe_kwargs: dict[str, Any] = {"batch_size": 1}
-            if word_timestamps:
-                transcribe_kwargs["timestamps"] = True
-                transcribe_kwargs["return_hypotheses"] = True
-
-            lock_wait_start = time.perf_counter()
-            self._lock.acquire()
-            lock_wait_ms = int((time.perf_counter() - lock_wait_start) * 1000)
-            try:
-                if not self._loaded or self._model is None:
-                    raise RuntimeError("Parakeet NeMo model was unloaded during transcription")
-                model = self._model
-
-                model_start = time.perf_counter()
-                try:
-                    result = model.transcribe([str(temp_path)], **transcribe_kwargs)
-                except Exception as exc:
-                    if not _has_cuda_graph_error(exc):
-                        raise
-                    logger.warning(
-                        "Parakeet NeMo transcription hit CUDA graph decoding failure; "
-                        "disabling graphs and retrying once"
-                    )
-                    _disable_cuda_graph_decoding(model)
-                    result = model.transcribe([str(temp_path)], **transcribe_kwargs)
-                model_ms = int((time.perf_counter() - model_start) * 1000)
-            finally:
-                self._lock.release()
-
-            if word_timestamps:
-                if isinstance(result, tuple):
-                    result = result[0]
-                hypothesis = result[0] if isinstance(result, (list, tuple)) else result
-                text = _extract_text(hypothesis)
-                words = tuple(_extract_word_timestamps(hypothesis, model))
-                segments = (
-                    (
-                        TranscriptSegment(
-                            text=text,
-                            start_ms=0,
-                            end_ms=duration_ms,
-                            words=words,
-                            language=language or getattr(hypothesis, "language", None),
-                        ),
-                    )
-                    if text
-                    else ()
-                )
-            else:
-                if isinstance(result, tuple):
-                    result = result[0]
-                text_result = result[0] if isinstance(result, (list, tuple)) else result
-                text = _extract_text(text_result)
-                segments = (
-                    (
-                        TranscriptSegment(
-                            text=text,
-                            start_ms=0,
-                            end_ms=duration_ms,
-                            language=language or getattr(text_result, "language", None),
-                        ),
-                    )
-                    if text
-                    else ()
-                )
-
-            detected_source = result[0] if isinstance(result, (list, tuple)) and result else result
-            detected_language = language or getattr(detected_source, "language", None)
-            logger.info(
-                "Parakeet NeMo transcribed %dms audio temp_write_ms=%d lock_wait_ms=%d model_ms=%d chars=%d",
-                duration_ms,
-                temp_write_ms,
-                lock_wait_ms,
-                model_ms,
-                len(text or ""),
+            request_start = time.perf_counter()
+            response = host.request(
+                {"op": "transcribe", "path": str(temp_path), "word_timestamps": word_timestamps},
+                timeout=_env_timeout_seconds(REQUEST_TIMEOUT_ENV, DEFAULT_REQUEST_TIMEOUT_SECONDS),
             )
-            return TranscribeResult(
-                text=text,
-                segments=segments,
-                language=detected_language,
-                duration_ms=duration_ms,
-                model=self._model_id,
-            )
+            request_ms = int((time.perf_counter() - request_start) * 1000)
         finally:
             temp_path.unlink(missing_ok=True)
+
+        text = str(response["text"])
+        detected_language = language or response.get("language")
+
+        if word_timestamps:
+            words = tuple(
+                WordTimestamp(
+                    word=str(entry["word"]),
+                    start_ms=int(entry["start_ms"]),
+                    end_ms=int(entry["end_ms"]),
+                )
+                for entry in response.get("words") or ()
+            )
+            segments = (
+                (
+                    TranscriptSegment(
+                        text=text,
+                        start_ms=0,
+                        end_ms=duration_ms,
+                        words=words,
+                        language=detected_language,
+                    ),
+                )
+                if text
+                else ()
+            )
+        else:
+            segments = (
+                (
+                    TranscriptSegment(
+                        text=text,
+                        start_ms=0,
+                        end_ms=duration_ms,
+                        language=detected_language,
+                    ),
+                )
+                if text
+                else ()
+            )
+
+        logger.info(
+            "Parakeet NeMo transcribed %dms audio temp_write_ms=%d request_ms=%d chars=%d",
+            duration_ms,
+            temp_write_ms,
+            request_ms,
+            len(text),
+        )
+        return TranscribeResult(
+            text=text,
+            segments=segments,
+            language=detected_language,
+            duration_ms=duration_ms,
+            model=self._model_id,
+        )
 
     def estimate_vram_bytes(self, **kwargs: Any) -> int:
         return DEFAULT_VRAM_BYTES

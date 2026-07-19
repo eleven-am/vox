@@ -1,148 +1,98 @@
 from __future__ import annotations
 
-import importlib
+import os
 import sys
-import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
+import soundfile as sf
+import vox_parakeet.nemo_adapter as module
+from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
+
+from vox.core.errors import ModelLoadError
+from vox.core.worker_host import WorkerError
 
 
-@pytest.fixture(autouse=True)
-def _restore_torch_and_nemo_modules():
-    poisoned_keys = (
-        "torch",
-        "nemo",
-        "nemo.collections",
-        "nemo.collections.asr",
-        "onnx",
-        "onnx.onnx_cpp2py_export",
-        "vox_parakeet",
-        "vox_parakeet.nemo_adapter",
+def _land_expected_runtime_paths(runtime_dir: Path) -> None:
+    for relative in module._RUNTIME_EXPECTED_RELATIVE_PATHS:
+        target = runtime_dir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.touch()
+
+
+def _startup_error(worker_error_message: str) -> ModelLoadError:
+    return ModelLoadError(
+        "parakeet-nemo worker failed to start: parakeet-nemo worker killed: expected ready frame, "
+        "got {'error': '" + worker_error_message + "'} (exit code 1)"
     )
-    saved = {k: sys.modules.get(k) for k in poisoned_keys}
-    yield
-    for k, v in saved.items():
-        if v is None:
-            sys.modules.pop(k, None)
-        else:
-            sys.modules[k] = v
 
 
-class _FakeNemoModel:
-    def __init__(self, *, text: str = "hello world", with_timestamps: bool = False) -> None:
-        self.text = text
-        self.with_timestamps = with_timestamps
-        self.to_calls: list[str] = []
-        self.eval_called = False
-        self.transcribe_calls: list[dict] = []
-        self.transcribe_errors: list[Exception] = []
-        self.disable_cuda_graph_calls = 0
-        self.decoding = SimpleNamespace(
-            decoding=SimpleNamespace(
-                decoding_computer=SimpleNamespace(
-                    disable_cuda_graphs=self._disable_cuda_graphs,
-                    use_cuda_graph_decoder=True,
-                )
-            )
-        )
-        self.cfg = SimpleNamespace(
-            preprocessor=SimpleNamespace(window_stride=0.02),
-        )
-
-    def to(self, device: str):
-        self.to_calls.append(device)
-        return self
-
-    def eval(self):
-        self.eval_called = True
-        return self
-
-    def _disable_cuda_graphs(self):
-        self.disable_cuda_graph_calls += 1
-        return True
-
-    def transcribe(self, paths, **kwargs):
-        self.transcribe_calls.append({"paths": paths, **kwargs})
-        if self.transcribe_errors:
-            raise self.transcribe_errors.pop(0)
-        if kwargs.get("return_hypotheses"):
-            return [
-                SimpleNamespace(
-                    text=self.text,
-                    timestamp={
-                        "word": [
-                            {"word": "hello", "start_offset": 0, "end_offset": 4},
-                            {"word": "world", "start_offset": 5, "end_offset": 10},
-                        ]
-                    },
-                )
-            ]
-        return [self.text]
+@pytest.fixture
+def runtime_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    runtime = tmp_path / "runtime" / "parakeet-nemo"
+    monkeypatch.setattr(module, "_runtime_target_dir", lambda: runtime)
+    return runtime
 
 
-class _ConcurrentDetectingNemoModel(_FakeNemoModel):
-    def __init__(self) -> None:
-        super().__init__(text="serialized")
-        self.active_calls = 0
-        self.max_active_calls = 0
-
-    def transcribe(self, paths, **kwargs):
-        self.active_calls += 1
-        self.max_active_calls = max(self.max_active_calls, self.active_calls)
-        try:
-            time.sleep(0.05)
-            return super().transcribe(paths, **kwargs)
-        finally:
-            self.active_calls -= 1
+@pytest.fixture
+def ready_runtime(runtime_dir: Path) -> Path:
+    runtime_dir.mkdir(parents=True)
+    (runtime_dir / module._RUNTIME_SENTINEL).touch()
+    return runtime_dir
 
 
-def _install_fake_nemo(*, model: _FakeNemoModel | None = None):
-    fake_module = ModuleType("nemo")
-    fake_collections = ModuleType("nemo.collections")
-    fake_asr = ModuleType("nemo.collections.asr")
+@pytest.fixture
+def fake_host_cls(monkeypatch: pytest.MonkeyPatch):
+    class _FakeWorkerHost:
+        instances: list[_FakeWorkerHost] = []
 
-    class _FakeASRModel:
-        from_pretrained = MagicMock(return_value=model or _FakeNemoModel())
-        restore_from = MagicMock(return_value=model or _FakeNemoModel())
+        def __init__(self, argv: list[str], *, env: dict[str, str], name: str, startup_timeout: float) -> None:
+            self.argv = argv
+            self.env = env
+            self.name = name
+            self.startup_timeout = startup_timeout
+            self.requests: list[dict[str, Any]] = []
+            self.responses: list[dict[str, Any]] = []
+            self.request_error: Exception | None = None
+            self.closed = False
+            self._alive = True
+            type(self).instances.append(self)
 
-    fake_asr.models = SimpleNamespace(ASRModel=_FakeASRModel)
-    fake_collections.asr = fake_asr
-    fake_module.collections = fake_collections
+        @property
+        def alive(self) -> bool:
+            return self._alive and not self.closed
 
-    sys.modules["nemo"] = fake_module
-    sys.modules["nemo.collections"] = fake_collections
-    sys.modules["nemo.collections.asr"] = fake_asr
-    return _FakeASRModel
+        def request(self, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+            observation: dict[str, Any] = {"payload": payload, "timeout": timeout}
+            path = payload.get("path")
+            if path is not None:
+                observation["wav_existed"] = os.path.exists(path)
+                if observation["wav_existed"]:
+                    data, sample_rate = sf.read(path, dtype="float32")
+                    observation["wav_samples"] = len(data)
+                    observation["wav_sample_rate"] = sample_rate
+            self.requests.append(observation)
+            if self.request_error is not None:
+                raise self.request_error
+            return self.responses.pop(0)
+
+        def close(self, grace: float = 5.0) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(module, "WorkerHost", _FakeWorkerHost)
+    return _FakeWorkerHost
 
 
-def _install_fake_torch(*, cuda_available: bool = True):
-    fake_torch = ModuleType("torch")
-    fake_torch.cuda = SimpleNamespace(
-        is_available=MagicMock(return_value=cuda_available),
-        empty_cache=MagicMock(),
-    )
-    fake_torch.backends = SimpleNamespace(
-        mps=SimpleNamespace(is_available=MagicMock(return_value=False))
-    )
-    fake_torch.inference_mode = lambda: SimpleNamespace(
-        __enter__=lambda self=None: None,
-        __exit__=lambda self, exc_type, exc, tb: False,
-    )
-    sys.modules["torch"] = fake_torch
-    return fake_torch
+def _loaded_adapter(fake_host_cls) -> tuple[ParakeetNemoAdapter, Any]:
+    adapter = ParakeetNemoAdapter()
+    adapter.load("ignored-local-path", "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")
+    return adapter, fake_host_cls.instances[-1]
 
 
 def test_info_exposes_pytorch_and_nemo_adapter_name():
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
-
-    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
-
     info = ParakeetNemoAdapter().info()
     assert info.name == "parakeet-stt-nemo"
     assert info.type.value == "stt"
@@ -151,197 +101,55 @@ def test_info_exposes_pytorch_and_nemo_adapter_name():
     assert info.supports_language_detection is True
 
 
-def test_load_uses_pretrained_model_name_when_source_is_provided(monkeypatch: pytest.MonkeyPatch):
-    fake_model = _FakeNemoModel()
-    fake_model_cls = _install_fake_nemo(model=fake_model)
-    _install_fake_torch(cuda_available=True)
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
-
-    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
-
-    adapter = ParakeetNemoAdapter()
-    adapter.load("ignored-local-path", "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")
-
-    fake_model_cls.from_pretrained.assert_called_once_with(model_name="nvidia/parakeet-tdt-0.6b-v3")
-    assert adapter.is_loaded is True
-    assert adapter._model_id == "nvidia/parakeet-tdt-0.6b-v3"
-    assert fake_model.disable_cuda_graph_calls == 1
-    assert fake_model.decoding.decoding.decoding_computer.use_cuda_graph_decoder is False
-
-
-def test_load_prefers_pretrained_source_over_pulled_local_nemo_checkpoint(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_prepare_runtime_installs_without_importing_nemo_or_touching_sys_path(
+    runtime_dir: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    fake_model = _FakeNemoModel()
-    fake_model_cls = _install_fake_nemo(model=fake_model)
-    _install_fake_torch(cuda_available=True)
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+    install = MagicMock(return_value=True)
+    monkeypatch.setattr(module, "install_target_runtime_requirements", install)
+    path_snapshot = list(sys.path)
 
-    model_dir = tmp_path / "parakeet"
-    model_dir.mkdir()
-    checkpoint = model_dir / "parakeet-tdt-0.6b-v3.nemo"
-    checkpoint.write_bytes(b"fake-nemo")
+    ParakeetNemoAdapter().prepare_runtime()
 
-    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
-
-    adapter = ParakeetNemoAdapter()
-    adapter.load(str(model_dir), "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")
-
-    fake_model_cls.from_pretrained.assert_called_once_with(model_name="nvidia/parakeet-tdt-0.6b-v3")
-    fake_model_cls.restore_from.assert_not_called()
-    assert adapter.is_loaded is True
-    assert adapter._model_id == "nvidia/parakeet-tdt-0.6b-v3"
-
-
-def test_load_uses_restore_from_for_local_nemo_checkpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    fake_model_cls = _install_fake_nemo()
-    _install_fake_torch(cuda_available=True)
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
-
-    model_dir = tmp_path / "parakeet"
-    model_dir.mkdir()
-    checkpoint = model_dir / "parakeet-tdt-0.6b-v3.nemo"
-    checkpoint.write_bytes(b"fake-nemo")
-
-    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
-
-    adapter = ParakeetNemoAdapter()
-    adapter.load(str(model_dir), "cuda")
-
-    fake_model_cls.restore_from.assert_called_once_with(restore_path=str(checkpoint))
-    assert adapter.is_loaded is True
-    assert adapter._model_id == str(model_dir)
-
-
-def test_load_rejects_non_cuda_device(monkeypatch: pytest.MonkeyPatch):
-    _install_fake_nemo()
-    _install_fake_torch(cuda_available=True)
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
-
-    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
-
-    adapter = ParakeetNemoAdapter()
-    with pytest.raises(RuntimeError, match="requires device='cuda' or 'auto'"):
-        adapter.load("ignored-local-path", "cpu")
-
-
-def test_load_asr_model_class_bootstraps_missing_nemo_runtime(monkeypatch: pytest.MonkeyPatch):
-    _install_fake_torch(cuda_available=True)
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
-
-    import vox_parakeet.nemo_adapter as module
-
-    fake_model_cls = _install_fake_nemo()
-    sys.modules.pop("nemo", None)
-    sys.modules.pop("nemo.collections", None)
-    sys.modules.pop("nemo.collections.asr", None)
-
-    imported_once = False
-    real_import_module = importlib.import_module
-
-    def fake_import_module(name: str):
-        nonlocal imported_once
-        if name == "nemo.collections.asr":
-            if not imported_once:
-                imported_once = True
-                raise ImportError("missing nemo")
-            return sys.modules[name]
-        return real_import_module(name)
-
-    install_mock = MagicMock(side_effect=lambda: _install_fake_nemo())
-    calls: list[str] = []
-    monkeypatch.setattr(module.importlib, "import_module", fake_import_module)
-    monkeypatch.setattr(
-        module,
-        "_ensure_runtime_target_on_path",
-        lambda: calls.append("ensure_runtime"),
+    assert sys.path == path_snapshot
+    assert "nemo" not in sys.modules
+    install.assert_called_once()
+    assert install.call_args.args[0] == runtime_dir
+    assert install.call_args.args[1] == module._RUNTIME_DEPENDENCIES
+    assert tuple(install.call_args.kwargs["expected_paths"]) == (
+        runtime_dir / "nemo" / "__init__.py",
+        runtime_dir / "nemo" / "collections" / "asr" / "__init__.py",
     )
-    monkeypatch.setattr(module, "_install_nemo_runtime", install_mock)
-    monkeypatch.setattr(module, "_clear_nemo_modules", lambda: calls.append("clear"))
-    monkeypatch.setattr(module, "_prime_lightning_imports", lambda: calls.append("prime"))
-
-    loaded_model_cls = module._load_asr_model_class()
-    assert loaded_model_cls.__name__ == fake_model_cls.__name__
-    assert hasattr(loaded_model_cls, "from_pretrained")
-    install_mock.assert_called_once()
-    assert calls == ["clear", "ensure_runtime", "clear", "prime"]
+    assert (runtime_dir / module._RUNTIME_SENTINEL).is_file()
 
 
-def test_load_asr_model_class_prefers_global_nemo_before_local_runtime(monkeypatch: pytest.MonkeyPatch):
-    _install_fake_torch(cuda_available=True)
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+def test_prepare_runtime_skips_reinstall_when_sentinel_present(
+    ready_runtime: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install = MagicMock(return_value=True)
+    monkeypatch.setattr(module, "install_target_runtime_requirements", install)
 
-    import vox_parakeet.nemo_adapter as module
+    ParakeetNemoAdapter().prepare_runtime()
 
-    fake_model_cls = _install_fake_nemo()
-    ensure_path = MagicMock()
-    install_mock = MagicMock()
-
-    monkeypatch.setattr(module, "_ensure_runtime_target_on_path", ensure_path)
-    monkeypatch.setattr(module, "_install_nemo_runtime", install_mock)
-
-    loaded_model_cls = module._load_asr_model_class()
-
-    assert loaded_model_cls.__name__ == fake_model_cls.__name__
-    ensure_path.assert_not_called()
-    install_mock.assert_not_called()
+    install.assert_not_called()
 
 
-def test_prime_lightning_imports_attaches_utilities_modules(monkeypatch: pytest.MonkeyPatch):
-    _install_fake_torch(cuda_available=True)
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
-
-    import vox_parakeet.nemo_adapter as module
-
-    lightning_pytorch = ModuleType("lightning.pytorch")
-    lightning_utilities = ModuleType("lightning.pytorch.utilities")
-    lightning_imports = ModuleType("lightning.pytorch.utilities.imports")
-
-    def fake_import_module(name: str):
-        if name == "lightning.pytorch":
-            return lightning_pytorch
-        if name == "lightning.pytorch.utilities":
-            return lightning_utilities
-        if name == "lightning.pytorch.utilities.imports":
-            return lightning_imports
-        raise AssertionError(f"unexpected import: {name}")
-
-    monkeypatch.setattr(module.importlib, "import_module", fake_import_module)
-
-    module._prime_lightning_imports()
-
-    assert lightning_pytorch.utilities is lightning_utilities
-    assert lightning_utilities.imports is lightning_imports
-
-
-def test_install_nemo_runtime_uses_python312_compatible_pins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
-
-    import vox_parakeet.nemo_adapter as module
-
+def test_prepare_runtime_uses_uv_target_install_with_python312_compatible_pins(
+    runtime_dir: Path, monkeypatch: pytest.MonkeyPatch
+):
     calls: list[list[str]] = []
 
-    def fake_run(cmd, **kwargs):
-        mock = MagicMock()
-        mock.stderr = ""
-        mock.stdout = ""
+    def fake_run(cmd: list[str], timeout: int):
         calls.append(cmd)
+        _land_expected_runtime_paths(runtime_dir)
+        mock = MagicMock()
         mock.returncode = 0
+        mock.stdout = ""
+        mock.stderr = ""
         return mock
 
-    monkeypatch.setattr(module, "_runtime_target_dir", lambda: tmp_path / "runtime")
-    monkeypatch.setattr(module.subprocess, "run", fake_run)
-    monkeypatch.setattr(module, "_runtime_module_available", lambda name: name == "nemo.collections.asr")
+    monkeypatch.setattr(module, "_run_install_command", fake_run)
 
-    module._install_nemo_runtime()
+    ParakeetNemoAdapter().prepare_runtime()
 
     assert calls[0][:5] == ["uv", "pip", "install", "--python", sys.executable]
     assert "--target" in calls[0]
@@ -351,430 +159,356 @@ def test_install_nemo_runtime_uses_python312_compatible_pins(tmp_path: Path, mon
     assert "llvmlite>=0.44,<0.49" in calls[0]
     assert "matplotlib>=3.9,<3.10" in calls[0]
     assert len(calls) == 1
-    assert (tmp_path / "runtime" / ".vox-parakeet-nemo-runtime-ready").is_file()
+    assert (runtime_dir / module._RUNTIME_SENTINEL).is_file()
 
 
-def test_install_nemo_runtime_removes_app_runtime_shadows_but_keeps_runtime_triton(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-):
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
-
-    import vox_parakeet.nemo_adapter as module
-
-    runtime_dir = tmp_path / "runtime"
-
-    def fake_run(cmd, **kwargs):
-        (runtime_dir / "torch").mkdir(parents=True, exist_ok=True)
-        (runtime_dir / "torch-2.9.1.dist-info").mkdir()
-        (runtime_dir / "triton").mkdir()
-        (runtime_dir / "triton-3.5.1.dist-info").mkdir()
-        (runtime_dir / "nvidia").mkdir()
-        (runtime_dir / "nvidia_cublas_cu12-12.8.4.1.dist-info").mkdir()
-        (runtime_dir / "cffi").mkdir()
-        (runtime_dir / "cffi-2.1.0.dist-info").mkdir()
-        (runtime_dir / "pycparser").mkdir()
-        (runtime_dir / "pycparser-3.0.dist-info").mkdir()
-        (runtime_dir / "_cffi_backend.cpython-312-x86_64-linux-gnu.so").touch()
+def test_prepare_runtime_fails_fast_when_uv_install_fails(runtime_dir: Path, monkeypatch: pytest.MonkeyPatch):
+    def fake_run(cmd: list[str], timeout: int):
         mock = MagicMock()
-        mock.stderr = ""
+        mock.returncode = 1
         mock.stdout = ""
-        mock.returncode = 0
+        mock.stderr = "resolution failed"
         return mock
 
-    installed = False
+    monkeypatch.setattr(module, "_run_install_command", fake_run)
 
-    def fake_module_available(name: str) -> bool:
-        return installed and name == "nemo.collections.asr"
+    with pytest.raises(RuntimeError, match="Failed to install Parakeet NeMo runtime dependencies"):
+        ParakeetNemoAdapter().prepare_runtime()
 
-    original_fake_run = fake_run
-
-    def fake_run_and_mark_installed(cmd, **kwargs):
-        nonlocal installed
-        result = original_fake_run(cmd, **kwargs)
-        installed = True
-        return result
-
-    monkeypatch.setattr(module, "_runtime_target_dir", lambda: runtime_dir)
-    monkeypatch.setattr(module.subprocess, "run", fake_run_and_mark_installed)
-    monkeypatch.setattr(module, "_runtime_module_available", fake_module_available)
-
-    module._install_nemo_runtime()
-
-    assert not (runtime_dir / "torch").exists()
-    assert not (runtime_dir / "torch-2.9.1.dist-info").exists()
-    assert (runtime_dir / "triton").exists()
-    assert (runtime_dir / "triton-3.5.1.dist-info").exists()
-    assert not (runtime_dir / "nvidia").exists()
-    assert not (runtime_dir / "nvidia_cublas_cu12-12.8.4.1.dist-info").exists()
-    assert not (runtime_dir / "cffi").exists()
-    assert not (runtime_dir / "cffi-2.1.0.dist-info").exists()
-    assert not (runtime_dir / "pycparser").exists()
-    assert not (runtime_dir / "pycparser-3.0.dist-info").exists()
-    assert not (runtime_dir / "_cffi_backend.cpython-312-x86_64-linux-gnu.so").exists()
-    assert (runtime_dir / ".vox-parakeet-nemo-runtime-ready").is_file()
+    assert not (runtime_dir / module._RUNTIME_SENTINEL).exists()
 
 
-def test_install_nemo_runtime_repairs_stale_app_runtime_shadows(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+def test_prepare_runtime_fails_fast_when_uv_is_missing(runtime_dir: Path, monkeypatch: pytest.MonkeyPatch):
+    def fake_run(cmd: list[str], timeout: int):
+        raise FileNotFoundError("uv")
+
+    monkeypatch.setattr(module, "_run_install_command", fake_run)
+
+    with pytest.raises(RuntimeError, match="Failed to install Parakeet NeMo runtime dependencies"):
+        ParakeetNemoAdapter().prepare_runtime()
+
+    assert not (runtime_dir / module._RUNTIME_SENTINEL).exists()
+
+
+def test_prepare_runtime_does_not_set_sentinel_when_install_succeeds_without_landing_nemo(
+    runtime_dir: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+    def fake_run(cmd: list[str], timeout: int):
+        mock = MagicMock()
+        mock.returncode = 0
+        mock.stdout = ""
+        mock.stderr = ""
+        return mock
 
-    import vox_parakeet.nemo_adapter as module
+    monkeypatch.setattr(module, "_run_install_command", fake_run)
 
-    runtime_dir = tmp_path / "runtime"
-    runtime_dir.mkdir()
-    (runtime_dir / ".vox-parakeet-nemo-runtime-ready").touch()
-    (runtime_dir / "torch").mkdir()
-    (runtime_dir / "torch-2.9.1.dist-info").mkdir()
-    (runtime_dir / "cffi").mkdir()
-    (runtime_dir / "cffi-2.1.0.dist-info").mkdir()
-    (runtime_dir / "pycparser").mkdir()
-    (runtime_dir / "_cffi_backend.cpython-312-x86_64-linux-gnu.so").touch()
+    with pytest.raises(RuntimeError, match="Failed to install Parakeet NeMo runtime dependencies"):
+        ParakeetNemoAdapter().prepare_runtime()
+
+    assert not (runtime_dir / module._RUNTIME_SENTINEL).exists()
+
+
+def test_load_runtime_import_failure_clears_sentinel_and_next_load_reinstalls(
+    ready_runtime: Path, fake_host_cls, monkeypatch: pytest.MonkeyPatch
+):
     install = MagicMock(return_value=True)
-
-    monkeypatch.setattr(module, "_runtime_target_dir", lambda: runtime_dir)
-    monkeypatch.setattr(module, "_runtime_module_available", lambda name: name == "nemo.collections.asr")
     monkeypatch.setattr(module, "install_target_runtime_requirements", install)
+    error = _startup_error(
+        "RuntimeError: " + module.RUNTIME_IMPORT_ERROR_MARKER
+        + " Parakeet NeMo worker could not import nemo.collections.asr: broken llvmlite ABI"
+    )
 
-    module._install_nemo_runtime()
+    class _BrokenRuntimeHost:
+        def __init__(self, argv: list[str], *, env: dict[str, str], name: str, startup_timeout: float) -> None:
+            raise error
 
-    assert not (runtime_dir / "torch").exists()
-    assert not (runtime_dir / "torch-2.9.1.dist-info").exists()
-    assert not (runtime_dir / "cffi").exists()
-    assert not (runtime_dir / "cffi-2.1.0.dist-info").exists()
-    assert not (runtime_dir / "pycparser").exists()
-    assert not (runtime_dir / "_cffi_backend.cpython-312-x86_64-linux-gnu.so").exists()
+    monkeypatch.setattr(module, "WorkerHost", _BrokenRuntimeHost)
+    adapter = ParakeetNemoAdapter()
+
+    with pytest.raises(ModelLoadError, match="failed to start"):
+        adapter.load("ignored-local-path", "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")
+
+    assert not (ready_runtime / module._RUNTIME_SENTINEL).exists()
+    assert adapter.is_loaded is False
+    install.assert_not_called()
+
+    monkeypatch.setattr(module, "WorkerHost", fake_host_cls)
+    adapter.load("ignored-local-path", "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")
+
+    install.assert_called_once()
+    assert install.call_args.args[0] == ready_runtime
+    assert (ready_runtime / module._RUNTIME_SENTINEL).is_file()
+    assert adapter.is_loaded is True
+
+
+def test_load_non_import_startup_failure_keeps_sentinel(
+    ready_runtime: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install = MagicMock(return_value=True)
+    monkeypatch.setattr(module, "install_target_runtime_requirements", install)
+    error = _startup_error("RuntimeError: CUDA driver initialization failed, you might not have a CUDA gpu")
+
+    class _CudaLessHost:
+        def __init__(self, argv: list[str], *, env: dict[str, str], name: str, startup_timeout: float) -> None:
+            raise error
+
+    monkeypatch.setattr(module, "WorkerHost", _CudaLessHost)
+    adapter = ParakeetNemoAdapter()
+
+    with pytest.raises(ModelLoadError, match="failed to start"):
+        adapter.load("ignored-local-path", "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")
+
+    assert (ready_runtime / module._RUNTIME_SENTINEL).is_file()
+    assert adapter.is_loaded is False
     install.assert_not_called()
 
 
-def test_install_nemo_runtime_repairs_stale_broken_sentinel(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+def test_load_spawns_worker_with_runtime_on_child_pythonpath(
+    ready_runtime: Path, fake_host_cls, monkeypatch: pytest.MonkeyPatch
 ):
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+    monkeypatch.setenv("VOX_SECRET_EXAMPLE", "leak")
 
-    import vox_parakeet.nemo_adapter as module
+    adapter, host = _loaded_adapter(fake_host_cls)
 
-    runtime_dir = tmp_path / "runtime"
-    runtime_dir.mkdir()
-    (runtime_dir / ".vox-parakeet-nemo-runtime-ready").touch()
-    install = MagicMock(return_value=True)
-    probes = [False, True]
+    assert host.argv == [
+        sys.executable,
+        "-m",
+        "vox_parakeet.nemo_worker",
+        "--model-id",
+        "nvidia/parakeet-tdt-0.6b-v3",
+    ]
+    import vox_parakeet
 
-    monkeypatch.setattr(module, "_runtime_target_dir", lambda: runtime_dir)
-    monkeypatch.setattr(module, "_runtime_module_available", lambda name: probes.pop(0))
-    monkeypatch.setattr(module, "install_target_runtime_requirements", install)
+    import vox
 
-    module._install_nemo_runtime()
+    python_paths = host.env["PYTHONPATH"].split(os.pathsep)
+    assert python_paths[0] == str(ready_runtime)
+    assert str(Path(vox.__file__).resolve().parents[1]) in python_paths
+    assert str(Path(vox_parakeet.__file__).resolve().parents[1]) in python_paths
+    assert host.env[module.WORKER_DEVICE_ENV] == "cuda"
+    assert "VOX_SECRET_EXAMPLE" not in host.env
+    assert host.name == "parakeet-nemo"
+    assert host.startup_timeout == module.DEFAULT_STARTUP_TIMEOUT_SECONDS
+    assert host.startup_timeout >= 600.0
+    assert adapter.is_loaded is True
+    assert adapter._model_id == "nvidia/parakeet-tdt-0.6b-v3"
 
-    install.assert_called_once()
-    assert (runtime_dir / ".vox-parakeet-nemo-runtime-ready").is_file()
 
-
-def test_install_nemo_runtime_removes_stale_matplotlib_before_repair(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+def test_load_startup_timeout_is_configurable_via_env(
+    ready_runtime: Path, fake_host_cls, monkeypatch: pytest.MonkeyPatch
 ):
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+    monkeypatch.setenv(module.STARTUP_TIMEOUT_ENV, "42.5")
 
-    import vox_parakeet.nemo_adapter as module
+    _adapter, host = _loaded_adapter(fake_host_cls)
 
-    runtime_dir = tmp_path / "runtime"
-    runtime_dir.mkdir()
-    (runtime_dir / ".vox-parakeet-nemo-runtime-ready").touch()
-    (runtime_dir / "matplotlib").mkdir()
-    (runtime_dir / "matplotlib-3.8.2.dist-info").mkdir()
-    (runtime_dir / "matplotlib-3.9.4.dist-info").mkdir()
-    (runtime_dir / "matplotlib.libs").mkdir()
-    install = MagicMock(return_value=True)
-    probes = [False, True]
-
-    monkeypatch.setattr(module, "_runtime_target_dir", lambda: runtime_dir)
-    monkeypatch.setattr(module, "_runtime_module_available", lambda name: probes.pop(0))
-    monkeypatch.setattr(module, "install_target_runtime_requirements", install)
-
-    module._install_nemo_runtime()
-
-    assert not (runtime_dir / "matplotlib").exists()
-    assert not (runtime_dir / "matplotlib-3.8.2.dist-info").exists()
-    assert not (runtime_dir / "matplotlib-3.9.4.dist-info").exists()
-    assert not (runtime_dir / "matplotlib.libs").exists()
-    install.assert_called_once()
+    assert host.startup_timeout == 42.5
 
 
-def test_clear_nemo_modules_removes_partial_import_resolver_state():
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
-
-    import vox_parakeet.nemo_adapter as module
-
-    sys.modules["nemo"] = ModuleType("nemo")
-    sys.modules["nemo.collections.asr"] = ModuleType("nemo.collections.asr")
-    sys.modules["hydra"] = ModuleType("hydra")
-    sys.modules["hydra._internal"] = ModuleType("hydra._internal")
-    sys.modules["hydra_plugins"] = ModuleType("hydra_plugins")
-    sys.modules["omegaconf"] = ModuleType("omegaconf")
-    sys.modules["omegaconf.omegaconf"] = ModuleType("omegaconf.omegaconf")
-    sys.modules["matplotlib"] = ModuleType("matplotlib")
-    sys.modules["fiddle"] = ModuleType("fiddle")
-    sys.modules["fiddle._src.daglish"] = ModuleType("fiddle._src.daglish")
-    sys.modules["transformers"] = ModuleType("transformers")
-    sys.modules["transformers.models.auto.tokenization_auto"] = ModuleType(
-        "transformers.models.auto.tokenization_auto"
-    )
-    sys.modules["nv_one_logger"] = ModuleType("nv_one_logger")
-    sys.modules["nv_one_logger.training_telemetry.api.training_telemetry_provider"] = ModuleType(
-        "nv_one_logger.training_telemetry.api.training_telemetry_provider"
-    )
-
-    module._clear_nemo_modules()
-
-    assert "nemo" not in sys.modules
-    assert "nemo.collections.asr" not in sys.modules
-    assert "hydra" not in sys.modules
-    assert "hydra._internal" not in sys.modules
-    assert "hydra_plugins" not in sys.modules
-    assert "omegaconf" not in sys.modules
-    assert "omegaconf.omegaconf" not in sys.modules
-    assert "matplotlib" not in sys.modules
-    assert "fiddle" not in sys.modules
-    assert "fiddle._src.daglish" not in sys.modules
-    assert "transformers" not in sys.modules
-    assert "transformers.models.auto.tokenization_auto" not in sys.modules
-    assert "nv_one_logger" not in sys.modules
-    assert "nv_one_logger.training_telemetry.api.training_telemetry_provider" not in sys.modules
-
-
-def test_clear_nemo_modules_preserves_native_modules_loaded_from_sibling_runtimes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+def test_load_uses_checkpoint_argv_for_local_nemo_checkpoint(
+    ready_runtime: Path, fake_host_cls, tmp_path: Path
 ):
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
-
-    import vox_parakeet.nemo_adapter as module
-
-    runtime_root = tmp_path / "runtime"
-    parakeet_runtime = runtime_root / "parakeet-nemo"
-    kokoro_runtime = runtime_root / "kokoro"
-    parakeet_runtime.mkdir(parents=True)
-    kokoro_runtime.mkdir()
-    (kokoro_runtime / "packaging.py").write_text("# fake", encoding="utf-8")
-    (kokoro_runtime / "spacy_curated_transformers.py").write_text("# fake", encoding="utf-8")
-    (kokoro_runtime / "onnx").mkdir()
-    (kokoro_runtime / "onnx" / "__init__.py").write_text("# fake", encoding="utf-8")
-    native_path = kokoro_runtime / "onnx" / "onnx_cpp2py_export.cpython-312-x86_64-linux-gnu.so"
-    native_path.touch()
-    (parakeet_runtime / "nemo.py").write_text("# fake", encoding="utf-8")
-
-    sibling_module = ModuleType("packaging")
-    sibling_module.__file__ = str(kokoro_runtime / "packaging.py")
-    sibling_plugin = ModuleType("spacy_curated_transformers")
-    sibling_plugin.__file__ = str(kokoro_runtime / "spacy_curated_transformers.py")
-    sibling_native_package = ModuleType("onnx")
-    sibling_native_package.__file__ = str(kokoro_runtime / "onnx" / "__init__.py")
-    sibling_native_extension = ModuleType("onnx.onnx_cpp2py_export")
-    sibling_native_extension.__file__ = str(native_path)
-    current_module = ModuleType("nemo")
-    current_module.__file__ = str(parakeet_runtime / "nemo.py")
-    monkeypatch.setitem(sys.modules, "packaging", sibling_module)
-    monkeypatch.setitem(sys.modules, "spacy_curated_transformers", sibling_plugin)
-    monkeypatch.setitem(sys.modules, "onnx", sibling_native_package)
-    monkeypatch.setitem(sys.modules, "onnx.onnx_cpp2py_export", sibling_native_extension)
-    monkeypatch.setitem(sys.modules, "nemo", current_module)
-
-    monkeypatch.setattr(module, "vox_runtime_root", lambda: runtime_root)
-    monkeypatch.setattr(module, "_runtime_target_dir", lambda: parakeet_runtime)
-
-    module._clear_nemo_modules()
-
-    assert "packaging" not in sys.modules
-    assert "spacy_curated_transformers" not in sys.modules
-    assert sys.modules["onnx"] is sibling_native_package
-    assert sys.modules["onnx.onnx_cpp2py_export"] is sibling_native_extension
-    assert "nemo" not in sys.modules
-
-
-def test_runtime_module_available_rejects_partial_nemo_asr_module():
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
-
-    import vox_parakeet.nemo_adapter as module
-
-    sys.modules["nemo.collections.asr"] = ModuleType("nemo.collections.asr")
-
-    assert module._runtime_module_available("nemo.collections.asr") is False
-
-
-def test_install_nemo_runtime_fails_fast_when_uv_install_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
-
-    import vox_parakeet.nemo_adapter as module
-
-    calls: list[list[str]] = []
-
-    def fake_run(cmd, **kwargs):
-        mock = MagicMock()
-        mock.stderr = ""
-        mock.stdout = ""
-        calls.append(cmd)
-        if cmd[0] == "uv":
-            mock.returncode = 1
-            mock.stderr = "resolution failed"
-            return mock
-        raise AssertionError(f"unexpected installer fallback: {cmd}")
-
-    monkeypatch.setattr(module, "_runtime_target_dir", lambda: tmp_path / "runtime")
-    monkeypatch.setattr(module.subprocess, "run", fake_run)
-
-    with pytest.raises(RuntimeError, match="Failed to install Parakeet NeMo runtime dependencies"):
-        module._install_nemo_runtime()
-
-    assert calls[0][:2] == ["uv", "pip"]
-    assert len(calls) == 1
-    assert not (tmp_path / "runtime" / ".vox-parakeet-nemo-runtime-ready").exists()
-
-
-def test_install_nemo_runtime_fails_fast_when_uv_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
-
-    import vox_parakeet.nemo_adapter as module
-
-    calls: list[list[str]] = []
-
-    def fake_run(cmd, **kwargs):
-        calls.append(cmd)
-        if cmd[0] == "uv":
-            raise FileNotFoundError("uv")
-        raise AssertionError(f"unexpected installer fallback: {cmd}")
-
-    monkeypatch.setattr(module, "_runtime_target_dir", lambda: tmp_path / "runtime")
-    monkeypatch.setattr(module.subprocess, "run", fake_run)
-
-    with pytest.raises(RuntimeError, match="Failed to install Parakeet NeMo runtime dependencies"):
-        module._install_nemo_runtime()
-
-    assert calls[0][:2] == ["uv", "pip"]
-    assert len(calls) == 1
-    assert not (tmp_path / "runtime" / ".vox-parakeet-nemo-runtime-ready").exists()
-
-
-def test_transcribe_with_word_timestamps_builds_segment(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    fake_model = _FakeNemoModel(text="hello world")
-    _install_fake_nemo(model=fake_model)
-    _install_fake_torch(cuda_available=True)
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
-
-    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
+    model_dir = tmp_path / "parakeet"
+    model_dir.mkdir()
+    checkpoint = model_dir / "parakeet-tdt-0.6b-v3.nemo"
+    checkpoint.write_bytes(b"fake-nemo")
 
     adapter = ParakeetNemoAdapter()
+    adapter.load(str(model_dir), "cuda")
+
+    host = fake_host_cls.instances[-1]
+    assert host.argv == [
+        sys.executable,
+        "-m",
+        "vox_parakeet.nemo_worker",
+        "--model-id",
+        str(model_dir),
+        "--checkpoint",
+        str(checkpoint),
+    ]
+    assert adapter.is_loaded is True
+    assert adapter._model_id == str(model_dir)
+
+
+def test_load_prefers_pretrained_source_over_pulled_local_nemo_checkpoint(
+    ready_runtime: Path, fake_host_cls, tmp_path: Path
+):
+    model_dir = tmp_path / "parakeet"
+    model_dir.mkdir()
+    (model_dir / "parakeet-tdt-0.6b-v3.nemo").write_bytes(b"fake-nemo")
+
+    adapter = ParakeetNemoAdapter()
+    adapter.load(str(model_dir), "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")
+
+    host = fake_host_cls.instances[-1]
+    assert "--checkpoint" not in host.argv
+    assert host.argv[-1] == "nvidia/parakeet-tdt-0.6b-v3"
+    assert adapter._model_id == "nvidia/parakeet-tdt-0.6b-v3"
+
+
+def test_load_rejects_non_cuda_device(ready_runtime: Path, fake_host_cls):
+    adapter = ParakeetNemoAdapter()
+
+    with pytest.raises(RuntimeError, match="requires device='cuda' or 'auto'"):
+        adapter.load("ignored-local-path", "cpu")
+
+    assert fake_host_cls.instances == []
+    assert adapter.is_loaded is False
+
+
+def test_load_is_idempotent_while_worker_alive(ready_runtime: Path, fake_host_cls):
+    adapter, _host = _loaded_adapter(fake_host_cls)
     adapter.load("ignored-local-path", "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")
 
-    audio = np.zeros(16000, dtype=np.float32)
-    result = adapter.transcribe(audio, word_timestamps=True)
+    assert len(fake_host_cls.instances) == 1
 
+
+def test_load_respawns_after_worker_death(ready_runtime: Path, fake_host_cls):
+    adapter, first = _loaded_adapter(fake_host_cls)
+    first._alive = False
+    assert adapter.is_loaded is False
+
+    adapter.load("ignored-local-path", "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")
+
+    assert first.closed is True
+    assert len(fake_host_cls.instances) == 2
+    assert adapter.is_loaded is True
+
+
+def test_transcribe_round_trips_wav_and_rebuilds_word_timestamp_result(ready_runtime: Path, fake_host_cls):
+    adapter, host = _loaded_adapter(fake_host_cls)
+    host.responses.append(
+        {
+            "text": "hello world",
+            "language": "en",
+            "words": [
+                {"word": "hello", "start_ms": 0, "end_ms": 640},
+                {"word": "world", "start_ms": 800, "end_ms": 1600},
+            ],
+        }
+    )
+
+    result = adapter.transcribe(np.zeros(16000, dtype=np.float32), word_timestamps=True)
+
+    observation = host.requests[0]
+    assert observation["payload"]["op"] == "transcribe"
+    assert observation["payload"]["word_timestamps"] is True
+    assert observation["timeout"] == module.DEFAULT_REQUEST_TIMEOUT_SECONDS
+    assert observation["wav_existed"] is True
+    assert observation["wav_samples"] == 16000
+    assert observation["wav_sample_rate"] == 16000
+    assert not os.path.exists(observation["payload"]["path"])
     assert result.text == "hello world"
     assert result.duration_ms == 1000
+    assert result.language == "en"
+    assert result.model == "nvidia/parakeet-tdt-0.6b-v3"
     assert len(result.segments) == 1
-    assert result.segments[0].words[0].word == "hello"
-    assert result.segments[0].words[1].word == "world"
-    assert fake_model.transcribe_calls[-1]["timestamps"] is True
-    assert fake_model.transcribe_calls[-1]["return_hypotheses"] is True
+    segment = result.segments[0]
+    assert segment.text == "hello world"
+    assert segment.start_ms == 0
+    assert segment.end_ms == 1000
+    assert segment.language == "en"
+    assert [(word.word, word.start_ms, word.end_ms) for word in segment.words] == [
+        ("hello", 0, 640),
+        ("world", 800, 1600),
+    ]
 
 
-def test_transcribe_without_word_timestamps_returns_text(monkeypatch: pytest.MonkeyPatch):
-    fake_model = _FakeNemoModel(text="plain text")
-    _install_fake_nemo(model=fake_model)
-    _install_fake_torch(cuda_available=True)
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+def test_transcribe_without_word_timestamps_returns_text(ready_runtime: Path, fake_host_cls):
+    adapter, host = _loaded_adapter(fake_host_cls)
+    host.responses.append({"text": "plain text", "language": None, "words": []})
 
-    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
+    result = adapter.transcribe(np.zeros(16000, dtype=np.float32), word_timestamps=False)
 
-    adapter = ParakeetNemoAdapter()
-    adapter.load("ignored-local-path", "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")
-
-    audio = np.zeros(16000, dtype=np.float32)
-    result = adapter.transcribe(audio, word_timestamps=False)
-
+    assert host.requests[0]["payload"]["word_timestamps"] is False
     assert result.text == "plain text"
     assert result.segments[0].text == "plain text"
-    assert "timestamps" not in fake_model.transcribe_calls[-1]
+    assert result.segments[0].words == ()
+    assert result.language is None
 
 
-def test_transcribe_serializes_concurrent_nemo_model_calls(monkeypatch: pytest.MonkeyPatch):
-    fake_model = _ConcurrentDetectingNemoModel()
-    _install_fake_nemo(model=fake_model)
-    _install_fake_torch(cuda_available=True)
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+def test_transcribe_empty_audio_short_circuits_without_worker_request(ready_runtime: Path, fake_host_cls):
+    adapter, host = _loaded_adapter(fake_host_cls)
 
-    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
+    result = adapter.transcribe(np.zeros(0, dtype=np.float32), language="en")
 
-    adapter = ParakeetNemoAdapter()
-    adapter.load("ignored-local-path", "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")
-    audio = np.zeros(16000, dtype=np.float32)
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        results = list(executor.map(lambda _: adapter.transcribe(audio), range(2)))
-
-    assert [result.text for result in results] == ["serialized", "serialized"]
-    assert len(fake_model.transcribe_calls) == 2
-    assert fake_model.max_active_calls == 1
+    assert host.requests == []
+    assert result.text == ""
+    assert result.segments == ()
+    assert result.language == "en"
+    assert result.duration_ms == 0
+    assert result.model == "nvidia/parakeet-tdt-0.6b-v3"
 
 
-def test_transcribe_retries_once_after_cuda_graph_failure(monkeypatch: pytest.MonkeyPatch):
-    fake_model = _FakeNemoModel(text="after retry")
-    fake_model.transcribe_errors.append(
-        RuntimeError("Called CUDAGraph::replay without a preceding successful capture")
+def test_transcribe_deletes_temp_wav_when_worker_request_fails(ready_runtime: Path, fake_host_cls):
+    adapter, host = _loaded_adapter(fake_host_cls)
+    host.request_error = WorkerError("parakeet-nemo worker killed: timed out after 600.0s (exit code -9)")
+
+    with pytest.raises(WorkerError, match="timed out"):
+        adapter.transcribe(np.zeros(16000, dtype=np.float32))
+
+    observation = host.requests[0]
+    assert observation["wav_existed"] is True
+    assert not os.path.exists(observation["payload"]["path"])
+
+
+def test_dead_worker_reads_as_unloaded_and_transcribe_raises(ready_runtime: Path, fake_host_cls):
+    adapter, host = _loaded_adapter(fake_host_cls)
+    host._alive = False
+
+    assert adapter.is_loaded is False
+    with pytest.raises(RuntimeError, match="not loaded"):
+        adapter.transcribe(np.zeros(16000, dtype=np.float32))
+    assert host.requests == []
+
+
+def test_unload_closes_host_and_resets_state(ready_runtime: Path, fake_host_cls):
+    adapter, host = _loaded_adapter(fake_host_cls)
+
+    adapter.unload()
+
+    assert host.closed is True
+    assert adapter.is_loaded is False
+    assert adapter._model_id == module.DEFAULT_MODEL_ID
+
+
+INTEGRATION_WORKER_SOURCE = """
+import wave
+
+from vox.core.worker_host import worker_main
+
+
+def handler(request):
+    if request["op"] != "transcribe":
+        raise RuntimeError("unexpected op: " + str(request.get("op")))
+    with wave.open(request["path"], "rb") as wav:
+        frames = wav.getnframes()
+    return {"text": f"frames:{frames}", "language": "en", "words": []}
+
+
+raise SystemExit(worker_main(handler))
+"""
+
+
+def test_adapter_host_wiring_end_to_end_with_fake_worker(ready_runtime: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(
+        module,
+        "_worker_argv",
+        lambda model_id, checkpoint_path: [sys.executable, "-c", INTEGRATION_WORKER_SOURCE],
     )
-    _install_fake_nemo(model=fake_model)
-    _install_fake_torch(cuda_available=True)
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
-
-    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
+    monkeypatch.setenv(module.STARTUP_TIMEOUT_ENV, "30")
 
     adapter = ParakeetNemoAdapter()
     adapter.load("ignored-local-path", "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")
-
-    result = adapter.transcribe(np.zeros(16000, dtype=np.float32), word_timestamps=False)
-
-    assert result.text == "after retry"
-    assert len(fake_model.transcribe_calls) == 2
-    assert fake_model.disable_cuda_graph_calls == 2
-
-
-def test_transcribe_retries_when_cleanup_error_wraps_cuda_graph_failure(monkeypatch: pytest.MonkeyPatch):
     try:
-        try:
-            raise RuntimeError("CUDA graph capture failed before replay")
-        except RuntimeError as exc:
-            raise OSError("Directory not empty") from exc
-    except OSError as wrapped_error:
-        fake_model = _FakeNemoModel(text="wrapped retry")
-        fake_model.transcribe_errors.append(wrapped_error)
+        assert adapter.is_loaded is True
 
-    _install_fake_nemo(model=fake_model)
-    _install_fake_torch(cuda_available=True)
-    sys.modules.pop("vox_parakeet", None)
-    sys.modules.pop("vox_parakeet.nemo_adapter", None)
+        result = adapter.transcribe(np.zeros(16000, dtype=np.float32), word_timestamps=False)
 
-    from vox_parakeet.nemo_adapter import ParakeetNemoAdapter
-
-    adapter = ParakeetNemoAdapter()
-    adapter.load("ignored-local-path", "cuda", _source="nvidia/parakeet-tdt-0.6b-v3")
-
-    result = adapter.transcribe(np.zeros(16000, dtype=np.float32), word_timestamps=False)
-
-    assert result.text == "wrapped retry"
-    assert len(fake_model.transcribe_calls) == 2
+        assert result.text == "frames:16000"
+        assert result.duration_ms == 1000
+        assert result.language == "en"
+        assert result.segments[0].text == "frames:16000"
+        assert result.model == "nvidia/parakeet-tdt-0.6b-v3"
+    finally:
+        adapter.unload()
+    assert adapter.is_loaded is False
