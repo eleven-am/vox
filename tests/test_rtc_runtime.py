@@ -365,6 +365,85 @@ async def test_runtime_retries_lifecycle_critical_emit_once(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_typed_conversation_handler_retries_critical_and_receives_event_and_wire(monkeypatch):
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket")
+    calls: list[tuple[object, str]] = []
+    failures = {"response.cancelled": 1}
+    marker = object()
+
+    wire_emits: list[str] = []
+
+    async def emit(event: dict) -> bool:
+        wire_emits.append(event["type"])
+        return True
+
+    async def emit_conversation(event: object, wire: dict) -> bool:
+        calls.append((event, wire["type"]))
+        if failures.get(wire["type"], 0) > 0:
+            failures[wire["type"]] -= 1
+            return False
+        return True
+
+    monkeypatch.setattr(
+        rtc_runtime_module,
+        "prepare_rtc_control_event",
+        lambda **_kwargs: _PreparedWire({"type": "response.cancelled", "response_id": "resp_1"}),
+    )
+    runtime = RtcRuntime(
+        scheduler=FakeScheduler(),
+        registry=registry,
+        session_id=record.session_id,
+        transport="pondsocket",
+        emit=emit,
+        emit_conversation=emit_conversation,
+    )
+
+    await runtime._emit_conversation_event(marker)
+
+    assert [wire_type for _, wire_type in calls] == ["response.cancelled", "response.cancelled"]
+    assert all(event is marker for event, _ in calls)
+    assert "response.cancelled" not in wire_emits
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_typed_conversation_handler_lost_after_retry_logs_error(monkeypatch, caplog):
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket")
+
+    wire_emits: list[str] = []
+
+    async def emit(event: dict) -> bool:
+        wire_emits.append(event["type"])
+        return True
+
+    async def emit_conversation(event: object, wire: dict) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        rtc_runtime_module,
+        "prepare_rtc_control_event",
+        lambda **_kwargs: _PreparedWire({"type": "response.cancelled", "response_id": "resp_1"}),
+    )
+    runtime = RtcRuntime(
+        scheduler=FakeScheduler(),
+        registry=registry,
+        session_id=record.session_id,
+        transport="pondsocket",
+        emit=emit,
+        emit_conversation=emit_conversation,
+    )
+
+    with caplog.at_level("ERROR"):
+        await runtime._emit_conversation_event(object())
+
+    assert any("Lost lifecycle event response.cancelled" in message for message in caplog.messages)
+    assert "response.cancelled" not in wire_emits
+    await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_runtime_logs_error_when_critical_emit_lost_after_retry(monkeypatch, caplog):
     registry = RtcSessionRegistry()
     record = registry.create_session(control_transport="pondsocket")
