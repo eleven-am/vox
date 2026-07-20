@@ -251,7 +251,7 @@ class OpenVoiceTTSAdapter(TTSAdapter):
         return self._loaded
 
     def trim(self) -> None:
-        self._base_models.clear()
+        self._base_models = {}
 
     def _resolve_base_paths(self, language_code: str) -> tuple[Path, Path]:
         assert self._model_root is not None

@@ -7,6 +7,7 @@ import os
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -17,6 +18,7 @@ from vox.core.errors import ModelLoadError, VoxError
 logger = logging.getLogger(__name__)
 
 WORKER_FD_ENV = "VOX_WORKER_PROTOCOL_FD"
+_PR_SET_PDEATHSIG = 1
 
 
 class WorkerError(VoxError):
@@ -154,7 +156,20 @@ class WorkerHost:
             os.killpg(self._proc.pid, sig)
 
 
+def _install_parent_death_signal() -> None:
+    if sys.platform != "linux":
+        return
+    import ctypes
+
+    try:
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+    except OSError:
+        return
+    libc.prctl(_PR_SET_PDEATHSIG, int(signal.SIGKILL))
+
+
 def worker_main(handler: Callable[[dict[str, Any]], dict[str, Any]]) -> int:
+    _install_parent_death_signal()
     sock = socket.socket(fileno=os.dup(int(os.environ[WORKER_FD_ENV])))
     os.dup2(2, 1)
     stream = sock.makefile("rwb")

@@ -302,8 +302,9 @@ class Qwen3ASRAdapter(STTAdapter):
         return tuple(words)
 
     def _ensure_aligner(self) -> Any:
-        if self._aligner is not None:
-            return self._aligner
+        aligner = self._aligner
+        if aligner is not None:
+            return aligner
 
         Qwen3ForcedAligner = _load_qwen_forced_aligner()
         dtype = _select_dtype(self._device)
@@ -315,8 +316,9 @@ class Qwen3ASRAdapter(STTAdapter):
         if self._device == "cuda" and _supports_flash_attention():
             aligner_kwargs["attn_implementation"] = "flash_attention_2"
 
-        self._aligner = Qwen3ForcedAligner.from_pretrained(QWEN_ASR_FORCE_ALIGNER, **aligner_kwargs)
-        return self._aligner
+        aligner = Qwen3ForcedAligner.from_pretrained(QWEN_ASR_FORCE_ALIGNER, **aligner_kwargs)
+        self._aligner = aligner
+        return aligner
 
     def transcribe(
         self,

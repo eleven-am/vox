@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -222,6 +223,33 @@ def test_spawn_close_cycles_keep_fd_count_flat():
         assert host.request({"op": "echo", "value": f"fd-{cycle}"}, timeout=10.0) == {"echo": f"fd-{cycle}"}
         host.close(grace=2.0)
     assert wait_until(lambda: count_open_fds() <= baseline)
+
+
+def test_parent_death_signal_noops_off_linux(monkeypatch):
+    monkeypatch.setattr(worker_host_module.sys, "platform", "darwin")
+
+    def fail_cdll(*_args, **_kwargs):
+        raise AssertionError("ctypes.CDLL must not be used off Linux")
+
+    monkeypatch.setattr("ctypes.CDLL", fail_cdll)
+
+    assert worker_host_module._install_parent_death_signal() is None
+
+
+def test_parent_death_signal_requests_sigkill_on_linux(monkeypatch):
+    monkeypatch.setattr(worker_host_module.sys, "platform", "linux")
+    calls: list[tuple[int, ...]] = []
+
+    class _FakeLibc:
+        def prctl(self, *args: int) -> int:
+            calls.append(args)
+            return 0
+
+    monkeypatch.setattr("ctypes.CDLL", lambda *_a, **_k: _FakeLibc())
+
+    worker_host_module._install_parent_death_signal()
+
+    assert calls == [(1, int(signal.SIGKILL))]
 
 
 def test_handler_error_frame_fails_request_but_worker_survives():

@@ -223,28 +223,26 @@ async def test_acquire_evicts_dead_cached_adapter_and_reloads(scheduler: Schedul
 
 
 @pytest.mark.asyncio
-async def test_dead_adapter_not_evicted_while_held(scheduler: Scheduler):
+async def test_dead_adapter_orphaned_and_reloaded_while_held(scheduler: Scheduler):
     async with scheduler.acquire("whisper:large-v3") as held_adapter:
         held_adapter._loaded = False
 
         async with scheduler.acquire("whisper:large-v3") as second_adapter:
-            assert second_adapter is held_adapter
+            assert second_adapter is not held_adapter
+            assert second_adapter.is_loaded
+            assert len(second_adapter.load_calls) == 1
             loaded_list = scheduler.list_loaded()
             assert len(loaded_list) == 1
-            assert loaded_list[0].ref_count == 2
+            assert loaded_list[0].ref_count == 1
 
         loaded_list = scheduler.list_loaded()
-        assert loaded_list[0].ref_count == 1
-
-    assert scheduler._models["whisper:large-v3"].ref_count == 0
-
-    async with scheduler.acquire("whisper:large-v3") as fresh_adapter:
-        assert fresh_adapter is not held_adapter
-        assert fresh_adapter.is_loaded
+        assert len(loaded_list) == 1
+        assert loaded_list[0].ref_count == 0
 
     loaded_list = scheduler.list_loaded()
     assert len(loaded_list) == 1
     assert loaded_list[0].ref_count == 0
+    assert scheduler._models["whisper:large-v3"].adapter is second_adapter
 
 
 @pytest.mark.asyncio
@@ -556,6 +554,44 @@ async def test_trim_idle_min_idle_seconds_skips_recently_used_models(registry: F
     assert sched._models["recent:latest"].adapter.trim_calls == 0
     loaded_refs = {f"{m.name}:{m.tag}" for m in sched.list_loaded()}
     assert loaded_refs == {"whisper:large-v3", "recent:latest"}
+
+
+@pytest.mark.asyncio
+async def test_trim_idle_trims_once_per_idle_period(registry: FakeRegistry):
+    sched = Scheduler(registry, default_device="cpu", max_loaded=3)
+
+    async with sched.acquire("whisper:large-v3"):
+        pass
+    adapter = sched._models["whisper:large-v3"].adapter
+    assert isinstance(adapter, FakeSTTAdapter)
+
+    assert await sched.trim_idle() == ["whisper:large-v3"]
+    assert adapter.trim_calls == 1
+
+    assert await sched.trim_idle() == []
+    assert adapter.trim_calls == 1
+
+    async with sched.acquire("whisper:large-v3"):
+        pass
+
+    assert await sched.trim_idle() == ["whisper:large-v3"]
+    assert adapter.trim_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_manual_trim_ignores_idle_trimmed_flag(registry: FakeRegistry):
+    sched = Scheduler(registry, default_device="cpu", max_loaded=3)
+
+    async with sched.acquire("whisper:large-v3"):
+        pass
+    adapter = sched._models["whisper:large-v3"].adapter
+    assert isinstance(adapter, FakeSTTAdapter)
+
+    assert await sched.trim_idle() == ["whisper:large-v3"]
+    assert adapter.trim_calls == 1
+
+    assert await sched.trim("whisper:large-v3") is True
+    assert adapter.trim_calls == 2
 
 
 @pytest.mark.asyncio

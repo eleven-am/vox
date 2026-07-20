@@ -838,6 +838,44 @@ def test_kokoro_torch_trim_clears_pipelines_and_next_synthesize_rebuilds(tmp_pat
     assert len(_FakePipeline.inits) == 2
 
 
+def test_kokoro_torch_list_voices_survives_trim_during_iteration(tmp_path: Path):
+    fake_kokoro = _install_fake_native_modules()
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    model_dir = tmp_path / "kokoro"
+    model_dir.mkdir(parents=True)
+    (model_dir / "kokoro-v1_0.pth").write_bytes(b"weights")
+
+    from vox_kokoro.torch_adapter import KokoroTorchAdapter
+
+    adapter = KokoroTorchAdapter()
+    with patch.object(KokoroTorchAdapter, "_import_runtime", return_value=fake_kokoro):
+        adapter.load(str(model_dir), "cpu")
+
+    class _TrimDuringIterationPipeline:
+        def __init__(self, target: KokoroTorchAdapter, voices: list[str]):
+            self._target = target
+            self._voices = voices
+
+        def get_voices(self) -> list[str]:
+            self._target.trim()
+            return self._voices
+
+    trailing = _FakePipeline("b", str(model_dir / "kokoro-v1_0.pth"), "cpu")
+    adapter._pipelines = {
+        "a": _TrimDuringIterationPipeline(adapter, ["af_heart"]),
+        "b": trailing,
+    }
+
+    voice_ids = [voice.id for voice in adapter.list_voices()]
+
+    assert adapter._pipelines == {}
+    assert "af_heart" in voice_ids
+    assert "bf_emma" in voice_ids
+
+
 def test_kokoro_torch_honors_explicit_language_override(tmp_path: Path):
     fake_kokoro = _install_fake_native_modules()
     sys.modules.pop("vox_kokoro", None)

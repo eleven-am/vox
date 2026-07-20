@@ -103,7 +103,19 @@ R2a and R2b share `conversation/session.py` and are strictly sequential.
   targets under the lock and executes off-loop via `asyncio.to_thread`
   (mirror of `_teardown_off_loop`), pinned by an off-loop-thread test —
   worker trims are blocking IPC and must never run on the loop under the
-  global lock.
+  global lock. HARDENED (batch trim-hardening, 2026-07-20, from external
+  review + adversarial verify): trim rebinds lazy caches instead of
+  clearing (concurrent-iteration crash pinned by a reentrant Kokoro test);
+  auto-trim fires once per idle period via a `trimmed` flag reset on
+  acquire (manual trim stays unconditional); a dead worker with active
+  refs is ORPHANED from `_models` (not served to new callers — they get a
+  fresh reload; old holders fail loudly, identity-safe release). ADAPTER
+  CONTRACT the orphan path relies on: `is_loaded` may report False only
+  when the adapter's resources are already freed (true today for every
+  adapter — workers flip it via the fail-dead anomaly after killpg);
+  an adapter that reports False while holding native memory would leak on
+  orphan. Workers also install PR_SET_PDEATHSIG(SIGKILL) on Linux so
+  parent death cannot strand a child mid-inference.
 
 Gate: full suite + lint, nothing else changes.
 

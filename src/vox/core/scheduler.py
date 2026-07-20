@@ -158,6 +158,7 @@ class _LoadedModel:
     last_used: float = field(default_factory=time.time)
     ref_count: int = 0
     vram_bytes: int = 0
+    trimmed: bool = False
 
 
 class Scheduler:
@@ -275,6 +276,8 @@ class Scheduler:
         eligible: list[tuple[str, _LoadedModel]] = []
         for full_name, loaded in list(self._models.items()):
             if loaded.ref_count > 0:
+                continue
+            if loaded.trimmed:
                 continue
             if min_idle_seconds > 0 and now - loaded.last_used < min_idle_seconds:
                 continue
@@ -408,17 +411,18 @@ class Scheduler:
                 if loaded is not None and not loaded.adapter.is_loaded:
                     if loaded.ref_count == 0:
                         logger.warning("Evicting %s from cache: adapter reports unloaded", full_name)
-                        del self._models[full_name]
-                        loaded = None
                     else:
                         logger.warning(
-                            "Adapter for %s reports unloaded but has %d active references; deferring eviction",
+                            "Orphaning %s from cache: adapter reports unloaded with %d active references",
                             full_name,
                             loaded.ref_count,
                         )
+                    del self._models[full_name]
+                    loaded = None
                 if loaded is not None:
                     loaded.ref_count += 1
                     loaded.last_used = time.time()
+                    loaded.trimmed = False
                     return loaded
             async with self._load_lock:
                 async with self._lock:
@@ -491,7 +495,15 @@ class Scheduler:
         """Trim all idle models and return the canonical model refs that were trimmed."""
         async with self._lock:
             eligible = self._select_trimmable_locked(min_idle_seconds=min_idle_seconds)
-        return await self._trim_off_loop(eligible)
+        trimmed = await self._trim_off_loop(eligible)
+        if trimmed:
+            candidates = {full_name: loaded for full_name, loaded in eligible}
+            async with self._lock:
+                for full_name in trimmed:
+                    loaded = candidates.get(full_name)
+                    if loaded is not None and self._models.get(full_name) is loaded:
+                        loaded.trimmed = True
+        return trimmed
 
     async def unload_all(self) -> None:
         """Unload all idle models. Models with active references are left in place."""
