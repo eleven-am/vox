@@ -53,7 +53,6 @@ class InterruptionDecision:
     candidate_id: int | None
     vad_active_ms: int = 0
     transcript: str | None = None
-    newly_decided: bool = False
 
 
 @dataclass
@@ -83,6 +82,8 @@ class InterruptDetector(Protocol):
     def confirm_window_ms(self, base_ms: int, last_eou_probability: float | None) -> int: ...
 
     def wants_partials(self) -> bool: ...
+
+    def is_self_echo(self, text: str, assistant_text: str) -> bool: ...
 
     def begin(
         self,
@@ -192,7 +193,7 @@ class EvidenceBasedInterruptDetector:
         if candidate is None:
             return self._defer("speech_stopped_without_candidate")
         if candidate.status is not InterruptionCandidateStatus.PENDING:
-            return self._terminal(candidate)
+            return self._defer("already_decided", candidate)
 
         candidate.stopped_at = stopped_at
         candidate.last_observed_at = stopped_at
@@ -213,7 +214,7 @@ class EvidenceBasedInterruptDetector:
         if candidate is None:
             return self._defer("stale_partial")
         if candidate.status is not InterruptionCandidateStatus.PENDING:
-            return self._terminal(candidate)
+            return self._defer("already_decided", candidate)
 
         text = cumulative_transcript.strip() or transcript.text.strip()
         candidate.last_observed_at = now
@@ -227,7 +228,7 @@ class EvidenceBasedInterruptDetector:
         )
         candidate.assistant_text = assistant_text
 
-        if self._is_self_echo(text, assistant_text):
+        if self.is_self_echo(text, assistant_text):
             return self._decide(candidate, InterruptionDecisionAction.REJECT, "self_echo_transcript")
 
         if text and self._classifier.should_short_circuit(text):
@@ -258,7 +259,7 @@ class EvidenceBasedInterruptDetector:
         if candidate is None:
             return self._defer("stale_final")
         if candidate.status is not InterruptionCandidateStatus.PENDING:
-            return self._terminal(candidate)
+            return self._defer("already_decided", candidate)
 
         text = transcript.text.strip()
         candidate.last_observed_at = now
@@ -272,7 +273,7 @@ class EvidenceBasedInterruptDetector:
 
         if not text:
             return self._decide(candidate, InterruptionDecisionAction.REJECT, "empty_final")
-        if self._is_self_echo(text, assistant_text):
+        if self.is_self_echo(text, assistant_text):
             return self._decide(candidate, InterruptionDecisionAction.REJECT, "self_echo_transcript")
 
         word_count = transcript_word_count(text)
@@ -287,47 +288,38 @@ class EvidenceBasedInterruptDetector:
             duration_ms,
             sample_rate,
         )
-        eou_support = transcript.eou_probability is not None and transcript.eou_probability >= 0.5
-        if strong_text:
-            if acoustic_speech or candidate.partial_revisions > 0 or eou_support:
-                return self._decide(
-                    candidate,
-                    InterruptionDecisionAction.CONFIRM,
-                    "supported_final_transcript",
-                )
-            return self._decide(
-                candidate,
-                InterruptionDecisionAction.REJECT,
-                "final_transcript_without_support",
-            )
-
-        if word_count == 1:
-            eou = transcript.eou_probability
-            if eou is not None and eou < 0.35:
-                return self._decide(
-                    candidate,
-                    InterruptionDecisionAction.REJECT,
-                    "isolated_low_eou_final",
-                )
-            stable_single_word = candidate.partial_revisions > 0
-            high_eou = eou is not None and eou >= 0.5
-            if acoustic_speech and (stable_single_word or high_eou or eou is None):
-                return self._decide(
-                    candidate,
-                    InterruptionDecisionAction.CONFIRM,
-                    "supported_single_word_final",
-                )
-            return self._decide(
-                candidate,
-                InterruptionDecisionAction.REJECT,
-                "isolated_final_without_support",
-            )
-
-        return self._decide(
-            candidate,
-            InterruptionDecisionAction.REJECT,
-            "insufficient_final_evidence",
+        supported, reason = self._final_is_supported(
+            strong_text=strong_text,
+            word_count=word_count,
+            acoustic_speech=acoustic_speech,
+            partial_revisions=candidate.partial_revisions,
+            eou_probability=transcript.eou_probability,
         )
+        action = InterruptionDecisionAction.CONFIRM if supported else InterruptionDecisionAction.REJECT
+        return self._decide(candidate, action, reason)
+
+    @staticmethod
+    def _final_is_supported(
+        *,
+        strong_text: bool,
+        word_count: int,
+        acoustic_speech: bool,
+        partial_revisions: int,
+        eou_probability: float | None,
+    ) -> tuple[bool, str]:
+        revised = partial_revisions > 0
+        eou_support = eou_probability is not None and eou_probability >= 0.5
+        if strong_text:
+            if acoustic_speech or revised or eou_support:
+                return True, "supported_final_transcript"
+            return False, "final_transcript_without_support"
+        if word_count == 1:
+            if eou_probability is not None and eou_probability < 0.35:
+                return False, "isolated_low_eou_final"
+            if acoustic_speech and (revised or eou_support or eou_probability is None):
+                return True, "supported_single_word_final"
+            return False, "isolated_final_without_support"
+        return False, "insufficient_final_evidence"
 
     async def evaluate_timeout(
         self,
@@ -347,13 +339,13 @@ class EvidenceBasedInterruptDetector:
                 candidate_id=None,
             )
         if candidate.status is not InterruptionCandidateStatus.PENDING:
-            return self._terminal(candidate)
+            return self._defer("already_decided", candidate)
 
         candidate.assistant_text = assistant_text
         candidate.last_observed_at = now
         vad_active_ms = max(candidate.vad_active_ms(now), candidate.latest_partial_duration_ms)
         text = candidate.cumulative_transcript.strip()
-        if self._is_self_echo(text, assistant_text):
+        if self.is_self_echo(text, assistant_text):
             return self._decide(candidate, InterruptionDecisionAction.REJECT, "self_echo_transcript")
         if self._strong_transcript(text, vad_active_ms):
             return self._decide(candidate, InterruptionDecisionAction.CONFIRM, "stable_partial")
@@ -404,7 +396,7 @@ class EvidenceBasedInterruptDetector:
             and duration_ms >= self._policy.speaking_interrupt_min_duration_ms
         )
 
-    def _is_self_echo(self, text: str, assistant_text: str) -> bool:
+    def is_self_echo(self, text: str, assistant_text: str) -> bool:
         return looks_like_self_echo(
             text,
             assistant_text,
@@ -433,25 +425,6 @@ class EvidenceBasedInterruptDetector:
                 candidate.latest_partial_duration_ms,
             ),
             transcript=(candidate.final_transcript or candidate.cumulative_transcript or None),
-            newly_decided=True,
-        )
-
-    def _terminal(self, candidate: InterruptionCandidate) -> InterruptionDecision:
-        action = (
-            InterruptionDecisionAction.CONFIRM
-            if candidate.status is InterruptionCandidateStatus.CONFIRMED
-            else InterruptionDecisionAction.REJECT
-        )
-        return InterruptionDecision(
-            action=action,
-            reason=candidate.decision_reason or candidate.status.value,
-            candidate_id=candidate.candidate_id,
-            vad_active_ms=max(
-                candidate.vad_active_ms(candidate.last_observed_at),
-                candidate.latest_partial_duration_ms,
-            ),
-            transcript=(candidate.final_transcript or candidate.cumulative_transcript or None),
-            newly_decided=False,
         )
 
     @staticmethod

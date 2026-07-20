@@ -299,7 +299,6 @@ async def test_self_echo_and_output_echo_reject_without_cancelling() -> None:
     )
     assert output_echo.action is InterruptionDecisionAction.REJECT
     assert output_echo.reason == "output_echo_timeout"
-    assert output_echo.newly_decided
 
     repeated = await output_detector.evaluate_timeout(
         assistant_text="The assistant is still speaking.",
@@ -309,8 +308,8 @@ async def test_self_echo_and_output_echo_reject_without_cancelling() -> None:
         last_eou_probability=None,
         now=12.1,
     )
-    assert repeated.action is InterruptionDecisionAction.REJECT
-    assert not repeated.newly_decided
+    assert repeated.action is InterruptionDecisionAction.DEFER
+    assert repeated.reason == "already_decided"
 
 
 @pytest.mark.asyncio

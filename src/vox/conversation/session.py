@@ -40,7 +40,6 @@ from vox.conversation.audio_output import ResponseAudioOutput
 from vox.conversation.interrupt import (
     HeuristicInterruptClassifier,
     InterruptClassifier,
-    looks_like_self_echo,
 )
 from vox.conversation.interruption_detector import (
     EvidenceBasedInterruptDetector,
@@ -813,11 +812,9 @@ class ConversationSession:
             if (
                 candidate is None
                 and self._sm.state in {TurnState.SPEAKING, TurnState.PAUSED}
-                and looks_like_self_echo(
+                and self._interrupt_detector.is_self_echo(
                     stream_event.text,
                     self._active_assistant_text(),
-                    min_words=self._config.policy.self_echo_min_words,
-                    min_overlap=self._config.policy.self_echo_min_overlap,
                 )
             ):
                 await self._emit_interruption_false_positive(
@@ -841,8 +838,14 @@ class ConversationSession:
                     sample_rate=TARGET_SAMPLE_RATE,
                     now=time.monotonic(),
                 )
+                decided = self._interrupt_detector.current()
+                confirmed = (
+                    decided is not None
+                    and decided.utterance_id == stream_event.utterance_id
+                    and decided.status is InterruptionCandidateStatus.CONFIRMED
+                )
                 await self._apply_interrupt_decision(interrupt_decision, resume_on_reject=True)
-                if interrupt_decision.action is not InterruptionDecisionAction.CONFIRM:
+                if not confirmed:
                     if stream_event.utterance_id and not self._input_speech_active:
                         self._interrupt_detector.finish(stream_event.utterance_id)
                     return
@@ -1389,8 +1392,6 @@ class ConversationSession:
         resume_on_reject: bool,
     ) -> None:
         if decision.action is InterruptionDecisionAction.DEFER:
-            return
-        if not decision.newly_decided:
             return
 
         await self._cancel_timer(TimerKey.CONFIRM_INTERRUPT.value)
