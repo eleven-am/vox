@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -47,6 +48,32 @@ _RUNTIME_EXPECTED_RELATIVE_PATHS = (
     Path("nemo") / "__init__.py",
     Path("nemo") / "collections" / "asr" / "__init__.py",
 )
+_SHARED_APP_RUNTIME_GLOBS = (
+    "torch",
+    "torch-*.dist-info",
+    "torchgen",
+    "functorch",
+    "torchaudio",
+    "torchaudio-*.dist-info",
+    "torio",
+    "torchvision",
+    "torchvision-*.dist-info",
+    "triton",
+    "triton-*.dist-info",
+    "nvidia",
+    "nvidia_*.dist-info",
+    "cuda",
+    "cuda_*.dist-info",
+)
+_SHARED_APP_RUNTIME_EXCLUDES = (
+    "torch",
+    "torchaudio",
+    "torchvision",
+    "triton",
+    "cuda-python",
+    "cuda-bindings",
+    "cuda-pathfinder",
+)
 _RUNTIME_DEPENDENCIES = (
     "nemo-toolkit[asr]==2.7.3",
     "numpy>=1.26,<2",
@@ -81,26 +108,40 @@ def _run_install_command(cmd: list[str], timeout: int) -> subprocess.CompletedPr
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
+def _remove_worker_local_gpu_stack(runtime_dir: Path) -> None:
+    for pattern in _SHARED_APP_RUNTIME_GLOBS:
+        for path in runtime_dir.glob(pattern):
+            if path.is_symlink() or path.is_file():
+                path.unlink()
+            elif path.is_dir():
+                shutil.rmtree(path)
+
+
 def _install_nemo_runtime() -> Path:
     runtime_dir = _runtime_target_dir()
     runtime_dir.mkdir(parents=True, exist_ok=True)
     sentinel = runtime_dir / _RUNTIME_SENTINEL
     if sentinel.is_file():
+        _remove_worker_local_gpu_stack(runtime_dir)
         return runtime_dir
 
-    if not install_target_runtime_requirements(
-        runtime_dir,
-        _RUNTIME_DEPENDENCIES,
-        upgrade=False,
-        timeout=1800,
-        expected_paths=tuple(runtime_dir / relative for relative in _RUNTIME_EXPECTED_RELATIVE_PATHS),
-        installer_order=("uv",),
-        install_runner=_run_install_command,
-        context="Parakeet NeMo runtime install",
-    ):
-        raise RuntimeError(
-            "Failed to install Parakeet NeMo runtime dependencies."
+    with tempfile.TemporaryDirectory(prefix="vox-parakeet-install-") as temp_dir:
+        excludes_path = Path(temp_dir) / "app-runtime-excludes.txt"
+        excludes_path.write_text("\n".join(_SHARED_APP_RUNTIME_EXCLUDES) + "\n", encoding="utf-8")
+        installed = install_target_runtime_requirements(
+            runtime_dir,
+            _RUNTIME_DEPENDENCIES,
+            upgrade=False,
+            timeout=1800,
+            expected_paths=tuple(runtime_dir / relative for relative in _RUNTIME_EXPECTED_RELATIVE_PATHS),
+            installer_order=("uv",),
+            extra_install_args=("--excludes", str(excludes_path)),
+            install_runner=_run_install_command,
+            context="Parakeet NeMo runtime install",
         )
+    if not installed:
+        raise RuntimeError("Failed to install Parakeet NeMo runtime dependencies.")
+    _remove_worker_local_gpu_stack(runtime_dir)
     sentinel.touch()
     return runtime_dir
 
@@ -203,9 +244,7 @@ class ParakeetNemoAdapter(STTAdapter):
                 self._host = None
 
             if device not in ("cuda", "auto"):
-                raise RuntimeError(
-                    "Parakeet NeMo is a CUDA-backed adapter and requires device='cuda' or 'auto'"
-                )
+                raise RuntimeError("Parakeet NeMo is a CUDA-backed adapter and requires device='cuda' or 'auto'")
             self._device = "cuda"
             source = kwargs.pop("_source", None)
             self._model_id, checkpoint_path = _resolve_model_ref(model_path, source)

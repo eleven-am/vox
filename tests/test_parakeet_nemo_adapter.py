@@ -23,6 +23,38 @@ def _land_expected_runtime_paths(runtime_dir: Path) -> None:
         target.touch()
 
 
+def _land_worker_local_gpu_stack(runtime_dir: Path) -> None:
+    for relative in (
+        "torch/__init__.py",
+        "torch-2.13.0.dist-info/METADATA",
+        "torchgen/__init__.py",
+        "functorch/__init__.py",
+        "torchaudio/__init__.py",
+        "torchaudio-2.13.0.dist-info/METADATA",
+        "torio/__init__.py",
+        "torchvision/__init__.py",
+        "torchvision-0.28.0.dist-info/METADATA",
+        "triton/__init__.py",
+        "triton-3.7.0.dist-info/METADATA",
+        "nvidia/cuda_runtime/__init__.py",
+        "nvidia_cuda_runtime-13.0.dist-info/METADATA",
+        "cuda/__init__.py",
+        "cuda_bindings-13.3.1.dist-info/METADATA",
+    ):
+        target = runtime_dir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.touch()
+
+    for relative in (
+        "torchmetrics/__init__.py",
+        "torchmetrics-1.9.0.dist-info/METADATA",
+        "nv_one_logger_pytorch_lightning_integration-2.3.1.dist-info/METADATA",
+    ):
+        target = runtime_dir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.touch()
+
+
 def _startup_error(worker_error_message: str) -> ModelLoadError:
     return ModelLoadError(
         "parakeet-nemo worker failed to start: parakeet-nemo worker killed: expected ready frame, "
@@ -119,12 +151,31 @@ def test_prepare_runtime_installs_without_importing_nemo_or_touching_sys_path(
         runtime_dir / "nemo" / "__init__.py",
         runtime_dir / "nemo" / "collections" / "asr" / "__init__.py",
     )
+    assert install.call_args.kwargs["extra_install_args"][0] == "--excludes"
     assert (runtime_dir / module._RUNTIME_SENTINEL).is_file()
 
 
-def test_prepare_runtime_skips_reinstall_when_sentinel_present(
-    ready_runtime: Path, monkeypatch: pytest.MonkeyPatch
+def test_prepare_runtime_removes_worker_local_gpu_stack_after_install(
+    runtime_dir: Path, monkeypatch: pytest.MonkeyPatch
 ):
+    def install(*args, **kwargs):
+        _land_expected_runtime_paths(runtime_dir)
+        _land_worker_local_gpu_stack(runtime_dir)
+        return True
+
+    monkeypatch.setattr(module, "install_target_runtime_requirements", install)
+
+    ParakeetNemoAdapter().prepare_runtime()
+
+    for pattern in module._SHARED_APP_RUNTIME_GLOBS:
+        assert list(runtime_dir.glob(pattern)) == []
+    assert (runtime_dir / "torchmetrics" / "__init__.py").is_file()
+    assert (runtime_dir / "torchmetrics-1.9.0.dist-info" / "METADATA").is_file()
+    assert (runtime_dir / "nv_one_logger_pytorch_lightning_integration-2.3.1.dist-info" / "METADATA").is_file()
+    assert (runtime_dir / module._RUNTIME_SENTINEL).is_file()
+
+
+def test_prepare_runtime_skips_reinstall_when_sentinel_present(ready_runtime: Path, monkeypatch: pytest.MonkeyPatch):
     install = MagicMock(return_value=True)
     monkeypatch.setattr(module, "install_target_runtime_requirements", install)
 
@@ -133,13 +184,33 @@ def test_prepare_runtime_skips_reinstall_when_sentinel_present(
     install.assert_not_called()
 
 
+def test_prepare_runtime_repairs_sentinel_runtime_with_worker_local_gpu_stack(
+    ready_runtime: Path, monkeypatch: pytest.MonkeyPatch
+):
+    _land_worker_local_gpu_stack(ready_runtime)
+    install = MagicMock(return_value=True)
+    monkeypatch.setattr(module, "install_target_runtime_requirements", install)
+
+    ParakeetNemoAdapter().prepare_runtime()
+
+    install.assert_not_called()
+    for pattern in module._SHARED_APP_RUNTIME_GLOBS:
+        assert list(ready_runtime.glob(pattern)) == []
+    assert (ready_runtime / "torchmetrics" / "__init__.py").is_file()
+    assert (ready_runtime / module._RUNTIME_SENTINEL).is_file()
+
+
 def test_prepare_runtime_uses_uv_target_install_with_python312_compatible_pins(
     runtime_dir: Path, monkeypatch: pytest.MonkeyPatch
 ):
     calls: list[list[str]] = []
 
+    excluded_packages: list[str] = []
+
     def fake_run(cmd: list[str], timeout: int):
         calls.append(cmd)
+        excludes_index = cmd.index("--excludes")
+        excluded_packages.extend(Path(cmd[excludes_index + 1]).read_text(encoding="utf-8").splitlines())
         _land_expected_runtime_paths(runtime_dir)
         mock = MagicMock()
         mock.returncode = 0
@@ -158,6 +229,7 @@ def test_prepare_runtime_uses_uv_target_install_with_python312_compatible_pins(
     assert "numba>=0.61,<0.67" in calls[0]
     assert "llvmlite>=0.44,<0.49" in calls[0]
     assert "matplotlib>=3.9,<3.10" in calls[0]
+    assert excluded_packages == list(module._SHARED_APP_RUNTIME_EXCLUDES)
     assert len(calls) == 1
     assert (runtime_dir / module._RUNTIME_SENTINEL).is_file()
 
@@ -214,7 +286,8 @@ def test_load_runtime_import_failure_clears_sentinel_and_next_load_reinstalls(
     install = MagicMock(return_value=True)
     monkeypatch.setattr(module, "install_target_runtime_requirements", install)
     error = _startup_error(
-        "RuntimeError: " + module.RUNTIME_IMPORT_ERROR_MARKER
+        "RuntimeError: "
+        + module.RUNTIME_IMPORT_ERROR_MARKER
         + " Parakeet NeMo worker could not import nemo.collections.asr: broken llvmlite ABI"
     )
 
@@ -241,9 +314,7 @@ def test_load_runtime_import_failure_clears_sentinel_and_next_load_reinstalls(
     assert adapter.is_loaded is True
 
 
-def test_load_non_import_startup_failure_keeps_sentinel(
-    ready_runtime: Path, monkeypatch: pytest.MonkeyPatch
-):
+def test_load_non_import_startup_failure_keeps_sentinel(ready_runtime: Path, monkeypatch: pytest.MonkeyPatch):
     install = MagicMock(return_value=True)
     monkeypatch.setattr(module, "install_target_runtime_requirements", install)
     error = _startup_error("RuntimeError: CUDA driver initialization failed, you might not have a CUDA gpu")
@@ -304,9 +375,7 @@ def test_load_startup_timeout_is_configurable_via_env(
     assert host.startup_timeout == 42.5
 
 
-def test_load_uses_checkpoint_argv_for_local_nemo_checkpoint(
-    ready_runtime: Path, fake_host_cls, tmp_path: Path
-):
+def test_load_uses_checkpoint_argv_for_local_nemo_checkpoint(ready_runtime: Path, fake_host_cls, tmp_path: Path):
     model_dir = tmp_path / "parakeet"
     model_dir.mkdir()
     checkpoint = model_dir / "parakeet-tdt-0.6b-v3.nemo"
