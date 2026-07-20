@@ -108,6 +108,14 @@ def _run_install_command(cmd: list[str], timeout: int) -> subprocess.CompletedPr
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
+def _uv_supports_excludes() -> bool:
+    try:
+        result = _run_install_command(["uv", "pip", "install", "--help"], 30)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and "--excludes" in result.stdout
+
+
 def _remove_worker_local_gpu_stack(runtime_dir: Path) -> None:
     for pattern in _SHARED_APP_RUNTIME_GLOBS:
         for path in runtime_dir.glob(pattern):
@@ -126,8 +134,11 @@ def _install_nemo_runtime() -> Path:
         return runtime_dir
 
     with tempfile.TemporaryDirectory(prefix="vox-parakeet-install-") as temp_dir:
-        excludes_path = Path(temp_dir) / "app-runtime-excludes.txt"
-        excludes_path.write_text("\n".join(_SHARED_APP_RUNTIME_EXCLUDES) + "\n", encoding="utf-8")
+        extra_install_args: tuple[str, ...] = ()
+        if _uv_supports_excludes():
+            excludes_path = Path(temp_dir) / "app-runtime-excludes.txt"
+            excludes_path.write_text("\n".join(_SHARED_APP_RUNTIME_EXCLUDES) + "\n", encoding="utf-8")
+            extra_install_args = ("--excludes", str(excludes_path))
         installed = install_target_runtime_requirements(
             runtime_dir,
             _RUNTIME_DEPENDENCIES,
@@ -135,7 +146,7 @@ def _install_nemo_runtime() -> Path:
             timeout=1800,
             expected_paths=tuple(runtime_dir / relative for relative in _RUNTIME_EXPECTED_RELATIVE_PATHS),
             installer_order=("uv",),
-            extra_install_args=("--excludes", str(excludes_path)),
+            extra_install_args=extra_install_args,
             install_runner=_run_install_command,
             context="Parakeet NeMo runtime install",
         )

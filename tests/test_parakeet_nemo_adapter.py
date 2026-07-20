@@ -62,10 +62,30 @@ def _startup_error(worker_error_message: str) -> ModelLoadError:
     )
 
 
+@pytest.mark.parametrize(
+    ("returncode", "stdout", "expected"),
+    [
+        (0, "options: --excludes <EXCLUDES>", True),
+        (0, "options: --exclude-newer <DATE>", False),
+        (2, "options: --excludes <EXCLUDES>", False),
+    ],
+)
+def test_uv_supports_excludes_requires_successful_help_with_option(
+    monkeypatch: pytest.MonkeyPatch, returncode: int, stdout: str, expected: bool
+):
+    result = MagicMock(returncode=returncode, stdout=stdout)
+    runner = MagicMock(return_value=result)
+    monkeypatch.setattr(module, "_run_install_command", runner)
+
+    assert module._uv_supports_excludes() is expected
+    runner.assert_called_once_with(["uv", "pip", "install", "--help"], 30)
+
+
 @pytest.fixture
 def runtime_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     runtime = tmp_path / "runtime" / "parakeet-nemo"
     monkeypatch.setattr(module, "_runtime_target_dir", lambda: runtime)
+    monkeypatch.setattr(module, "_uv_supports_excludes", lambda: True)
     return runtime
 
 
@@ -172,6 +192,29 @@ def test_prepare_runtime_removes_worker_local_gpu_stack_after_install(
     assert (runtime_dir / "torchmetrics" / "__init__.py").is_file()
     assert (runtime_dir / "torchmetrics-1.9.0.dist-info" / "METADATA").is_file()
     assert (runtime_dir / "nv_one_logger_pytorch_lightning_integration-2.3.1.dist-info" / "METADATA").is_file()
+    assert (runtime_dir / module._RUNTIME_SENTINEL).is_file()
+
+
+def test_prepare_runtime_falls_back_when_uv_does_not_support_excludes(
+    runtime_dir: Path, monkeypatch: pytest.MonkeyPatch
+):
+    calls: list[tuple[str, ...]] = []
+
+    def install(*args, **kwargs):
+        calls.append(tuple(kwargs["extra_install_args"]))
+        _land_expected_runtime_paths(runtime_dir)
+        _land_worker_local_gpu_stack(runtime_dir)
+        return True
+
+    monkeypatch.setattr(module, "_uv_supports_excludes", lambda: False)
+    monkeypatch.setattr(module, "install_target_runtime_requirements", install)
+
+    ParakeetNemoAdapter().prepare_runtime()
+
+    assert calls == [()]
+    for pattern in module._SHARED_APP_RUNTIME_GLOBS:
+        assert list(runtime_dir.glob(pattern)) == []
+    assert (runtime_dir / "torchmetrics" / "__init__.py").is_file()
     assert (runtime_dir / module._RUNTIME_SENTINEL).is_file()
 
 
