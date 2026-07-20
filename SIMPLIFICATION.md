@@ -330,3 +330,10 @@ event-taxonomy enumeration per direction.
   repeats, gates) is re-run independently before any commit.
 - This document is the source of truth for the program; amendments land here
   first.
+
+## Program status — 2026-07-20
+
+R0 through R4 implemented, adversarially verified, and merged (R0, R1, R2a,
+R2b, R2c, R3a, R3b, R3c, R4). Deferred by owner decision: R1 item 9 (VRAM
+budget vertical — see the item for the decision needed). Follow-up noted from
+review: a dedicated retry test for the gRPC typed-event handler branch.
