@@ -172,6 +172,7 @@ class RtcRuntime:
                 raise InvalidConfigError("RTC offer already applied; set restart=true for an ICE restart")
             await self._prepare_ice_restart()
 
+        self.record.negotiation_generation = command.generation
         result = await exchange_server_rtc_offer(
             registry=self._registry,
             request=RtcOfferRequest(
@@ -182,7 +183,6 @@ class RtcRuntime:
         )
         self.record.remote_description_set = True
         self.record.remote_candidates_complete = False
-        self.record.negotiation_generation = command.generation
         await self._emit(
             stamp_negotiation_generation(
                 self.record,

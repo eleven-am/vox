@@ -18,6 +18,7 @@ from vox.core.errors import ModelLoadError, VoxError
 logger = logging.getLogger(__name__)
 
 WORKER_FD_ENV = "VOX_WORKER_PROTOCOL_FD"
+WORKER_PARENT_PID_ENV = "VOX_WORKER_PARENT_PID"
 _PR_SET_PDEATHSIG = 1
 
 
@@ -49,7 +50,11 @@ class WorkerHost:
         try:
             self._proc = subprocess.Popen(
                 argv,
-                env={**env, WORKER_FD_ENV: str(child_sock.fileno())},
+                env={
+                    **env,
+                    WORKER_FD_ENV: str(child_sock.fileno()),
+                    WORKER_PARENT_PID_ENV: str(os.getpid()),
+                },
                 stdin=subprocess.PIPE,
                 stdout=stderr_write,
                 stderr=stderr_write,
@@ -166,6 +171,11 @@ def install_parent_death_signal() -> None:
     except OSError:
         return
     libc.prctl(_PR_SET_PDEATHSIG, int(signal.SIGKILL))
+
+
+def worker_parent_lost() -> bool:
+    expected = os.environ.get(WORKER_PARENT_PID_ENV)
+    return expected is not None and os.getppid() != int(expected)
 
 
 def worker_main(handler: Callable[[dict[str, Any]], dict[str, Any]]) -> int:

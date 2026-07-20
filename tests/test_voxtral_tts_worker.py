@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 import vox_voxtral.voxtral_tts_worker as worker
 
-from vox.core.worker_host import WORKER_FD_ENV
+from vox.core.worker_host import WORKER_FD_ENV, WORKER_PARENT_PID_ENV
 
 
 class _FakeOmniRuntime:
@@ -216,10 +216,11 @@ def test_main_arms_parent_death_signal_before_loading(monkeypatch: pytest.Monkey
     assert order == ["armed", "load_runtime"]
 
 
-def test_main_exits_when_orphaned_before_signal_armed(monkeypatch: pytest.MonkeyPatch):
+def test_main_exits_when_parent_pid_no_longer_matches(monkeypatch: pytest.MonkeyPatch):
     order: list[str] = []
     monkeypatch.setattr(worker, "install_parent_death_signal", lambda: order.append("armed"))
-    monkeypatch.setattr(worker.os, "getppid", lambda: 1)
+    monkeypatch.setenv(WORKER_PARENT_PID_ENV, "999999")
+    monkeypatch.setattr(worker.os, "getppid", lambda: 4321)
 
     def fail_load_runtime():
         raise AssertionError("runtime must not load after orphan detection")
@@ -230,6 +231,54 @@ def test_main_exits_when_orphaned_before_signal_armed(monkeypatch: pytest.Monkey
 
     assert exit_code == 1
     assert order == ["armed"]
+
+
+def test_main_proceeds_when_parent_is_pid_one_in_container(monkeypatch: pytest.MonkeyPatch):
+    order: list[str] = []
+    monkeypatch.setattr(worker, "install_parent_death_signal", lambda: order.append("armed"))
+    monkeypatch.setenv(WORKER_PARENT_PID_ENV, "1")
+    monkeypatch.setattr(worker.os, "getppid", lambda: 1)
+
+    def fail_load_runtime():
+        order.append("load_runtime")
+        raise RuntimeError("stop after arming")
+
+    monkeypatch.setattr(worker, "_load_runtime", fail_load_runtime)
+    parent_sock, child_sock = socket.socketpair()
+    monkeypatch.setenv(WORKER_FD_ENV, str(child_sock.fileno()))
+
+    exit_code = worker.main(["--model-id", "m", "--stage-configs-path", "/tmp/s.yaml"])
+
+    child_sock.close()
+    with parent_sock, parent_sock.makefile("rb") as stream:
+        stream.readline()
+
+    assert exit_code == 1
+    assert order == ["armed", "load_runtime"]
+
+
+def test_main_proceeds_when_parent_pid_env_absent(monkeypatch: pytest.MonkeyPatch):
+    order: list[str] = []
+    monkeypatch.setattr(worker, "install_parent_death_signal", lambda: order.append("armed"))
+    monkeypatch.delenv(WORKER_PARENT_PID_ENV, raising=False)
+    monkeypatch.setattr(worker.os, "getppid", lambda: 1)
+
+    def fail_load_runtime():
+        order.append("load_runtime")
+        raise RuntimeError("stop after arming")
+
+    monkeypatch.setattr(worker, "_load_runtime", fail_load_runtime)
+    parent_sock, child_sock = socket.socketpair()
+    monkeypatch.setenv(WORKER_FD_ENV, str(child_sock.fileno()))
+
+    exit_code = worker.main(["--model-id", "m", "--stage-configs-path", "/tmp/s.yaml"])
+
+    child_sock.close()
+    with parent_sock, parent_sock.makefile("rb") as stream:
+        stream.readline()
+
+    assert exit_code == 1
+    assert order == ["armed", "load_runtime"]
 
 
 def test_main_loads_runtime_before_ready_and_serves_synthesize(monkeypatch: pytest.MonkeyPatch):

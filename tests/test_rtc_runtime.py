@@ -509,6 +509,52 @@ async def _wait_for_emitted(emitted: list[dict], event_type: str, *, timeout: fl
     raise AssertionError(f"event {event_type} was not emitted")
 
 
+async def _wait_for_candidate(emitted: list[dict], name: str, *, timeout: float = 1.0) -> dict:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        for event in emitted:
+            if event["type"] == "rtc.ice_candidate" and event.get("candidate", {}).get("candidate") == name:
+                return event
+        await asyncio.sleep(0)
+    raise AssertionError(f"candidate {name} was not emitted")
+
+
+@pytest.mark.asyncio
+async def test_runtime_labels_candidate_gathered_during_exchange(monkeypatch):
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket")
+    emitted: list[dict] = []
+    exchanges = 0
+
+    async def fake_exchange(**_kwargs):
+        nonlocal exchanges
+        exchanges += 1
+        record.browser_attached = True
+        await emit_media_event(
+            record, {"type": "rtc.ice_candidate", "candidate": {"candidate": f"mid-{exchanges}"}}
+        )
+        return RtcOfferAnswer(session_id=record.session_id, answer_type="answer", sdp=f"answer-{exchanges}")
+
+    monkeypatch.setattr(rtc_runtime_module, "exchange_server_rtc_offer", fake_exchange)
+    runtime = RtcRuntime(
+        scheduler=FakeScheduler(),
+        registry=registry,
+        session_id=record.session_id,
+        transport="pondsocket",
+        emit=lambda event: _append(emitted, event),
+    )
+    await runtime.start()
+
+    await runtime.dispatch(RtcOfferCommand(offer_type="offer", sdp="offer-1", generation=1))
+    first = await _wait_for_candidate(emitted, "mid-1")
+    assert first["generation"] == 1
+
+    await runtime.dispatch(RtcOfferCommand(offer_type="offer", sdp="offer-2", restart=True, generation=2))
+    second = await _wait_for_candidate(emitted, "mid-2")
+    assert second["generation"] == 2
+    await runtime.close()
+
+
 @pytest.mark.asyncio
 async def test_runtime_stamps_offer_generation_on_answer_candidate_and_error(monkeypatch):
     registry = RtcSessionRegistry()

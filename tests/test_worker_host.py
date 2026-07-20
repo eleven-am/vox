@@ -13,7 +13,7 @@ import pytest
 
 import vox.core.worker_host as worker_host_module
 from vox.core.errors import ModelLoadError
-from vox.core.worker_host import WorkerError, WorkerHost
+from vox.core.worker_host import WORKER_PARENT_PID_ENV, WorkerError, WorkerHost, worker_parent_lost
 
 SRC_DIR = str(Path(worker_host_module.__file__).resolve().parents[2])
 
@@ -61,6 +61,8 @@ else:
         if op == "spawn-grandchild":
             proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"])
             return {"grandchild_pid": proc.pid}
+        if op == "parent-pid-env":
+            return {"parent_pid": os.environ.get("VOX_WORKER_PARENT_PID")}
         raise RuntimeError("unknown op: " + op)
 
     sys.exit(worker_main(handler))
@@ -250,6 +252,32 @@ def test_parent_death_signal_requests_sigkill_on_linux(monkeypatch):
     worker_host_module.install_parent_death_signal()
 
     assert calls == [(1, int(signal.SIGKILL))]
+
+
+def test_worker_host_passes_its_pid_to_child_env():
+    host = spawn()
+    try:
+        response = host.request({"op": "parent-pid-env"}, timeout=10.0)
+        assert response == {"parent_pid": str(os.getpid())}
+    finally:
+        host.close(grace=2.0)
+
+
+def test_worker_parent_lost_only_when_env_present_and_ppid_differs(monkeypatch):
+    monkeypatch.setattr(worker_host_module.os, "getppid", lambda: 4321)
+
+    monkeypatch.delenv(WORKER_PARENT_PID_ENV, raising=False)
+    assert worker_parent_lost() is False
+
+    monkeypatch.setenv(WORKER_PARENT_PID_ENV, "4321")
+    assert worker_parent_lost() is False
+
+    monkeypatch.setenv(WORKER_PARENT_PID_ENV, "999999")
+    assert worker_parent_lost() is True
+
+    monkeypatch.setattr(worker_host_module.os, "getppid", lambda: 1)
+    monkeypatch.setenv(WORKER_PARENT_PID_ENV, "1")
+    assert worker_parent_lost() is False
 
 
 def test_handler_error_frame_fails_request_but_worker_survives():

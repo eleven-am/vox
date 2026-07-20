@@ -10,7 +10,12 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
-from vox.core.worker_host import WORKER_FD_ENV, install_parent_death_signal, worker_main
+from vox.core.worker_host import (
+    WORKER_FD_ENV,
+    install_parent_death_signal,
+    worker_main,
+    worker_parent_lost,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +237,7 @@ def _emit_startup_error(error: BaseException) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     install_parent_death_signal()
-    if os.getppid() == 1:
+    if worker_parent_lost():
         return 1
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     parser = argparse.ArgumentParser(prog="vox-parakeet-nemo-worker")
