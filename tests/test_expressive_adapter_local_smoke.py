@@ -398,10 +398,15 @@ def test_download_estimate_resolves_variant_and_selected_files():
 
 def test_local_smoke_estimate_only_does_not_require_download_or_docker(tmp_path, monkeypatch):
     module = _load_local_smoke_module()
+    gib = 1024**3
 
     def fail_run(*args, **kwargs):
         raise AssertionError("docker must not run for --estimate-only")
 
+    def fake_disk_snapshot(path):
+        return {"total": 1000 * gib, "used": 200 * gib, "free": 800 * gib}
+
+    monkeypatch.setattr(module, "_disk_snapshot", fake_disk_snapshot)
     monkeypatch.setattr(subprocess, "run", fail_run)
     monkeypatch.setattr(
         module,
