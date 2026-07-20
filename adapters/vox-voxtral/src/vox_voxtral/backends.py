@@ -1,32 +1,118 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import subprocess
-import threading
+import os
 import time
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 
 from vox.core.types import SynthesizeChunk
+from vox.core.worker_host import WorkerHost
 from vox_voxtral.protocol import (
     VOXTRAL_TTS_SAMPLE_RATE as _SAMPLE_RATE,
 )
 from vox_voxtral.protocol import (
-    OkResponse,
-    ShutdownRequest,
     SynthesizeRequest,
+    SynthesizeResponse,
     accumulate_chunk,
-    decode_response,
     extract_audio_chunk,
-    is_ok,
-    is_ready,
 )
 
 VOXTRAL_TTS_SAMPLE_RATE = _SAMPLE_RATE
+
+DEFAULT_STARTUP_TIMEOUT_SECONDS = 1800.0
+DEFAULT_REQUEST_TIMEOUT_SECONDS = 600.0
+STARTUP_TIMEOUT_ENV = "VOX_VOXTRAL_STARTUP_TIMEOUT_S"
+REQUEST_TIMEOUT_ENV = "VOX_VOXTRAL_REQUEST_TIMEOUT_S"
+_WORKER_ENV_NAMES = (
+    "PATH",
+    "HOME",
+    "TMPDIR",
+    "LANG",
+    "LC_ALL",
+    "LD_LIBRARY_PATH",
+    "XDG_CACHE_HOME",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+)
+_WORKER_ENV_PREFIXES = (
+    "CUDA_",
+    "NVIDIA_",
+    "HF_",
+    "HUGGINGFACE_",
+    "TORCH_",
+    "PYTORCH_",
+    "TORCHINDUCTOR_",
+    "TRITON_",
+    "NCCL_",
+    "VLLM_",
+    "VOX_VOXTRAL_",
+)
+
+
+def _worker_python_paths() -> list[str]:
+    import vox
+
+    candidates = [
+        str(Path(vox.__file__).resolve().parents[1]),
+        str(Path(__file__).resolve().parents[1]),
+    ]
+    paths: list[str] = []
+    for candidate in candidates:
+        if candidate not in paths:
+            paths.append(candidate)
+    return paths
+
+
+def _worker_env(runtime_env: dict[str, str]) -> dict[str, str]:
+    env = {
+        name: value
+        for name, value in runtime_env.items()
+        if name in _WORKER_ENV_NAMES or name.startswith(_WORKER_ENV_PREFIXES)
+    }
+    env["PYTHONPATH"] = os.pathsep.join(_worker_python_paths())
+    return env
+
+
+def _worker_argv(
+    python_executable: str,
+    *,
+    model_id: str,
+    stage_configs_path: str,
+    default_voice: str,
+) -> list[str]:
+    return [
+        python_executable,
+        "-m",
+        "vox_voxtral.voxtral_tts_worker",
+        "--model-id",
+        model_id,
+        "--stage-configs-path",
+        stage_configs_path,
+        "--default-voice",
+        default_voice,
+    ]
+
+
+def _env_timeout_seconds(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a number of seconds, got {raw!r}") from exc
+    if value <= 0:
+        raise RuntimeError(f"{name} must be positive, got {raw!r}")
+    return value
 
 
 class OmniBackend(ABC):
@@ -107,144 +193,55 @@ class InProcessOmniBackend(OmniBackend):
             shutdown()
 
 
-class SubprocessOmniBackend(OmniBackend):
+class WorkerOmniBackend(OmniBackend):
 
-    def __init__(self, worker_proc: subprocess.Popen[str]) -> None:
-        self._worker_proc = worker_proc
-        self._lock = threading.Lock()
+    def __init__(self, host: WorkerHost) -> None:
+        self._host = host
 
     @classmethod
-    def from_worker_script(
+    def spawn(
         cls,
         *,
         python_executable: str,
-        worker_script: str,
         model_id: str,
         stage_configs_path: str,
         default_voice: str,
-        env: dict[str, str] | None = None,
-    ) -> SubprocessOmniBackend:
-        proc = subprocess.Popen(
-            [
+        env: dict[str, str],
+    ) -> WorkerOmniBackend:
+        host = WorkerHost(
+            _worker_argv(
                 python_executable,
-                "-u",
-                worker_script,
-                "--model-id",
-                model_id,
-                "--stage-configs-path",
-                stage_configs_path,
-                "--default-voice",
-                default_voice,
-            ],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            env=env,
+                model_id=model_id,
+                stage_configs_path=stage_configs_path,
+                default_voice=default_voice,
+            ),
+            env=_worker_env(env),
+            name="voxtral-tts",
+            startup_timeout=_env_timeout_seconds(STARTUP_TIMEOUT_ENV, DEFAULT_STARTUP_TIMEOUT_SECONDS),
         )
-        startup_logs: list[str] = []
-        while True:
-            line = _read_line(proc, allow_empty=True)
-            if not line:
-                stderr = ""
-                if proc.stderr is not None:
-                    stderr = proc.stderr.read()
-                message = stderr or "\n".join(startup_logs) or "Failed to start Voxtral TTS worker"
-                raise RuntimeError(message)
-
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                startup_logs.append(line.strip())
-                continue
-
-            if is_ready(payload):
-                return cls(proc)
-
-            stderr = ""
-            if proc.stderr is not None:
-                stderr = proc.stderr.read()
-            message = (
-                payload.get("error")
-                or stderr
-                or "\n".join(startup_logs)
-                or "Failed to start Voxtral TTS worker"
-            )
-            raise RuntimeError(message)
+        return cls(host)
 
     async def generate(
         self,
         text: str,
         voice: str,
     ) -> AsyncIterator[SynthesizeChunk]:
-        payload = await asyncio.to_thread(self._request_sync, text=text, voice=voice)
-        ok = OkResponse.decode(payload)
+        frame = await asyncio.to_thread(
+            self._host.request,
+            SynthesizeRequest(text=text, voice=voice).payload(),
+            _env_timeout_seconds(REQUEST_TIMEOUT_ENV, DEFAULT_REQUEST_TIMEOUT_SECONDS),
+        )
+        response = SynthesizeResponse.decode(frame)
         yield SynthesizeChunk(
-            audio=ok.audio_bytes(),
-            sample_rate=ok.sample_rate,
+            audio=response.audio_bytes(),
+            sample_rate=response.sample_rate,
             is_final=False,
         )
         yield SynthesizeChunk(
             audio=b"",
-            sample_rate=ok.sample_rate,
+            sample_rate=response.sample_rate,
             is_final=True,
         )
 
-    def _request_sync(self, *, text: str, voice: str) -> dict[str, Any]:
-        if self._worker_proc is None or self._worker_proc.stdin is None:
-            raise RuntimeError("Voxtral TTS worker is not running")
-
-        with self._lock:
-            self._worker_proc.stdin.write(SynthesizeRequest.make(text=text, voice=voice).encode() + "\n")
-            self._worker_proc.stdin.flush()
-            request_logs: list[str] = []
-            while True:
-                line = _read_line(self._worker_proc)
-                try:
-                    payload = decode_response(line)
-                except json.JSONDecodeError:
-                    request_logs.append(line.strip())
-                    continue
-
-                if is_ok(payload):
-                    return payload
-
-                message = (
-                    payload.get("error")
-                    or "\n".join(log for log in request_logs if log)
-                    or "Voxtral TTS worker request failed"
-                )
-                raise RuntimeError(message)
-
     async def close(self) -> None:
-        if self._worker_proc is None:
-            return
-        try:
-            if self._worker_proc.stdin is not None:
-                self._worker_proc.stdin.write(ShutdownRequest.make().encode() + "\n")
-                self._worker_proc.stdin.flush()
-        except Exception:
-            pass
-        try:
-            self._worker_proc.terminate()
-            self._worker_proc.wait(timeout=10)
-        except Exception:
-            self._worker_proc.kill()
-        self._worker_proc = None
-
-
-def _read_line(proc: subprocess.Popen[str], *, allow_empty: bool = False) -> str:
-    if proc.stdout is None:
-        raise RuntimeError("Voxtral TTS worker stdout is not available")
-
-    line = proc.stdout.readline()
-    if line:
-        return line
-    if allow_empty:
-        return ""
-
-    stderr = ""
-    if proc.stderr is not None:
-        stderr = proc.stderr.read()
-    raise RuntimeError(stderr or "Voxtral TTS worker exited unexpectedly")
+        await asyncio.to_thread(self._host.close)

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib
-import json
-import subprocess
 import sys
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -387,7 +385,7 @@ class TestVoxtralTTSAdapterInfo:
             assert request.input == "hello world"
             assert request.voice == "neutral_female"
 
-    def test_load_falls_back_to_subprocess_worker(self):
+    def test_load_falls_back_to_worker_host_backend(self):
         torch = MagicMock()
         torch.cuda.is_available.return_value = True
         torch.backends.mps.is_available.return_value = False
@@ -396,13 +394,28 @@ class TestVoxtralTTSAdapterInfo:
 
         runtime_info = SimpleNamespace(
             python_executable="/tmp/voxtral-python",
-            env={},
+            env={"LD_LIBRARY_PATH": "/tmp/runtime-torch-lib", "AWS_SECRET_ACCESS_KEY": "leak"},
             stage_configs_path="/tmp/voxtral_tts.yaml",
             site_packages="/tmp/site-packages",
         )
-        worker = MagicMock()
-        worker.stdout.readline.return_value = json.dumps({"status": "ready"}) + "\n"
-        worker.stderr.read.return_value = ""
+
+        class _FakeWorkerHost:
+            instances: list[Any] = []
+
+            def __init__(self, argv: list[str], *, env: dict[str, str], name: str, startup_timeout: float) -> None:
+                self.argv = argv
+                self.env = env
+                self.name = name
+                self.startup_timeout = startup_timeout
+                self.closed = False
+                type(self).instances.append(self)
+
+            @property
+            def alive(self) -> bool:
+                return not self.closed
+
+            def close(self, grace: float = 5.0) -> None:
+                self.closed = True
 
         with patch.dict("sys.modules", {"torch": torch}):
             from vox_voxtral.tts_adapter import VoxtralTTSAdapter
@@ -410,7 +423,7 @@ class TestVoxtralTTSAdapterInfo:
             adapter = VoxtralTTSAdapter()
             with (
                 patch("vox_voxtral.tts_adapter.ensure_voxtral_tts_runtime", return_value=runtime_info),
-                patch("vox_voxtral.backends.subprocess.Popen", return_value=worker) as popen,
+                patch("vox_voxtral.backends.WorkerHost", _FakeWorkerHost),
             ):
                 adapter.load(
                     "/tmp/voxtral-local",
@@ -420,12 +433,28 @@ class TestVoxtralTTSAdapterInfo:
 
             assert adapter.is_loaded is True
             assert adapter._subprocess_only is True
-            popen.assert_called_once()
-            assert popen.call_args.kwargs["stderr"] is subprocess.STDOUT
-            assert popen.call_args.kwargs["bufsize"] == 1
-            assert "/tmp/voxtral-local" in popen.call_args.args[0]
+            host = _FakeWorkerHost.instances[-1]
+            assert host.argv == [
+                "/tmp/voxtral-python",
+                "-m",
+                "vox_voxtral.voxtral_tts_worker",
+                "--model-id",
+                "/tmp/voxtral-local",
+                "--stage-configs-path",
+                "/tmp/voxtral_tts.yaml",
+                "--default-voice",
+                "neutral_female",
+            ]
+            assert host.name == "voxtral-tts"
+            assert host.env["LD_LIBRARY_PATH"] == "/tmp/runtime-torch-lib"
+            assert "AWS_SECRET_ACCESS_KEY" not in host.env
 
-    def test_synthesize_uses_subprocess_worker(self):
+            adapter.unload()
+
+            assert host.closed is True
+            assert adapter.is_loaded is False
+
+    def test_synthesize_uses_worker_backend(self):
 
         audio_bytes = b"\x00\x00\x80?\x00\x00\x00@"
 

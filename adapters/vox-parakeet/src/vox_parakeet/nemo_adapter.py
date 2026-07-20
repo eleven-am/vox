@@ -69,7 +69,7 @@ _WORKER_ENV_NAMES = (
     "https_proxy",
     "no_proxy",
 )
-_WORKER_ENV_PREFIXES = ("CUDA_", "NVIDIA_", "HF_", "HUGGINGFACE_")
+_WORKER_ENV_PREFIXES = ("CUDA_", "NVIDIA_", "HF_", "HUGGINGFACE_", "PYTORCH_")
 
 
 def _runtime_target_dir() -> Path:

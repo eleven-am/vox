@@ -1,137 +1,54 @@
 from __future__ import annotations
 
 import base64
-import json
 
 import numpy as np
-import pytest
 from vox_voxtral.protocol import (
-    OP_SHUTDOWN,
     OP_SYNTHESIZE,
-    STATUS_ERROR,
-    STATUS_OK,
-    STATUS_READY,
-    ErrorResponse,
-    OkResponse,
-    ReadyResponse,
-    ShutdownRequest,
+    VOXTRAL_TTS_SAMPLE_RATE,
     SynthesizeRequest,
+    SynthesizeResponse,
     accumulate_chunk,
-    decode_response,
     extract_audio_chunk,
-    is_error,
-    is_ok,
-    is_ready,
 )
 
 
 class TestSynthesizeRequest:
-    def test_make_sets_op_and_fields(self):
-        req = SynthesizeRequest.make(text="hello", voice="neutral_female")
-        assert req.op == OP_SYNTHESIZE
-        assert req.text == "hello"
-        assert req.voice == "neutral_female"
-
-    def test_encode_produces_valid_json(self):
-        req = SynthesizeRequest.make(text="hello", voice="cheerful_female")
-        payload = json.loads(req.encode())
-        assert payload["op"] == OP_SYNTHESIZE
-        assert payload["text"] == "hello"
-        assert payload["voice"] == "cheerful_female"
-
-    def test_encode_roundtrip(self):
-        req = SynthesizeRequest.make(text="test text", voice="casual_male")
-        raw = req.encode()
-        parsed = json.loads(raw)
-        assert parsed["text"] == "test text"
-        assert parsed["voice"] == "casual_male"
-
-
-class TestShutdownRequest:
-    def test_make_sets_op(self):
-        req = ShutdownRequest.make()
-        assert req.op == OP_SHUTDOWN
-
-    def test_encode_produces_valid_json(self):
-        req = ShutdownRequest.make()
-        payload = json.loads(req.encode())
-        assert payload["op"] == OP_SHUTDOWN
-
-
-class TestReadyResponse:
-    def test_decode_from_payload(self):
-        resp = ReadyResponse.decode({"status": STATUS_READY})
-        assert resp.status == STATUS_READY
-
-    def test_is_ready_helper(self):
-        assert is_ready({"status": STATUS_READY}) is True
-        assert is_ready({"status": STATUS_OK}) is False
-        assert is_ready({"status": STATUS_ERROR}) is False
-
-
-class TestOkResponse:
-    def _make_b64(self, audio: bytes) -> str:
-        return base64.b64encode(audio).decode("ascii")
+    def test_payload_sets_op_and_fields(self):
+        payload = SynthesizeRequest(text="hello", voice="neutral_female").payload()
+        assert payload == {"op": OP_SYNTHESIZE, "text": "hello", "voice": "neutral_female"}
 
     def test_decode_roundtrip(self):
+        request = SynthesizeRequest(text="test text", voice="casual_male")
+        decoded = SynthesizeRequest.decode(request.payload())
+        assert decoded == request
+
+    def test_decode_defaults_missing_fields_to_empty(self):
+        decoded = SynthesizeRequest.decode({"op": OP_SYNTHESIZE})
+        assert decoded.text == ""
+        assert decoded.voice == ""
+
+
+class TestSynthesizeResponse:
+    def test_from_audio_payload_roundtrip(self):
         audio = np.array([0.1, 0.2, 0.3], dtype=np.float32).tobytes()
-        b64 = self._make_b64(audio)
-        resp = OkResponse.decode({"status": STATUS_OK, "sample_rate": 24000, "audio_b64": b64})
-        assert resp.status == STATUS_OK
-        assert resp.sample_rate == 24000
-        assert resp.audio_bytes() == audio
+        response = SynthesizeResponse.from_audio(audio, sample_rate=24000)
+        decoded = SynthesizeResponse.decode(response.payload())
+        assert decoded.sample_rate == 24000
+        assert decoded.audio_bytes() == audio
 
-    def test_decode_uses_default_sample_rate(self):
-        audio = b"\x00\x00\x80?"
-        resp = OkResponse.decode({"status": STATUS_OK, "audio_b64": self._make_b64(audio)})
-        assert resp.sample_rate == 24000
-
-    def test_encode_audio_produces_valid_json(self):
+    def test_payload_carries_base64_audio(self):
         audio = b"\x01\x02\x03\x04"
-        raw = OkResponse.encode_audio(audio, sample_rate=24000)
-        payload = json.loads(raw)
-        assert payload["status"] == STATUS_OK
+        payload = SynthesizeResponse.from_audio(audio, sample_rate=24000).payload()
         assert payload["sample_rate"] == 24000
         assert base64.b64decode(payload["audio_b64"]) == audio
 
-    def test_is_ok_helper(self):
-        assert is_ok({"status": STATUS_OK}) is True
-        assert is_ok({"status": STATUS_READY}) is False
-        assert is_ok({"status": STATUS_ERROR}) is False
-
-
-class TestErrorResponse:
-    def test_decode_from_payload(self):
-        resp = ErrorResponse.decode({"status": STATUS_ERROR, "error": "boom"})
-        assert resp.status == STATUS_ERROR
-        assert resp.error == "boom"
-
-    def test_decode_missing_error_field(self):
-        resp = ErrorResponse.decode({"status": STATUS_ERROR})
-        assert resp.error == "unknown error"
-
-    def test_encode_error_produces_valid_json(self):
-        raw = ErrorResponse.encode_error("something went wrong")
-        payload = json.loads(raw)
-        assert payload["status"] == STATUS_ERROR
-        assert payload["error"] == "something went wrong"
-
-    def test_is_error_helper(self):
-        assert is_error({"status": STATUS_ERROR}) is True
-        assert is_error({"status": STATUS_OK}) is False
-        assert is_error({"status": STATUS_READY}) is False
-
-
-class TestDecodeResponse:
-    def test_decode_response_parses_json(self):
-        payload = decode_response('{"status": "ok", "sample_rate": 24000}')
-        assert payload["status"] == "ok"
-        assert payload["sample_rate"] == 24000
-
-    def test_decode_response_raises_on_invalid(self):
-        import json as _json
-        with pytest.raises(_json.JSONDecodeError):
-            decode_response("not json")
+    def test_decode_uses_default_sample_rate(self):
+        audio = b"\x00\x00\x80?"
+        b64 = base64.b64encode(audio).decode("ascii")
+        response = SynthesizeResponse.decode({"audio_b64": b64})
+        assert response.sample_rate == VOXTRAL_TTS_SAMPLE_RATE
+        assert response.audio_bytes() == audio
 
 
 class TestExtractAudioChunk:

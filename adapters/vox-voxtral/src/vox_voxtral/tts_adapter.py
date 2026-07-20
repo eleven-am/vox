@@ -4,7 +4,6 @@ import logging
 import time
 from collections.abc import AsyncIterator
 from importlib.resources import files
-from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -23,7 +22,7 @@ from vox.core.types import (
 from vox_voxtral.backends import (
     InProcessOmniBackend,
     OmniBackend,
-    SubprocessOmniBackend,
+    WorkerOmniBackend,
 )
 from vox_voxtral.runtime import (
     VOXTRAL_TIER_DEFAULT,
@@ -207,7 +206,7 @@ class VoxtralTTSAdapter(TTSAdapter):
                 exc,
             )
 
-        self._backend = self._make_subprocess_backend(explicit_stage_configs_path=explicit_stage_configs_path)
+        self._backend = self._make_worker_backend(explicit_stage_configs_path=explicit_stage_configs_path)
         self._subprocess_only = True
         self._loaded = True
 
@@ -227,13 +226,11 @@ class VoxtralTTSAdapter(TTSAdapter):
             return mistral_tokenizer_cls.from_file(str(model_dir / "tekken.json"))
         return mistral_tokenizer_cls.from_hf_hub(self._model_id)
 
-    def _make_subprocess_backend(self, *, explicit_stage_configs_path: str | None) -> SubprocessOmniBackend:
-        worker_script = str(Path(__file__).with_name("voxtral_tts_worker.py"))
+    def _make_worker_backend(self, *, explicit_stage_configs_path: str | None) -> WorkerOmniBackend:
         runtime = ensure_voxtral_tts_runtime()
         stage_configs_path = explicit_stage_configs_path or runtime.stage_configs_path
-        return SubprocessOmniBackend.from_worker_script(
+        return WorkerOmniBackend.spawn(
             python_executable=runtime.python_executable,
-            worker_script=worker_script,
             model_id=self._model_ref or self._model_id,
             stage_configs_path=stage_configs_path,
             default_voice=self._default_voice or "neutral_female",
