@@ -64,6 +64,23 @@ What Vox handles for you:
 
 Full protocol and event reference: [docs/conversation-events.md](docs/conversation-events.md).
 
+### RTC SDKs
+
+The [Vox RTC SDKs](https://github.com/eleven-am/vox-sdks) let application
+servers create and control Vox-hosted WebRTC calls without exposing the Vox API
+key or internal endpoint to the browser:
+
+- `@eleven-am/vox-rtc-client`: browser media and same-origin gateway signaling
+- `@eleven-am/vox-rtc-server`: TypeScript PondSocket control and application gateway
+- `vox-rtc-server`: Python and Rust PondSocket control packages
+- `github.com/eleven-am/vox-sdks/go/rtcserver`: Go PondSocket control
+- `vox_rtc_server`: Elixir control over Vox's native gRPC service
+
+TypeScript, Python, Go, and Rust use PondSocket for server-side signaling and
+control. Elixir uses the native gRPC RTC service. In both cases the application
+server handles signaling only; negotiated WebRTC audio flows directly between
+the browser and Vox.
+
 ## What it does
 
 Vox manages STT and TTS models through a consistent runtime API. Models are
