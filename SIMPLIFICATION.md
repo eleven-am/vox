@@ -383,3 +383,16 @@ R0 through R4 implemented, adversarially verified, and merged (R0, R1, R2a,
 R2b, R2c, R3a, R3b, R3c, R4). Deferred by owner decision: R1 item 9 (VRAM
 budget vertical — see the item for the decision needed). The review-noted retry tests for the gRPC typed-event handler branch landed
 post-release (test_rtc_runtime.py).
+
+## Program status — 2026-07-20 (v0.2.111)
+
+Post-release follow-ups complete and externally re-reviewed to zero findings:
+budget vertical deleted (two-tier trim/unload stands); adapter.trim()
+implemented for the five genuinely-releasable adapters via the worker trim op
+and lazy-cache rebinds, scheduler trims off-loop, once per idle period;
+dead-worker orphaning; PDEATHSIG at worker entry with the expected-parent-PID
+contract (container PID-1 correct); RTC negotiation-generation contract
+(browser owns, vox echoes at enqueue time, gateways forward verbatim);
+offer-error correlation to signaling errors only. Released as v0.2.111 with
+adapter package bumps: vox-parakeet 0.2.32, vox-voxtral 0.2.33,
+vox-openvoice 0.2.6, vox-kokoro 0.2.21, vox-qwen 0.2.17.
