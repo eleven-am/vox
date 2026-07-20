@@ -220,8 +220,19 @@ def _pcm16_duration_ms(pcm16: bytes, sample_rate: int) -> float:
     return (len(pcm16) // np.dtype(np.int16).itemsize) / max(1, rate) * 1000.0
 
 
+GENERATION_STAMPED_EVENT_TYPES = frozenset({"rtc.answer", "rtc.ice_candidate", "rtc.signaling_error"})
+
+
+def stamp_negotiation_generation(record: Any, event: dict) -> dict:
+    generation = getattr(record, "negotiation_generation", None)
+    if generation is not None and event.get("type") in GENERATION_STAMPED_EVENT_TYPES:
+        event["generation"] = generation
+    return event
+
+
 async def emit_media_event(record: Any, event: dict) -> None:
     if getattr(record, "media_events", None) is not None:
+        stamp_negotiation_generation(record, event)
         await record.media_events.put(event)
 
 

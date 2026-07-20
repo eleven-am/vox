@@ -24,6 +24,7 @@ from vox.operations.rtc_runtime import (
     RtcRuntime,
 )
 from vox.operations.rtc_signaling import RtcCandidateResult, RtcOfferAnswer
+from vox.server.rtc_media import emit_media_event
 from vox.server.rtc_registry import RtcSessionRegistry
 
 
@@ -495,6 +496,145 @@ async def test_runtime_does_not_retry_non_critical_emit(monkeypatch, caplog):
 
     assert attempts == ["response.audio.delta"]
     assert [entry for entry in caplog.records if entry.levelno == logging.ERROR] == []
+    await runtime.close()
+
+
+async def _wait_for_emitted(emitted: list[dict], event_type: str, *, timeout: float = 1.0) -> dict:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
+        for event in emitted:
+            if event["type"] == event_type:
+                return event
+        await asyncio.sleep(0)
+    raise AssertionError(f"event {event_type} was not emitted")
+
+
+@pytest.mark.asyncio
+async def test_runtime_stamps_offer_generation_on_answer_candidate_and_error(monkeypatch):
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket")
+    emitted: list[dict] = []
+
+    async def fake_exchange(**_kwargs):
+        return RtcOfferAnswer(session_id=record.session_id, answer_type="answer", sdp="answer-sdp")
+
+    monkeypatch.setattr(rtc_runtime_module, "exchange_server_rtc_offer", fake_exchange)
+    runtime = RtcRuntime(
+        scheduler=FakeScheduler(),
+        registry=registry,
+        session_id=record.session_id,
+        transport="pondsocket",
+        emit=lambda event: _append(emitted, event),
+    )
+    await runtime.start()
+
+    await runtime.dispatch(RtcOfferCommand(offer_type="offer", sdp="offer-sdp", generation=7))
+    answer = await _wait_for_emitted(emitted, "rtc.answer")
+    assert answer["generation"] == 7
+
+    await emit_media_event(
+        record, {"type": "rtc.ice_candidate", "candidate": {"candidate": "candidate:1", "sdpMid": "0"}}
+    )
+    candidate = await _wait_for_emitted(emitted, "rtc.ice_candidate")
+    assert candidate["generation"] == 7
+
+    await emit_media_event(record, {"type": "rtc.signaling_error", "message": "TURN gathering failed"})
+    await asyncio.wait_for(runtime.wait_closed(), timeout=1)
+    error = await _wait_for_emitted(emitted, "rtc.signaling_error")
+    assert error["generation"] == 7
+
+
+@pytest.mark.asyncio
+async def test_runtime_labels_candidates_with_current_offer_generation(monkeypatch):
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket")
+    emitted: list[dict] = []
+
+    async def fake_exchange(**_kwargs):
+        record.browser_attached = True
+        return RtcOfferAnswer(session_id=record.session_id, answer_type="answer", sdp="answer-sdp")
+
+    monkeypatch.setattr(rtc_runtime_module, "exchange_server_rtc_offer", fake_exchange)
+    runtime = RtcRuntime(
+        scheduler=FakeScheduler(),
+        registry=registry,
+        session_id=record.session_id,
+        transport="pondsocket",
+        emit=lambda event: _append(emitted, event),
+    )
+    await runtime.start()
+
+    await runtime.dispatch(RtcOfferCommand(offer_type="offer", sdp="offer-1", generation=1))
+    await emit_media_event(record, {"type": "rtc.ice_candidate", "candidate": {"candidate": "candidate:1"}})
+    first = await _wait_for_emitted(emitted, "rtc.ice_candidate")
+    assert first["generation"] == 1
+
+    await runtime.dispatch(RtcOfferCommand(offer_type="offer", sdp="offer-2", restart=True, generation=2))
+    emitted.clear()
+    await emit_media_event(record, {"type": "rtc.ice_candidate", "candidate": {"candidate": "candidate:2"}})
+    second = await _wait_for_emitted(emitted, "rtc.ice_candidate")
+    assert second["generation"] == 2
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_forwards_pre_restart_candidate_with_its_enqueue_generation(monkeypatch):
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket")
+    emitted: list[dict] = []
+
+    async def fake_exchange(**_kwargs):
+        record.browser_attached = True
+        return RtcOfferAnswer(session_id=record.session_id, answer_type="answer", sdp="answer-sdp")
+
+    monkeypatch.setattr(rtc_runtime_module, "exchange_server_rtc_offer", fake_exchange)
+    runtime = RtcRuntime(
+        scheduler=FakeScheduler(),
+        registry=registry,
+        session_id=record.session_id,
+        transport="pondsocket",
+        emit=lambda event: _append(emitted, event),
+    )
+    await runtime.start()
+
+    await runtime.dispatch(RtcOfferCommand(offer_type="offer", sdp="offer-1", generation=1))
+    await emit_media_event(record, {"type": "rtc.ice_candidate", "candidate": {"candidate": "pre-restart"}})
+
+    await runtime.dispatch(RtcOfferCommand(offer_type="offer", sdp="offer-2", restart=True, generation=2))
+    assert record.negotiation_generation == 2
+
+    candidate = await _wait_for_emitted(emitted, "rtc.ice_candidate")
+    assert candidate["candidate"]["candidate"] == "pre-restart"
+    assert candidate["generation"] == 1
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_omits_generation_when_offer_has_none(monkeypatch):
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket")
+    emitted: list[dict] = []
+
+    async def fake_exchange(**_kwargs):
+        return RtcOfferAnswer(session_id=record.session_id, answer_type="answer", sdp="answer-sdp")
+
+    monkeypatch.setattr(rtc_runtime_module, "exchange_server_rtc_offer", fake_exchange)
+    runtime = RtcRuntime(
+        scheduler=FakeScheduler(),
+        registry=registry,
+        session_id=record.session_id,
+        transport="pondsocket",
+        emit=lambda event: _append(emitted, event),
+    )
+    await runtime.start()
+
+    await runtime.dispatch(RtcOfferCommand(offer_type="offer", sdp="offer-sdp"))
+    answer = await _wait_for_emitted(emitted, "rtc.answer")
+    assert "generation" not in answer
+
+    await emit_media_event(record, {"type": "rtc.ice_candidate", "candidate": {"candidate": "candidate:1"}})
+    candidate = await _wait_for_emitted(emitted, "rtc.ice_candidate")
+    assert "generation" not in candidate
     await runtime.close()
 
 

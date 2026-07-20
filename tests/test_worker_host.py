@@ -233,7 +233,7 @@ def test_parent_death_signal_noops_off_linux(monkeypatch):
 
     monkeypatch.setattr("ctypes.CDLL", fail_cdll)
 
-    assert worker_host_module._install_parent_death_signal() is None
+    assert worker_host_module.install_parent_death_signal() is None
 
 
 def test_parent_death_signal_requests_sigkill_on_linux(monkeypatch):
@@ -247,7 +247,7 @@ def test_parent_death_signal_requests_sigkill_on_linux(monkeypatch):
 
     monkeypatch.setattr("ctypes.CDLL", lambda *_a, **_k: _FakeLibc())
 
-    worker_host_module._install_parent_death_signal()
+    worker_host_module.install_parent_death_signal()
 
     assert calls == [(1, int(signal.SIGKILL))]
 

@@ -194,6 +194,44 @@ def _install_fake_vllm_runtime(
     return {"AsyncOmni": async_omni_cls, "SamplingParams": sampling_params_cls, "MistralTokenizer": tokenizer_cls}
 
 
+def test_main_arms_parent_death_signal_before_loading(monkeypatch: pytest.MonkeyPatch):
+    order: list[str] = []
+    monkeypatch.setattr(worker, "install_parent_death_signal", lambda: order.append("armed"))
+
+    def recording_load_runtime():
+        order.append("load_runtime")
+        raise RuntimeError("stop after arming")
+
+    monkeypatch.setattr(worker, "_load_runtime", recording_load_runtime)
+    parent_sock, child_sock = socket.socketpair()
+    monkeypatch.setenv(WORKER_FD_ENV, str(child_sock.fileno()))
+
+    exit_code = worker.main(["--model-id", "m", "--stage-configs-path", "/tmp/s.yaml"])
+
+    child_sock.close()
+    with parent_sock, parent_sock.makefile("rb") as stream:
+        stream.readline()
+
+    assert exit_code == 1
+    assert order == ["armed", "load_runtime"]
+
+
+def test_main_exits_when_orphaned_before_signal_armed(monkeypatch: pytest.MonkeyPatch):
+    order: list[str] = []
+    monkeypatch.setattr(worker, "install_parent_death_signal", lambda: order.append("armed"))
+    monkeypatch.setattr(worker.os, "getppid", lambda: 1)
+
+    def fail_load_runtime():
+        raise AssertionError("runtime must not load after orphan detection")
+
+    monkeypatch.setattr(worker, "_load_runtime", fail_load_runtime)
+
+    exit_code = worker.main(["--model-id", "m", "--stage-configs-path", "/tmp/s.yaml"])
+
+    assert exit_code == 1
+    assert order == ["armed"]
+
+
 def test_main_loads_runtime_before_ready_and_serves_synthesize(monkeypatch: pytest.MonkeyPatch):
     audio = np.array([0.5, -0.5], dtype=np.float32)
     runtime = _FakeOmniRuntime([_stage_output(audio, finished=True)])

@@ -69,6 +69,7 @@ class RtcSessionRecord:
     remote_description_set: bool = False
     remote_candidates_complete: bool = False
     ice_restart_in_progress: bool = False
+    negotiation_generation: int | None = None
 
 
 class RtcSessionRegistry:

@@ -579,6 +579,56 @@ async def test_trim_idle_trims_once_per_idle_period(registry: FakeRegistry):
 
 
 @pytest.mark.asyncio
+async def test_trim_idle_does_not_stamp_flag_when_acquired_mid_trim(registry: FakeRegistry):
+    import threading
+
+    trim_started = threading.Event()
+    release_trim = threading.Event()
+
+    class BlockingTrimAdapter(FakeSTTAdapter):
+        def trim(self) -> None:
+            trim_started.set()
+            release_trim.wait(5.0)
+            super().trim()
+
+    registry.add_model("block", "latest", adapter_cls=BlockingTrimAdapter)
+    sched = Scheduler(registry, default_device="cpu", max_loaded=3)
+
+    async with sched.acquire("block:latest"):
+        pass
+    loaded = sched._models["block:latest"]
+    adapter = loaded.adapter
+    assert isinstance(adapter, BlockingTrimAdapter)
+
+    trim_task = asyncio.create_task(sched.trim_idle())
+    await asyncio.to_thread(trim_started.wait, 5.0)
+
+    holding = asyncio.Event()
+    released = asyncio.Event()
+
+    async def hold() -> None:
+        async with sched.acquire("block:latest"):
+            holding.set()
+            await released.wait()
+
+    hold_task = asyncio.create_task(hold())
+    await holding.wait()
+    assert loaded.ref_count == 1
+    assert loaded.trimmed is False
+
+    release_trim.set()
+    assert await trim_task == ["block:latest"]
+    assert loaded.trimmed is False
+
+    released.set()
+    await hold_task
+    assert loaded.ref_count == 0
+
+    assert await sched.trim_idle() == ["block:latest"]
+    assert adapter.trim_calls == 2
+
+
+@pytest.mark.asyncio
 async def test_manual_trim_ignores_idle_trimmed_flag(registry: FakeRegistry):
     sched = Scheduler(registry, default_device="cpu", max_loaded=3)
 

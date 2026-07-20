@@ -156,7 +156,7 @@ class WorkerHost:
             os.killpg(self._proc.pid, sig)
 
 
-def _install_parent_death_signal() -> None:
+def install_parent_death_signal() -> None:
     if sys.platform != "linux":
         return
     import ctypes
@@ -169,7 +169,7 @@ def _install_parent_death_signal() -> None:
 
 
 def worker_main(handler: Callable[[dict[str, Any]], dict[str, Any]]) -> int:
-    _install_parent_death_signal()
+    install_parent_death_signal()
     sock = socket.socket(fileno=os.dup(int(os.environ[WORKER_FD_ENV])))
     os.dup2(2, 1)
     stream = sock.makefile("rwb")

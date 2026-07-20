@@ -501,7 +501,7 @@ class Scheduler:
             async with self._lock:
                 for full_name in trimmed:
                     loaded = candidates.get(full_name)
-                    if loaded is not None and self._models.get(full_name) is loaded:
+                    if loaded is not None and self._models.get(full_name) is loaded and loaded.ref_count == 0:
                         loaded.trimmed = True
         return trimmed
 

@@ -263,6 +263,39 @@ def test_main_emits_error_frame_when_nemo_import_fails(monkeypatch: pytest.Monke
     assert "nemo.collections.asr" in frame["error"]
 
 
+def test_main_arms_parent_death_signal_before_loading(monkeypatch: pytest.MonkeyPatch):
+    order: list[str] = []
+    monkeypatch.setattr(worker, "install_parent_death_signal", lambda: order.append("armed"))
+
+    def recording_load(*_args, **_kwargs):
+        order.append("loaded")
+        return _FakeNemoModel()
+
+    monkeypatch.setattr(worker, "load_model", recording_load)
+    monkeypatch.setattr(worker, "worker_main", lambda _handler: 0)
+
+    exit_code = worker.main(["--model-id", "nvidia/parakeet-tdt-0.6b-v3"])
+
+    assert exit_code == 0
+    assert order == ["armed", "loaded"]
+
+
+def test_main_exits_when_orphaned_before_signal_armed(monkeypatch: pytest.MonkeyPatch):
+    order: list[str] = []
+    monkeypatch.setattr(worker, "install_parent_death_signal", lambda: order.append("armed"))
+    monkeypatch.setattr(worker.os, "getppid", lambda: 1)
+
+    def fail_load(*_args, **_kwargs):
+        raise AssertionError("model must not load after orphan detection")
+
+    monkeypatch.setattr(worker, "load_model", fail_load)
+
+    exit_code = worker.main(["--model-id", "nvidia/parakeet-tdt-0.6b-v3"])
+
+    assert exit_code == 1
+    assert order == ["armed"]
+
+
 def test_main_loads_model_before_ready_and_serves_transcribe(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):

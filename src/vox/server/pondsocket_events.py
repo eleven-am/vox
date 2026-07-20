@@ -144,6 +144,7 @@ def decode_pondsocket_command(event_name: str, payload: Any) -> ConversationComm
             offer_type=str(offer.get("type") or offer.get("sdpType") or offer.get("sdp_type") or "offer"),
             sdp=str(offer.get("sdp") or ""),
             restart=bool(message.get("restart", False)),
+            generation=_optional_int(message.get("generation")),
         )
     if event_name == "rtc.ice_candidate":
         candidate = message.get("candidate")

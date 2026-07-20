@@ -239,3 +239,28 @@ async def test_emit_media_event_queues_when_available():
     await emit_media_event(record, event)
 
     assert await record.media_events.get() == event
+
+
+@pytest.mark.asyncio
+async def test_emit_media_event_binds_generation_at_enqueue_not_drain():
+    record = SimpleNamespace(media_events=asyncio.Queue(), negotiation_generation=3)
+
+    await emit_media_event(record, {"type": "rtc.ice_candidate", "candidate": {"candidate": "pre"}})
+    record.negotiation_generation = 4
+    await emit_media_event(record, {"type": "rtc.ice_candidate", "candidate": {"candidate": "post"}})
+
+    pre = record.media_events.get_nowait()
+    post = record.media_events.get_nowait()
+    assert pre["generation"] == 3
+    assert post["generation"] == 4
+
+
+@pytest.mark.asyncio
+async def test_emit_media_event_leaves_untracked_event_types_and_absent_generation_unstamped():
+    record = SimpleNamespace(media_events=asyncio.Queue(), negotiation_generation=5)
+    await emit_media_event(record, {"type": "rtc.connection_state", "state": "connected"})
+    assert "generation" not in record.media_events.get_nowait()
+
+    record.negotiation_generation = None
+    await emit_media_event(record, {"type": "rtc.ice_candidate", "candidate": {"candidate": "c"}})
+    assert "generation" not in record.media_events.get_nowait()

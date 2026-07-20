@@ -115,7 +115,18 @@ R2a and R2b share `conversation/session.py` and are strictly sequential.
   adapter — workers flip it via the fail-dead anomaly after killpg);
   an adapter that reports False while holding native memory would leak on
   orphan. Workers also install PR_SET_PDEATHSIG(SIGKILL) on Linux so
-  parent death cannot strand a child mid-inference.
+  parent death cannot strand a child mid-inference. TRIM CONCURRENCY
+  CONTRACT: trim may run concurrently with request paths, so adapters must
+  be safe under it — worker trims serialize behind the WorkerHost request
+  lock, and in-process trims must be rebind/local-ref safe (never clear a
+  live cache in place). The idle-trim `trimmed` stamp is applied post-trim
+  only when the entry is still identity-equal AND `ref_count == 0`, so a
+  request that acquired mid-trim keeps its flag reset and the rebuilt cache
+  is re-trimmed next idle cycle. The reviewer's scheduler-owned trim
+  reservation stays REJECTED: an in-process trim racing a request is
+  synchronize-latency (not corruption), worker trims already serialize on
+  the request lock, and a reservation would block new requests behind a 30s
+  trim.
 
 Gate: full suite + lint, nothing else changes.
 

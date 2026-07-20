@@ -28,6 +28,7 @@ from vox.operations.rtc_signaling import (
     add_server_rtc_candidate,
     exchange_server_rtc_offer,
 )
+from vox.server.rtc_media import stamp_negotiation_generation
 from vox.server.rtc_registry import RtcControlTransport, RtcSessionRegistry
 from vox.server.rtc_session_io import (
     create_rtc_orchestrator,
@@ -46,6 +47,7 @@ class RtcOfferCommand:
     offer_type: str
     sdp: str
     restart: bool = False
+    generation: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,12 +182,16 @@ class RtcRuntime:
         )
         self.record.remote_description_set = True
         self.record.remote_candidates_complete = False
+        self.record.negotiation_generation = command.generation
         await self._emit(
-            {
-                "type": "rtc.answer",
-                "session_id": self.session_id,
-                "answer": {"type": result.answer_type, "sdp": result.sdp},
-            }
+            stamp_negotiation_generation(
+                self.record,
+                {
+                    "type": "rtc.answer",
+                    "session_id": self.session_id,
+                    "answer": {"type": result.answer_type, "sdp": result.sdp},
+                },
+            )
         )
         pending = tuple(self.record.pending_remote_candidates)
         self.record.pending_remote_candidates.clear()

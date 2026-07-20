@@ -12,12 +12,26 @@ from vox.server.pondsocket_events import (
     broadcast_conversation_event_to_user,
     broadcast_wire_to_user,
     decline_if_channel_attached,
+    decode_pondsocket_command,
     deliver_wire_to_user,
     handle_pondsocket_control_event,
     pondsocket_route_or_channel_session_id,
     reply_pondsocket_error,
     try_broadcast_wire_to_user,
 )
+
+
+def test_decode_rtc_offer_carries_generation():
+    command = decode_pondsocket_command(
+        "rtc.offer",
+        {"offer": {"type": "offer", "sdp": "offer-sdp"}, "generation": 4},
+    )
+    assert command == RtcOfferCommand(offer_type="offer", sdp="offer-sdp", generation=4)
+
+
+def test_decode_rtc_offer_without_generation_is_none():
+    command = decode_pondsocket_command("rtc.offer", {"offer": {"type": "offer", "sdp": "offer-sdp"}})
+    assert command.generation is None
 
 
 class FakeChannel:

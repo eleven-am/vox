@@ -14,7 +14,7 @@ from typing import Any
 
 import numpy as np
 
-from vox.core.worker_host import WORKER_FD_ENV, worker_main
+from vox.core.worker_host import WORKER_FD_ENV, install_parent_death_signal, worker_main
 from vox_voxtral.protocol import (
     OP_SYNTHESIZE,
     OP_TRIM,
@@ -143,6 +143,9 @@ def _emit_startup_error(error: BaseException) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    install_parent_death_signal()
+    if os.getppid() == 1:
+        return 1
     logging.basicConfig(level=logging.INFO, stream=sys.stderr)
     parser = argparse.ArgumentParser(prog="vox-voxtral-tts-worker")
     parser.add_argument("--model-id", required=True)
