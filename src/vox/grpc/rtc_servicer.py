@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator
 from vox.core.scheduler import Scheduler
 from vox.grpc import vox_pb2, vox_pb2_grpc
 from vox.grpc.conversation_commands import rtc_control_message_to_command
+from vox.grpc.conversation_events import conversation_event_to_pb
 from vox.grpc.rtc_messages import (
     rtc_create_session_request_from_pb,
     rtc_error_pb,
@@ -20,6 +21,7 @@ from vox.grpc.streaming_queue import (
     close_grpc_output_queue,
     iter_grpc_stream_lifecycle,
 )
+from vox.operations.conversation import ConvEvent
 from vox.operations.errors import OperationError
 from vox.operations.rtc_runtime import RtcRuntime
 from vox.operations.rtc_signaling import create_rtc_session
@@ -53,6 +55,13 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
             if event.get("type") == "rtc.session.closed":
                 await close_grpc_output_queue(out_queue)
 
+        async def emit_conversation(event: ConvEvent, wire: dict) -> None:
+            conversation = conversation_event_to_pb(event)
+            if conversation is None:
+                await out_queue.put(rtc_runtime_event_pb(wire))
+                return
+            await out_queue.put(vox_pb2.RtcControlServerMessage(conversation=conversation))
+
         async def drain_client() -> None:
             nonlocal runtime
             try:
@@ -72,6 +81,7 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                                 session_id=client_msg.attach.session_id,
                                 transport="grpc",
                                 emit=emit,
+                                emit_conversation=emit_conversation,
                             )
                         except OperationError as exc:
                             await out_queue.put(rtc_error_pb(str(exc)))

@@ -5,7 +5,14 @@ import asyncio
 import pytest
 
 from vox.operations.conversation import WIRE_BROWSER_EVENT, WIRE_RTC_CLIENT_DISCONNECTED
-from vox.server.rtc_client_events import (
+from vox.server.rtc_registry import (
+    RtcSessionRegistry,
+    cancel_and_drain_media_tasks,
+    cancel_media_tasks,
+    track_media_task,
+    track_task,
+)
+from vox.server.rtc_session_io import (
     BrowserDataChannelEvent,
     emit_client_disconnected_to_control,
     flush_pending_client_events,
@@ -13,7 +20,6 @@ from vox.server.rtc_client_events import (
     parse_browser_data_channel_message,
     send_client_event_to_browser,
 )
-from vox.server.rtc_registry import RtcSessionRegistry
 
 
 def test_create_session_returns_lookupable_record():
@@ -241,3 +247,130 @@ def test_flush_pending_client_events_suppresses_send_errors():
     flush_pending_client_events(record)
 
     assert record.pending_client_events == []
+
+
+async def _wait_forever() -> None:
+    await asyncio.Event().wait()
+
+
+async def _return_value(value: str) -> str:
+    return value
+
+
+@pytest.mark.asyncio
+async def test_track_task_registers_and_discards_completed_task():
+    tasks = set()
+
+    task = track_task(tasks, _return_value("done"))
+
+    assert task in tasks
+    assert await task == "done"
+    await asyncio.sleep(0)
+    assert task not in tasks
+
+
+@pytest.mark.asyncio
+async def test_track_media_task_registers_and_discards_completed_task():
+    class Record:
+        media_tasks = set()
+
+    task = track_media_task(Record(), _return_value("done"))
+
+    assert task in Record.media_tasks
+    assert await task == "done"
+    await asyncio.sleep(0)
+    assert task not in Record.media_tasks
+
+
+@pytest.mark.asyncio
+async def test_track_media_task_allows_records_without_media_task_set():
+    class Record:
+        pass
+
+    task = track_media_task(Record(), _return_value("done"))
+
+    assert await task == "done"
+
+
+@pytest.mark.asyncio
+async def test_cancel_media_tasks_cancels_and_clears_tracked_tasks():
+    task = asyncio.create_task(_wait_forever())
+
+    class Record:
+        media_tasks = {task}
+
+    cancelled = cancel_media_tasks(Record())
+    await asyncio.gather(*cancelled, return_exceptions=True)
+
+    assert cancelled == [task]
+    assert task.cancelled()
+    assert Record.media_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_cancel_media_tasks_is_noop_without_tracked_tasks():
+    class Record:
+        pass
+
+    assert cancel_media_tasks(Record()) == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_and_drain_media_tasks_awaits_cancelled_tasks():
+    task = asyncio.create_task(_wait_forever())
+
+    class Record:
+        media_tasks = {task}
+
+    await cancel_and_drain_media_tasks(Record())
+
+    assert task.cancelled()
+    assert Record.media_tasks == set()
+
+
+class FakeOrchestrator:
+    def __init__(self) -> None:
+        self.ended = None
+        self.closed = False
+
+    async def end_of_stream(self, *, flush_response: bool = True) -> None:
+        self.ended = flush_response
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class FakePeer:
+    def __init__(self) -> None:
+        self.closed = False
+        self.close_count = 0
+
+    async def close(self) -> None:
+        self.close_count += 1
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_close_attached_owns_shared_media_teardown():
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket")
+    assert registry.attach_control(record.session_id, transport="pondsocket") is record
+    record.orchestrator = object()
+    record.data_channel = object()
+    record.audio_output = asyncio.Queue()
+    record.media_events = asyncio.Queue()
+    peer = FakePeer()
+    record.rtc_peer = peer
+    orchestrator = FakeOrchestrator()
+
+    await registry.close_attached(record, orchestrator=orchestrator)
+
+    assert orchestrator.ended is None
+    assert orchestrator.closed is True
+    assert record.orchestrator is None
+    assert record.data_channel is None
+    assert await record.audio_output.get() is None
+    assert await record.media_events.get() is None
+    assert peer.close_count == 1
+    assert record.rtc_peer is None
+    assert registry.get(record.session_id) is None

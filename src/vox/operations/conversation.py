@@ -53,6 +53,16 @@ WIRE_SESSION_CREATED = "session.created"
 WIRE_CLIENT_EVENT = "client.event"
 WIRE_BROWSER_EVENT = "browser.event"
 WIRE_RTC_CLIENT_DISCONNECTED = "rtc.client.disconnected"
+LIFECYCLE_CRITICAL_WIRE_TYPES = frozenset(
+    {
+        WIRE_RESPONSE_CANCELLED,
+        WIRE_AUDIO_CLEAR,
+        WIRE_RESPONSE_DONE,
+        WIRE_INTERRUPTION_DETECTED,
+        WIRE_INTERRUPTION_FALSE_POSITIVE,
+        WIRE_ERROR,
+    }
+)
 SESSION_UPDATE_STT_MODEL_FIELDS = (
     "stt_model",
     "input_audio_transcription.model",
@@ -432,6 +442,23 @@ def conversation_wire_event_payload(wire: dict) -> tuple[str, dict]:
     payload = dict(wire)
     payload.pop("type", None)
     return event_type.strip(), payload
+
+
+async def deliver_wire_with_lifecycle_retry(
+    wire: dict,
+    attempt: Callable[[], Awaitable[Any]],
+    *,
+    on_lost: Callable[[str], None],
+) -> bool:
+    if await attempt() is not False:
+        return True
+    event_type = str(wire.get("type") or "")
+    if event_type not in LIFECYCLE_CRITICAL_WIRE_TYPES:
+        return False
+    if await attempt() is not False:
+        return True
+    on_lost(event_type)
+    return False
 
 
 def parse_session_update(payload: dict) -> ConversationSessionConfig:

@@ -2,19 +2,30 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Request
 
 from vox.operations.rtc_signaling import (
-    create_rtc_session as create_rtc_session_operation,
+    RtcSessionBootstrapRequest,
+    rtc_session_bootstrap_payload,
 )
 from vox.operations.rtc_signaling import (
-    rtc_session_bootstrap_payload,
+    create_rtc_session as create_rtc_session_operation,
 )
 from vox.server.app_services import app_rtc_registry
 from vox.server.auth import require_api_key
-from vox.server.rtc_sessions import parse_rtc_session_bootstrap_request
 
 router = APIRouter()
+
+
+def parse_rtc_session_bootstrap_request(body: Any) -> RtcSessionBootstrapRequest:
+    if isinstance(body, dict) and "browser_events" in body:
+        return RtcSessionBootstrapRequest(
+            control_transport="pondsocket",
+            forward_browser_events=bool(body["browser_events"]),
+        )
+    return RtcSessionBootstrapRequest(control_transport="pondsocket")
 
 
 @router.post("/v1/rtc/sessions")

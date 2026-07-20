@@ -9,10 +9,7 @@ from vox.grpc.conversation_commands import (
     converse_client_message_to_command,
     rtc_control_message_to_command,
 )
-from vox.grpc.conversation_events import (
-    conversation_event_to_pb,
-    conversation_wire_event_to_pb,
-)
+from vox.grpc.conversation_events import conversation_event_to_pb
 from vox.operations.conversation import (
     ConvAudioClearEvent,
     ConvAudioDeltaEvent,
@@ -29,6 +26,7 @@ from vox.operations.conversation import (
     ConvTranscriptDeltaEvent,
     ConvTranscriptDoneEvent,
     ConvTurnEouPredictedEvent,
+    parse_conversation_wire_event,
     serialize_conversation_event,
 )
 from vox.operations.conversation_commands import ClientEventCommand
@@ -311,7 +309,9 @@ def test_json_and_protobuf_edges_encode_the_same_canonical_event(event):
     assert wire is not None
 
     direct_pb = conversation_event_to_pb(event)
-    json_round_trip_pb = conversation_wire_event_to_pb(wire)
+    reparsed = parse_conversation_wire_event(wire)
+    assert reparsed is not None
+    json_round_trip_pb = conversation_event_to_pb(reparsed)
 
     assert direct_pb is not None
     assert json_round_trip_pb == direct_pb

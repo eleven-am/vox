@@ -1,4 +1,5 @@
 import asyncio
+from types import SimpleNamespace
 
 import av
 import numpy as np
@@ -9,6 +10,7 @@ from vox.server.rtc_media import (
     RtcAudioOutputTrack,
     audio_frame_to_pcm16,
     create_rtc_audio_queue,
+    emit_media_event,
     pump_input_audio,
 )
 
@@ -220,3 +222,20 @@ async def test_pump_input_audio_ingests_real_audio_frame():
     await pump_input_audio(OneFrameTrack(), ingest)
 
     assert calls == [(samples.reshape(-1).tobytes(), 16_000)]
+
+
+@pytest.mark.asyncio
+async def test_emit_media_event_is_noop_without_queue():
+    record = SimpleNamespace(media_events=None)
+
+    await emit_media_event(record, {"type": "rtc.connection_state"})
+
+
+@pytest.mark.asyncio
+async def test_emit_media_event_queues_when_available():
+    record = SimpleNamespace(media_events=asyncio.Queue())
+
+    event = {"type": "rtc.connection_state", "state": "connected"}
+    await emit_media_event(record, event)
+
+    assert await record.media_events.get() == event

@@ -8,16 +8,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
-from vox.conversation.session import (
-    WIRE_AUDIO_CLEAR,
-    WIRE_ERROR,
-    WIRE_INTERRUPTION_DETECTED,
-    WIRE_INTERRUPTION_FALSE_POSITIVE,
-    WIRE_RESPONSE_CANCELLED,
-    WIRE_RESPONSE_DONE,
-)
 from vox.core.scheduler import Scheduler
-from vox.operations.conversation import ConvEvent
+from vox.operations.conversation import ConvEvent, deliver_wire_with_lifecycle_retry
 from vox.operations.conversation_commands import (
     ClientEventCommand,
     ConversationCommand,
@@ -36,23 +28,15 @@ from vox.operations.rtc_signaling import (
     add_server_rtc_candidate,
     exchange_server_rtc_offer,
 )
-from vox.server.rtc_cleanup import close_attached_rtc_resources
-from vox.server.rtc_client_events import send_client_event_to_browser
-from vox.server.rtc_conversation import create_rtc_orchestrator, prepare_rtc_control_event
 from vox.server.rtc_registry import RtcControlTransport, RtcSessionRegistry
+from vox.server.rtc_session_io import (
+    create_rtc_orchestrator,
+    prepare_rtc_control_event,
+    send_client_event_to_browser,
+)
 
 RtcEventHandler = Callable[[dict[str, Any]], Awaitable[Any]]
-
-LIFECYCLE_CRITICAL_WIRE_TYPES = frozenset(
-    {
-        WIRE_RESPONSE_CANCELLED,
-        WIRE_AUDIO_CLEAR,
-        WIRE_RESPONSE_DONE,
-        WIRE_INTERRUPTION_DETECTED,
-        WIRE_INTERRUPTION_FALSE_POSITIVE,
-        WIRE_ERROR,
-    }
-)
+RtcConversationEventHandler = Callable[[ConvEvent, dict[str, Any]], Awaitable[Any]]
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +75,7 @@ class RtcRuntime:
         session_id: str,
         transport: RtcControlTransport,
         emit: RtcEventHandler,
+        emit_conversation: RtcConversationEventHandler | None = None,
     ) -> None:
         record = registry.get(session_id)
         if record is None:
@@ -111,6 +96,7 @@ class RtcRuntime:
         self.record = record
         self._registry = registry
         self._emit = emit
+        self._emit_conversation = emit_conversation
         self._dispatch_lock = asyncio.Lock()
         self._close_lock = asyncio.Lock()
         self._closed_event = asyncio.Event()
@@ -249,17 +235,17 @@ class RtcRuntime:
             session_id=self.session_id,
             event=event,
         )
-        if prepared.wire is not None:
-            await self._emit_wire(prepared.wire)
+        wire = prepared.wire
+        if wire is None:
+            return
+        attempt = (
+            (lambda: self._emit_conversation(event, wire))
+            if self._emit_conversation is not None
+            else (lambda: self._emit(wire))
+        )
+        await deliver_wire_with_lifecycle_retry(wire, attempt, on_lost=self._log_lost_lifecycle_event)
 
-    async def _emit_wire(self, wire: dict[str, Any]) -> None:
-        if await self._emit(wire) is not False:
-            return
-        event_type = str(wire.get("type") or "")
-        if event_type not in LIFECYCLE_CRITICAL_WIRE_TYPES:
-            return
-        if await self._emit(wire) is not False:
-            return
+    def _log_lost_lifecycle_event(self, event_type: str) -> None:
         logger.error(
             "Lost lifecycle event %s for RTC session %s after retry",
             event_type,
@@ -319,12 +305,7 @@ class RtcRuntime:
             except BaseException as exc:
                 error = exc
             try:
-                await close_attached_rtc_resources(
-                    session_id=self.session_id,
-                    registry=self._registry,
-                    record=self.record,
-                    orchestrator=None,
-                )
+                await self._registry.close_attached(self.record, orchestrator=None)
             except BaseException as exc:
                 if error is None:
                     error = exc

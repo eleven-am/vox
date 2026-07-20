@@ -6,7 +6,6 @@ import json
 from typing import Any
 
 from vox.grpc import vox_pb2
-from vox.grpc.conversation_events import conversation_wire_event_to_pb
 from vox.operations.conversation import (
     control_event_as_client_event,
     control_event_client_payload_json,
@@ -92,9 +91,6 @@ def rtc_runtime_event_pb(event: dict[str, Any]) -> vox_pb2.RtcControlServerMessa
             )
         )
 
-    conversation = conversation_wire_event_to_pb(event)
-    if conversation is not None:
-        return vox_pb2.RtcControlServerMessage(conversation=conversation)
     event_name, payload = conversation_wire_event_payload(event)
     return vox_pb2.RtcControlServerMessage(
         event=vox_pb2.RtcWireEvent(

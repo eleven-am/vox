@@ -3,14 +3,45 @@ from __future__ import annotations
 import asyncio
 import secrets
 import time
+from collections.abc import Coroutine
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from vox.server.rtc_media import create_rtc_audio_queue
-from vox.server.rtc_tasks import cancel_media_tasks, track_task
 
 RtcControlTransport = Literal["pondsocket", "grpc"]
+
+
+def track_task(tasks: set[asyncio.Task], coro: Coroutine[Any, Any, Any]) -> asyncio.Task:
+    task = asyncio.create_task(coro)
+    tasks.add(task)
+    task.add_done_callback(tasks.discard)
+    return task
+
+
+def track_media_task(record: Any, coro: Coroutine[Any, Any, Any]) -> asyncio.Task:
+    media_tasks = getattr(record, "media_tasks", None)
+    if media_tasks is not None:
+        return track_task(media_tasks, coro)
+    task = asyncio.create_task(coro)
+    return task
+
+
+def cancel_media_tasks(record: Any) -> list[asyncio.Task]:
+    tasks = list(getattr(record, "media_tasks", ()))
+    for task in tasks:
+        task.cancel()
+    media_tasks = getattr(record, "media_tasks", None)
+    if media_tasks is not None:
+        media_tasks.clear()
+    return tasks
+
+
+async def cancel_and_drain_media_tasks(record: Any) -> None:
+    tasks = cancel_media_tasks(record)
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @dataclass
@@ -131,6 +162,32 @@ class RtcSessionRegistry:
             return
         record.closed = True
         self._release_resources(record)
+
+    async def close_attached(self, record: RtcSessionRecord, *, orchestrator: Any | None) -> None:
+        if orchestrator is not None:
+            with suppress(Exception):
+                await orchestrator.close()
+        record.orchestrator = None
+        record.data_channel = None
+        if record.audio_output is not None:
+            if record.audio_output_track is not None:
+                record.audio_output_track.clear()
+            while True:
+                try:
+                    record.audio_output.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+            await record.audio_output.put(None)
+        if record.media_events is not None:
+            await record.media_events.put(None)
+        await cancel_and_drain_media_tasks(record)
+        if record.rtc_peer is not None:
+            peer = record.rtc_peer
+            record.rtc_peer = None
+            with suppress(Exception):
+                await peer.close()
+        self.detach_control(record.session_id)
+        self.close(record.session_id)
 
     def _release_resources(self, record: RtcSessionRecord) -> None:
         media_tasks = cancel_media_tasks(record)

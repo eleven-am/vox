@@ -9,11 +9,11 @@ from vox.conversation.session import (
     WIRE_STATE_CHANGED,
     WIRE_TRANSCRIPT_DELTA,
 )
-from vox.server.rtc_conversation import (
+from vox.server.rtc_registry import RtcSessionRecord
+from vox.server.rtc_session_io import (
     BROWSER_FORWARDED_EVENT_TYPES,
     forward_wire_event_to_browser,
 )
-from vox.server.rtc_registry import RtcSessionRecord
 
 
 def _record_with_open_channel() -> tuple[RtcSessionRecord, MagicMock]:

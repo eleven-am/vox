@@ -19,9 +19,20 @@ from vox.grpc.conversation_commands import (
     conversation_session_update_to_command,
     converse_client_message_to_command,
 )
-from vox.grpc.conversation_events import conversation_event_to_pb, conversation_wire_event_to_pb
+from vox.grpc.conversation_events import conversation_event_to_pb
 from vox.grpc.conversation_servicer import ConversationServicer
-from vox.operations.conversation import ConvAudioClearEvent, ConvTranscriptDoneEvent
+from vox.operations.conversation import (
+    ConvAudioClearEvent,
+    ConvTranscriptDoneEvent,
+    parse_conversation_wire_event,
+)
+
+
+def _engine_wire_event_to_pb(event: dict):
+    mapped = parse_conversation_wire_event(event)
+    if mapped is None:
+        return None
+    return conversation_event_to_pb(mapped)
 
 
 class ScriptedTTS(TTSAdapter):
@@ -194,7 +205,7 @@ def test_session_update_proto_preserves_profile_defaults_when_overriding_one_fie
 
 
 def test_turn_eou_predicted_event_maps_to_proto():
-    msg = conversation_wire_event_to_pb(
+    msg = _engine_wire_event_to_pb(
         {
             "type": "turn.eou.predicted",
             "probability": 0.25,
@@ -297,7 +308,7 @@ async def test_audio_before_session_update_maps_to_error_pb():
 
 
 def test_wire_event_to_pb_coerces_missing_numeric_fields_to_zero():
-    msg = conversation_wire_event_to_pb(
+    msg = _engine_wire_event_to_pb(
         {
             "type": "input_audio_buffer.speech_started",
             "timestamp_ms": None,
@@ -306,7 +317,7 @@ def test_wire_event_to_pb_coerces_missing_numeric_fields_to_zero():
     assert msg is not None
     assert msg.speech_started.timestamp_ms == 0
 
-    transcript = conversation_wire_event_to_pb(
+    transcript = _engine_wire_event_to_pb(
         {
             "type": "conversation.item.input_audio_transcription.completed",
             "transcript": "hello",
@@ -485,7 +496,7 @@ async def test_response_commands_without_generation_id_still_work_end_to_end():
 
 
 def test_audio_clear_event_maps_to_proto_message():
-    msg = conversation_wire_event_to_pb({"type": "response.audio.clear", "response_id": "resp_1"})
+    msg = _engine_wire_event_to_pb({"type": "response.audio.clear", "response_id": "resp_1"})
     assert msg is not None
     assert msg.WhichOneof("msg") == "audio_clear"
     assert msg.audio_clear.response_id == "resp_1"

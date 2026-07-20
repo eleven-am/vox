@@ -181,12 +181,3 @@ def conversation_event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage 
             generation_id=event.generation_id,
         )
     return None
-
-
-def conversation_wire_event_to_pb(event: dict) -> vox_pb2.ConverseServerMessage | None:
-    from vox.operations.conversation import parse_conversation_wire_event
-
-    mapped = parse_conversation_wire_event(event)
-    if mapped is None:
-        return None
-    return conversation_event_to_pb(mapped)

@@ -9,6 +9,7 @@ from vox.operations.conversation import (
     ConvEvent,
     conversation_error_fields,
     conversation_wire_event_payload,
+    deliver_wire_with_lifecycle_retry,
     parse_allow_interruptions,
     parse_response_generation_id,
     parse_response_text,
@@ -29,7 +30,6 @@ from vox.operations.conversation_commands import (
 )
 from vox.operations.errors import InvalidConfigError, OperationError
 from vox.operations.rtc_runtime import (
-    LIFECYCLE_CRITICAL_WIRE_TYPES,
     RtcCandidateCommand,
     RtcCloseCommand,
     RtcCommand,
@@ -84,20 +84,19 @@ async def deliver_wire_to_user(
     *,
     session_id: str | None = None,
 ) -> bool:
-    if await try_broadcast_wire_to_user(channel, user_id, wire, session_id=session_id):
-        return True
-    event_type = str(wire.get("type") or "")
-    if event_type not in LIFECYCLE_CRITICAL_WIRE_TYPES:
-        return False
-    if await try_broadcast_wire_to_user(channel, user_id, wire, session_id=session_id):
-        return True
-    logger.error(
-        "Lost lifecycle event %s for session %s (user=%s) after retry",
-        event_type,
-        session_id,
-        user_id,
+    def log_lost(event_type: str) -> None:
+        logger.error(
+            "Lost lifecycle event %s for session %s (user=%s) after retry",
+            event_type,
+            session_id,
+            user_id,
+        )
+
+    return await deliver_wire_with_lifecycle_retry(
+        wire,
+        lambda: try_broadcast_wire_to_user(channel, user_id, wire, session_id=session_id),
+        on_lost=log_lost,
     )
-    return False
 
 
 async def broadcast_conversation_event_to_user(

@@ -220,6 +220,11 @@ def _pcm16_duration_ms(pcm16: bytes, sample_rate: int) -> float:
     return (len(pcm16) // np.dtype(np.int16).itemsize) / max(1, rate) * 1000.0
 
 
+async def emit_media_event(record: Any, event: dict) -> None:
+    if getattr(record, "media_events", None) is not None:
+        await record.media_events.put(event)
+
+
 async def pump_input_audio(
     track: MediaStreamTrack,
     ingest_pcm16: Callable[[bytes, int | None], Awaitable[None]],

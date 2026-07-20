@@ -13,14 +13,14 @@ from vox.operations.conversation import (
     ConvDoneEvent,
     ConvStateChangedEvent,
 )
-from vox.server.rtc_conversation import (
+from vox.server.rtc_registry import RtcSessionRecord
+from vox.server.rtc_session_io import (
     clear_rtc_audio_if_needed,
     create_rtc_orchestrator,
     enqueue_rtc_audio,
     prepare_rtc_control_event,
     wait_until_rtc_audio_drained,
 )
-from vox.server.rtc_registry import RtcSessionRecord
 
 
 class FakeAudioTrack:

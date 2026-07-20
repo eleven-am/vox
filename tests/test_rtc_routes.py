@@ -3,6 +3,8 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from vox.operations.rtc_signaling import RtcSessionBootstrapRequest
+from vox.server.routes.rtc import parse_rtc_session_bootstrap_request
 from vox.server.routes.rtc import router as rtc_router
 
 
@@ -49,3 +51,24 @@ def test_direct_http_signaling_routes_do_not_exist():
     assert client.post(f"/v1/rtc/sessions/{session_id}/offer", json={}).status_code == 404
     assert client.post(f"/v1/rtc/sessions/{session_id}/candidates", json={}).status_code == 404
     assert client.get(f"/v1/rtc/sessions/{session_id}/events").status_code == 404
+
+
+def test_parse_rtc_session_bootstrap_request_defaults_to_browser_events_unchanged():
+    expected = RtcSessionBootstrapRequest(control_transport="pondsocket")
+    assert parse_rtc_session_bootstrap_request(None) == expected
+    assert parse_rtc_session_bootstrap_request({"other": False}) == expected
+
+
+def test_parse_rtc_session_bootstrap_request_preserves_browser_event_choice():
+    assert parse_rtc_session_bootstrap_request({"browser_events": False}) == (
+        RtcSessionBootstrapRequest(
+            control_transport="pondsocket",
+            forward_browser_events=False,
+        )
+    )
+    assert parse_rtc_session_bootstrap_request({"browser_events": 1}) == (
+        RtcSessionBootstrapRequest(
+            control_transport="pondsocket",
+            forward_browser_events=True,
+        )
+    )
