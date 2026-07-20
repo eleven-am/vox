@@ -15,12 +15,16 @@ class FakeOmniBackend:
         self._chunks = chunks
         self._raise_on_generate = raise_on_generate
         self.close_called = False
+        self.trim_called = False
 
     async def generate(self, text: str, voice: str) -> AsyncIterator[SynthesizeChunk]:
         if self._raise_on_generate is not None:
             raise self._raise_on_generate
         for chunk in self._chunks:
             yield chunk
+
+    def trim(self) -> None:
+        self.trim_called = True
 
     async def close(self) -> None:
         self.close_called = True
@@ -135,6 +139,25 @@ class TestFakeOmniBackendErrorPropagation:
 
         empty_chunks = asyncio.run(synthesize_empty())
         assert empty_chunks == []
+
+
+class TestTrim:
+    def test_trim_delegates_to_backend(self):
+        backend = FakeOmniBackend(_make_chunks())
+        adapter = _make_adapter_with_backend(backend)
+
+        adapter.trim()
+
+        assert backend.trim_called is True
+
+    def test_trim_is_noop_when_not_loaded(self):
+        with patch.dict("sys.modules", {"torch": MagicMock()}):
+            from vox_voxtral.tts_adapter import VoxtralTTSAdapter
+
+            adapter = VoxtralTTSAdapter()
+            adapter.trim()
+
+            assert adapter._backend is None
 
 
 class TestCloseOnUnload:

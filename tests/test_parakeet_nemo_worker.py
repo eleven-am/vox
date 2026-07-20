@@ -7,7 +7,7 @@ import sys
 import threading
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -181,6 +181,21 @@ def test_handler_transcribe_without_word_timestamps_returns_text_only(tmp_path: 
 
     assert response == {"text": "plain text", "language": None, "words": []}
     assert fake_model.transcribe_calls == [{"paths": [str(wav_path)], "batch_size": 1}]
+
+
+def test_handler_trim_returns_ack_and_empties_cuda_cache():
+    fake_model = _FakeNemoModel()
+    handle = worker.build_handler(fake_model)
+    torch = MagicMock()
+    torch.cuda.is_available.return_value = True
+
+    with patch.dict(sys.modules, {"torch": torch}):
+        response = handle({"op": "trim"})
+
+    assert response == {"trimmed": True}
+    assert fake_model.transcribe_calls == []
+    torch.cuda.empty_cache.assert_called_once()
+    torch.cuda.synchronize.assert_called_once()
 
 
 def test_handler_rejects_unknown_op():

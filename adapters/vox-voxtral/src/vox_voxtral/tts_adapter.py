@@ -256,6 +256,11 @@ class VoxtralTTSAdapter(TTSAdapter):
     def is_loaded(self) -> bool:
         return self._loaded
 
+    def trim(self) -> None:
+        backend = self._backend
+        if backend is not None:
+            backend.trim()
+
     async def synthesize(
         self,
         text: str,

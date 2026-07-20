@@ -10,6 +10,7 @@ from numpy.typing import NDArray
 VOXTRAL_TTS_SAMPLE_RATE = 24_000
 
 OP_SYNTHESIZE = "synthesize"
+OP_TRIM = "trim"
 
 
 @dataclass

@@ -461,6 +461,34 @@ def test_dead_worker_reads_as_unloaded_and_transcribe_raises(ready_runtime: Path
     assert host.requests == []
 
 
+def test_trim_forwards_trim_op_with_short_timeout(ready_runtime: Path, fake_host_cls):
+    adapter, host = _loaded_adapter(fake_host_cls)
+    host.responses.append({"trimmed": True})
+
+    adapter.trim()
+
+    assert host.requests[0]["payload"] == {"op": "trim"}
+    assert host.requests[0]["timeout"] == module.DEFAULT_TRIM_TIMEOUT_SECONDS
+    assert module.DEFAULT_TRIM_TIMEOUT_SECONDS < module.DEFAULT_REQUEST_TIMEOUT_SECONDS
+
+
+def test_trim_is_noop_when_not_loaded(fake_host_cls):
+    adapter = ParakeetNemoAdapter()
+
+    adapter.trim()
+
+    assert fake_host_cls.instances == []
+
+
+def test_trim_is_noop_when_worker_dead(ready_runtime: Path, fake_host_cls):
+    adapter, host = _loaded_adapter(fake_host_cls)
+    host._alive = False
+
+    adapter.trim()
+
+    assert host.requests == []
+
+
 def test_unload_closes_host_and_resets_state(ready_runtime: Path, fake_host_cls):
     adapter, host = _loaded_adapter(fake_host_cls)
 

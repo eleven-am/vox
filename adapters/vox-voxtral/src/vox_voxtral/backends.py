@@ -13,19 +13,21 @@ import numpy as np
 from vox.core.types import SynthesizeChunk
 from vox.core.worker_host import WorkerHost
 from vox_voxtral.protocol import (
-    VOXTRAL_TTS_SAMPLE_RATE as _SAMPLE_RATE,
-)
-from vox_voxtral.protocol import (
+    OP_TRIM,
     SynthesizeRequest,
     SynthesizeResponse,
     accumulate_chunk,
     extract_audio_chunk,
+)
+from vox_voxtral.protocol import (
+    VOXTRAL_TTS_SAMPLE_RATE as _SAMPLE_RATE,
 )
 
 VOXTRAL_TTS_SAMPLE_RATE = _SAMPLE_RATE
 
 DEFAULT_STARTUP_TIMEOUT_SECONDS = 1800.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 600.0
+DEFAULT_TRIM_TIMEOUT_SECONDS = 30.0
 STARTUP_TIMEOUT_ENV = "VOX_VOXTRAL_STARTUP_TIMEOUT_S"
 REQUEST_TIMEOUT_ENV = "VOX_VOXTRAL_REQUEST_TIMEOUT_S"
 _WORKER_ENV_NAMES = (
@@ -126,6 +128,10 @@ class OmniBackend(ABC):
         ...
 
     @abstractmethod
+    def trim(self) -> None:
+        ...
+
+    @abstractmethod
     async def close(self) -> None:
         ...
 
@@ -187,6 +193,16 @@ class InProcessOmniBackend(OmniBackend):
             is_final=True,
         )
 
+    def trim(self) -> None:
+        import gc
+
+        import torch
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+
     async def close(self) -> None:
         shutdown = getattr(self._runtime, "shutdown", None)
         if callable(shutdown):
@@ -242,6 +258,9 @@ class WorkerOmniBackend(OmniBackend):
             sample_rate=response.sample_rate,
             is_final=True,
         )
+
+    def trim(self) -> None:
+        self._host.request({"op": OP_TRIM}, DEFAULT_TRIM_TIMEOUT_SECONDS)
 
     async def close(self) -> None:
         await asyncio.to_thread(self._host.close)

@@ -585,13 +585,42 @@ async def test_idle_trim_runs_even_when_unload_ttl_disabled(registry: FakeRegist
     loaded = sched._models["whisper:large-v3"]
     loaded.last_used = time.time() - 120
 
-    async with sched._lock:
-        sched._trim_idle_models_locked(min_idle_seconds=sched._idle_trim_seconds)
+    trimmed = await sched.trim_idle(min_idle_seconds=sched._idle_trim_seconds)
 
+    assert trimmed == ["whisper:large-v3"]
     adapter = sched._models["whisper:large-v3"].adapter
     assert isinstance(adapter, FakeSTTAdapter)
     assert adapter.trim_calls == 1
     assert adapter.is_loaded is True
+
+
+@pytest.mark.asyncio
+async def test_trim_runs_adapter_trim_off_event_loop(registry: FakeRegistry):
+    import threading
+
+    seen: dict[str, int] = {}
+
+    class ThreadRecordingAdapter(FakeSTTAdapter):
+        def trim(self) -> None:
+            seen["trim_thread"] = threading.get_ident()
+            super().trim()
+
+    registry.add_model("thr", "latest", adapter_cls=ThreadRecordingAdapter)
+    sched = Scheduler(registry, default_device="cpu", max_loaded=3)
+
+    async with sched.acquire("thr:latest"):
+        pass
+
+    assert await sched.trim("thr:latest") is True
+    assert seen["trim_thread"] != threading.get_ident()
+
+    seen.clear()
+    async with sched.acquire("thr:latest"):
+        pass
+    trimmed = await sched.trim_idle()
+
+    assert "thr:latest" in trimmed
+    assert seen["trim_thread"] != threading.get_ident()
 
 
 def test_memory_snapshot_reports_device_and_loaded_models(scheduler: Scheduler):

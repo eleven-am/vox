@@ -269,6 +269,9 @@ class Qwen3ASRAdapter(STTAdapter):
     def is_loaded(self) -> bool:
         return self._loaded
 
+    def trim(self) -> None:
+        self._aligner = None
+
     def prepare_runtime(self) -> None:
         _load_qwen_asr_model()
 

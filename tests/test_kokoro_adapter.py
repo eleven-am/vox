@@ -804,6 +804,40 @@ def test_kokoro_torch_loads_native_runtime_and_streams_audio(tmp_path: Path):
     }
 
 
+def test_kokoro_torch_trim_clears_pipelines_and_next_synthesize_rebuilds(tmp_path: Path):
+    fake_kokoro = _install_fake_native_modules()
+    sys.modules.pop("vox_kokoro", None)
+    sys.modules.pop("vox_kokoro.adapter", None)
+    sys.modules.pop("vox_kokoro.torch_adapter", None)
+
+    model_dir = tmp_path / "kokoro"
+    model_dir.mkdir(parents=True)
+    (model_dir / "kokoro-v1_0.pth").write_bytes(b"weights")
+
+    from vox_kokoro.torch_adapter import KokoroTorchAdapter
+
+    adapter = KokoroTorchAdapter()
+    with patch.object(KokoroTorchAdapter, "_import_runtime", return_value=fake_kokoro):
+        adapter.load(str(model_dir), "cpu")
+
+    assert set(adapter._pipelines) == {"a"}
+    assert len(_FakePipeline.inits) == 1
+
+    adapter.trim()
+
+    assert adapter._pipelines == {}
+
+    async def _collect():
+        return [chunk async for chunk in adapter.synthesize("Hello world", voice="af_heart")]
+
+    with patch.object(KokoroTorchAdapter, "_import_runtime", return_value=fake_kokoro):
+        chunks = asyncio.run(_collect())
+
+    assert len(chunks) == 2
+    assert "a" in adapter._pipelines
+    assert len(_FakePipeline.inits) == 2
+
+
 def test_kokoro_torch_honors_explicit_language_override(tmp_path: Path):
     fake_kokoro = _install_fake_native_modules()
     sys.modules.pop("vox_kokoro", None)

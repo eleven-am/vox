@@ -88,11 +88,22 @@ R2a and R2b share `conversation/session.py` and are strictly sequential.
   `--vram-headroom`, `--memory-over-budget`, `_enforce_budget_locked`,
   `_memory_budget_allows_locked`, and the `/v1/system/enforce-memory-budget`
   endpoint; `/v1/system/memory` keeps real telemetry, drops the policy block.
-  Executed as batch R1b. FOLLOW-UP (owner requirement): `adapter.trim()` is
-  currently a universal no-op — implement it for real per adapter, including
-  a worker-protocol `trim` op so worker adapters reclaim memory in the child
-  process where it lives; adapters that genuinely have nothing to release
-  stay no-ops with that reason documented.
+  Executed as batch R1b. FOLLOW-UP DONE (batch trim-real, 2026-07-20):
+  `adapter.trim()` implemented for the five adapters an inventory audit
+  proved genuinely releasable — ParakeetNemo and Voxtral-worker forward a
+  new worker-protocol `{"op": "trim"}` into the child (gc + guarded
+  `torch.cuda.empty_cache`/`synchronize` where the memory actually lives;
+  parent-side `_clear_gpu_cache` provably cannot reach it), Voxtral
+  in-process backend does the same in-process, OpenVoice clears its lazy
+  per-language `_base_models`, KokoroTorch its `_pipelines`, Qwen3-ASR its
+  lazy `_aligner` — each with a pinned lazy-rebuild test driving a real
+  second request. All other adapters stay no-ops honestly: they hold only
+  weights plus request-local caches (ORT exposes no arena release short of
+  dropping the session, which is unload). Scheduler now selects trim
+  targets under the lock and executes off-loop via `asyncio.to_thread`
+  (mirror of `_teardown_off_loop`), pinned by an off-loop-thread test —
+  worker trims are blocking IPC and must never run on the loop under the
+  global lock.
 
 Gate: full suite + lint, nothing else changes.
 

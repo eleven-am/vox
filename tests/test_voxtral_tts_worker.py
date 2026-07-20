@@ -9,7 +9,7 @@ import sys
 import threading
 from types import ModuleType, SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -103,6 +103,22 @@ def test_handler_uses_default_voice_when_request_voice_is_empty():
     speech_request = tokenizer.instruct_tokenizer.encode_speech_request.call_args.args[0]
     assert speech_request.voice == "cheerful_female"
     assert base64.b64decode(response["audio_b64"]) == b""
+
+
+def test_handler_trim_returns_ack_and_empties_cuda_cache():
+    runtime = _FakeOmniRuntime([])
+    torch = MagicMock()
+    torch.cuda.is_available.return_value = True
+    with asyncio.Runner() as runner:
+        handle = _make_handler(runtime, _make_tokenizer(), runner)
+
+        with patch.dict(sys.modules, {"torch": torch}):
+            response = handle({"op": "trim"})
+
+    assert response == {"trimmed": True}
+    assert runtime.generate_calls == []
+    torch.cuda.empty_cache.assert_called_once()
+    torch.cuda.synchronize.assert_called_once()
 
 
 def test_handler_rejects_unsupported_op():

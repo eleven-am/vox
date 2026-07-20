@@ -233,6 +233,9 @@ class KokoroTorchAdapter(TTSAdapter):
     def is_loaded(self) -> bool:
         return self._model_file is not None
 
+    def trim(self) -> None:
+        self._pipelines.clear()
+
     async def synthesize(
         self,
         text: str,

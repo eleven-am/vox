@@ -270,17 +270,24 @@ class Scheduler:
         _clear_gpu_cache()
         return True
 
-    def _trim_idle_models_locked(self, *, min_idle_seconds: int = 0) -> list[str]:
+    def _select_trimmable_locked(self, *, min_idle_seconds: int = 0) -> list[tuple[str, _LoadedModel]]:
         now = time.time()
-        trimmed: list[str] = []
+        eligible: list[tuple[str, _LoadedModel]] = []
         for full_name, loaded in list(self._models.items()):
             if loaded.ref_count > 0:
                 continue
             if min_idle_seconds > 0 and now - loaded.last_used < min_idle_seconds:
                 continue
-            if self._trim_loaded_model(full_name, loaded):
-                trimmed.append(full_name)
-        return trimmed
+            eligible.append((full_name, loaded))
+        return eligible
+
+    def _trim_models_blocking(self, items: list[tuple[str, _LoadedModel]]) -> list[str]:
+        return [full_name for full_name, loaded in items if self._trim_loaded_model(full_name, loaded)]
+
+    async def _trim_off_loop(self, items: list[tuple[str, _LoadedModel]]) -> list[str]:
+        if not items:
+            return []
+        return await asyncio.to_thread(self._trim_models_blocking, items)
 
     def _adapter_memory_status(self, loaded: _LoadedModel) -> dict:
         try:
@@ -476,12 +483,15 @@ class Scheduler:
             if loaded.ref_count > 0:
                 logger.warning("Cannot trim %s: %d active references", full_name, loaded.ref_count)
                 return False
-            return self._trim_loaded_model(full_name, loaded)
+            eligible = [(full_name, loaded)]
+        trimmed = await self._trim_off_loop(eligible)
+        return full_name in trimmed
 
     async def trim_idle(self, *, min_idle_seconds: int = 0) -> list[str]:
         """Trim all idle models and return the canonical model refs that were trimmed."""
         async with self._lock:
-            return self._trim_idle_models_locked(min_idle_seconds=min_idle_seconds)
+            eligible = self._select_trimmable_locked(min_idle_seconds=min_idle_seconds)
+        return await self._trim_off_loop(eligible)
 
     async def unload_all(self) -> None:
         """Unload all idle models. Models with active references are left in place."""
@@ -544,6 +554,5 @@ class Scheduler:
                         to_unload.append((name, self._models[name], "TTL cleanup"))
                         del self._models[name]
             await self._teardown_off_loop(to_unload)
-            async with self._lock:
-                if self._idle_trim_seconds > 0:
-                    self._trim_idle_models_locked(min_idle_seconds=self._idle_trim_seconds)
+            if self._idle_trim_seconds > 0:
+                await self.trim_idle(min_idle_seconds=self._idle_trim_seconds)

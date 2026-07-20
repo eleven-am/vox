@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -196,6 +197,38 @@ def test_generate_after_worker_death_fails_loudly(fake_host_cls):
 
     with pytest.raises(WorkerError, match="not alive"):
         asyncio.run(_collect(backend, "hello", "neutral_female"))
+
+
+def test_worker_backend_trim_forwards_trim_op_with_short_timeout(fake_host_cls):
+    backend = _spawn()
+    host = fake_host_cls.instances[-1]
+    host.responses.append({"trimmed": True})
+
+    backend.trim()
+
+    assert host.requests == [
+        {"payload": {"op": "trim"}, "timeout": module.DEFAULT_TRIM_TIMEOUT_SECONDS}
+    ]
+    assert module.DEFAULT_TRIM_TIMEOUT_SECONDS < module.DEFAULT_REQUEST_TIMEOUT_SECONDS
+
+
+def test_inprocess_backend_trim_empties_cuda_cache_when_available():
+    from vox_voxtral.backends import InProcessOmniBackend
+
+    backend = InProcessOmniBackend(
+        runtime=MagicMock(),
+        tokenizer=MagicMock(),
+        speech_request_cls=MagicMock(),
+        sampling_params=[],
+    )
+    torch = MagicMock()
+    torch.cuda.is_available.return_value = True
+
+    with patch.dict("sys.modules", {"torch": torch}):
+        backend.trim()
+
+    torch.cuda.empty_cache.assert_called_once()
+    torch.cuda.synchronize.assert_called_once()
 
 
 def test_close_closes_host(fake_host_cls):

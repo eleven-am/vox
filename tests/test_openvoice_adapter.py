@@ -343,6 +343,68 @@ class TestOpenVoiceAdapterSynthesis:
             assert converter.extract_se.call_count == 2
             assert converter.convert.called
 
+    def test_trim_clears_base_models_and_next_synthesize_rebuilds(self, tmp_path: Path):
+        torch = MagicMock()
+        torch.cuda.is_available.return_value = False
+        torch.backends.mps.is_available.return_value = False
+        torch.float32 = "float32"
+
+        api = ModuleType("openvoice.api")
+        base_cls = MagicMock()
+        base_model = MagicMock()
+        base_model.tts.return_value = np.arange(44_100, dtype=np.float32)
+        base_model.hps.data.sampling_rate = 22_050
+        base_cls.return_value = base_model
+
+        converter = MagicMock()
+        converter.hps.data.sampling_rate = 22_050
+        api.BaseSpeakerTTS = base_cls
+        api.ToneColorConverter = MagicMock(return_value=converter)
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "torch": torch,
+                "librosa": MagicMock(),
+                "soundfile": MagicMock(),
+                "openvoice": ModuleType("openvoice"),
+                "openvoice.api": api,
+            },
+        ):
+            _clear_openvoice_modules()
+            sys.modules["openvoice"] = ModuleType("openvoice")
+            sys.modules["openvoice.api"] = api
+            from vox_openvoice.adapter import OpenVoiceTTSAdapter
+
+            adapter = OpenVoiceTTSAdapter()
+            adapter._loaded = True
+            adapter._converter = converter
+            adapter._model_root = tmp_path / "openvoice"
+            adapter._BaseSpeakerTTS = base_cls  # type: ignore[attr-defined]
+
+            base_dir = adapter._model_root / "checkpoints" / "base_speakers" / "EN"
+            base_dir.mkdir(parents=True, exist_ok=True)
+            (base_dir / "config.json").write_text("{}", encoding="utf-8")
+            (base_dir / "checkpoint.pth").write_bytes(b"checkpoint")
+
+            import asyncio
+
+            async def collect() -> None:
+                async for _ in adapter.synthesize("Hello OpenVoice"):
+                    pass
+
+            asyncio.run(collect())
+            assert "en" in adapter._base_models
+            assert base_cls.call_count == 1
+
+            adapter.trim()
+            assert adapter._base_models == {}
+            assert adapter._converter is converter
+
+            asyncio.run(collect())
+            assert "en" in adapter._base_models
+            assert base_cls.call_count == 2
+
     def test_synthesize_rejects_unsupported_language(self, tmp_path: Path):
         with patch.dict("sys.modules", {"torch": MagicMock(), "librosa": MagicMock(), "soundfile": MagicMock()}):
             _clear_openvoice_modules()

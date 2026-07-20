@@ -250,6 +250,9 @@ class OpenVoiceTTSAdapter(TTSAdapter):
     def is_loaded(self) -> bool:
         return self._loaded
 
+    def trim(self) -> None:
+        self._base_models.clear()
+
     def _resolve_base_paths(self, language_code: str) -> tuple[Path, Path]:
         assert self._model_root is not None
         subdir = "EN" if language_code == "en" else "ZH"

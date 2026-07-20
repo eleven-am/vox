@@ -17,6 +17,7 @@ import numpy as np
 from vox.core.worker_host import WORKER_FD_ENV, worker_main
 from vox_voxtral.protocol import (
     OP_SYNTHESIZE,
+    OP_TRIM,
     VOXTRAL_TTS_SAMPLE_RATE,
     SynthesizeRequest,
     SynthesizeResponse,
@@ -92,6 +93,18 @@ async def _generate_audio(
     return np.concatenate(chunks).astype(np.float32, copy=False).tobytes()
 
 
+def trim() -> dict[str, Any]:
+    import gc
+
+    import torch
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    return {"trimmed": True}
+
+
 def build_handler(
     runtime: Any,
     speech_request_cls: Any,
@@ -102,6 +115,8 @@ def build_handler(
 ) -> Callable[[dict[str, Any]], dict[str, Any]]:
     def handle(request: dict[str, Any]) -> dict[str, Any]:
         op = request.get("op")
+        if op == OP_TRIM:
+            return trim()
         if op != OP_SYNTHESIZE:
             raise RuntimeError(f"Unsupported op: {op}")
         synthesize = SynthesizeRequest.decode(request)

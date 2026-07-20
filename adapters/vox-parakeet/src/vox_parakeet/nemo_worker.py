@@ -199,11 +199,25 @@ def transcribe(model: Any, path: str, *, word_timestamps: bool) -> dict[str, Any
     }
 
 
+def trim() -> dict[str, Any]:
+    import gc
+
+    import torch
+
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.synchronize()
+    return {"trimmed": True}
+
+
 def build_handler(model: Any) -> Callable[[dict[str, Any]], dict[str, Any]]:
     def handle(request: dict[str, Any]) -> dict[str, Any]:
         op = request.get("op")
         if op == "transcribe":
             return transcribe(model, request["path"], word_timestamps=bool(request.get("word_timestamps")))
+        if op == "trim":
+            return trim()
         raise RuntimeError(f"unknown Parakeet NeMo worker op: {op}")
 
     return handle

@@ -183,6 +183,38 @@ class TestQwen3ASRAdapterInfo:
             assert forced_aligner_cls.from_pretrained.called
             aligner_instance.align.assert_called_once()
 
+    def test_trim_drops_aligner_and_next_aligned_transcribe_reloads(self):
+        torch_mock = _mock_torch()
+        qwen_asr_module, model_cls, forced_aligner_cls = _mock_qwen_asr_module()
+        model_instance = MagicMock()
+        model_instance.processor = MagicMock()
+        model_instance.transcribe.return_value = [SimpleNamespace(text="hello world", language="English")]
+        model_cls.from_pretrained.return_value = model_instance
+
+        aligner_instance = MagicMock()
+        aligner_instance.align.return_value = [[
+            SimpleNamespace(text="hello", start_time=0.0, end_time=0.5, confidence=0.99),
+        ]]
+        forced_aligner_cls.from_pretrained.return_value = aligner_instance
+
+        with patch.dict("sys.modules", {"torch": torch_mock, "qwen_asr": qwen_asr_module, "qwen_tts": MagicMock()}):
+            from vox_qwen.asr_adapter import Qwen3ASRAdapter
+
+            adapter = Qwen3ASRAdapter()
+            with patch("vox_qwen.asr_adapter._supports_flash_attention", return_value=True):
+                adapter.load("local-path", "cuda", _source="Qwen/Qwen3-ASR-0.6B")
+
+            adapter.transcribe(np.ones(16000, dtype=np.float32), word_timestamps=True)
+            assert adapter._aligner is aligner_instance
+            assert forced_aligner_cls.from_pretrained.call_count == 1
+
+            adapter.trim()
+            assert adapter._aligner is None
+
+            adapter.transcribe(np.ones(16000, dtype=np.float32), word_timestamps=True)
+            assert adapter._aligner is aligner_instance
+            assert forced_aligner_cls.from_pretrained.call_count == 2
+
     def test_detect_language_uses_official_runtime(self):
         torch_mock = _mock_torch()
         qwen_asr_module, model_cls, _ = _mock_qwen_asr_module()
