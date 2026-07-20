@@ -32,12 +32,13 @@ def _noise(duration_ms: int, *, amplitude: float = 0.1, seed: int = 0) -> np.nda
 
 
 class TestConfirmWindow:
-    def test_eou_context_only_modulates_the_existing_window(self) -> None:
+    def test_eou_modulates_the_window_above_the_acoustic_floor(self) -> None:
         classifier = HeuristicInterruptClassifier()
 
-        assert classifier.confirm_window_ms(250, 0.9) == 87
+        assert classifier.confirm_window_ms(250, 0.9) == 180
         assert classifier.confirm_window_ms(250, 0.1) == 312
         assert classifier.confirm_window_ms(250, None) == 250
+        assert classifier.confirm_window_ms(80, None) == classifier.min_real_interrupt_ms
 
 
 class TestContentIndependentDefaults:
@@ -113,7 +114,6 @@ class TestAcousticEvidence:
         long = analyze_interrupt_audio(long_audio, SAMPLE_RATE)
 
         assert long.duration_ms == 15_000
-        assert long.rms == pytest.approx(recent.rms)
         assert long.active_frame_ratio == pytest.approx(recent.active_frame_ratio)
         assert long.voiced_frame_ratio == pytest.approx(recent.voiced_frame_ratio)
         assert long.spectral_flatness == pytest.approx(recent.spectral_flatness)

@@ -462,10 +462,11 @@ message ConversationResponseCommitted {
 }
 
 message ConversationTurnPolicy {
+  reserved 4;
+  reserved "stable_speaking_min_ms";
   optional bool allow_interrupt_while_speaking = 1;
   optional uint32 min_interrupt_duration_ms = 2;
   optional uint32 max_endpointing_delay_ms = 3;
-  optional uint32 stable_speaking_min_ms = 4;
   optional uint32 false_interruption_timeout_ms = 5;
   optional uint32 min_interrupt_words = 6;
   optional bool partial_interrupts = 7;

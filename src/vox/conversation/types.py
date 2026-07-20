@@ -97,7 +97,6 @@ class TurnPolicy:
     allow_interrupt_while_speaking: bool = True
     min_interrupt_duration_ms: int = 250
     max_endpointing_delay_ms: int = 3000
-    stable_speaking_min_ms: int = 150
     false_interruption_timeout_ms: int = 2000
     min_interrupt_words: int = 0
     partial_interrupts: bool = True

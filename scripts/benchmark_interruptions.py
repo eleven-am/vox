@@ -15,6 +15,7 @@ from vox.conversation.interrupt import HeuristicInterruptClassifier, looks_like_
 from vox.conversation.interruption_detector import (
     EvidenceBasedInterruptDetector,
     InterruptionDecisionAction,
+    candidate_timer_arming_ms,
 )
 from vox.conversation.types import TurnPolicy
 from vox.streaming.partials import PARTIAL_OVERLAP_MS
@@ -22,6 +23,13 @@ from vox.streaming.types import StreamSessionConfig, StreamTranscript
 
 SAMPLE_RATE = 16_000
 ASSISTANT_TEXT = "The assistant is explaining the appointment and the next steps."
+BENCHMARK_POLICY = TurnPolicy(
+    min_interrupt_duration_ms=420,
+    speaking_interrupt_min_duration_ms=420,
+    speaking_interrupt_min_words=2,
+    aec_warmup_ms=900,
+)
+_WINDOW_CLASSIFIER = HeuristicInterruptClassifier()
 BASELINE_DUCK_SIGNAL_OFFSET_MS = 0
 BASELINE_PARTIAL_WINDOW_MS = 1500
 BASELINE_PARTIAL_STRIDE_MS = 700
@@ -39,6 +47,7 @@ REQUIRED_CATEGORIES = frozenset(
         "keyboard",
         "breath",
         "cough",
+        "phone_vibration",
         "room_noise",
         "assistant_echo",
         "tts_leakage",
@@ -148,6 +157,26 @@ def benchmark_cases() -> tuple[BenchmarkCase, ...]:
             True,
             "timeout",
             duration_ms=420,
+            eou_probability=0.8,
+        ),
+        BenchmarkCase(
+            "warmup_acoustic_barge_in",
+            ("aec_warmup", "tts_playback"),
+            True,
+            "timeout",
+            duration_ms=1200,
+            eou_probability=0.9,
+            aec_warmup=True,
+        ),
+        BenchmarkCase(
+            "correlated_echo_with_late_transcript",
+            ("tts_leakage", "natural_multiword", "tts_playback"),
+            True,
+            "final",
+            transcript="No wait I need to change that",
+            duration_ms=500,
+            eou_probability=0.8,
+            output_echo=True,
         ),
         BenchmarkCase(
             "incomplete_multiword_final",
@@ -212,6 +241,14 @@ def benchmark_cases() -> tuple[BenchmarkCase, ...]:
             transcript="Uh",
             eou_probability=0.03,
             audio_profile="cough",
+        ),
+        BenchmarkCase(
+            "phone_vibration_bursts",
+            ("phone_vibration", "tts_playback"),
+            False,
+            "timeout",
+            duration_ms=600,
+            audio_profile="vibration",
         ),
         BenchmarkCase(
             "quiet_room_noise",
@@ -337,6 +374,18 @@ def _audio(profile: str, duration_ms: int) -> np.ndarray:
                 np.zeros(silence_samples, np.float32),
             ]
         )
+    if profile == "vibration":
+        signal = np.zeros(samples, np.float32)
+        burst_samples = 60 * SAMPLE_RATE // 1000
+        period_samples = 300 * SAMPLE_RATE // 1000
+        t = np.arange(burst_samples) / SAMPLE_RATE
+        burst = (0.2 * np.sin(2 * np.pi * 170 * t)).astype(np.float32)
+        for start in range(0, samples, period_samples):
+            end = min(samples, start + burst_samples)
+            signal[start:end] = burst[: end - start]
+        tail_start = max(0, samples - burst_samples)
+        signal[tail_start:] = burst[: samples - tail_start]
+        return signal
     if profile == "noise":
         return rng.normal(0, 0.15, samples).astype(np.float32)
     if profile == "room":
@@ -362,14 +411,36 @@ def _audio(profile: str, duration_ms: int) -> np.ndarray:
 
 def _detector() -> EvidenceBasedInterruptDetector:
     return EvidenceBasedInterruptDetector(
-        policy=TurnPolicy(
-            min_interrupt_duration_ms=420,
-            speaking_interrupt_min_duration_ms=420,
-            speaking_interrupt_min_words=2,
-            aec_warmup_ms=900,
-        ),
+        policy=BENCHMARK_POLICY,
         classifier=HeuristicInterruptClassifier(),
     )
+
+
+def _confirm_window_ms(case: BenchmarkCase) -> int:
+    return _WINDOW_CLASSIFIER.confirm_window_ms(
+        BENCHMARK_POLICY.min_interrupt_duration_ms,
+        case.eou_probability,
+    )
+
+
+def _new_timer_arming_ms(case: BenchmarkCase) -> int:
+    return candidate_timer_arming_ms(
+        confirm_window_ms=_confirm_window_ms(case),
+        false_interruption_timeout_ms=BENCHMARK_POLICY.false_interruption_timeout_ms,
+        echo_exposed=case.output_echo,
+        evidence_distrust_remaining_ms=BENCHMARK_POLICY.aec_warmup_ms if case.aec_warmup else 0,
+    )
+
+
+def _legacy_timer_window_ms(case: BenchmarkCase) -> int:
+    return max(
+        _confirm_window_ms(case),
+        BENCHMARK_POLICY.speaking_interrupt_min_duration_ms,
+    )
+
+
+def _audio_until_ms(audio: np.ndarray, at_ms: int) -> np.ndarray:
+    return audio[: max(1, at_ms * SAMPLE_RATE // 1000)]
 
 
 def _begin(
@@ -423,6 +494,7 @@ async def _new_decision(case: BenchmarkCase) -> tuple[bool, float | None, str]:
         if partial.action is InterruptionDecisionAction.CONFIRM:
             return True, float(case.partial_at_ms), partial.reason
 
+    confirmation_ms = float(case.duration_ms)
     if case.path == "partial":
         decision = await detector.observe_partial(
             StreamTranscript(
@@ -437,14 +509,15 @@ async def _new_decision(case: BenchmarkCase) -> tuple[bool, float | None, str]:
             now=10.0 + case.duration_ms / 1000,
         )
     elif case.path == "timeout":
+        timer_fires_at_ms = _new_timer_arming_ms(case)
+        confirmation_ms = float(timer_fires_at_ms)
         decision = await detector.evaluate_timeout(
             assistant_text=ASSISTANT_TEXT,
             output_echo=case.output_echo,
-            aec_warmup_remaining_ms=250 if case.aec_warmup else 0,
-            audio=audio,
+            audio=_audio_until_ms(audio, timer_fires_at_ms),
             sample_rate=SAMPLE_RATE,
             last_eou_probability=case.eou_probability,
-            now=10.0 + case.duration_ms / 1000,
+            now=10.0 + timer_fires_at_ms / 1000,
         )
     else:
         if case.path not in {"stale", "restart"}:
@@ -467,22 +540,8 @@ async def _new_decision(case: BenchmarkCase) -> tuple[bool, float | None, str]:
             now=10.0 + case.duration_ms / 1000,
         )
 
-    confirmation_ms = case.duration_ms
-    if decision.action is InterruptionDecisionAction.DEFER and decision.retry_after_ms > 0:
-        elapsed_ms = case.duration_ms + decision.retry_after_ms
-        decision = await detector.evaluate_timeout(
-            assistant_text=ASSISTANT_TEXT,
-            output_echo=case.output_echo,
-            aec_warmup_remaining_ms=0,
-            audio=audio,
-            sample_rate=SAMPLE_RATE,
-            last_eou_probability=case.eou_probability,
-            now=10.0 + elapsed_ms / 1000,
-        )
-        confirmation_ms = elapsed_ms
-
     confirmed = decision.action is InterruptionDecisionAction.CONFIRM
-    latency = float(confirmation_ms) if confirmed else None
+    latency = confirmation_ms if confirmed else None
     return confirmed, latency, decision.reason
 
 
@@ -498,11 +557,13 @@ def _legacy_decision(case: BenchmarkCase) -> tuple[bool, float | None, str]:
     if case.aec_warmup:
         return False, None, "legacy_aec_reject"
 
-    audio = _audio(case.audio_profile, case.duration_ms)
+    window_ms = _legacy_timer_window_ms(case)
+    audio = _audio_until_ms(_audio(case.audio_profile, case.duration_ms), window_ms)
     tail = audio[-min(audio.size, SAMPLE_RATE * 80 // 1000) :]
     tail_rms = float(np.sqrt(np.mean(np.square(tail, dtype=np.float32)))) if tail.size else 0.0
-    confirmed = case.duration_ms >= 180 and tail_rms >= 0.0025
-    return confirmed, float(case.duration_ms) if confirmed else None, "legacy_energy_gate"
+    audio_ms = audio.size * 1000 // SAMPLE_RATE
+    confirmed = audio_ms >= 180 and tail_rms >= 0.0025
+    return confirmed, float(window_ms) if confirmed else None, "legacy_energy_gate"
 
 
 def _score(cases: tuple[BenchmarkCase, ...], predictions: list[bool], latencies: list[float | None]) -> BenchmarkResult:
@@ -598,6 +659,11 @@ async def run_benchmark() -> dict[str, object]:
         BASELINE_PARTIAL_OVERLAP_MS,
     )
     current_duck_signal_offset_ms = 0
+    new_latency_by_name = {case.name: latency for case, latency in zip(cases, new_latencies, strict=True)}
+    new_confirmed_by_name = {case.name: predicted for case, predicted in zip(cases, new_predictions, strict=True)}
+    warmup_case = next(case for case in cases if case.name == "warmup_acoustic_barge_in")
+    warmup_bound_ms = float(_new_timer_arming_ms(warmup_case))
+    evidence_timeout_ms = float(BENCHMARK_POLICY.false_interruption_timeout_ms)
     acceptance = {
         "required_categories_present": not missing_categories,
         "false_positive_reduction_at_least_50_percent": false_positive_reduction >= 0.5,
@@ -606,6 +672,14 @@ async def run_benchmark() -> dict[str, object]:
         "p95_latency_regression_at_most_100_ms": p95_delta <= 100,
         "duck_latency_unchanged": (current_duck_signal_offset_ms <= BASELINE_DUCK_SIGNAL_OFFSET_MS),
         "ordinary_stt_cadence_unchanged": current_stt_cadence == baseline_stt_cadence,
+        "warmup_barge_in_confirms_at_arming_bound_not_timeout": (
+            new_confirmed_by_name["warmup_acoustic_barge_in"]
+            and new_latency_by_name["warmup_acoustic_barge_in"] == warmup_bound_ms
+            and warmup_bound_ms < evidence_timeout_ms
+        ),
+        "correlated_echo_late_transcript_confirms": (
+            new_confirmed_by_name["correlated_echo_with_late_transcript"]
+        ),
     }
     return {
         "baseline": {

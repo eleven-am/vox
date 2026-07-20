@@ -33,6 +33,7 @@ from typing import Any
 import numpy as np
 
 from vox.conversation import response_stream as response_streams
+from vox.conversation import speech_guard as speech_guards
 from vox.conversation import transcripts as transcript_finalization
 from vox.conversation.audio_history import ConversationAudioHistory
 from vox.conversation.audio_output import ResponseAudioOutput
@@ -47,6 +48,7 @@ from vox.conversation.interruption_detector import (
     InterruptionCandidateStatus,
     InterruptionDecision,
     InterruptionDecisionAction,
+    candidate_timer_arming_ms,
 )
 from vox.conversation.profiles import DEFAULT_TURN_PROFILE, resolve_turn_profile
 from vox.conversation.response_lifecycle import (
@@ -701,7 +703,7 @@ class ConversationSession:
         self._tts_task = None
         with suppress(Exception):
             self._interrupt_detector.reset()
-        self._speech_guard.mark_speech_ended()
+        self._speech_guard.mark_speech_ended(self._config.policy.backchannel_end_cooldown_ms)
         self._output_playout_started = False
         self._sm.handle(TurnEvent(type=TurnEventType.RECOVER))
 
@@ -736,24 +738,16 @@ class ConversationSession:
                     assistant_text=self._active_assistant_text(),
                 )
 
-            if self._sm.state == TurnState.SPEAKING and self._speech_guard.flutter_cooldown_active():
-                logger.debug("flutter cooldown active; deferring SPEECH_STARTED state transition")
-                return
             confirm_ms = self._interrupt_detector.confirm_window_ms(
                 self._config.policy.min_interrupt_duration_ms,
                 self._last_eou_probability,
             )
-            if self._sm.state == TurnState.SPEAKING:
-                confirm_ms = max(
-                    confirm_ms,
-                    self._config.policy.speaking_interrupt_min_duration_ms,
-                )
             await self._event_queue.put(
                 TurnEvent(
                     type=TurnEventType.SPEECH_STARTED,
                     timestamp_ms=stream_event.timestamp_ms,
                     payload={
-                        "confirm_window_ms": confirm_ms,
+                        "confirm_window_ms": self._interrupt_timer_arming_ms(confirm_ms),
                         "defer_output_clear": self._sm.state == TurnState.SPEAKING,
                     },
                 )
@@ -788,7 +782,7 @@ class ConversationSession:
             if not stream_event.expects_transcript:
                 self._interrupt_detector.finish(stream_event.utterance_id)
         elif isinstance(stream_event, StreamTranscript) and stream_event.is_partial:
-            if stream_event.text and stream_event.text.strip() and not self._is_in_self_echo_window():
+            if stream_event.text and stream_event.text.strip() and not self._suppresses_transcript_trust():
                 await self._emit(
                     {
                         "type": WIRE_TRANSCRIPT_DELTA,
@@ -1117,14 +1111,8 @@ class ConversationSession:
         if self._output_playout_started:
             return
         self._output_playout_started = True
-        self._arm_aec_warmup()
+        self._speech_guard.arm(speech_guards.TTS_START_WARMUP, self._config.policy.aec_warmup_ms)
         self._mark_agent_speech_started()
-
-    def _arm_aec_warmup(self) -> None:
-        self._speech_guard.arm_aec_warmup(self._config.policy.aec_warmup_ms)
-
-    def _aec_warmup_active(self) -> bool:
-        return self._speech_guard.aec_warmup_active()
 
     def _is_response_uninterruptible(self) -> bool:
         stream = self._response_lifecycle.stream
@@ -1136,15 +1124,29 @@ class ConversationSession:
         self._speech_guard.mark_speech_started()
 
     def _mark_agent_speech_ended(self) -> None:
-        self._speech_guard.mark_speech_ended()
+        self._speech_guard.mark_speech_ended(self._config.policy.backchannel_end_cooldown_ms)
 
-    def _is_in_self_echo_window(self) -> bool:
+    def _suppresses_transcript_trust(self) -> bool:
         if self._sm.state not in {TurnState.SPEAKING, TurnState.PAUSED, TurnState.THINKING}:
             return False
-        return self._speech_guard.in_self_echo_window(self._config.policy.backchannel_end_cooldown_ms)
+        return self._speech_guard.suppresses_transcript_trust(time.monotonic())
 
     def _looks_like_current_output_echo(self) -> bool:
         return self._audio_history.looks_like_current_output_echo()
+
+    def _interrupt_timer_arming_ms(self, confirm_ms: int) -> int:
+        now = time.monotonic()
+        distrust_ms = (
+            self._speech_guard.interrupt_evidence_distrust_remaining_ms(now)
+            if self._speech_guard.suppresses_interrupt_evidence(now)
+            else 0
+        )
+        return candidate_timer_arming_ms(
+            confirm_window_ms=confirm_ms,
+            false_interruption_timeout_ms=self._config.policy.false_interruption_timeout_ms,
+            echo_exposed=self._output_playout_started and self._looks_like_current_output_echo(),
+            evidence_distrust_remaining_ms=distrust_ms,
+        )
 
     async def _execute(
         self,
@@ -1162,7 +1164,7 @@ class ConversationSession:
                 for pending in pending_batch:
                     await self._emit_output_audio(pending.audio, pending.sample_rate, pending.sequence)
             self._audio_output.finish_resume()
-            self._speech_guard.start_flutter_cooldown(self._config.policy.stable_speaking_min_ms)
+            self._speech_guard.arm(speech_guards.RESUME_STABILITY, speech_guards.RESUME_STABILITY_MS)
             if stream is not None and stream.pending_done:
                 await self._complete_response_stream(stream)
 
@@ -1387,11 +1389,6 @@ class ConversationSession:
         resume_on_reject: bool,
     ) -> None:
         if decision.action is InterruptionDecisionAction.DEFER:
-            if decision.candidate_id is not None and decision.retry_after_ms > 0:
-                await self._start_timer(
-                    TimerKey.CONFIRM_INTERRUPT.value,
-                    decision.retry_after_ms,
-                )
             return
         if not decision.newly_decided:
             return
@@ -1439,7 +1436,6 @@ class ConversationSession:
             decision = await self._interrupt_detector.evaluate_timeout(
                 assistant_text=self._active_assistant_text(),
                 output_echo=self._looks_like_current_output_echo(),
-                aec_warmup_remaining_ms=self._speech_guard.aec_warmup_remaining_ms(),
                 audio=audio_tail,
                 sample_rate=TARGET_SAMPLE_RATE,
                 last_eou_probability=self._last_eou_probability,

@@ -1,4 +1,4 @@
-"""Integration tests for v1 extras: anti-flutter cooldown + EOU-modulated confirm window."""
+"""Integration tests for v1 extras: resume-stability suppression + EOU-modulated confirm window."""
 
 from __future__ import annotations
 
@@ -99,7 +99,6 @@ def _build(**policy_kwargs):
     policy = TurnPolicy(**{
         "min_interrupt_duration_ms": 100,
         "max_endpointing_delay_ms": 500,
-        "stable_speaking_min_ms": 150,
         "speaking_interrupt_min_duration_ms": 0,
         "speaking_interrupt_min_words": 0,
         "aec_warmup_ms": 0,
@@ -114,10 +113,10 @@ def _build(**policy_kwargs):
     return session, coll, tts
 
 
-class TestAntiFlutterCooldown:
+class TestResumeStabilitySuppression:
     @pytest.mark.asyncio
-    async def test_second_speech_during_cooldown_is_suppressed(self):
-        session, coll, tts = _build(min_interrupt_duration_ms=80, stable_speaking_min_ms=200)
+    async def test_second_speech_during_resume_window_pauses_with_deferred_timer(self):
+        session, coll, tts = _build(min_interrupt_duration_ms=80)
         await session.start()
 
         await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
@@ -142,14 +141,22 @@ class TestAntiFlutterCooldown:
         await session._forward_stream_event(SpeechStarted(timestamp_ms=50, utterance_id=1))
         await asyncio.sleep(0.01)
 
-        assert session.state == TurnState.SPEAKING
+        assert session.state == TurnState.PAUSED
         assert tts.cancelled is False
+
+        await asyncio.sleep(0.09)
+        assert session.state == TurnState.PAUSED
+        assert tts.cancelled is False
+
+        await asyncio.sleep(0.25)
+        assert session.state == TurnState.INTERRUPTED
+        assert tts.cancelled is True
 
         await session.close()
 
     @pytest.mark.asyncio
     async def test_speech_after_cooldown_elapses_is_honored(self):
-        session, coll, tts = _build(min_interrupt_duration_ms=80, stable_speaking_min_ms=50)
+        session, coll, tts = _build(min_interrupt_duration_ms=80, aec_warmup_ms=50)
         await session.start()
 
         await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
@@ -178,7 +185,7 @@ class TestAntiFlutterCooldown:
     @pytest.mark.asyncio
     async def test_cooldown_still_emits_wire_event_for_ui(self):
         """Even during cooldown, the speech_started wire event should go out."""
-        session, coll, tts = _build(min_interrupt_duration_ms=50, stable_speaking_min_ms=300)
+        session, coll, tts = _build(min_interrupt_duration_ms=50, aec_warmup_ms=300)
         await session.start()
 
         await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
@@ -210,7 +217,7 @@ class TestEouModulatedConfirmWindow:
     @pytest.mark.asyncio
     async def test_high_eou_shortens_confirm_window(self):
         """When last turn had high EOU, barge-in should confirm faster."""
-        session, coll, tts = _build(min_interrupt_duration_ms=300, stable_speaking_min_ms=50)
+        session, coll, tts = _build(min_interrupt_duration_ms=300)
         await session.start()
 
 
@@ -244,7 +251,7 @@ class TestEouModulatedConfirmWindow:
     @pytest.mark.asyncio
     async def test_low_eou_lengthens_confirm_window(self):
         """When last turn had low EOU, skepticism wins — longer confirm window."""
-        session, coll, tts = _build(min_interrupt_duration_ms=100, stable_speaking_min_ms=50)
+        session, coll, tts = _build(min_interrupt_duration_ms=100)
         await session.start()
 
         from vox.streaming.types import StreamTranscript
@@ -276,7 +283,7 @@ class TestEouModulatedConfirmWindow:
     @pytest.mark.asyncio
     async def test_no_prior_turn_falls_back_to_policy_default(self):
         """If no user turn has been committed yet, use policy.min_interrupt_duration_ms."""
-        session, coll, tts = _build(min_interrupt_duration_ms=120, stable_speaking_min_ms=50)
+        session, coll, tts = _build(min_interrupt_duration_ms=120)
         await session.start()
 
 
@@ -313,7 +320,7 @@ class TestEouModulatedConfirmWindow:
         coll = Collector()
         cfg = ConversationConfig(
             stt_model="x:1", tts_model="y:1", voice="default", language="en",
-            policy=TurnPolicy(min_interrupt_duration_ms=50, stable_speaking_min_ms=50),
+            policy=TurnPolicy(min_interrupt_duration_ms=50, aec_warmup_ms=0),
             interrupt_classifier=StrictClassifier(),
         )
         session = ConversationSession(scheduler=Scheduler(tts), config=cfg, on_event=coll)

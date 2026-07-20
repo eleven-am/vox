@@ -20,7 +20,6 @@ TURN_PROFILES: dict[str, TurnPolicy] = {
     DEFAULT_TURN_PROFILE: TurnPolicy(),
     "browser_default": TurnPolicy(
         min_interrupt_duration_ms=220,
-        stable_speaking_min_ms=140,
         false_interruption_timeout_ms=1700,
         min_endpointing_delay_ms=350,
         speaking_interrupt_min_duration_ms=420,
@@ -33,7 +32,6 @@ TURN_PROFILES: dict[str, TurnPolicy] = {
     ),
     "headset": TurnPolicy(
         min_interrupt_duration_ms=180,
-        stable_speaking_min_ms=100,
         false_interruption_timeout_ms=1200,
         min_endpointing_delay_ms=300,
         speaking_interrupt_min_duration_ms=250,
@@ -44,7 +42,6 @@ TURN_PROFILES: dict[str, TurnPolicy] = {
     ),
     "speakerphone": TurnPolicy(
         min_interrupt_duration_ms=260,
-        stable_speaking_min_ms=180,
         false_interruption_timeout_ms=1900,
         min_endpointing_delay_ms=450,
         speaking_interrupt_min_duration_ms=520,
@@ -56,7 +53,6 @@ TURN_PROFILES: dict[str, TurnPolicy] = {
     ),
     "noisy_room": TurnPolicy(
         min_interrupt_duration_ms=320,
-        stable_speaking_min_ms=220,
         false_interruption_timeout_ms=2400,
         min_endpointing_delay_ms=700,
         speaking_interrupt_min_duration_ms=700,

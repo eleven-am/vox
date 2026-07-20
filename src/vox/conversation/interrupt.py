@@ -61,32 +61,26 @@ class AcousticInterruptEvidence:
     """Cheap speech-likeness features computed from an interruption audio tail."""
 
     duration_ms: int
-    rms: float
     tail_rms: float
     active_frame_ratio: float
     voiced_frame_ratio: float
     spectral_flatness: float
-    crest_factor: float
 
     def is_speech_like(
         self,
         *,
         min_duration_ms: int,
-        min_rms: float,
         min_tail_rms: float,
         min_active_frame_ratio: float,
         min_voiced_frame_ratio: float,
         max_spectral_flatness: float,
-        max_crest_factor: float,
     ) -> bool:
         return (
             self.duration_ms >= min_duration_ms
-            and self.rms >= min_rms
             and self.tail_rms >= min_tail_rms
             and self.active_frame_ratio >= min_active_frame_ratio
             and self.voiced_frame_ratio >= min_voiced_frame_ratio
             and self.spectral_flatness <= max_spectral_flatness
-            and self.crest_factor <= max_crest_factor
         )
 
 
@@ -98,17 +92,14 @@ def analyze_interrupt_audio(
     analysis_window_ms: int = 1200,
 ) -> AcousticInterruptEvidence:
     if audio is None or audio.size == 0 or sample_rate <= 0:
-        return AcousticInterruptEvidence(0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0)
+        return AcousticInterruptEvidence(0, 0.0, 0.0, 0.0, 1.0)
 
     full_signal = np.nan_to_num(np.asarray(audio, dtype=np.float32), copy=False)
     duration_ms = int(full_signal.size * 1000 / sample_rate)
     analysis_samples = max(1, analysis_window_ms * sample_rate // 1000)
     signal = full_signal[-analysis_samples:]
-    rms = _rms(signal)
     tail_samples = min(signal.size, max(1, tail_check_ms * sample_rate // 1000))
     tail_rms = _rms(signal[-tail_samples:])
-    peak = float(np.max(np.abs(signal))) if signal.size else 0.0
-    crest_factor = peak / max(rms, 1e-8)
 
     frame_size = max(32, int(sample_rate * 0.04))
     hop_size = max(16, frame_size // 2)
@@ -123,12 +114,10 @@ def analyze_interrupt_audio(
     if not active:
         return AcousticInterruptEvidence(
             duration_ms,
-            rms,
             tail_rms,
             active_frame_ratio,
             0.0,
             1.0,
-            crest_factor,
         )
 
     periodicities = [_frame_periodicity(frame, sample_rate) for frame in active]
@@ -136,12 +125,10 @@ def analyze_interrupt_audio(
     flatness = float(np.median([_spectral_flatness(frame) for frame in active]))
     return AcousticInterruptEvidence(
         duration_ms=duration_ms,
-        rms=rms,
         tail_rms=tail_rms,
         active_frame_ratio=active_frame_ratio,
         voiced_frame_ratio=voiced_frame_ratio,
         spectral_flatness=flatness,
-        crest_factor=crest_factor,
     )
 
 
@@ -231,16 +218,13 @@ class HeuristicInterruptClassifier:
     low_eou_threshold: float = 0.3
     high_eou_multiplier: float = 0.35
     low_eou_multiplier: float = 1.25
-    min_window_ms: int = 75
     tail_check_ms: int = 80
     min_real_interrupt_ms: int = 180
     min_interrupt_words: int = 0
-    min_rms: float = 0.0025
     min_tail_rms: float = 0.0025
     min_active_frame_ratio: float = 0.55
     min_voiced_frame_ratio: float = 0.20
     max_spectral_flatness: float = 0.70
-    max_crest_factor: float = 12.0
     interrupt_keywords: frozenset[str] = field(default_factory=frozenset)
     language: str | None = None
 
@@ -253,14 +237,14 @@ class HeuristicInterruptClassifier:
         last_eou_probability: float | None,
     ) -> int:
         if last_eou_probability is None:
-            return base_ms
-        if last_eou_probability >= self.high_eou_threshold:
+            scaled = base_ms
+        elif last_eou_probability >= self.high_eou_threshold:
             scaled = int(base_ms * self.high_eou_multiplier)
         elif last_eou_probability < self.low_eou_threshold:
             scaled = int(base_ms * self.low_eou_multiplier)
         else:
             scaled = base_ms
-        return max(scaled, self.min_window_ms)
+        return max(scaled, self.min_real_interrupt_ms)
 
     def should_short_circuit(self, partial_transcript: str | None) -> bool:
         if not partial_transcript or not self.interrupt_keywords:
@@ -301,10 +285,8 @@ class HeuristicInterruptClassifier:
         )
         return evidence.is_speech_like(
             min_duration_ms=max(self.min_real_interrupt_ms, min(vad_active_duration_ms, 250)),
-            min_rms=self.min_rms,
             min_tail_rms=0.0 if supported_eou else self.min_tail_rms,
             min_active_frame_ratio=self.min_active_frame_ratio,
             min_voiced_frame_ratio=self.min_voiced_frame_ratio,
             max_spectral_flatness=self.max_spectral_flatness,
-            max_crest_factor=self.max_crest_factor,
         )

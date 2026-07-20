@@ -196,7 +196,6 @@ def test_parse_session_update_accepts_turn_policy_overrides():
                 "tts_model": "y:1",
                 "turn_policy": {
                     "min_interrupt_duration_ms": 150,
-                    "stable_speaking_min_ms": 100,
                     "speaking_interrupt_min_duration_ms": 650,
                     "speaking_interrupt_min_words": 3,
                     "self_echo_min_words": 4,
@@ -207,7 +206,6 @@ def test_parse_session_update_accepts_turn_policy_overrides():
     )
     assert config.policy is not None
     assert config.policy.min_interrupt_duration_ms == 150
-    assert config.policy.stable_speaking_min_ms == 100
     assert config.policy.speaking_interrupt_min_duration_ms == 650
     assert config.policy.speaking_interrupt_min_words == 3
     assert config.policy.self_echo_min_words == 4

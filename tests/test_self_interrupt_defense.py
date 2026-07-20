@@ -1,15 +1,19 @@
-"""Tests for AEC warmup handling and per-utterance allow_interruptions."""
+"""Tests for playout-distrust suppression and per-utterance allow_interruptions."""
 
 from __future__ import annotations
 
 import asyncio
+import time
 from contextlib import asynccontextmanager
 
 import numpy as np
 import pytest
 
 from vox.conversation import TurnPolicy, TurnState
+from vox.conversation.interruption_detector import InterruptionCandidateStatus
 from vox.conversation.session import ConversationConfig, ConversationSession
+from vox.conversation.speech_guard import RESUME_STABILITY, RESUME_STABILITY_MS, TTS_START_WARMUP
+from vox.conversation.types import TimerKey
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
 from vox.streaming.types import SpeechStarted
@@ -80,7 +84,6 @@ def _build(**policy_kwargs):
         **{
             "min_interrupt_duration_ms": 80,
             "max_endpointing_delay_ms": 500,
-            "stable_speaking_min_ms": 50,
             "speaking_interrupt_min_duration_ms": 80,
             "aec_warmup_ms": 250,
             **policy_kwargs,
@@ -153,7 +156,7 @@ class TestAECWarmupCapture:
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_warmup_does_not_rearm_on_pause_resume(self):
+    async def test_resume_arms_resume_stability_without_rearming_start_warmup(self):
         session, _, _ = _build(aec_warmup_ms=200, speaking_interrupt_min_duration_ms=80)
         await session.start()
 
@@ -162,7 +165,8 @@ class TestAECWarmupCapture:
         assert session.state == TurnState.SPEAKING
 
         await asyncio.sleep(0.22)
-        assert not session._aec_warmup_active()
+        assert not session._speech_guard.suppresses_interrupt_evidence(time.monotonic())
+        warmup_until = session._speech_guard.contribution_until(TTS_START_WARMUP)
 
         from vox.conversation.types import TurnEvent, TurnEventType
 
@@ -173,7 +177,8 @@ class TestAECWarmupCapture:
         await asyncio.sleep(0.01)
 
         assert session.state == TurnState.SPEAKING
-        assert not session._aec_warmup_active()
+        assert session._speech_guard.contribution_until(TTS_START_WARMUP) == warmup_until
+        assert session._speech_guard.suppresses_interrupt_evidence(time.monotonic())
 
         await session.close()
 
@@ -185,7 +190,7 @@ class TestAECWarmupCapture:
         await session.submit_response_text("hello")
         await asyncio.sleep(0.1)
         assert session.state == TurnState.SPEAKING
-        assert session._aec_warmup_active()
+        assert session._speech_guard.suppresses_interrupt_evidence(time.monotonic())
 
         ring_size_before = session._audio_history.mic_size
         audio = np.full(int(0.04 * 16_000), 0.1, dtype=np.float32).astype(np.float32).tobytes()
@@ -204,7 +209,7 @@ class TestAECWarmupCapture:
         await session.submit_response_text("hello")
         await asyncio.sleep(0.1)
         assert session.state == TurnState.SPEAKING
-        assert not session._aec_warmup_active()
+        assert not session._speech_guard.suppresses_interrupt_evidence(time.monotonic())
 
         baseline_calls = len(call_log)
         audio = np.full(int(0.04 * 16_000), 0.1, dtype=np.float32).astype(np.float32).tobytes()
@@ -226,7 +231,7 @@ class TestAECWarmupCapture:
         await session.start()
         await session.submit_response_text("The assistant is speaking.")
         await asyncio.sleep(0.1)
-        assert session._aec_warmup_active()
+        assert session._speech_guard.suppresses_interrupt_evidence(time.monotonic())
 
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
         await asyncio.sleep(0.12)
@@ -264,8 +269,8 @@ class TestWarmupArmingAlignedToPlayout:
         await asyncio.sleep(0.01)
 
         assert session.state == TurnState.SPEAKING
-        assert not session._aec_warmup_active()
-        assert session._speech_guard.aec_warmup_until == 0.0
+        assert not session._speech_guard.suppresses_interrupt_evidence(time.monotonic())
+        assert session._speech_guard.contribution_until(TTS_START_WARMUP) == 0.0
 
         await session.close()
 
@@ -278,7 +283,7 @@ class TestWarmupArmingAlignedToPlayout:
         await asyncio.sleep(0.1)
 
         assert session.state == TurnState.SPEAKING
-        assert session._aec_warmup_active()
+        assert session._speech_guard.suppresses_interrupt_evidence(time.monotonic())
 
         await session.close()
 
@@ -291,7 +296,7 @@ class TestWarmupArmingAlignedToPlayout:
         await session.submit_response_text("hello")
         await asyncio.sleep(0.1)
 
-        assert not session._aec_warmup_active()
+        assert not session._speech_guard.suppresses_interrupt_evidence(time.monotonic())
         assert session._audio_history.output_size == 0
 
         played = np.full(320, 0.02, dtype=np.float32)
@@ -299,8 +304,114 @@ class TestWarmupArmingAlignedToPlayout:
 
         session.observe_output_playout(float32_to_pcm16(played), 16_000)
 
-        assert session._aec_warmup_active()
+        assert session._speech_guard.suppresses_interrupt_evidence(time.monotonic())
         assert session._audio_history.output_size == 320
+
+        await session.close()
+
+
+class TestWarmupBargeInArming:
+    @pytest.mark.asyncio
+    async def test_warmup_barge_in_pauses_and_arms_timer_just_past_distrust_window(self):
+        session, _, _ = _build(aec_warmup_ms=250)
+        await session.start()
+
+        await session.submit_response_text("hello")
+        await asyncio.sleep(0.1)
+        assert session.state == TurnState.SPEAKING
+        assert session._speech_guard.suppresses_interrupt_evidence(time.monotonic())
+
+        armed: list[tuple[str, int]] = []
+        original_start = session._timer_registry.start
+
+        async def spy(key: str, duration_ms: int) -> None:
+            armed.append((key, duration_ms))
+            await original_start(key, duration_ms)
+
+        session._timer_registry.start = spy
+
+        warmup_until = session._speech_guard.contribution_until(TTS_START_WARMUP)
+        before = time.monotonic()
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
+        await asyncio.sleep(0.03)
+
+        assert session.state == TurnState.PAUSED
+        durations = [duration for key, duration in armed if key == TimerKey.CONFIRM_INTERRUPT.value]
+        assert len(durations) == 1
+        expected = int((warmup_until - before) * 1000) + 180
+        assert 180 < durations[0] < session._config.policy.false_interruption_timeout_ms
+        assert abs(durations[0] - expected) <= 75
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_stability_window_keeps_production_magnitude(self):
+        assert RESUME_STABILITY_MS == 150
+
+        session, _, _ = _build(aec_warmup_ms=750)
+        await session.start()
+
+        from vox.conversation.types import TurnEvent, TurnEventType
+
+        await session.submit_response_text("hello")
+        await asyncio.sleep(0.1)
+        assert session.state == TurnState.SPEAKING
+
+        await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
+        await asyncio.sleep(0.01)
+        assert session.state == TurnState.PAUSED
+        await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STOPPED))
+        await asyncio.sleep(0.02)
+        assert session.state == TurnState.SPEAKING
+
+        remaining_s = session._speech_guard.contribution_until(RESUME_STABILITY) - time.monotonic()
+        assert 0.05 < remaining_s <= RESUME_STABILITY_MS / 1000
+
+        await session.close()
+
+
+class TestTerminalTimeoutResolution:
+    @pytest.mark.asyncio
+    async def test_candidate_with_no_events_after_timer_reaches_terminal_decision(self):
+        session, coll, _ = _build(aec_warmup_ms=0)
+        await session.start()
+
+        await session.submit_response_text("hello")
+        await asyncio.sleep(0.1)
+        assert session.state == TurnState.SPEAKING
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
+        await asyncio.sleep(0.35)
+
+        candidate = session._interrupt_detector.current()
+        assert candidate is not None
+        assert candidate.status is not InterruptionCandidateStatus.PENDING
+        assert not session._timer_registry.has_active(TimerKey.CONFIRM_INTERRUPT.value)
+        decided = coll.by_type("interruption.detected") + coll.by_type("interruption.false_positive")
+        assert decided
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_suppressed_candidate_timer_still_resolves_terminally(self):
+        session, _, _ = _build(aec_warmup_ms=500, false_interruption_timeout_ms=150)
+        await session.start()
+
+        await session.submit_response_text("hello")
+        await asyncio.sleep(0.1)
+        assert session._speech_guard.suppresses_interrupt_evidence(time.monotonic())
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
+        await asyncio.sleep(0.05)
+        assert session.state == TurnState.PAUSED
+        assert session._timer_registry.has_active(TimerKey.CONFIRM_INTERRUPT.value)
+
+        await asyncio.sleep(0.3)
+
+        candidate = session._interrupt_detector.current()
+        assert candidate is not None
+        assert candidate.status is not InterruptionCandidateStatus.PENDING
+        assert not session._timer_registry.has_active(TimerKey.CONFIRM_INTERRUPT.value)
 
         await session.close()
 

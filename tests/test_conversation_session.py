@@ -174,7 +174,7 @@ def _build_session(
         tts_model="fake-tts:latest",
         voice="default",
         language="en",
-        policy=policy or TurnPolicy(min_interrupt_duration_ms=50, max_endpointing_delay_ms=200),
+        policy=policy or TurnPolicy(min_interrupt_duration_ms=50, max_endpointing_delay_ms=200, aec_warmup_ms=0),
         interrupt_classifier=interrupt_classifier or _AcceptAllClassifier(),
         audio_preprocessor=audio_preprocessor,
         pace_response_done_to_audio=pace_response_done_to_audio,
@@ -961,7 +961,7 @@ class TestBargeIn:
         tts = ScriptedTTSAdapter(chunks=40, inter_chunk_delay=0.02)
         session, collector, _ = _build_session(
             adapter=tts,
-            policy=TurnPolicy(min_interrupt_duration_ms=500, max_endpointing_delay_ms=200),
+            policy=TurnPolicy(min_interrupt_duration_ms=500, max_endpointing_delay_ms=200, aec_warmup_ms=0),
         )
         await session.start()
         await session.submit_response_text("long reply")
@@ -989,7 +989,7 @@ class TestBargeIn:
         tts = ScriptedTTSAdapter(chunks=20, inter_chunk_delay=0.02)
         session, collector, _ = _build_session(
             adapter=tts,
-            policy=TurnPolicy(min_interrupt_duration_ms=50, max_endpointing_delay_ms=200),
+            policy=TurnPolicy(min_interrupt_duration_ms=50, max_endpointing_delay_ms=200, aec_warmup_ms=0),
         )
         await session.start()
 
@@ -1038,7 +1038,7 @@ class TestBargeIn:
             tts_model="fake-tts:latest",
             voice="default",
             language="en",
-            policy=TurnPolicy(min_interrupt_duration_ms=50, max_endpointing_delay_ms=200),
+            policy=TurnPolicy(min_interrupt_duration_ms=50, max_endpointing_delay_ms=200, aec_warmup_ms=0),
             interrupt_classifier=_AcceptAllClassifier(),
         )
         session = ConversationSession(scheduler=scheduler, config=config, on_event=collector)
@@ -1095,7 +1095,7 @@ class TestBargeIn:
         tts = ScriptedTTSAdapter(chunks=20, inter_chunk_delay=0.02)
         session, collector, _ = _build_session(
             adapter=tts,
-            policy=TurnPolicy(min_interrupt_duration_ms=100, max_endpointing_delay_ms=200),
+            policy=TurnPolicy(min_interrupt_duration_ms=100, max_endpointing_delay_ms=200, aec_warmup_ms=0),
         )
         await session.start()
 
@@ -1134,7 +1134,7 @@ class TestBargeIn:
             tts_model="fake-tts:latest",
             voice="default",
             language="en",
-            policy=TurnPolicy(min_interrupt_duration_ms=500, max_endpointing_delay_ms=200),
+            policy=TurnPolicy(min_interrupt_duration_ms=500, max_endpointing_delay_ms=200, aec_warmup_ms=0),
             interrupt_classifier=HeuristicInterruptClassifier(
                 interrupt_keywords=frozenset({"stop"}),
             ),
@@ -1176,7 +1176,7 @@ class TestBargeIn:
         tts = ScriptedTTSAdapter(chunks=1, inter_chunk_delay=0.01)
         session, _, _ = _build_session(
             adapter=tts,
-            policy=TurnPolicy(min_interrupt_duration_ms=50, max_endpointing_delay_ms=200),
+            policy=TurnPolicy(min_interrupt_duration_ms=50, max_endpointing_delay_ms=200, aec_warmup_ms=0),
         )
         await session.start()
 
@@ -1218,7 +1218,7 @@ class TestBargeIn:
             tts_model="fake-tts:latest",
             voice="default",
             language="en",
-            policy=TurnPolicy(min_interrupt_duration_ms=500, max_endpointing_delay_ms=200),
+            policy=TurnPolicy(min_interrupt_duration_ms=500, max_endpointing_delay_ms=200, aec_warmup_ms=0),
             interrupt_classifier=HeuristicInterruptClassifier(
                 interrupt_keywords=frozenset({"stop"}),
             ),
@@ -1266,7 +1266,7 @@ class TestBargeIn:
             tts_model="fake-tts:latest",
             voice="default",
             language="en",
-            policy=TurnPolicy(partial_interrupts=False),
+            policy=TurnPolicy(partial_interrupts=False, aec_warmup_ms=0),
             interrupt_classifier=HeuristicInterruptClassifier(),
         )
         session = ConversationSession(scheduler=scheduler, config=config, on_event=collector)
@@ -1279,7 +1279,7 @@ class TestBargeIn:
         tts = ScriptedTTSAdapter(chunks=20, inter_chunk_delay=0.01)
         session, collector, _ = _build_session(
             adapter=tts,
-            policy=TurnPolicy(min_interrupt_duration_ms=200, max_endpointing_delay_ms=500),
+            policy=TurnPolicy(min_interrupt_duration_ms=200, max_endpointing_delay_ms=500, aec_warmup_ms=0),
         )
         await session.start()
 
@@ -1444,7 +1444,7 @@ class TestEndpointingFallback:
     async def test_endpointing_timer_forces_turn_end(self):
 
         session, collector, _ = _build_session(
-            policy=TurnPolicy(max_endpointing_delay_ms=50, min_interrupt_duration_ms=300),
+            policy=TurnPolicy(max_endpointing_delay_ms=50, min_interrupt_duration_ms=300, aec_warmup_ms=0),
         )
         await session.start()
 
@@ -1462,7 +1462,7 @@ class TestEndpointingFallback:
     @pytest.mark.asyncio
     async def test_transcript_after_speech_stop_waits_for_continuation_window(self):
         session, collector, _ = _build_session(
-            policy=TurnPolicy(max_endpointing_delay_ms=3000, min_interrupt_duration_ms=300),
+            policy=TurnPolicy(max_endpointing_delay_ms=3000, min_interrupt_duration_ms=300, aec_warmup_ms=0),
         )
         await session.start()
 
@@ -1502,6 +1502,7 @@ class TestEndpointingFallback:
                 max_endpointing_delay_ms=50,
                 min_interrupt_duration_ms=300,
                 dynamic_endpointing=False,
+                aec_warmup_ms=0,
             ),
         )
         await session.start()
@@ -1537,7 +1538,7 @@ class TestEndpointingFallback:
     @pytest.mark.asyncio
     async def test_endpointing_does_not_wait_when_no_transcript_is_expected(self):
         session, collector, _ = _build_session(
-            policy=TurnPolicy(max_endpointing_delay_ms=50, min_interrupt_duration_ms=300),
+            policy=TurnPolicy(max_endpointing_delay_ms=50, min_interrupt_duration_ms=300, aec_warmup_ms=0),
         )
         await session.start()
 
@@ -1559,6 +1560,7 @@ class TestEndpointingFallback:
                 max_endpointing_delay_ms=100,
                 min_interrupt_duration_ms=300,
                 dynamic_endpointing=False,
+                aec_warmup_ms=0,
             ),
         )
         await session.start()
@@ -1603,7 +1605,7 @@ class TestEndpointingFallback:
     @pytest.mark.asyncio
     async def test_policy_vad_min_silence_reaches_vad_config(self):
         session, _, _ = _build_session(
-            policy=TurnPolicy(vad_min_silence_ms=550),
+            policy=TurnPolicy(vad_min_silence_ms=550, aec_warmup_ms=0),
         )
         assert session._pipeline._vad.config.min_silence_duration_ms == 550
 

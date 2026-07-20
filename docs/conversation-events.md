@@ -304,7 +304,6 @@ Example session update:
       "allow_interrupt_while_speaking": true,
       "min_interrupt_duration_ms": 250,
       "max_endpointing_delay_ms": 3000,
-      "stable_speaking_min_ms": 150,
       "false_interruption_timeout_ms": 2000,
       "min_interrupt_words": 0,
       "partial_interrupts": true,
@@ -314,6 +313,8 @@ Example session update:
       "speaking_interrupt_min_words": 2,
       "self_echo_min_words": 3,
       "self_echo_min_overlap": 0.7,
+      "aec_warmup_ms": 750,
+      "backchannel_end_cooldown_ms": 1500,
       "vad_min_silence_ms": 1000
     }
   }
@@ -537,11 +538,20 @@ or "wait". Natural single-word interruptions remain valid when acoustic,
 partial-stability, or EOU evidence supports them.
 
 Output correlation and AEC warm-up are uncertainty signals, not immediate
-vetoes. Vox keeps the same candidate pending for a bounded evidence window so a
-genuine partial or final transcript can still confirm speech mixed with leaked
-assistant playback. If no supporting evidence arrives, the detector rejects the
-candidate and resumes held output. Starting or replacing an assistant response
-clears any older candidate, so a delayed final cannot cancel the new response.
+vetoes. Each candidate arms exactly one confirmation timer, and its expiry is
+terminal. The timer duration is chosen up front so distrusted evidence never
+forces an early terminal decision: normally it is the EOU-modulated confirm
+window; while a TTS-start warm-up or a short fixed resume-stability window
+(150 ms) still distrusts acoustic evidence, the timer lands just past that
+window's expiry; and when recent mic audio already correlates with active
+assistant playout, the timer arms at `false_interruption_timeout_ms`, because
+echo cannot be acoustically cleared earlier. All durations are bounded by
+`false_interruption_timeout_ms`. Speech starting mid-playback still pauses
+output immediately, and a genuine partial or final transcript can confirm at
+any time before the timer fires. If no supporting evidence arrives by expiry,
+the detector rejects the candidate and resumes held output. Starting or
+replacing an assistant response clears any older candidate, so a delayed final
+cannot cancel the new response.
 
 Acoustic analysis is bounded to the most recent 1200 ms. The detector still
 uses the complete VAD and transcript durations, but long utterances do not make

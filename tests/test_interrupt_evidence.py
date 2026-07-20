@@ -7,6 +7,7 @@ from vox.conversation.interrupt import HeuristicInterruptClassifier
 from vox.conversation.interruption_detector import (
     EvidenceBasedInterruptDetector,
     InterruptionDecisionAction,
+    candidate_timer_arming_ms,
 )
 from vox.conversation.types import TurnPolicy
 from vox.streaming.types import StreamTranscript
@@ -49,6 +50,78 @@ def _begin(detector: EvidenceBasedInterruptDetector, *, utterance_id: int = 1) -
         started_at=10.0,
         assistant_text="The assistant is still speaking.",
     )
+
+
+def test_timer_arming_uses_confirm_window_without_distrust() -> None:
+    assert (
+        candidate_timer_arming_ms(
+            confirm_window_ms=180,
+            false_interruption_timeout_ms=2000,
+            echo_exposed=False,
+            evidence_distrust_remaining_ms=0,
+        )
+        == 180
+    )
+
+
+def test_timer_arming_lands_just_past_distrust_expiry() -> None:
+    assert (
+        candidate_timer_arming_ms(
+            confirm_window_ms=180,
+            false_interruption_timeout_ms=2000,
+            echo_exposed=False,
+            evidence_distrust_remaining_ms=750,
+        )
+        == 930
+    )
+
+
+def test_timer_arming_is_bounded_by_evidence_timeout() -> None:
+    assert (
+        candidate_timer_arming_ms(
+            confirm_window_ms=180,
+            false_interruption_timeout_ms=600,
+            echo_exposed=False,
+            evidence_distrust_remaining_ms=750,
+        )
+        == 600
+    )
+
+
+def test_timer_arming_uses_evidence_timeout_when_echo_exposed() -> None:
+    assert (
+        candidate_timer_arming_ms(
+            confirm_window_ms=180,
+            false_interruption_timeout_ms=2000,
+            echo_exposed=True,
+            evidence_distrust_remaining_ms=0,
+        )
+        == 2000
+    )
+
+
+@pytest.mark.asyncio
+async def test_output_echo_candidate_confirms_on_late_genuine_final() -> None:
+    detector = _detector()
+    _begin(detector)
+
+    detector.mark_speech_stopped(utterance_id=1, stopped_at=10.5, expects_transcript=True)
+    decision = await detector.observe_final(
+        StreamTranscript(
+            text="No wait I need to change that.",
+            audio_duration_ms=500,
+            eou_probability=0.8,
+            utterance_id=1,
+        ),
+        assistant_text="The assistant is still speaking.",
+        output_echo=True,
+        audio=_voice(500),
+        sample_rate=SAMPLE_RATE,
+        now=10.5,
+    )
+
+    assert decision.action is InterruptionDecisionAction.CONFIRM
+    assert decision.reason == "supported_final_transcript"
 
 
 @pytest.mark.asyncio
@@ -175,7 +248,6 @@ async def test_timeout_uses_acoustic_speech_likeness_not_energy_alone() -> None:
     voice = await voice_detector.evaluate_timeout(
         assistant_text="The assistant is still speaking.",
         output_echo=False,
-        aec_warmup_remaining_ms=0,
         audio=_voice(600),
         sample_rate=SAMPLE_RATE,
         last_eou_probability=None,
@@ -187,7 +259,6 @@ async def test_timeout_uses_acoustic_speech_likeness_not_energy_alone() -> None:
     noise = await noise_detector.evaluate_timeout(
         assistant_text="The assistant is still speaking.",
         output_echo=False,
-        aec_warmup_remaining_ms=0,
         audio=_noise(600, seed=4),
         sample_rate=SAMPLE_RATE,
         last_eou_probability=None,
@@ -221,27 +292,25 @@ async def test_self_echo_and_output_echo_reject_without_cancelling() -> None:
     output_echo = await output_detector.evaluate_timeout(
         assistant_text="The assistant is still speaking.",
         output_echo=True,
-        aec_warmup_remaining_ms=0,
         audio=_voice(600),
         sample_rate=SAMPLE_RATE,
         last_eou_probability=None,
         now=10.6,
     )
-    assert output_echo.action is InterruptionDecisionAction.DEFER
-    assert output_echo.reason == "output_echo_waiting_for_transcript"
-    assert output_echo.retry_after_ms > 0
+    assert output_echo.action is InterruptionDecisionAction.REJECT
+    assert output_echo.reason == "output_echo_timeout"
+    assert output_echo.newly_decided
 
-    timed_out = await output_detector.evaluate_timeout(
+    repeated = await output_detector.evaluate_timeout(
         assistant_text="The assistant is still speaking.",
         output_echo=True,
-        aec_warmup_remaining_ms=0,
         audio=_voice(2100),
         sample_rate=SAMPLE_RATE,
         last_eou_probability=None,
         now=12.1,
     )
-    assert timed_out.action is InterruptionDecisionAction.REJECT
-    assert timed_out.reason == "output_echo_timeout"
+    assert repeated.action is InterruptionDecisionAction.REJECT
+    assert not repeated.newly_decided
 
 
 @pytest.mark.asyncio

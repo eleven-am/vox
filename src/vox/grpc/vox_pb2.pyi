@@ -691,11 +691,10 @@ class ConversationResponseCommitted(_message.Message):
     def __init__(self, response_id: _Optional[str] = ..., generation_id: _Optional[str] = ...) -> None: ...
 
 class ConversationTurnPolicy(_message.Message):
-    __slots__ = ("allow_interrupt_while_speaking", "min_interrupt_duration_ms", "max_endpointing_delay_ms", "stable_speaking_min_ms", "false_interruption_timeout_ms", "min_interrupt_words", "partial_interrupts", "dynamic_endpointing", "min_endpointing_delay_ms", "speaking_interrupt_min_duration_ms", "speaking_interrupt_min_words", "self_echo_min_words", "self_echo_min_overlap", "aec_warmup_ms", "backchannel_end_cooldown_ms", "vad_min_silence_ms")
+    __slots__ = ("allow_interrupt_while_speaking", "min_interrupt_duration_ms", "max_endpointing_delay_ms", "false_interruption_timeout_ms", "min_interrupt_words", "partial_interrupts", "dynamic_endpointing", "min_endpointing_delay_ms", "speaking_interrupt_min_duration_ms", "speaking_interrupt_min_words", "self_echo_min_words", "self_echo_min_overlap", "aec_warmup_ms", "backchannel_end_cooldown_ms", "vad_min_silence_ms")
     ALLOW_INTERRUPT_WHILE_SPEAKING_FIELD_NUMBER: _ClassVar[int]
     MIN_INTERRUPT_DURATION_MS_FIELD_NUMBER: _ClassVar[int]
     MAX_ENDPOINTING_DELAY_MS_FIELD_NUMBER: _ClassVar[int]
-    STABLE_SPEAKING_MIN_MS_FIELD_NUMBER: _ClassVar[int]
     FALSE_INTERRUPTION_TIMEOUT_MS_FIELD_NUMBER: _ClassVar[int]
     MIN_INTERRUPT_WORDS_FIELD_NUMBER: _ClassVar[int]
     PARTIAL_INTERRUPTS_FIELD_NUMBER: _ClassVar[int]
@@ -711,7 +710,6 @@ class ConversationTurnPolicy(_message.Message):
     allow_interrupt_while_speaking: bool
     min_interrupt_duration_ms: int
     max_endpointing_delay_ms: int
-    stable_speaking_min_ms: int
     false_interruption_timeout_ms: int
     min_interrupt_words: int
     partial_interrupts: bool
@@ -724,7 +722,7 @@ class ConversationTurnPolicy(_message.Message):
     aec_warmup_ms: int
     backchannel_end_cooldown_ms: int
     vad_min_silence_ms: int
-    def __init__(self, allow_interrupt_while_speaking: bool = ..., min_interrupt_duration_ms: _Optional[int] = ..., max_endpointing_delay_ms: _Optional[int] = ..., stable_speaking_min_ms: _Optional[int] = ..., false_interruption_timeout_ms: _Optional[int] = ..., min_interrupt_words: _Optional[int] = ..., partial_interrupts: bool = ..., dynamic_endpointing: bool = ..., min_endpointing_delay_ms: _Optional[int] = ..., speaking_interrupt_min_duration_ms: _Optional[int] = ..., speaking_interrupt_min_words: _Optional[int] = ..., self_echo_min_words: _Optional[int] = ..., self_echo_min_overlap: _Optional[float] = ..., aec_warmup_ms: _Optional[int] = ..., backchannel_end_cooldown_ms: _Optional[int] = ..., vad_min_silence_ms: _Optional[int] = ...) -> None: ...
+    def __init__(self, allow_interrupt_while_speaking: bool = ..., min_interrupt_duration_ms: _Optional[int] = ..., max_endpointing_delay_ms: _Optional[int] = ..., false_interruption_timeout_ms: _Optional[int] = ..., min_interrupt_words: _Optional[int] = ..., partial_interrupts: bool = ..., dynamic_endpointing: bool = ..., min_endpointing_delay_ms: _Optional[int] = ..., speaking_interrupt_min_duration_ms: _Optional[int] = ..., speaking_interrupt_min_words: _Optional[int] = ..., self_echo_min_words: _Optional[int] = ..., self_echo_min_overlap: _Optional[float] = ..., aec_warmup_ms: _Optional[int] = ..., backchannel_end_cooldown_ms: _Optional[int] = ..., vad_min_silence_ms: _Optional[int] = ...) -> None: ...
 
 class ConversationSessionUpdate(_message.Message):
     __slots__ = ("stt_model", "tts_model", "voice", "language", "sample_rate", "policy", "vad_backend", "turn_detector", "turn_profile", "include_word_timestamps")

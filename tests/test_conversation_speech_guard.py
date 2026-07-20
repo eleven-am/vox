@@ -1,6 +1,14 @@
 from __future__ import annotations
 
-from vox.conversation.speech_guard import AssistantSpeechGuard
+import pytest
+
+from vox.conversation.speech_guard import (
+    RESUME_STABILITY,
+    RESUME_STABILITY_MS,
+    TTS_START_WARMUP,
+    TTS_TAIL,
+    AssistantSpeechGuard,
+)
 
 
 class FakeClock:
@@ -14,71 +22,140 @@ class FakeClock:
         self.now += seconds
 
 
-def test_aec_warmup_uses_injected_clock() -> None:
+def test_start_warmup_contribution_suppresses_interrupt_evidence() -> None:
     clock = FakeClock()
     guard = AssistantSpeechGuard(clock=clock)
 
-    assert not guard.aec_warmup_active()
-    assert guard.aec_warmup_until == 0.0
+    assert not guard.suppresses_interrupt_evidence(clock.now)
+    assert guard.contribution_until(TTS_START_WARMUP) == 0.0
 
-    guard.arm_aec_warmup(250)
+    guard.arm(TTS_START_WARMUP, 250)
 
-    assert guard.aec_warmup_active()
-    assert guard.aec_warmup_until == 10.25
+    assert guard.suppresses_interrupt_evidence(clock.now)
+    assert guard.contribution_until(TTS_START_WARMUP) == 10.25
 
     clock.advance(0.251)
 
-    assert not guard.aec_warmup_active()
+    assert not guard.suppresses_interrupt_evidence(clock.now)
 
 
-def test_zero_aec_warmup_does_not_arm() -> None:
+def test_resume_stability_contribution_suppresses_interrupt_evidence() -> None:
+    clock = FakeClock()
+    guard = AssistantSpeechGuard(clock=clock)
+
+    guard.arm(RESUME_STABILITY, 100)
+
+    assert guard.suppresses_interrupt_evidence(clock.now)
+
+    clock.advance(0.101)
+
+    assert not guard.suppresses_interrupt_evidence(clock.now)
+
+
+def test_contributions_combine_by_max() -> None:
+    clock = FakeClock()
+    guard = AssistantSpeechGuard(clock=clock)
+
+    guard.arm(TTS_START_WARMUP, 100)
+    guard.arm(RESUME_STABILITY, 300)
+
+    clock.advance(0.2)
+
+    assert guard.suppresses_interrupt_evidence(clock.now)
+
+    clock.advance(0.2)
+
+    assert not guard.suppresses_interrupt_evidence(clock.now)
+
+
+def test_zero_duration_clears_a_contribution() -> None:
+    clock = FakeClock()
+    guard = AssistantSpeechGuard(clock=clock)
+
+    guard.arm(TTS_START_WARMUP, 250)
+    guard.arm(TTS_START_WARMUP, 0)
+
+    assert guard.contribution_until(TTS_START_WARMUP) == 0.0
+    assert not guard.suppresses_interrupt_evidence(clock.now)
+
+
+def test_unknown_contribution_is_rejected() -> None:
     guard = AssistantSpeechGuard(clock=FakeClock())
 
-    guard.arm_aec_warmup(0)
-
-    assert guard.aec_warmup_until == 0.0
-    assert not guard.aec_warmup_active()
+    with pytest.raises(ValueError, match="unknown distrust contribution"):
+        guard.arm("mystery_window", 100)
 
 
-def test_self_echo_window_tracks_active_speech_and_end_cooldown() -> None:
+def test_transcript_trust_tracks_active_speech_and_tail() -> None:
     clock = FakeClock()
     guard = AssistantSpeechGuard(clock=clock)
 
     guard.mark_speech_started()
 
     assert guard.speech_active
-    assert guard.in_self_echo_window(0)
+    assert guard.suppresses_transcript_trust(clock.now)
 
-    guard.mark_speech_ended()
+    guard.mark_speech_ended(500)
 
     assert not guard.speech_active
-    assert guard.in_self_echo_window(500)
+    assert guard.suppresses_transcript_trust(clock.now)
 
     clock.advance(0.501)
 
-    assert not guard.in_self_echo_window(500)
+    assert not guard.suppresses_transcript_trust(clock.now)
 
 
-def test_flutter_cooldown_uses_injected_clock() -> None:
+def test_tail_is_only_armed_when_speech_was_active() -> None:
     clock = FakeClock()
     guard = AssistantSpeechGuard(clock=clock)
 
-    guard.start_flutter_cooldown(100)
+    guard.mark_speech_ended(500)
 
-    assert guard.flutter_cooldown_active()
-
-    clock.advance(0.101)
-
-    assert not guard.flutter_cooldown_active()
+    assert guard.contribution_until(TTS_TAIL) == 0.0
+    assert not guard.suppresses_transcript_trust(clock.now)
 
 
-def test_zero_flutter_cooldown_clears_active_window() -> None:
+def test_tail_does_not_suppress_interrupt_evidence() -> None:
     clock = FakeClock()
     guard = AssistantSpeechGuard(clock=clock)
 
-    guard.start_flutter_cooldown(100)
-    assert guard.flutter_cooldown_active()
+    guard.mark_speech_started()
+    guard.mark_speech_ended(1500)
 
-    guard.start_flutter_cooldown(0)
+    assert guard.suppresses_transcript_trust(clock.now)
+    assert not guard.suppresses_interrupt_evidence(clock.now)
 
-    assert not guard.flutter_cooldown_active()
+
+def test_resume_stability_constant_is_production_magnitude() -> None:
+    assert RESUME_STABILITY_MS == 150
+
+
+def test_evidence_distrust_remaining_tracks_longest_window() -> None:
+    clock = FakeClock()
+    guard = AssistantSpeechGuard(clock=clock)
+
+    assert guard.interrupt_evidence_distrust_remaining_ms(clock.now) == 0
+
+    guard.arm(TTS_START_WARMUP, 100)
+    guard.arm(RESUME_STABILITY, 300)
+
+    assert guard.interrupt_evidence_distrust_remaining_ms(clock.now) == 300
+
+    clock.advance(0.2)
+
+    assert guard.interrupt_evidence_distrust_remaining_ms(clock.now) == 100
+
+    clock.advance(0.2)
+
+    assert guard.interrupt_evidence_distrust_remaining_ms(clock.now) == 0
+
+
+def test_evidence_windows_do_not_suppress_transcript_trust() -> None:
+    clock = FakeClock()
+    guard = AssistantSpeechGuard(clock=clock)
+
+    guard.arm(TTS_START_WARMUP, 500)
+    guard.arm(RESUME_STABILITY, 500)
+
+    assert guard.suppresses_interrupt_evidence(clock.now)
+    assert not guard.suppresses_transcript_trust(clock.now)

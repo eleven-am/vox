@@ -23,6 +23,7 @@ import numpy as np
 import pytest
 
 from vox.conversation import TurnAction, TurnActionType, TurnPolicy, TurnState
+from vox.conversation.interruption_detector import InterruptionCandidateStatus
 from vox.conversation.session import AppendResult, ConversationConfig, ConversationSession
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
@@ -113,7 +114,7 @@ class Collector:
         return [e for e in self.events if e.get("type") == t]
 
 
-def _build():
+def _build(**policy_overrides):
     tts = LongTTS()
     coll = Collector()
     cfg = ConversationConfig(
@@ -122,11 +123,13 @@ def _build():
         voice="default",
         language="en",
         policy=TurnPolicy(
-            min_interrupt_duration_ms=180,
-            max_endpointing_delay_ms=500,
-            stable_speaking_min_ms=50,
-            speaking_interrupt_min_duration_ms=180,
-            aec_warmup_ms=0,
+            **{
+                "min_interrupt_duration_ms": 180,
+                "max_endpointing_delay_ms": 500,
+                "speaking_interrupt_min_duration_ms": 180,
+                "aec_warmup_ms": 0,
+                **policy_overrides,
+            }
         ),
     )
     session = ConversationSession(scheduler=Scheduler(tts), config=cfg, on_event=coll)
@@ -269,9 +272,8 @@ class TestBackchannelRejection:
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_acoustic_output_echo_is_rejected_before_audio_clear(self):
-        """Pure output echo is evaluated by the candidate without clearing audio."""
-        session, coll, _ = _build()
+    async def test_acoustic_output_echo_waits_until_evidence_timeout_before_reject(self):
+        session, coll, _ = _build(false_interruption_timeout_ms=450)
         await session.start()
 
         await session.submit_response_text("The assistant is speaking.")
@@ -283,11 +285,21 @@ class TestBackchannelRejection:
         _replace_mic_audio(session, echo.copy())
 
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
-        await asyncio.sleep(0.22)
+        await asyncio.sleep(0.25)
 
         assert session.state == TurnState.PAUSED
         assert session._has_active_timer("confirm_interrupt")
         assert not coll.by_type("interruption.false_positive")
+        assert not coll.by_type("response.audio.clear")
+        assert not coll.by_type("response.cancelled")
+
+        await asyncio.sleep(0.35)
+
+        assert session.state == TurnState.SPEAKING
+        assert not session._has_active_timer("confirm_interrupt")
+        rejected = coll.by_type("interruption.false_positive")
+        assert rejected and rejected[-1]["reason"] == "output_echo_timeout"
+        assert not coll.by_type("response.audio.clear")
         assert not coll.by_type("response.cancelled")
 
         await session._forward_stream_event(
@@ -300,7 +312,6 @@ class TestBackchannelRejection:
         await asyncio.sleep(0.05)
 
         assert session.state == TurnState.SPEAKING
-        assert coll.by_type("interruption.false_positive")
         assert not coll.by_type("response.audio.clear")
         assert not coll.by_type("response.cancelled")
 
@@ -345,6 +356,53 @@ class TestBackchannelRejection:
         assert coll.by_type("interruption.detected")
         assert coll.by_type("response.cancelled")
         assert coll.by_type("response.audio.clear")
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_correlated_barge_in_with_transcript_after_confirm_window_still_confirms(self):
+        session, coll, _ = _build()
+        await session.start()
+
+        await session.submit_response_text("The assistant is speaking.")
+        await asyncio.sleep(0.15)
+        assert session.state == TurnState.SPEAKING
+
+        echo = _voice_signal(0.80, amp=0.08, freq=330)
+        _replace_output_audio(session, echo.copy())
+        _replace_mic_audio(session, echo.copy())
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
+        await asyncio.sleep(0.5)
+
+        candidate = session._interrupt_detector.current()
+        assert candidate is not None
+        assert candidate.status is InterruptionCandidateStatus.PENDING
+        assert session.state == TurnState.PAUSED
+        assert session._has_active_timer("confirm_interrupt")
+        assert not coll.by_type("interruption.false_positive")
+
+        await session._forward_stream_event(
+            SpeechStopped(
+                timestamp_ms=1500,
+                expects_transcript=True,
+                utterance_id=1,
+            )
+        )
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="No wait I need to change that.",
+                audio_duration_ms=500,
+                eou_probability=0.8,
+                utterance_id=1,
+            )
+        )
+        await asyncio.sleep(0.10)
+
+        assert coll.by_type("interruption.detected")
+        assert coll.by_type("response.cancelled")
+        assert coll.by_type("response.audio.clear")
+        assert not coll.by_type("interruption.false_positive")
 
         await session.close()
 
@@ -735,8 +793,8 @@ class TestBackchannelRejection:
             policy=TurnPolicy(
                 min_interrupt_duration_ms=300,
                 max_endpointing_delay_ms=500,
-                stable_speaking_min_ms=50,
                 speaking_interrupt_min_duration_ms=300,
+                aec_warmup_ms=0,
             ),
         )
         session = ConversationSession(scheduler=Scheduler(tts), config=cfg, on_event=coll)
@@ -793,8 +851,8 @@ class TestMhmmAtRealisticWindow:
             policy=TurnPolicy(
                 min_interrupt_duration_ms=300,
                 max_endpointing_delay_ms=500,
-                stable_speaking_min_ms=50,
                 speaking_interrupt_min_duration_ms=300,
+                aec_warmup_ms=0,
             ),
         )
         session = ConversationSession(scheduler=Scheduler(tts), config=cfg, on_event=coll)
@@ -831,8 +889,8 @@ class TestMhmmAtRealisticWindow:
             policy=TurnPolicy(
                 min_interrupt_duration_ms=300,
                 max_endpointing_delay_ms=500,
-                stable_speaking_min_ms=50,
                 speaking_interrupt_min_duration_ms=300,
+                aec_warmup_ms=0,
             ),
         )
         session = ConversationSession(scheduler=Scheduler(tts), config=cfg, on_event=coll)
@@ -904,7 +962,6 @@ class TestClassifierFailureFallsBackToBackchannel:
             voice="default",
             policy=TurnPolicy(
                 min_interrupt_duration_ms=80,
-                stable_speaking_min_ms=50,
                 speaking_interrupt_min_duration_ms=80,
                 aec_warmup_ms=0,
             ),
