@@ -201,18 +201,10 @@ class DeviceMemoryInfo:
     torch_reserved_bytes: int | None = None
 
 @dataclass(frozen=True)
-class VramPolicy:
-    """Scheduler policy for bounded accelerator memory use."""
-    max_vram_bytes: int | None = None
-    headroom_bytes: int = 512 * 1024 * 1024
-    idle_trim_seconds: int = 0
-    over_budget: str = "reject"
-
-@dataclass(frozen=True)
 class VramSnapshot:
     """Current scheduler and device memory state."""
-    policy: VramPolicy
     device: DeviceMemoryInfo
+    idle_trim_seconds: int
     loaded_models: tuple[LoadedModelInfo, ...]
     estimated_loaded_vram_bytes: int
     active_model_count: int

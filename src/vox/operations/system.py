@@ -3,9 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from vox.core.errors import ModelLoadError
 from vox.core.types import LoadedModelInfo, VramSnapshot
-from vox.operations.errors import MemoryBudgetExceededError, ModelInUseError
+from vox.operations.errors import ModelInUseError
 
 
 class SystemScheduler(Protocol):
@@ -14,7 +13,6 @@ class SystemScheduler(Protocol):
     async def trim(self, model_name: str) -> bool: ...
     async def trim_idle(self, *, min_idle_seconds: int = 0) -> list[str]: ...
     async def unload(self, model_name: str) -> bool: ...
-    async def enforce_memory_budget(self, *, additional_vram_bytes: int = 0) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -53,11 +51,6 @@ class TrimIdleMemoryRequest:
 
 
 @dataclass(frozen=True)
-class EnforceMemoryBudgetRequest:
-    additional_vram_bytes: int = 0
-
-
-@dataclass(frozen=True)
 class TrimModelRequest:
     model_name: str
 
@@ -83,13 +76,6 @@ def trim_idle_memory_request_from_fields(*, min_idle_seconds: int = 0) -> TrimId
     return TrimIdleMemoryRequest(min_idle_seconds=min_idle_seconds)
 
 
-def enforce_memory_budget_request_from_fields(
-    *,
-    additional_vram_bytes: int = 0,
-) -> EnforceMemoryBudgetRequest:
-    return EnforceMemoryBudgetRequest(additional_vram_bytes=additional_vram_bytes)
-
-
 def trim_model_request_from_fields(*, model_name: str) -> TrimModelRequest:
     return TrimModelRequest(model_name=model_name)
 
@@ -101,11 +87,6 @@ def unload_idle_models_request_from_fields() -> UnloadIdleModelsRequest:
 @dataclass(frozen=True)
 class TrimIdleResult:
     trimmed: list[str]
-    snapshot: VramSnapshot
-
-
-@dataclass(frozen=True)
-class EnforceMemoryBudgetResult:
     snapshot: VramSnapshot
 
 
@@ -152,12 +133,6 @@ def list_loaded_models_payload(result: ListLoadedModelsResult) -> dict[str, Any]
 
 def memory_snapshot_payload(snapshot: VramSnapshot) -> dict[str, Any]:
     return {
-        "policy": {
-            "max_vram_bytes": snapshot.policy.max_vram_bytes,
-            "headroom_bytes": snapshot.policy.headroom_bytes,
-            "idle_trim_seconds": snapshot.policy.idle_trim_seconds,
-            "over_budget": snapshot.policy.over_budget,
-        },
         "device": {
             "device": snapshot.device.device,
             "free_bytes": snapshot.device.free_bytes,
@@ -165,6 +140,7 @@ def memory_snapshot_payload(snapshot: VramSnapshot) -> dict[str, Any]:
             "torch_allocated_bytes": snapshot.device.torch_allocated_bytes,
             "torch_reserved_bytes": snapshot.device.torch_reserved_bytes,
         },
+        "idle_trim_seconds": snapshot.idle_trim_seconds,
         "estimated_loaded_vram_bytes": snapshot.estimated_loaded_vram_bytes,
         "active_model_count": snapshot.active_model_count,
         "models": [loaded_model_payload(model) for model in snapshot.loaded_models],
@@ -182,13 +158,6 @@ def health_status_payload(result: HealthStatusResult) -> dict[str, str]:
 def trim_idle_payload(result: TrimIdleResult) -> dict[str, Any]:
     return {
         "trimmed": result.trimmed,
-        "memory": memory_snapshot_payload(result.snapshot),
-    }
-
-
-def enforce_memory_budget_payload(result: EnforceMemoryBudgetResult) -> dict[str, Any]:
-    return {
-        "status": "ok",
         "memory": memory_snapshot_payload(result.snapshot),
     }
 
@@ -234,20 +203,6 @@ async def trim_idle_memory(
 ) -> TrimIdleResult:
     trimmed = await scheduler.trim_idle(min_idle_seconds=max(0, request.min_idle_seconds))
     return TrimIdleResult(trimmed=trimmed, snapshot=scheduler.memory_snapshot())
-
-
-async def enforce_memory_budget(
-    *,
-    scheduler: SystemScheduler,
-    request: EnforceMemoryBudgetRequest,
-) -> EnforceMemoryBudgetResult:
-    try:
-        await scheduler.enforce_memory_budget(
-            additional_vram_bytes=max(0, request.additional_vram_bytes),
-        )
-    except ModelLoadError as exc:
-        raise MemoryBudgetExceededError(str(exc)) from exc
-    return EnforceMemoryBudgetResult(snapshot=scheduler.memory_snapshot())
 
 
 async def trim_model(*, scheduler: SystemScheduler, request: TrimModelRequest) -> TrimModelResult:

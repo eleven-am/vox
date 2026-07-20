@@ -100,10 +100,7 @@ def create_app(
     default_device: str = "auto",
     max_loaded: int = 3,
     ttl_seconds: int = 300,
-    max_vram_bytes: int | None = None,
-    vram_headroom_bytes: int = 512 * 1024 * 1024,
     idle_trim_seconds: int = 0,
-    memory_over_budget: str = "reject",
     grpc_port: int | None = None,
     preload_models: list[str] | None = None,
     preload_vad: bool = False,
@@ -137,10 +134,7 @@ def create_app(
         default_device=default_device,
         max_loaded=max_loaded,
         ttl_seconds=ttl_seconds,
-        max_vram_bytes=max_vram_bytes,
-        vram_headroom_bytes=vram_headroom_bytes,
         idle_trim_seconds=idle_trim_seconds,
-        memory_over_budget=memory_over_budget,
     )
 
     app.state.store = store

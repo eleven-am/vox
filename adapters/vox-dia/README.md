@@ -29,9 +29,11 @@ tested on GPUs with PyTorch/CUDA and that CPU support is future work:
 https://github.com/nari-labs/dia#hardware-and-inference-speed
 
 Plan for at least 12GiB of usable VRAM budget: upstream reports that the full
-Dia 1.6B model requires around 10GB of VRAM, and Vox budgets the adapter's 10GB
-model estimate plus the deployment's configured VRAM headroom. A server started
-with `--max-vram 10GiB --vram-headroom 1GiB` will reject Dia at load time.
+Dia 1.6B model requires around 10GB of VRAM, and the registry records the
+requirement as `min_vram_gb=12`. Vox places Dia using the adapter's 10GB model
+estimate against free VRAM at load time. Idle model memory is reclaimed by the
+idle-trim tier (optional `--idle-trim-ttl` auto trim plus the manual
+`POST /v1/system/trim` endpoint) and by TTL unload.
 
 During `vox pull`, the adapter verifies or installs the Dia-capable
 Transformers runtime into `$VOX_HOME/runtime/dia`. It uses the released

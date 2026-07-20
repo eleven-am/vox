@@ -14,10 +14,6 @@ class TrimIdleBody(BaseModel):
     min_idle_seconds: int = 0
 
 
-class EnforceMemoryBudgetBody(BaseModel):
-    additional_vram_bytes: int = 0
-
-
 @router.get("/v1/system/memory")
 async def memory_status(request: Request):
     scheduler = app_scheduler(request)
@@ -39,19 +35,6 @@ async def trim_idle(req: TrimIdleBody, request: Request):
             ),
         )
     return system_operations.trim_idle_payload(result)
-
-
-@router.post("/v1/system/enforce-memory-budget")
-async def enforce_memory_budget(req: EnforceMemoryBudgetBody, request: Request):
-    scheduler = app_scheduler(request)
-    with map_operation_errors_to_http():
-        result = await system_operations.enforce_memory_budget(
-            scheduler=scheduler,
-            request=system_operations.enforce_memory_budget_request_from_fields(
-                additional_vram_bytes=req.additional_vram_bytes,
-            ),
-        )
-    return system_operations.enforce_memory_budget_payload(result)
 
 
 @router.post("/v1/models/{name:path}/trim")

@@ -77,10 +77,22 @@ R2a and R2b share `conversation/session.py` and are strictly sequential.
   the `GET /v1/system/memory` policy payload, CLI flags `--idle-trim-ttl` and
   `--memory-over-budget` beyond the two approved, plus doc/test pins in
   vox-dia. Deleting registered HTTP surface exceeds the recorded approval.
-  OWNER DECISION NEEDED: (a) delete the whole budget vertical including its
-  endpoint, flags, and memory-payload policy block, keeping `/v1/system/trim`
-  as an independently useful op; (b) delete both verticals including trim; or
-  (c) keep as-is. Executed in a later batch once decided.
+  OWNER DECIDED 2026-07-20 (final, supersedes an earlier misread that would
+  have deleted the auto layer): memory management is the two-tier story —
+  trim at `--idle-trim-ttl` (warm reclaim), unload at `--ttl` (full reclaim),
+  either tier disabled by 0 — plus manual `POST /v1/system/trim`. All trim
+  layers KEPT: the `adapter.trim()` hook, `idle_trim_seconds`, the
+  cleanup-loop trim branch. Only the budget vertical is DELETED:
+  `max_vram_bytes`/headroom/over_budget policy (the `VramPolicy` dataclass
+  collapses to a plain `idle_trim_seconds` scheduler param), `--max-vram`,
+  `--vram-headroom`, `--memory-over-budget`, `_enforce_budget_locked`,
+  `_memory_budget_allows_locked`, and the `/v1/system/enforce-memory-budget`
+  endpoint; `/v1/system/memory` keeps real telemetry, drops the policy block.
+  Executed as batch R1b. FOLLOW-UP (owner requirement): `adapter.trim()` is
+  currently a universal no-op — implement it for real per adapter, including
+  a worker-protocol `trim` op so worker adapters reclaim memory in the child
+  process where it lives; adapters that genuinely have nothing to release
+  stay no-ops with that reason documented.
 
 Gate: full suite + lint, nothing else changes.
 

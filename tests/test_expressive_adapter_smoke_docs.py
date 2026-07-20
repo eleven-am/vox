@@ -788,8 +788,11 @@ def test_expressive_adapter_status_records_dia_budget_finding():
         "`ghcr.io/eleven-am/vox:v0.2.86`",
         "`vox-dia==0.2.11`",
         "`/home/vox/.vox/runtime/dia` only contained",
-        "`--max-vram 10GiB --vram-headroom 1GiB`",
+        "`--max-vram 10GiB --vram-headroom 1GiB`, while that release budgeted Dia",
         "`min_vram_gb=12`",
+        "Current Vox has removed the VRAM budget flags entirely",
+        "optional `--idle-trim-ttl` auto trim plus the",
+        "manual `POST /v1/system/trim` endpoint) and by TTL unload",
         "wrote evidence to `/tmp/vox-served-smoke/evidence.json`",
         "Short and long Dia synthesis both returned HTTP 500",
         "Cannot satisfy VRAM budget: projected 12500000000 bytes plus headroom\n"

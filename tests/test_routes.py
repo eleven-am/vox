@@ -26,12 +26,11 @@ from vox.core.types import (
     TranscribeResult,
     TranscriptSegment,
     VoiceInfo,
-    VramPolicy,
     VramSnapshot,
     WordTimestamp,
 )
 from vox.operations.defaults import resolve_default_model
-from vox.operations.errors import InvalidConfigError, MemoryBudgetExceededError, ModelInUseError
+from vox.operations.errors import InvalidConfigError, ModelInUseError
 from vox.operations.transcription import format_hint_from_content_type
 
 
@@ -89,19 +88,14 @@ class MockScheduler(FakeScheduler):
         super().__init__()
         self._loaded = []
         self._unload = True
-        self._enforce_error: Exception | None = None
-        self._trim_idle_error: Exception | None = None
         self._unload_error: Exception | None = None
         self._acquire_error: Exception | None = None
         self.preloaded: list[str] = []
         self.trimmed: list[str] = []
-        self.enforced: list[int] = []
 
     def list_loaded(self): return self._loaded
     def set_loaded(self, ms): self._loaded = ms
     def set_unload_result(self, v: bool): self._unload = v
-    def set_enforce_error(self, error: Exception): self._enforce_error = error
-    def set_trim_idle_error(self, error: Exception): self._trim_idle_error = error
     def set_unload_error(self, error: Exception): self._unload_error = error
     def set_acquire_error(self, error: Exception): self._acquire_error = error
 
@@ -121,18 +115,12 @@ class MockScheduler(FakeScheduler):
         self.trimmed.append(name)
         return self._unload
     async def trim_idle(self, *, min_idle_seconds: int = 0) -> list[str]:
-        if self._trim_idle_error is not None:
-            raise self._trim_idle_error
         self.trimmed.append(f"idle:{min_idle_seconds}")
         return ["fake:latest"]
-    async def enforce_memory_budget(self, *, additional_vram_bytes: int = 0) -> None:
-        self.enforced.append(additional_vram_bytes)
-        if self._enforce_error is not None:
-            raise self._enforce_error
     def memory_snapshot(self):
         return VramSnapshot(
-            policy=VramPolicy(max_vram_bytes=10_000, headroom_bytes=1_000, idle_trim_seconds=60),
             device=DeviceMemoryInfo(device="cuda", free_bytes=5_000, total_bytes=20_000),
+            idle_trim_seconds=60,
             loaded_models=tuple(self._loaded),
             estimated_loaded_vram_bytes=4_000,
             active_model_count=0,
@@ -220,7 +208,7 @@ class TestHealth:
 
 
 class TestSystemMemory:
-    def test_memory_status_returns_policy_and_models(self):
+    def test_memory_status_returns_models_without_policy_block(self):
         scheduler = MockScheduler()
         client = TestClient(_build_app(scheduler=scheduler))
 
@@ -228,7 +216,15 @@ class TestSystemMemory:
 
         assert resp.status_code == 200
         body = resp.json()
-        assert body["policy"]["max_vram_bytes"] == 10_000
+        assert "policy" not in body
+        assert set(body) == {
+            "device",
+            "idle_trim_seconds",
+            "estimated_loaded_vram_bytes",
+            "active_model_count",
+            "models",
+        }
+        assert body["idle_trim_seconds"] == 60
         assert body["device"]["device"] == "cuda"
         assert body["estimated_loaded_vram_bytes"] == 4_000
 
@@ -242,36 +238,13 @@ class TestSystemMemory:
         assert resp.json()["trimmed"] == ["fake:latest"]
         assert scheduler.trimmed == ["idle:30"]
 
-    def test_trim_idle_endpoint_maps_operation_errors(self):
-        scheduler = MockScheduler()
-        scheduler.set_trim_idle_error(MemoryBudgetExceededError("Cannot satisfy VRAM budget"))
-        client = TestClient(_build_app(scheduler=scheduler))
-
-        resp = client.post("/v1/system/trim", json={"min_idle_seconds": 30})
-
-        assert resp.status_code == 507
-        assert "Cannot satisfy VRAM budget" in resp.json()["detail"]
-
-    def test_enforce_memory_budget_endpoint(self):
+    def test_enforce_memory_budget_endpoint_is_removed(self):
         scheduler = MockScheduler()
         client = TestClient(_build_app(scheduler=scheduler))
 
         resp = client.post("/v1/system/enforce-memory-budget", json={"additional_vram_bytes": 1024})
 
-        assert resp.status_code == 200
-        assert scheduler.enforced == [1024]
-
-    def test_enforce_memory_budget_endpoint_maps_budget_failure_to_507(self):
-        from vox.core.errors import ModelLoadError
-
-        scheduler = MockScheduler()
-        scheduler.set_enforce_error(ModelLoadError("Cannot satisfy VRAM budget"))
-        client = TestClient(_build_app(scheduler=scheduler))
-
-        resp = client.post("/v1/system/enforce-memory-budget", json={"additional_vram_bytes": 1024})
-
-        assert resp.status_code == 507
-        assert "Cannot satisfy VRAM budget" in resp.json()["detail"]
+        assert resp.status_code == 404
 
     def test_trim_model_endpoint_returns_conflict_when_active(self):
         scheduler = MockScheduler()

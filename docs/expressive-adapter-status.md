@@ -105,9 +105,15 @@ The production `vox` deployment was inspected read-only while running
 `vox-dia==0.2.11` installed, but `/home/vox/.vox/runtime/dia` only contained
 the Vox fallback `.pth` file. Dia synthesis did not reach model/runtime load:
 the scheduler rejected the request because the deployment was started with
-`--max-vram 10GiB --vram-headroom 1GiB`, while Dia is budgeted as a 10GB model
-plus headroom. The remote registry now records this constraint directly as
-`min_vram_gb=12`.
+`--max-vram 10GiB --vram-headroom 1GiB`, while that release budgeted Dia as a
+10GB model plus headroom. The remote registry now records this constraint
+directly as `min_vram_gb=12`.
+
+Current Vox has removed the VRAM budget flags entirely; idle model memory is
+reclaimed by the idle-trim tier (optional `--idle-trim-ttl` auto trim plus the
+manual `POST /v1/system/trim` endpoint) and by TTL unload, and Dia capacity is
+owned by the registry `min_vram_gb` metadata plus free-VRAM device placement
+at load time.
 
 The existing-server smoke was rerun against the same production endpoint on
 2026-07-06 and wrote evidence to `/tmp/vox-served-smoke/evidence.json`. Health,

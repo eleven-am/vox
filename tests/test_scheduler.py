@@ -24,7 +24,6 @@ from vox.core.types import (
     ModelInfo,
     ModelType,
     TranscribeResult,
-    VramPolicy,
     VramSnapshot,
     parse_model_name,
 )
@@ -526,9 +525,11 @@ async def test_trim_idle_keeps_model_loaded_and_clears_cache(registry: FakeRegis
     async with sched.acquire("whisper:large-v3") as adapter:
         assert isinstance(adapter, FakeSTTAdapter)
 
-    trimmed = await sched.trim_idle()
+    with patch("vox.core.scheduler._clear_gpu_cache") as clear_cache:
+        trimmed = await sched.trim_idle()
 
     assert trimmed == ["whisper:large-v3"]
+    assert clear_cache.call_count == 1
     assert len(sched.list_loaded()) == 1
     loaded_adapter = sched._models["whisper:large-v3"].adapter
     assert isinstance(loaded_adapter, FakeSTTAdapter)
@@ -537,12 +538,35 @@ async def test_trim_idle_keeps_model_loaded_and_clears_cache(registry: FakeRegis
 
 
 @pytest.mark.asyncio
+async def test_trim_idle_min_idle_seconds_skips_recently_used_models(registry: FakeRegistry):
+    registry.add_model("recent", "latest", adapter_cls=FakeSTTAdapter)
+    sched = Scheduler(registry, default_device="cpu", max_loaded=3)
+
+    async with sched.acquire("whisper:large-v3"):
+        pass
+    async with sched.acquire("recent:latest"):
+        pass
+    sched._models["whisper:large-v3"].last_used = time.time() - 120
+
+    with patch("vox.core.scheduler._clear_gpu_cache") as clear_cache:
+        trimmed = await sched.trim_idle(min_idle_seconds=60)
+
+    assert trimmed == ["whisper:large-v3"]
+    assert clear_cache.call_count == 1
+    assert sched._models["recent:latest"].adapter.trim_calls == 0
+    loaded_refs = {f"{m.name}:{m.tag}" for m in sched.list_loaded()}
+    assert loaded_refs == {"whisper:large-v3", "recent:latest"}
+
+
+@pytest.mark.asyncio
 async def test_trim_refuses_active_model(scheduler: Scheduler):
     async with scheduler.acquire("whisper:large-v3") as adapter:
-        assert await scheduler.trim("whisper:large-v3") is False
+        with patch("vox.core.scheduler._clear_gpu_cache") as clear_cache:
+            assert await scheduler.trim("whisper:large-v3") is False
 
     assert isinstance(adapter, FakeSTTAdapter)
     assert adapter.trim_calls == 0
+    assert clear_cache.call_count == 0
 
 
 @pytest.mark.asyncio
@@ -562,7 +586,7 @@ async def test_idle_trim_runs_even_when_unload_ttl_disabled(registry: FakeRegist
     loaded.last_used = time.time() - 120
 
     async with sched._lock:
-        sched._trim_idle_models_locked(min_idle_seconds=sched._vram_policy.idle_trim_seconds)
+        sched._trim_idle_models_locked(min_idle_seconds=sched._idle_trim_seconds)
 
     adapter = sched._models["whisper:large-v3"].adapter
     assert isinstance(adapter, FakeSTTAdapter)
@@ -570,73 +594,13 @@ async def test_idle_trim_runs_even_when_unload_ttl_disabled(registry: FakeRegist
     assert adapter.is_loaded is True
 
 
-@pytest.mark.asyncio
-async def test_memory_budget_eviction_unloads_idle_cuda_model():
-    registry = FakeRegistry()
-    registry.add_model(
-        "m1",
-        "latest",
-        adapter_cls=FakeSTTAdapter,
-        parameters={"vram_bytes": 4_000_000_000},
-    )
-    registry.add_model(
-        "m2",
-        "latest",
-        adapter_cls=FakeSTTAdapter,
-        parameters={"vram_bytes": 4_000_000_000},
-    )
-    sched = Scheduler(
-        registry,
-        default_device="cuda",
-        max_loaded=3,
-        max_vram_bytes=6_000_000_000,
-        vram_headroom_bytes=500_000_000,
-    )
-
-    async with sched.acquire("m1:latest"):
-        pass
-    async with sched.acquire("m2:latest"):
-        pass
-
-    loaded_refs = {f"{m.name}:{m.tag}" for m in sched.list_loaded()}
-    assert loaded_refs == {"m2:latest"}
-
-
-@pytest.mark.asyncio
-async def test_memory_budget_rejects_when_active_refs_prevent_eviction():
-    registry = FakeRegistry()
-    registry.add_model(
-        "m1",
-        "latest",
-        adapter_cls=FakeSTTAdapter,
-        parameters={"vram_bytes": 4_000_000_000},
-    )
-    registry.add_model(
-        "m2",
-        "latest",
-        adapter_cls=FakeSTTAdapter,
-        parameters={"vram_bytes": 4_000_000_000},
-    )
-    sched = Scheduler(
-        registry,
-        default_device="cuda",
-        max_loaded=3,
-        max_vram_bytes=6_000_000_000,
-        vram_headroom_bytes=500_000_000,
-    )
-
-    async with sched.acquire("m1:latest"):
-        with pytest.raises(ModelLoadError, match="VRAM budget"):
-            async with sched.acquire("m2:latest"):
-                pass
-
-
-def test_memory_snapshot_reports_policy_and_loaded_models(scheduler: Scheduler):
+def test_memory_snapshot_reports_device_and_loaded_models(scheduler: Scheduler):
     snapshot = scheduler.memory_snapshot()
 
     assert isinstance(snapshot, VramSnapshot)
-    assert isinstance(snapshot.policy, VramPolicy)
     assert isinstance(snapshot.device, DeviceMemoryInfo)
+    assert snapshot.idle_trim_seconds == 0
+    assert not hasattr(snapshot, "policy")
 
 
 @pytest.mark.asyncio

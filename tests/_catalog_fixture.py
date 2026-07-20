@@ -442,8 +442,8 @@ FIXTURE_CATALOG: dict[str, dict[str, dict[str, Any]]] = {
                     "notes": [
                         "Dia Transformers backend is CUDA-only in Vox; "
                         "CPU, ONNX, and Spark/ARM NVIDIA paths are not currently production-supported.",
-                        "Vox budgets the adapter's 10GB model estimate plus configured VRAM headroom; "
-                        "deployments capped at 10GiB with 1GiB headroom will reject Dia at load time.",
+                        "Vox places Dia using the adapter's 10GB model estimate against free VRAM "
+                        "at load time; hosts without 12GB of free VRAM cannot load Dia.",
                     ],
                 }
             },

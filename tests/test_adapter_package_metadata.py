@@ -251,7 +251,9 @@ def test_dia_readme_documents_upstream_hardware_limits():
         "CPU support is future work",
         "https://github.com/nari-labs/dia#hardware-and-inference-speed",
         "requires around 10GB of VRAM",
-        "`--max-vram 10GiB --vram-headroom 1GiB` will reject Dia",
+        "requirement as `min_vram_gb=12`",
+        "optional `--idle-trim-ttl` auto trim plus the manual",
+        "`POST /v1/system/trim` endpoint) and by TTL unload",
     ):
         assert phrase in content
 

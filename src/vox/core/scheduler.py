@@ -20,7 +20,7 @@ from vox.core.device_placement import (
 from vox.core.errors import ModelLoadError
 from vox.core.runtime import detect_runtime_capabilities
 from vox.core.tasks import reap_task
-from vox.core.types import DeviceMemoryInfo, LoadedModelInfo, ModelInfo, VramPolicy, VramSnapshot, parse_model_name
+from vox.core.types import DeviceMemoryInfo, LoadedModelInfo, ModelInfo, VramSnapshot, parse_model_name
 
 logger = logging.getLogger(__name__)
 
@@ -169,10 +169,7 @@ class Scheduler:
         max_loaded: int = 3,
         ttl_seconds: int = 300,
         cleanup_interval: int = 30,
-        max_vram_bytes: int | None = None,
-        vram_headroom_bytes: int = 512 * 1024 * 1024,
         idle_trim_seconds: int = 0,
-        memory_over_budget: str = "reject",
     ) -> None:
         self._registry = registry
         self._requested_device = default_device
@@ -180,12 +177,7 @@ class Scheduler:
         self._max_loaded = max_loaded
         self._ttl_seconds = ttl_seconds
         self._cleanup_interval = cleanup_interval
-        self._vram_policy = VramPolicy(
-            max_vram_bytes=max_vram_bytes,
-            headroom_bytes=max(0, int(vram_headroom_bytes)),
-            idle_trim_seconds=max(0, int(idle_trim_seconds)),
-            over_budget=memory_over_budget,
-        )
+        self._idle_trim_seconds = max(0, int(idle_trim_seconds))
         self._models: dict[str, _LoadedModel] = {}
         self._lock = asyncio.Lock()
         self._load_lock = asyncio.Lock()
@@ -290,53 +282,12 @@ class Scheduler:
                 trimmed.append(full_name)
         return trimmed
 
-    def _estimated_loaded_vram_bytes(self) -> int:
-        return sum(max(int(m.vram_bytes), 0) for m in self._models.values() if m.device == "cuda")
-
     def _adapter_memory_status(self, loaded: _LoadedModel) -> dict:
         try:
             return loaded.adapter.memory_status()
         except Exception as error:
             logger.warning("Failed to query memory status for %s: %s", loaded.full_name, error)
             return {"error": str(error)}
-
-    def _memory_budget_allows_locked(self, *, additional_vram_bytes: int = 0) -> bool:
-        max_vram = self._vram_policy.max_vram_bytes
-        if max_vram is None:
-            return True
-        projected = self._estimated_loaded_vram_bytes() + max(0, int(additional_vram_bytes))
-        return projected + self._vram_policy.headroom_bytes <= max_vram
-
-    def _enforce_budget_locked(self, *, additional_vram_bytes: int = 0) -> None:
-        if self._vram_policy.max_vram_bytes is None:
-            return
-        if self._memory_budget_allows_locked(additional_vram_bytes=additional_vram_bytes):
-            return
-
-        trimmed = self._trim_idle_models_locked()
-        if trimmed and self._memory_budget_allows_locked(additional_vram_bytes=additional_vram_bytes):
-            return
-
-        candidates = sorted(
-            ((name, model) for name, model in self._models.items() if model.ref_count == 0 and model.device == "cuda"),
-            key=lambda item: item[1].last_used,
-        )
-        for name, _model in candidates:
-            self._execute_evictions([name])
-            if self._memory_budget_allows_locked(additional_vram_bytes=additional_vram_bytes):
-                return
-
-        projected = self._estimated_loaded_vram_bytes() + max(0, int(additional_vram_bytes))
-        budget = self._vram_policy.max_vram_bytes
-        if self._vram_policy.over_budget == "cpu":
-            raise ModelLoadError(
-                f"VRAM budget exceeded: projected {projected} bytes plus headroom "
-                f"{self._vram_policy.headroom_bytes} exceeds max {budget} bytes"
-            )
-        raise ModelLoadError(
-            f"Cannot satisfy VRAM budget: projected {projected} bytes plus headroom "
-            f"{self._vram_policy.headroom_bytes} exceeds max {budget} bytes"
-        )
 
     def _decide_placement(self, adapter: Adapter, info: ModelInfo, estimated_vram_bytes: int) -> Placement:
         capabilities = detect_capabilities()
@@ -368,8 +319,6 @@ class Scheduler:
         if placement.evict:
             self._execute_evictions(placement.evict)
         device = placement.device
-        if device == "cuda":
-            self._enforce_budget_locked(additional_vram_bytes=estimated_vram_bytes)
 
 
         if len(self._models) >= self._max_loaded:
@@ -534,11 +483,6 @@ class Scheduler:
         async with self._lock:
             return self._trim_idle_models_locked(min_idle_seconds=min_idle_seconds)
 
-    async def enforce_memory_budget(self, *, additional_vram_bytes: int = 0) -> None:
-        """Trim/evict idle models until the configured VRAM budget is satisfied."""
-        async with self._lock:
-            self._enforce_budget_locked(additional_vram_bytes=additional_vram_bytes)
-
     async def unload_all(self) -> None:
         """Unload all idle models. Models with active references are left in place."""
         async with self._lock:
@@ -576,8 +520,8 @@ class Scheduler:
     def memory_snapshot(self) -> VramSnapshot:
         loaded = tuple(self.list_loaded())
         return VramSnapshot(
-            policy=self._vram_policy,
             device=_device_memory_snapshot("cuda"),
+            idle_trim_seconds=self._idle_trim_seconds,
             loaded_models=loaded,
             estimated_loaded_vram_bytes=sum(max(int(m.vram_bytes), 0) for m in loaded if m.device == "cuda"),
             active_model_count=sum(1 for m in loaded if m.ref_count > 0),
@@ -601,5 +545,5 @@ class Scheduler:
                         del self._models[name]
             await self._teardown_off_loop(to_unload)
             async with self._lock:
-                if self._vram_policy.idle_trim_seconds > 0:
-                    self._trim_idle_models_locked(min_idle_seconds=self._vram_policy.idle_trim_seconds)
+                if self._idle_trim_seconds > 0:
+                    self._trim_idle_models_locked(min_idle_seconds=self._idle_trim_seconds)

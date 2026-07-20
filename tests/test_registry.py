@@ -380,7 +380,7 @@ class TestAvailableModels:
         assert dia["runtime"]["required"]["accelerators"] == ["cuda"]
         assert dia["runtime"]["required"]["min_vram_gb"] == 12
         assert "CPU, ONNX, and Spark/ARM NVIDIA" in dia["runtime"]["required"]["notes"][0]
-        assert "10GiB with 1GiB headroom" in dia["runtime"]["required"]["notes"][1]
+        assert "10GB model estimate against free VRAM" in dia["runtime"]["required"]["notes"][1]
 
     def test_kokoro_logical_catalog_entry_keeps_concrete_variants(self):
         kokoro = CATALOG["kokoro-tts"]["v1.0"]
