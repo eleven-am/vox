@@ -201,7 +201,7 @@ def test_endpoint_commit_delay_shrinks_with_eou_confidence():
     assert 400 < mid_ms < base_ms
 
 
-def test_endpoint_commit_delay_keeps_full_delay_for_low_or_missing_eou():
+def test_endpoint_commit_delay_extends_low_eou_but_keeps_missing_eou_fallback():
     policy = EndpointCommitDelayPolicy.from_turn_policy(
         TurnPolicy(
             max_endpointing_delay_ms=3000,
@@ -210,8 +210,28 @@ def test_endpoint_commit_delay_keeps_full_delay_for_low_or_missing_eou():
         )
     )
 
-    assert policy.commit_delay_ms(eou_probability=0.3, eou_threshold=0.5) == 1200
+    low_confidence_ms = policy.commit_delay_ms(eou_probability=0.3, eou_threshold=0.5)
+
+    assert 1200 < low_confidence_ms < 3000
+    assert policy.commit_delay_ms(eou_probability=0.0, eou_threshold=0.5) == 3000
     assert policy.commit_delay_ms(eou_probability=None, eou_threshold=0.5) == 1200
+
+
+def test_endpoint_commit_delay_is_monotonic_across_incomplete_confidence():
+    policy = EndpointCommitDelayPolicy.from_turn_policy(
+        TurnPolicy(
+            max_endpointing_delay_ms=3000,
+            min_endpointing_delay_ms=400,
+            dynamic_endpointing=False,
+        )
+    )
+
+    barely_incomplete = policy.commit_delay_ms(eou_probability=0.49, eou_threshold=0.5)
+    clearly_incomplete = policy.commit_delay_ms(eou_probability=0.25, eou_threshold=0.5)
+    certainly_incomplete = policy.commit_delay_ms(eou_probability=0.0, eou_threshold=0.5)
+
+    assert 1200 < barely_incomplete < clearly_incomplete < certainly_incomplete
+    assert certainly_incomplete == 3000
 
 
 def test_final_transcript_decision_emits_commit_eou_event_without_endpoint_timer():
@@ -266,13 +286,45 @@ def test_final_transcript_decision_defers_while_endpoint_timer_is_active():
         turn_detector="livekit",
     )
 
-    assert decision.commit_delay_ms == 1200
+    assert 1200 < decision.commit_delay_ms < 3000
     assert decision.defer_commit
     assert not decision.eou_complete
     assert decision.eou_event is not None
     assert decision.eou_event["decision"] == "incomplete"
     assert decision.eou_event["action"] == "wait"
-    assert decision.eou_event["delay_ms"] == 1200
+    assert decision.eou_event["delay_ms"] == decision.commit_delay_ms
+
+
+def test_near_zero_eou_uses_profile_maximum_for_every_detector_backend():
+    policy = EndpointCommitDelayPolicy.from_turn_policy(
+        TurnPolicy(
+            max_endpointing_delay_ms=3000,
+            min_endpointing_delay_ms=400,
+            dynamic_endpointing=False,
+        )
+    )
+
+    for turn_detector in ("livekit", "smart-turn:v3.2"):
+        decision = final_transcript_decision(
+            StreamTranscript(
+                text="I am calling out because I wanna",
+                eou_probability=0.000028,
+                start_ms=0,
+                end_ms=1800,
+            ),
+            endpoint_timer_active=True,
+            commit_delay_policy=policy,
+            recent_pause_ms=[],
+            eou_threshold=0.5,
+            turn_detector=turn_detector,
+        )
+
+        assert decision.defer_commit
+        assert not decision.eou_complete
+        assert decision.commit_delay_ms == 3000
+        assert decision.eou_event is not None
+        assert decision.eou_event["turn_detector"] == turn_detector
+        assert decision.eou_event["action"] == "wait"
 
 
 def test_final_transcript_decision_defers_missing_eou_without_emitting_eou_event():

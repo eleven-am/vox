@@ -187,13 +187,27 @@ class EndpointCommitDelayPolicy:
         if eou_probability is None or eou_threshold is None:
             return base_ms
         if eou_probability < eou_threshold:
-            return base_ms
+            if eou_threshold <= 0.0:
+                return base_ms
+            incompletion = min(
+                1.0,
+                max(0.0, (eou_threshold - eou_probability) / eou_threshold),
+            )
+            return round(base_ms + incompletion * (max_delay_ms - base_ms))
 
         floor_ms = min(min_delay_ms, base_ms)
         if eou_threshold >= 1.0:
             return floor_ms
         confidence = min(1.0, max(0.0, (eou_probability - eou_threshold) / (1.0 - eou_threshold)))
         return int(base_ms - confidence * (base_ms - floor_ms))
+
+
+def eou_indicates_incomplete_turn(
+    eou_probability: float | None,
+    *,
+    threshold: float,
+) -> bool:
+    return eou_probability is not None and eou_probability < threshold
 
 
 @dataclass
@@ -207,7 +221,7 @@ class EndpointPauseHistory:
         current_time = time.monotonic() if now is None else now
         pause_ms = max(0, int((current_time - stopped_at) * 1000))
         self.pauses_ms.append(pause_ms)
-        self.pauses_ms = self.pauses_ms[-max(1, int(self.max_items)):]
+        self.pauses_ms = self.pauses_ms[-max(1, int(self.max_items)) :]
 
     def values(self) -> tuple[int, ...]:
         return tuple(self.pauses_ms)

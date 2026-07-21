@@ -58,7 +58,7 @@ from vox.conversation.response_lifecycle import (
 from vox.conversation.response_synthesis import synthesize_response_stream
 from vox.conversation.speech_guard import AssistantSpeechGuard
 from vox.conversation.state_machine import TurnStateMachine
-from vox.conversation.timers import ConversationTimerRegistry
+from vox.conversation.timers import ConversationTimerLease, ConversationTimerRegistry
 from vox.conversation.types import (
     TimerKey,
     TurnAction,
@@ -301,6 +301,9 @@ class ConversationSession:
             await asyncio.gather(*tuple(self._tts_reaper_tasks), return_exceptions=True)
         await reap_task(self._runner)
 
+        self._awaiting_final_transcript = False
+        self._awaiting_final_transcript_started_at = 0.0
+        self._transcript_finalizer.clear()
         self._pipeline.shutdown()
         self._interrupt_detector.reset()
 
@@ -567,6 +570,17 @@ class ConversationSession:
             return
         if event.type == TurnEventType.CLIENT_CANCEL and isinstance(event.payload, dict):
             event.payload["has_active_response"] = self._response_pipeline_engaged()
+        timer_lease = payload.get("_timer_lease")
+        if isinstance(timer_lease, ConversationTimerLease) and not self._timer_registry.consume(timer_lease):
+            self._resolve_event_future(done)
+            return
+        if (
+            event.type == TurnEventType.TIMER_ELAPSED
+            and payload.get("key") == TimerKey.ENDPOINTING.value
+            and self._input_speech_active
+        ):
+            self._resolve_event_future(done)
+            return
         if self._should_wait_for_final_transcript(event):
             await self._start_timer(
                 TimerKey.ENDPOINTING.value,
@@ -852,8 +866,9 @@ class ConversationSession:
 
             enrich_transcript(stream_event, self._config.language)
 
-            if stream_event.eou_probability is not None:
-                self._last_eou_probability = float(stream_event.eou_probability)
+            self._last_eou_probability = (
+                float(stream_event.eou_probability) if stream_event.eou_probability is not None else None
+            )
             self._endpoint_pause_history.record_since(self._last_speech_stopped_at)
             eou_threshold = EOUConfig().threshold
             finalization_decision = transcript_finalization.final_transcript_decision(
@@ -959,7 +974,11 @@ class ConversationSession:
             return f"turn state is {state.value}", ERROR_CODE_RESPONSE_REJECTED_TURN_STATE
         if state is TurnState.THINKING and self._input_speech_active:
             candidate = self._interrupt_detector.current()
-            if candidate is None or candidate.status is not InterruptionCandidateStatus.REJECTED:
+            unfinished_turn = transcript_finalization.eou_indicates_incomplete_turn(
+                self._last_eou_probability,
+                threshold=EOUConfig().threshold,
+            )
+            if candidate is None or candidate.status is not InterruptionCandidateStatus.REJECTED or unfinished_turn:
                 return "user speech is active", ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH
         return None
 
@@ -1234,8 +1253,11 @@ class ConversationSession:
             return
         done.set_result(result)
 
-    async def _on_timer_expired(self, key: str) -> None:
+    async def _on_timer_expired(self, lease: ConversationTimerLease) -> None:
+        key = lease.key
         if key == TimerKey.CONFIRM_INTERRUPT.value:
+            if not self._timer_registry.consume(lease):
+                return
             expected_candidate_id = self._interrupt_timer_candidate_id
             self._interrupt_timer_candidate_id = None
             candidate = self._interrupt_detector.current()
@@ -1252,7 +1274,7 @@ class ConversationSession:
         await self._event_queue.put(
             TurnEvent(
                 type=TurnEventType.TIMER_ELAPSED,
-                payload={"key": key},
+                payload={"key": key, "_timer_lease": lease},
             )
         )
 

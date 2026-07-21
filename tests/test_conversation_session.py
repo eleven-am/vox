@@ -417,6 +417,31 @@ class TestResponseAdmission:
         await session.close()
 
     @pytest.mark.asyncio
+    async def test_rejected_short_candidate_cannot_admit_response_for_unfinished_turn(self):
+        session, collector, _ = _build_session(interrupt_classifier=_RejectAllClassifier())
+        await session.start()
+        await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
+        await _drain_events(session)
+        session._last_eou_probability = 0.000028
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=2_000, utterance_id=7))
+        await _drain_events(session)
+        await session._evaluate_interrupt_candidate()
+        await _drain_events(session)
+
+        false_positives = collector.by_type(WIRE_INTERRUPTION_FALSE_POSITIVE)
+        assert false_positives[-1]["reason"] == "insufficient_acoustic_evidence"
+        assert session._input_speech_active is True
+
+        result = await session.start_response_stream()
+        assert result.response_id is None
+        assert result.rejection is not None
+        assert result.rejection.code == ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH
+        assert not collector.by_type(WIRE_RESPONSE_CREATED)
+
+        await session.close()
+
+    @pytest.mark.asyncio
     async def test_rejected_final_remains_authoritative_until_vad_stops(self):
         session, collector, _ = _build_session(interrupt_classifier=_RejectAllClassifier())
         await session.start()
@@ -448,9 +473,7 @@ class TestResponseAdmission:
         assert candidate is not None
         assert candidate.status.value == "rejected"
 
-        await session._forward_stream_event(
-            SpeechStopped(timestamp_ms=2_300, expects_transcript=False, utterance_id=7)
-        )
+        await session._forward_stream_event(SpeechStopped(timestamp_ms=2_300, expects_transcript=False, utterance_id=7))
         await _drain_events(session)
         assert session._interrupt_detector.current() is None
 
@@ -468,9 +491,7 @@ class TestResponseAdmission:
         await session._evaluate_interrupt_candidate()
         await _drain_events(session)
 
-        await session._forward_stream_event(
-            SpeechStopped(timestamp_ms=2_300, expects_transcript=False, utterance_id=7)
-        )
+        await session._forward_stream_event(SpeechStopped(timestamp_ms=2_300, expects_transcript=False, utterance_id=7))
         await _drain_events(session)
         await session._forward_stream_event(SpeechStarted(timestamp_ms=3_000, utterance_id=8))
         await _drain_events(session)
@@ -642,6 +663,217 @@ class TestLifecycle:
         assert session.state == TurnState.THINKING
 
         await session.close()
+
+    @pytest.mark.asyncio
+    async def test_incomplete_clause_survives_endpoint_expiry_racing_resumed_speech(self):
+        session, collector, _ = _build_session(
+            policy=TurnPolicy(
+                max_endpointing_delay_ms=3000,
+                min_endpointing_delay_ms=400,
+                dynamic_endpointing=False,
+                aec_warmup_ms=0,
+            ),
+        )
+        await session.start()
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=0, utterance_id=1))
+        await _drain_events(session)
+        await session._forward_stream_event(SpeechStopped(timestamp_ms=1_800, utterance_id=1))
+        await _drain_events(session)
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="I am calling out because I wanna",
+                eou_probability=0.000028,
+                start_ms=0,
+                end_ms=1_800,
+                utterance_id=1,
+            )
+        )
+        await _drain_events(session)
+
+        assert session.state == TurnState.LISTENING
+        assert not collector.by_type(WIRE_TRANSCRIPT_DONE)
+
+        # VAD has already observed the continuation, but the speech-start event
+        # is still queued behind an endpoint expiry from the previous pause.
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=4_790, utterance_id=2))
+        await session._process_turn_event(
+            TurnEvent(
+                type=TurnEventType.TIMER_ELAPSED,
+                payload={"key": TimerKey.ENDPOINTING.value},
+            )
+        )
+        await _drain_events(session)
+
+        assert session.state == TurnState.LISTENING
+        assert not collector.by_type(WIRE_TRANSCRIPT_DONE)
+
+        await session._forward_stream_event(SpeechStopped(timestamp_ms=5_700, utterance_id=2))
+        await _drain_events(session)
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="finish what I was saying",
+                eou_probability=0.95,
+                start_ms=4_790,
+                end_ms=5_700,
+                utterance_id=2,
+            )
+        )
+        await _drain_events(session)
+
+        await session._cancel_timer(TimerKey.ENDPOINTING.value)
+        await session._process_turn_event(
+            TurnEvent(
+                type=TurnEventType.TIMER_ELAPSED,
+                payload={"key": TimerKey.ENDPOINTING.value},
+            )
+        )
+
+        completed = collector.by_type(WIRE_TRANSCRIPT_DONE)
+        assert len(completed) == 1
+        assert completed[0]["transcript"] == ("I am calling out because I wanna finish what I was saying")
+        assert session.state == TurnState.THINKING
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_multiple_thinking_pauses_emit_one_turn_and_offer_one_response(self):
+        session, collector, _ = _build_session(
+            policy=TurnPolicy(
+                max_endpointing_delay_ms=3000,
+                min_endpointing_delay_ms=400,
+                dynamic_endpointing=False,
+                aec_warmup_ms=0,
+            ),
+        )
+        await session.start()
+
+        clauses = (
+            ("I have been thinking", 0.01),
+            ("about how this should", 0.04),
+            ("work when I pause", 0.95),
+        )
+        timestamp_ms = 0
+        for index, (text, eou_probability) in enumerate(clauses, start=1):
+            await session._forward_stream_event(SpeechStarted(timestamp_ms=timestamp_ms, utterance_id=index))
+            await _drain_events(session)
+            timestamp_ms += 700
+            await session._forward_stream_event(SpeechStopped(timestamp_ms=timestamp_ms, utterance_id=index))
+            await _drain_events(session)
+            await session._forward_stream_event(
+                StreamTranscript(
+                    text=text,
+                    eou_probability=eou_probability,
+                    start_ms=timestamp_ms - 700,
+                    end_ms=timestamp_ms,
+                    utterance_id=index,
+                )
+            )
+            await _drain_events(session)
+            assert not collector.by_type(WIRE_TRANSCRIPT_DONE)
+            timestamp_ms += 500
+
+        await session._cancel_timer(TimerKey.ENDPOINTING.value)
+        await session._process_turn_event(
+            TurnEvent(
+                type=TurnEventType.TIMER_ELAPSED,
+                payload={"key": TimerKey.ENDPOINTING.value},
+            )
+        )
+
+        completed = collector.by_type(WIRE_TRANSCRIPT_DONE)
+        assert len(completed) == 1
+        assert completed[0]["transcript"] == ("I have been thinking about how this should work when I pause")
+
+        first = await session.start_response_stream(generation_id="generation-1")
+        second = await session.start_response_stream(generation_id="generation-1")
+
+        assert first.response_id is not None
+        assert second.response_id == first.response_id
+        assert len(collector.by_type(WIRE_RESPONSE_CREATED)) == 1
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_replaced_endpoint_timer_cannot_commit_pending_continuation(self):
+        session, collector, _ = _build_session(
+            policy=TurnPolicy(
+                max_endpointing_delay_ms=3000,
+                min_endpointing_delay_ms=400,
+                dynamic_endpointing=False,
+                aec_warmup_ms=0,
+            ),
+        )
+        await session.start()
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=0, utterance_id=1))
+        await _drain_events(session)
+        await session._forward_stream_event(SpeechStopped(timestamp_ms=700, utterance_id=1))
+        await _drain_events(session)
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="I am still",
+                eou_probability=0.01,
+                start_ms=0,
+                end_ms=700,
+                utterance_id=1,
+            )
+        )
+        await _drain_events(session)
+
+        stale = await session._timer_registry.start(TimerKey.ENDPOINTING.value, 10_000)
+        replacement = await session._timer_registry.start(TimerKey.ENDPOINTING.value, 10_000)
+        assert replacement is not stale
+
+        await session._process_turn_event(
+            TurnEvent(
+                type=TurnEventType.TIMER_ELAPSED,
+                payload={
+                    "key": TimerKey.ENDPOINTING.value,
+                    "_timer_lease": stale,
+                },
+            )
+        )
+
+        assert session.state == TurnState.LISTENING
+        assert not collector.by_type(WIRE_TRANSCRIPT_DONE)
+        assert session._timer_registry.has_active(TimerKey.ENDPOINTING.value)
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_close_discards_held_transcript_without_late_emission(self):
+        session, collector, _ = _build_session(
+            policy=TurnPolicy(
+                max_endpointing_delay_ms=3000,
+                min_endpointing_delay_ms=400,
+                dynamic_endpointing=False,
+                aec_warmup_ms=0,
+            ),
+        )
+        await session.start()
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=0, utterance_id=1))
+        await _drain_events(session)
+        await session._forward_stream_event(SpeechStopped(timestamp_ms=700, utterance_id=1))
+        await _drain_events(session)
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="I have not finished",
+                eou_probability=0.01,
+                start_ms=0,
+                end_ms=700,
+                utterance_id=1,
+            )
+        )
+        await _drain_events(session)
+        assert session._transcript_finalizer.pending is not None
+
+        await session.close()
+        await asyncio.sleep(0)
+
+        assert session._transcript_finalizer.pending is None
+        assert not collector.by_type(WIRE_TRANSCRIPT_DONE)
 
     @pytest.mark.asyncio
     async def test_final_transcript_is_not_rewritten_by_partials(self):
@@ -1361,9 +1593,7 @@ class TestClientCancel:
         assert speaking_session.state == TurnState.SPEAKING
         speaking_before = len(speaking_events.events)
         await speaking_session.cancel_response()
-        speaking_tail = [
-            e["type"] for e in speaking_events.events[speaking_before:] if e["type"] != WIRE_AUDIO_DELTA
-        ]
+        speaking_tail = [e["type"] for e in speaking_events.events[speaking_before:] if e["type"] != WIRE_AUDIO_DELTA]
 
         assert thinking_tail == [WIRE_AUDIO_CLEAR, WIRE_RESPONSE_CANCELLED, WIRE_STATE_CHANGED]
         assert speaking_tail == thinking_tail

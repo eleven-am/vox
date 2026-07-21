@@ -3,45 +3,65 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from dataclasses import dataclass
 
-TimerExpiredHandler = Callable[[str], Awaitable[None]]
+
+@dataclass(frozen=True, slots=True)
+class ConversationTimerLease:
+    key: str
+
+
+TimerExpiredHandler = Callable[[ConversationTimerLease], Awaitable[None]]
 
 
 class ConversationTimerRegistry:
     def __init__(self, on_expired: TimerExpiredHandler) -> None:
         self._on_expired = on_expired
-        self._timers: dict[str, asyncio.Task] = {}
+        self._timers: dict[str, tuple[ConversationTimerLease, asyncio.Task]] = {}
 
     def has_active(self, key: str) -> bool:
-        task = self._timers.get(key)
-        return task is not None and not task.done()
+        return key in self._timers
 
     def has_any_active(self) -> bool:
-        return any(not task.done() for task in self._timers.values())
+        return bool(self._timers)
 
-    async def start(self, key: str, duration_ms: int) -> None:
+    async def start(self, key: str, duration_ms: int) -> ConversationTimerLease:
         await self.cancel(key)
-        self._timers[key] = asyncio.create_task(self._timer_task(key, duration_ms))
+        lease = ConversationTimerLease(key=key)
+        task = asyncio.create_task(self._timer_task(lease, duration_ms))
+        self._timers[key] = (lease, task)
+        return lease
 
     async def cancel(self, key: str) -> None:
-        task = self._timers.pop(key, None)
-        if task and not task.done():
+        entry = self._timers.pop(key, None)
+        if entry is None:
+            return
+        _, task = entry
+        if task is not asyncio.current_task() and not task.done():
             task.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await task
 
     def cancel_all(self) -> None:
-        for task in list(self._timers.values()):
-            task.cancel()
+        entries = tuple(self._timers.values())
         self._timers.clear()
+        for _, task in entries:
+            task.cancel()
 
-    async def _timer_task(self, key: str, duration_ms: int) -> None:
+    def consume(self, lease: ConversationTimerLease) -> bool:
+        entry = self._timers.get(lease.key)
+        if entry is None or entry[0] is not lease:
+            return False
+        self._timers.pop(lease.key, None)
+        return True
+
+    async def _timer_task(self, lease: ConversationTimerLease, duration_ms: int) -> None:
         try:
             await asyncio.sleep(duration_ms / 1000.0)
         except asyncio.CancelledError:
             return
 
-        if self._timers.get(key) is not asyncio.current_task():
+        entry = self._timers.get(lease.key)
+        if entry is None or entry[0] is not lease or entry[1] is not asyncio.current_task():
             return
-        self._timers.pop(key, None)
-        await self._on_expired(key)
+        await self._on_expired(lease)
