@@ -19,6 +19,12 @@ def _load_local_smoke_module() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    gib = 1024**3
+    module._disk_snapshot = lambda _path: {
+        "total": 1000 * gib,
+        "used": 200 * gib,
+        "free": 800 * gib,
+    }
     return module
 
 
