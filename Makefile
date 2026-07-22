@@ -18,7 +18,7 @@ SPARK_TORCHAUDIO_WHEEL ?=
 SPARK_TORCH_INDEX_URL ?= https://download.pytorch.org/whl/cu129
 SPARK_TORCH_EXTRA_INDEX_URL ?=
 
-.PHONY: build build-lean build-cpu build-spark build-local build-local-lean build-local-cpu build-local-spark push tag clean setup-buildx current-version bump-patch bump-minor bump-major test test-smoke-runner smoke-expressive smoke-expressive-served smoke-expressive-local proto
+.PHONY: build build-lean build-cpu build-spark build-local build-local-lean build-local-cpu build-local-spark push tag clean setup-buildx current-version bump-patch bump-minor bump-major test test-smoke-runner smoke-expressive smoke-expressive-served smoke-expressive-local speech-context-install speech-context-evidence proto
 
 build:
 	@test "$(patsubst v%,%,$(VERSION))" = "$(APP_VERSION)" || \
@@ -223,6 +223,14 @@ smoke-expressive-local:
 verify-expressive-local-evidence:
 	@test -n "$(EVIDENCE)" || (echo "usage: make verify-expressive-local-evidence EVIDENCE=/path/to/local-smoke-evidence.json [VERIFY_MODEL=dia-tts:1.6b] [VERIFY_PROOF_TARGET=dia]"; exit 2)
 	uv run python scripts/verify-expressive-adapter-evidence.py $(if $(VERIFY_MODEL),--expect-model "$(VERIFY_MODEL)",) $(if $(VERIFY_PROOF_TARGET),--expect-proof-target "$(VERIFY_PROOF_TARGET)",) $(EVIDENCE)
+
+speech-context-install:
+	@test "$(ACCEPT_OPENSMILE_RESEARCH_LICENSE)" = "1" || (echo "set ACCEPT_OPENSMILE_RESEARCH_LICENSE=1 after reviewing the audEERING Research License"; exit 2)
+	uv run python scripts/speech-context-evidence.py install --accept-opensmile-research-license
+
+speech-context-evidence:
+	@test -n "$(AUDIO)" || (echo "usage: make speech-context-evidence AUDIO=/path/to/audio.wav [EVIDENCE=/path/to/evidence.json] [VOX_URL=http://127.0.0.1:11435]"; exit 2)
+	uv run python scripts/speech-context-evidence.py analyze "$(AUDIO)" $(if $(EVIDENCE),--output "$(EVIDENCE)",) $(if $(VOX_URL),--vox-url "$(VOX_URL)",)
 
 proto:
 	uv run python -m grpc_tools.protoc \

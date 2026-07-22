@@ -1,0 +1,2 @@
+numpy==2.5.1
+opensmile==2.6.0
