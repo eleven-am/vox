@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import tempfile
 import time
-from collections.abc import AsyncIterator
+import wave
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -26,7 +30,9 @@ from vox.operations.model_acquisition import (
     release_entered_adapter_suppressing,
 )
 from vox.operations.streaming_reporting import StreamingOperationErrorReporter
-from vox.streaming.codecs import pcm16_to_float32, resample_audio
+from vox.speech_context.service import SpeechContextService, cancel_speech_context_task
+from vox.speech_context.types import SpeechContext, speech_context_payload
+from vox.streaming.codecs import float32_to_pcm16, pcm16_to_float32, resample_audio
 from vox.streaming.types import TARGET_SAMPLE_RATE, samples_to_ms
 
 logger = logging.getLogger(__name__)
@@ -49,6 +55,7 @@ class LongformTranscriptionConfig:
     temperature: float = 0.0
     chunk_ms: int = DEFAULT_LONGFORM_CHUNK_MS
     overlap_ms: int = DEFAULT_LONGFORM_OVERLAP_MS
+    speech_context: bool = False
 
 
 @dataclass(frozen=True)
@@ -75,6 +82,7 @@ class LongformDoneEvent:
     duration_ms: int
     processing_ms: int
     segments: tuple[dict, ...]
+    speech_context: SpeechContext | None = None
 
 
 @dataclass(frozen=True)
@@ -108,7 +116,7 @@ def longform_transcription_event_payload(event: LongformEvent) -> dict[str, Any]
             "chunks_completed": event.chunks_completed,
         }
     if isinstance(event, LongformDoneEvent):
-        return {
+        payload = {
             "type": "done",
             "model": event.model,
             "text": event.text,
@@ -117,6 +125,9 @@ def longform_transcription_event_payload(event: LongformEvent) -> dict[str, Any]
             "processing_ms": event.processing_ms,
             "segments": list(event.segments),
         }
+        if event.speech_context is not None:
+            payload["speech_context"] = speech_context_payload(event.speech_context)
+        return payload
     if isinstance(event, LongformErrorEvent):
         return {"type": "error", "message": event.message}
     return None
@@ -135,6 +146,21 @@ class _LongformState:
     transcript_parts: list[str] = field(default_factory=list)
     segments: list[dict] = field(default_factory=list)
     language: str | None = None
+    context_path: Path | None = None
+    context_wave: wave.Wave_write | None = None
+    context_resources: contextlib.ExitStack | None = None
+
+
+@contextlib.contextmanager
+def _open_context_wave() -> Iterator[tuple[Path, wave.Wave_write]]:
+    with tempfile.NamedTemporaryFile(
+        prefix="vox-longform-context-",
+        suffix=".wav",
+        delete=False,
+    ) as temporary:
+        context_path = Path(temporary.name)
+        with wave.open(temporary, "wb") as context_wave:
+            yield context_path, context_wave
 
 
 def _clamp_int(value: object, default: int, minimum: int, maximum: int) -> int:
@@ -156,6 +182,7 @@ def normalize_longform_config(
     overlap_ms: object,
     registry: Any,
     store: Any | None,
+    speech_context: bool = False,
 ) -> LongformTranscriptionConfig:
     resolved_model = resolve_requested_or_default_model("stt", model, registry, store)
 
@@ -181,15 +208,24 @@ def normalize_longform_config(
         temperature=float(temperature or 0.0),
         chunk_ms=chunk,
         overlap_ms=overlap,
+        speech_context=bool(speech_context),
     )
 
 
 class LongformTranscriptionSession(StreamingOperationErrorReporter):
 
-    def __init__(self, *, scheduler: Any, registry: Any, store: Any | None) -> None:
+    def __init__(
+        self,
+        *,
+        scheduler: Any,
+        registry: Any,
+        store: Any | None,
+        speech_context_service: SpeechContextService | None = None,
+    ) -> None:
         self._scheduler = scheduler
         self._registry = registry
         self._store = store
+        self._speech_context_service = speech_context_service
 
         self._config: LongformTranscriptionConfig | None = None
         self._state: _LongformState | None = None
@@ -217,6 +253,15 @@ class LongformTranscriptionSession(StreamingOperationErrorReporter):
             overlap_samples=int(config.overlap_ms * TARGET_SAMPLE_RATE / 1000),
             pending_audio=np.array([], dtype=np.float32),
         )
+        if config.speech_context:
+            resources = contextlib.ExitStack()
+            context_path, context_wave = resources.enter_context(_open_context_wave())
+            context_wave.setnchannels(1)
+            context_wave.setsampwidth(2)
+            context_wave.setframerate(TARGET_SAMPLE_RATE)
+            self._state.context_path = context_path
+            self._state.context_wave = context_wave
+            self._state.context_resources = resources
         await self._events.put(LongformReadyEvent(
             model=config.model,
             sample_rate=config.sample_rate,
@@ -240,6 +285,8 @@ class LongformTranscriptionSession(StreamingOperationErrorReporter):
             return
 
         state = self._state
+        if state.context_wave is not None:
+            state.context_wave.writeframes(float32_to_pcm16(audio))
         state.uploaded_samples += audio.size
         state.pending_audio = (
             audio if state.pending_audio.size == 0 else np.concatenate([state.pending_audio, audio])
@@ -269,12 +316,21 @@ class LongformTranscriptionSession(StreamingOperationErrorReporter):
             await self.report_error(str(EmptyAudioError()))
             return
 
-        if state.pending_audio.size > 0 and not (
-            state.chunks_completed > 0 and state.pending_audio.size <= state.overlap_samples
-        ):
-            await self._run_chunk(state.pending_audio, final_chunk=True)
-            state.committed_samples = state.uploaded_samples
+        context_task = self._start_context_analysis(state)
+        try:
+            if state.pending_audio.size > 0 and not (
+                state.chunks_completed > 0 and state.pending_audio.size <= state.overlap_samples
+            ):
+                await self._run_chunk(state.pending_audio, final_chunk=True)
+                state.committed_samples = state.uploaded_samples
+        except asyncio.CancelledError:
+            await cancel_speech_context_task(context_task)
+            raise
+        except Exception:
+            await cancel_speech_context_task(context_task)
+            raise
 
+        speech_context = await self._resolve_context(context_task, enabled=config.speech_context)
         await self._events.put(LongformDoneEvent(
             model=config.model,
             text=" ".join(part for part in state.transcript_parts if part).strip(),
@@ -282,6 +338,7 @@ class LongformTranscriptionSession(StreamingOperationErrorReporter):
             duration_ms=samples_to_ms(state.uploaded_samples),
             processing_ms=state.processing_ms,
             segments=tuple(state.segments),
+            speech_context=speech_context,
         ))
 
     async def end_of_stream_or_report(self) -> bool:
@@ -298,6 +355,7 @@ class LongformTranscriptionSession(StreamingOperationErrorReporter):
             await release_entered_adapter_suppressing(self._adapter_lease)
             self._adapter_lease = None
             self._adapter = None
+        self._delete_context_file()
 
     async def events(self) -> AsyncIterator[LongformEvent]:
         while True:
@@ -369,3 +427,45 @@ class LongformTranscriptionSession(StreamingOperationErrorReporter):
             if text:
                 state.transcript_parts.append(text)
         state.chunks_completed += 1
+
+    def _start_context_analysis(self, state: _LongformState) -> asyncio.Task[SpeechContext] | None:
+        self._close_context_resources(state)
+        if state.context_path is None or self._speech_context_service is None:
+            return None
+        return asyncio.create_task(self._speech_context_service.analyze_wave_path(state.context_path))
+
+    @staticmethod
+    async def _resolve_context(
+        task: asyncio.Task[SpeechContext] | None,
+        *,
+        enabled: bool,
+    ) -> SpeechContext | None:
+        if not enabled:
+            return None
+        if task is None:
+            return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+        try:
+            return await task
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Long-form speech context analysis failed")
+            return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+
+    def _delete_context_file(self) -> None:
+        state = self._state
+        if state is None:
+            return
+        self._close_context_resources(state)
+        if state.context_path is not None:
+            with contextlib.suppress(OSError):
+                state.context_path.unlink()
+            state.context_path = None
+
+    @staticmethod
+    def _close_context_resources(state: _LongformState) -> None:
+        if state.context_resources is not None:
+            with contextlib.suppress(Exception):
+                state.context_resources.close()
+            state.context_resources = None
+        state.context_wave = None

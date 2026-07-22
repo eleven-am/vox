@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import csv
+import json
 import os
 import wave
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +12,12 @@ import numpy as np
 from ai_edge_litert.interpreter import Interpreter
 from numpy.typing import NDArray
 
+from vox.speech_context.audioset import enrich_audioset_classes
+from vox.speech_context.reducer import (
+    merge_audio_event_chunks,
+    offset_audio_events,
+    reduce_audio_events,
+)
 from vox.speech_context.worker import run_analysis_worker
 
 SAMPLE_RATE = 16_000
@@ -17,6 +25,7 @@ SCORE_WINDOW_MS = 960.0
 SCORE_HOP_MS = 480.0
 SPECTROGRAM_WINDOW_MS = 25.0
 SPECTROGRAM_HOP_MS = 10.0
+COMPACT_CHUNK_SECONDS = 300
 
 
 class YamnetAnalyzer:
@@ -27,11 +36,12 @@ class YamnetAnalyzer:
         assets = Path(assets_value)
         self._model_path = assets / "yamnet.tflite"
         self._class_map_path = assets / "yamnet_class_map.csv"
-        if not self._model_path.is_file() or not self._class_map_path.is_file():
+        self._ontology_path = assets / "audioset_ontology.json"
+        if not self._model_path.is_file() or not self._class_map_path.is_file() or not self._ontology_path.is_file():
             raise RuntimeError("YAMNet assets are missing from the isolated runtime")
 
         with self._class_map_path.open(newline="", encoding="utf-8") as handle:
-            self._classes = [
+            classes = [
                 {
                     "index": int(row["index"]),
                     "id": row["mid"],
@@ -39,8 +49,10 @@ class YamnetAnalyzer:
                 }
                 for row in csv.DictReader(handle)
             ]
-        if len(self._classes) != 521:
-            raise RuntimeError(f"expected 521 YAMNet classes, found {len(self._classes)}")
+        if len(classes) != 521:
+            raise RuntimeError(f"expected 521 YAMNet classes, found {len(classes)}")
+        ontology = json.loads(self._ontology_path.read_text(encoding="utf-8"))
+        self._classes = enrich_audioset_classes(classes, ontology)
 
         self._interpreter = Interpreter(model_path=str(self._model_path))
 
@@ -53,6 +65,15 @@ class YamnetAnalyzer:
         return (audio.astype(np.float32) / 32768.0).astype(np.float32, copy=False)
 
     @staticmethod
+    def _iter_waveforms(audio_path: str) -> Iterator[NDArray[np.float32]]:
+        with wave.open(audio_path, "rb") as handle:
+            if handle.getnchannels() != 1 or handle.getsampwidth() != 2 or handle.getframerate() != SAMPLE_RATE:
+                raise ValueError("YAMNet worker requires mono 16 kHz PCM16 WAV input")
+            while pcm := handle.readframes(SAMPLE_RATE * COMPACT_CHUNK_SECONDS):
+                audio = np.frombuffer(pcm, dtype="<i2")
+                yield (audio.astype(np.float32) / 32768.0).astype(np.float32, copy=False)
+
+    @staticmethod
     def _timed_rows(values: np.ndarray[Any, Any], *, window_ms: float, hop_ms: float) -> list[dict[str, Any]]:
         return [
             {
@@ -63,8 +84,7 @@ class YamnetAnalyzer:
             for index, row in enumerate(values)
         ]
 
-    def analyze(self, audio_path: str) -> dict[str, Any]:
-        waveform = self._read_waveform(audio_path)
+    def _invoke(self, waveform: NDArray[np.float32]) -> tuple[np.ndarray[Any, Any], ...]:
         input_detail = self._interpreter.get_input_details()[0]
         self._interpreter.resize_tensor_input(input_detail["index"], [len(waveform)], strict=True)
         self._interpreter.allocate_tensors()
@@ -72,9 +92,11 @@ class YamnetAnalyzer:
         self._interpreter.invoke()
 
         output_details = self._interpreter.get_output_details()
-        scores = self._interpreter.get_tensor(output_details[0]["index"])
-        embeddings = self._interpreter.get_tensor(output_details[1]["index"])
-        spectrogram = self._interpreter.get_tensor(output_details[2]["index"])
+        return tuple(self._interpreter.get_tensor(detail["index"]) for detail in output_details)
+
+    def analyze(self, audio_path: str) -> dict[str, Any]:
+        waveform = self._read_waveform(audio_path)
+        scores, embeddings, spectrogram = self._invoke(waveform)
         return {
             "classes": self._classes,
             "scores": self._timed_rows(scores, window_ms=SCORE_WINDOW_MS, hop_ms=SCORE_HOP_MS),
@@ -90,7 +112,40 @@ class YamnetAnalyzer:
             ),
         }
 
+    def analyze_compact(self, audio_path: str) -> dict[str, Any]:
+        chunks: list[dict[str, Any]] = []
+        offset_samples = 0
+        for waveform in self._iter_waveforms(audio_path):
+            scores = self._invoke(waveform)[0]
+            duration_ms = len(waveform) / SAMPLE_RATE * 1000
+            reduced = reduce_audio_events(
+                {
+                    "classes": self._classes,
+                    "scores": self._timed_rows(
+                        scores,
+                        window_ms=SCORE_WINDOW_MS,
+                        hop_ms=SCORE_HOP_MS,
+                    ),
+                },
+                duration_ms=duration_ms,
+            )
+            chunks.append(
+                offset_audio_events(
+                    reduced,
+                    offset_ms=round(offset_samples / SAMPLE_RATE * 1000),
+                )
+            )
+            offset_samples += len(waveform)
+        return merge_audio_event_chunks(chunks)
+
 
 if __name__ == "__main__":
     analyzer = YamnetAnalyzer()
-    raise SystemExit(run_analysis_worker(analyzer.analyze))
+    raise SystemExit(
+        run_analysis_worker(
+            {
+                "analyze": analyzer.analyze,
+                "analyze_compact": analyzer.analyze_compact,
+            }
+        )
+    )

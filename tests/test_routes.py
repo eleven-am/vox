@@ -383,6 +383,21 @@ class TestTranscribeMapping:
         assert resp.text == "hello world"
         assert "text/plain" in resp.headers["content-type"]
 
+    def test_text_format_rejects_requested_speech_context(self):
+        client = self._client()
+        resp = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("a.wav", io.BytesIO(_wav_bytes()), "audio/wav")},
+            data={
+                "model": "test-stt:latest",
+                "response_format": "text",
+                "speech_context": "true",
+            },
+        )
+
+        assert resp.status_code == 400
+        assert resp.json()["detail"] == "speech_context requires a structured JSON response format"
+
     def test_verbose_json_includes_segments(self):
         client = self._client()
         resp = client.post(

@@ -26,14 +26,22 @@ from vox.operations.errors import OperationError
 from vox.operations.rtc_runtime import RtcRuntime
 from vox.operations.rtc_signaling import create_rtc_session
 from vox.server.rtc_registry import RtcSessionRegistry
+from vox.speech_context.service import SpeechContextService
 
 logger = logging.getLogger(__name__)
 
 
 class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
-    def __init__(self, *, scheduler: Scheduler, rtc_registry: RtcSessionRegistry) -> None:
+    def __init__(
+        self,
+        *,
+        scheduler: Scheduler,
+        rtc_registry: RtcSessionRegistry,
+        speech_context_service: SpeechContextService | None = None,
+    ) -> None:
         self._scheduler = scheduler
         self._rtc_registry = rtc_registry
+        self._speech_context_service = speech_context_service
 
     async def CreateSession(self, request, context):
         result = create_rtc_session(
@@ -82,6 +90,7 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                                 transport="grpc",
                                 emit=emit,
                                 emit_conversation=emit_conversation,
+                                speech_context_service=self._speech_context_service,
                             )
                         except OperationError as exc:
                             await out_queue.put(rtc_error_pb(str(exc)))

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import logging
 
+import numpy as np
+
 from vox.conversation.transcripts import (
     TRANSCRIPT_CONTINUATION_COMMIT_MS,
     WIRE_TRANSCRIPT_DONE,
@@ -16,6 +18,7 @@ from vox.conversation.transcripts import (
     transcript_done_payload,
 )
 from vox.conversation.types import TimerKey, TurnEvent, TurnEventType, TurnPolicy
+from vox.speech_context.types import SpeechContext
 from vox.streaming.types import StreamTranscript
 
 
@@ -134,6 +137,69 @@ def test_pending_transcript_finalizer_remembers_pops_clears_and_logs(caplog):
         and "logged" in record.message
         for record in caplog.records
     )
+
+
+def test_pending_transcript_finalizer_reanalyzes_continuations_as_one_timeline():
+    finalizer = PendingTranscriptFinalizer(language="en")
+    context = SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+    first_audio = np.full(1_600, 0.1, dtype=np.float32)
+    second_audio = np.full(3_200, 0.2, dtype=np.float32)
+
+    finalizer.remember(
+        StreamTranscript(
+            text="first phrase",
+            start_ms=100,
+            end_ms=200,
+            speech_context=context,
+            audio=first_audio,
+        )
+    )
+    finalizer.remember(
+        StreamTranscript(
+            text="second phrase",
+            start_ms=600,
+            end_ms=800,
+            speech_context=context,
+            audio=second_audio,
+        )
+    )
+
+    payload, chunks = finalizer.pop_with_audio()
+
+    assert payload is not None
+    assert payload["transcript"] == "first phrase second phrase"
+    assert "speech_context" not in payload
+    assert [(chunk.offset_ms, chunk.duration_ms) for chunk in chunks] == [
+        (100, 100),
+        (600, 200),
+    ]
+
+
+def test_pending_transcript_finalizer_replaces_revision_audio_and_context():
+    finalizer = PendingTranscriptFinalizer(language="en")
+    first = np.full(1_600, 0.1, dtype=np.float32)
+    revision = np.full(3_200, 0.2, dtype=np.float32)
+
+    finalizer.remember(StreamTranscript(text="hello", audio=first))
+    finalizer.remember(
+        StreamTranscript(
+            text="hello there",
+            end_ms=200,
+            audio=revision,
+            speech_context=SpeechContext(
+                status="failed",
+                unavailable=("prosody", "audio_events"),
+            ),
+        )
+    )
+
+    payload, chunks = finalizer.pop_with_audio()
+
+    assert payload is not None
+    assert payload["transcript"] == "hello there"
+    assert payload["speech_context"]["status"] == "failed"
+    assert len(chunks) == 1
+    assert chunks[0].duration_ms == 200
 
 
 def test_endpoint_commit_delay_uses_recent_pause_history_when_dynamic():

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -23,6 +24,8 @@ from vox.operations.errors import (
     WrongModelTypeError,
 )
 from vox.operations.model_acquisition import acquire_typed_adapter
+from vox.speech_context.service import SpeechContextService, cancel_speech_context_task
+from vox.speech_context.types import SpeechContext, speech_context_payload
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +54,7 @@ class TranscriptionRequest:
     word_timestamps: bool = False
     temperature: float = 0.0
     annotate_text: bool = False
+    speech_context: bool = False
 
 
 def transcription_request_from_fields(
@@ -62,6 +66,7 @@ def transcription_request_from_fields(
     word_timestamps: bool = False,
     temperature: float = 0.0,
     annotate_text: bool = False,
+    speech_context: bool = False,
 ) -> TranscriptionRequest:
     return TranscriptionRequest(
         audio=audio,
@@ -71,6 +76,7 @@ def transcription_request_from_fields(
         word_timestamps=word_timestamps,
         temperature=temperature if temperature > 0 else 0.0,
         annotate_text=annotate_text,
+        speech_context=speech_context,
     )
 
 
@@ -123,6 +129,7 @@ class TranscriptionResultBundle:
     processing_ms: int
     entities: tuple[Entity, ...] = ()
     topics: tuple[str, ...] = ()
+    speech_context: SpeechContext | None = None
 
 
 @dataclass
@@ -184,10 +191,10 @@ def openai_transcription_response(
             ),
         )
 
-    return OpenAITranscriptionResponse(
-        response_format=response_format or "json",
-        payload={"text": bundle.result.text},
-    )
+    payload: dict[str, Any] = {"text": bundle.result.text}
+    if bundle.speech_context is not None:
+        payload["speech_context"] = speech_context_payload(bundle.speech_context)
+    return OpenAITranscriptionResponse(response_format=response_format or "json", payload=payload)
 
 
 def openai_transcription_payload(
@@ -208,6 +215,8 @@ def openai_transcription_payload(
         response["entities"] = [asdict(entity) for entity in bundle.entities]
     if bundle.topics:
         response["topics"] = list(bundle.topics)
+    if bundle.speech_context is not None:
+        response["speech_context"] = speech_context_payload(bundle.speech_context)
     if include_segments:
         response["segments"] = openai_segments_payload(result)
     if include_words:
@@ -306,6 +315,7 @@ async def transcribe(
     registry: Any,
     store: Any | None,
     request: TranscriptionRequest,
+    speech_context_service: SpeechContextService | None = None,
 ) -> TranscriptionResultBundle:
     model = resolve_requested_or_default_model("stt", request.model, registry, store)
 
@@ -318,6 +328,11 @@ async def transcribe(
     timings.decode_ms = int((time.perf_counter() - decode_start) * 1000)
     timings.chunks = len(chunks)
     first_signal_ms = _first_signal_ms(chunks[0].data, sample_rate=chunks[0].sample_rate)
+    context_task = (
+        asyncio.create_task(speech_context_service.analyze_chunks(chunks))
+        if request.speech_context and speech_context_service is not None
+        else None
+    )
 
     start_time = time.perf_counter()
     try:
@@ -352,9 +367,14 @@ async def transcribe(
         merge_start = time.perf_counter()
         result = merge_transcripts(per_chunk)
         timings.merge_ms = int((time.perf_counter() - merge_start) * 1000)
+    except asyncio.CancelledError:
+        await cancel_speech_context_task(context_task)
+        raise
     except (WrongModelTypeError, OperationError, VoxError):
+        await cancel_speech_context_task(context_task)
         raise
     except Exception:
+        await cancel_speech_context_task(context_task)
         logger.exception(f"Transcription failed for model {model}")
         raise
 
@@ -373,6 +393,25 @@ async def transcribe(
         )
         topics = tuple(tops)
         timings.annotate_ms = int((time.perf_counter() - annotate_start) * 1000)
+
+    speech_context: SpeechContext | None = None
+    if request.speech_context:
+        if context_task is None:
+            speech_context = SpeechContext(
+                status="failed",
+                unavailable=("prosody", "audio_events"),
+            )
+        else:
+            try:
+                speech_context = await context_task
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Speech context analysis failed")
+                speech_context = SpeechContext(
+                    status="failed",
+                    unavailable=("prosody", "audio_events"),
+                )
 
     logger.info(
         (
@@ -405,6 +444,7 @@ async def transcribe(
         processing_ms=processing_ms,
         entities=entities,
         topics=topics,
+        speech_context=speech_context,
     )
 
 

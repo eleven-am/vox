@@ -72,6 +72,8 @@ from vox.core.adapter import TTSAdapter
 from vox.core.adapter_acquisition import AdapterTypeMismatchError, acquire_typed_adapter
 from vox.core.scheduler import Scheduler
 from vox.core.tasks import reap_task
+from vox.speech_context.service import SpeechContextService
+from vox.speech_context.types import SpeechContext, speech_context_payload
 from vox.streaming.annotation import enrich_transcript
 from vox.streaming.codecs import StreamResampler, float32_to_pcm16, pcm16_to_float32, resample_audio
 from vox.streaming.eou import DEFAULT_TURN_DETECTOR, EOUConfig
@@ -164,6 +166,7 @@ class ConversationConfig:
     vad_backend: str = "silero"
     turn_detector: str = DEFAULT_TURN_DETECTOR
     include_word_timestamps: bool = False
+    speech_context: bool = False
 
     interrupt_classifier: InterruptClassifier | None = None
     interrupt_detector: InterruptDetector | None = None
@@ -220,6 +223,7 @@ class ConversationSession:
         scheduler: Scheduler,
         config: ConversationConfig,
         on_event: EventEmitter,
+        speech_context_service: SpeechContextService | None = None,
     ) -> None:
         self._scheduler = scheduler
         self._config = config
@@ -234,6 +238,7 @@ class ConversationSession:
 
         self._pipeline = StreamPipeline(
             scheduler=scheduler,
+            speech_context_service=speech_context_service,
             config=StreamPipelineConfig(
                 vad_config=VADConfig(
                     backend=config.vad_backend,
@@ -248,6 +253,7 @@ class ConversationSession:
             model=config.stt_model,
             partials=self._wants_partials,
             include_word_timestamps=config.include_word_timestamps,
+            speech_context=config.speech_context,
         )
         self._pipeline.configure(self._stream_session_config)
 
@@ -282,6 +288,7 @@ class ConversationSession:
         self._awaiting_final_transcript_started_at: float = 0.0
         self._endpoint_pause_history = transcript_finalization.EndpointPauseHistory()
         self._transcript_finalizer = transcript_finalization.PendingTranscriptFinalizer(language=config.language)
+        self._speech_context_service = speech_context_service
         self._endpoint_commit_delay = transcript_finalization.EndpointCommitDelayPolicy.from_turn_policy(config.policy)
         self._audio_history = ConversationAudioHistory()
 
@@ -1288,9 +1295,32 @@ class ConversationSession:
             self._interrupt_timer_candidate_id = candidate.candidate_id if candidate is not None else None
 
     async def _emit_pending_transcript_done(self) -> None:
-        payload = self._transcript_finalizer.pop()
+        payload, audio = self._transcript_finalizer.pop_with_audio()
         if payload is None:
             return
+        if self._config.speech_context:
+            if len(audio) > 1 and self._speech_context_service is not None:
+                try:
+                    context = await self._speech_context_service.analyze_chunks(
+                        audio,
+                        timeline_offset_ms=int(payload.get("start_ms") or 0),
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception("Conversation speech context analysis failed")
+                    context = SpeechContext(
+                        status="failed",
+                        unavailable=("prosody", "audio_events"),
+                    )
+                payload["speech_context"] = speech_context_payload(context)
+            elif "speech_context" not in payload:
+                payload["speech_context"] = speech_context_payload(
+                    SpeechContext(
+                        status="failed",
+                        unavailable=("prosody", "audio_events"),
+                    )
+                )
         self._transcript_finalizer.log(payload)
         await self._emit(payload)
 

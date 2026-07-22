@@ -14,6 +14,7 @@ from vox.server.app_services import (
     app_pondsocket,
     app_rtc_registry,
     app_scheduler,
+    app_speech_context,
     set_app_pondsocket_gateway,
 )
 from vox.server.auth import authorize_api_key_connection
@@ -113,6 +114,7 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
         return False
 
     scheduler = app_scheduler(app)
+    speech_context_service = app_speech_context(app)
     rtc_registry: RtcSessionRegistry = app_rtc_registry(app)
     conversation_runtimes: dict[str, _ConversationRuntime] = {}
     rtc_runtimes: dict[str, RtcRuntime] = {}
@@ -127,7 +129,10 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
         await runtime.conversation.close()
 
     async def build_conversation_runtime(channel: Channel, user_id: str, session_id: str) -> _ConversationRuntime:
-        orchestrator = ConversationOrchestrator(scheduler=scheduler)
+        orchestrator = ConversationOrchestrator(
+            scheduler=scheduler,
+            speech_context_service=speech_context_service,
+        )
         conversation = ConversationRuntime(
             orchestrator,
             unknown_message_label="unknown conversation message type",
@@ -163,6 +168,7 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
                 wire,
                 session_id=session_id,
             ),
+            speech_context_service=speech_context_service,
         )
 
     async def on_conversation_join(ctx: JoinContext) -> None:

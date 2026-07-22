@@ -34,6 +34,7 @@ from vox.operations.conversation import (
 )
 from vox.operations.errors import OperationError
 from vox.server.rtc_registry import RtcSessionRecord
+from vox.speech_context.service import SpeechContextService
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +204,12 @@ def prepare_rtc_control_event(
     return RtcControlEvent(wire=wire, done=isinstance(event, ConvDoneEvent))
 
 
-def create_rtc_orchestrator(*, scheduler: Any, record: Any) -> ConversationOrchestrator:
+def create_rtc_orchestrator(
+    *,
+    scheduler: Any,
+    record: Any,
+    speech_context_service: SpeechContextService | None = None,
+) -> ConversationOrchestrator:
     async def send_rtc_audio(event: ConvAudioDeltaEvent) -> None:
         await enqueue_rtc_audio(record, event)
 
@@ -216,6 +222,7 @@ def create_rtc_orchestrator(*, scheduler: Any, record: Any) -> ConversationOrche
         audio_sink=send_rtc_audio,
         wait_for_output_playout=wait_for_rtc_playout,
         output_playout_observed=True,
+        speech_context_service=speech_context_service,
     )
     record.orchestrator = orchestrator
     return orchestrator

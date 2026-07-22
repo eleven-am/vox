@@ -34,6 +34,7 @@ from vox.operations.streaming_transcription import (
     streaming_transcription_config_from_fields,
     streaming_transcription_event_payload,
 )
+from vox.speech_context.types import SpeechContext
 from vox.streaming.types import SpeechStarted, StreamTranscript
 
 
@@ -238,6 +239,26 @@ def test_streaming_event_payload_preserves_realtime_wire_contract():
         "words": [{"word": "hello", "start_ms": 100, "end_ms": 400}],
         "segments": [{"text": "hello", "start_ms": 100, "end_ms": 400}],
     }
+
+
+def test_streaming_event_payload_includes_context_only_on_final_transcripts():
+    context = SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+
+    final_payload = streaming_transcription_event_payload(
+        TranscriptEvent(StreamTranscript(text="final", speech_context=context))
+    )
+    partial_payload = streaming_transcription_event_payload(
+        TranscriptEvent(StreamTranscript(text="partial", is_partial=True, speech_context=context))
+    )
+
+    assert final_payload is not None
+    assert final_payload["speech_context"] == {
+        "schema_version": 1,
+        "status": "failed",
+        "unavailable": ["prosody", "audio_events"],
+    }
+    assert partial_payload is not None
+    assert "speech_context" not in partial_payload
     assert streaming_transcription_event_payload(ErrorEvent(message="boom")) == {
         "type": "error",
         "message": "boom",

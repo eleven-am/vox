@@ -44,6 +44,7 @@ from vox.operations.errors import (
     SessionAlreadyConfiguredError,
     SessionNotConfiguredError,
 )
+from vox.speech_context.service import SpeechContextService
 from vox.streaming.eou import DEFAULT_TURN_DETECTOR
 from vox.streaming.types import TARGET_SAMPLE_RATE
 
@@ -121,6 +122,7 @@ class ConversationSessionConfig:
     turn_detector: str = DEFAULT_TURN_DETECTOR
     policy: TurnPolicy | None = None
     include_word_timestamps: bool = False
+    speech_context: bool = False
 
 
 @dataclass(frozen=True)
@@ -155,6 +157,7 @@ class ConvTranscriptDoneEvent:
     entities: tuple[dict, ...]
     topics: tuple[str, ...]
     words: tuple[dict, ...]
+    speech_context: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -334,6 +337,8 @@ def serialize_conversation_event(event: ConvEvent) -> dict | None:
             payload["topics"] = list(event.topics)
         if event.words:
             payload["words"] = list(event.words)
+        if event.speech_context is not None:
+            payload["speech_context"] = event.speech_context
         return payload
     if isinstance(event, ConvResponseCreatedEvent):
         return _with_generation_id(
@@ -475,6 +480,7 @@ def parse_session_update(payload: dict) -> ConversationSessionConfig:
         turn_detector=str(_first_session_value(sess, SESSION_UPDATE_TURN_DETECTOR_FIELDS) or DEFAULT_TURN_DETECTOR),
         policy_overrides=_first_session_mapping(sess, SESSION_UPDATE_POLICY_FIELDS),
         include_word_timestamps=bool(sess.get("include_word_timestamps") or False),
+        speech_context=bool(sess.get("speech_context") or False),
     )
 
 
@@ -490,6 +496,7 @@ def build_conversation_session_config(
     turn_detector: str = DEFAULT_TURN_DETECTOR,
     policy_overrides: dict[str, Any] | None = None,
     include_word_timestamps: bool = False,
+    speech_context: bool = False,
 ) -> ConversationSessionConfig:
     if not stt_model:
         raise InvalidConfigError("session.update requires 'stt_model'")
@@ -517,6 +524,7 @@ def build_conversation_session_config(
         turn_detector=turn_detector,
         policy=policy,
         include_word_timestamps=include_word_timestamps,
+        speech_context=speech_context,
     )
 
 
@@ -694,6 +702,11 @@ def parse_conversation_wire_event(event: dict) -> ConvEvent | None:
             entities=tuple(event.get("entities") or ()),
             topics=tuple(event.get("topics") or ()),
             words=tuple(event.get("words") or ()),
+            speech_context=(
+                dict(event["speech_context"])
+                if isinstance(event.get("speech_context"), dict)
+                else None
+            ),
         )
     if t == WIRE_RESPONSE_CREATED:
         return ConvResponseCreatedEvent(
@@ -794,12 +807,14 @@ class ConversationOrchestrator:
         audio_sink: Callable[[ConvAudioDeltaEvent], Awaitable[None]] | None = None,
         wait_for_output_playout: Callable[[], Awaitable[None]] | None = None,
         output_playout_observed: bool = False,
+        speech_context_service: SpeechContextService | None = None,
     ) -> None:
         self._scheduler = scheduler
         self._pace_response_done_to_audio = pace_response_done_to_audio
         self._audio_sink = audio_sink
         self._wait_for_output_playout = wait_for_output_playout
         self._output_playout_observed = output_playout_observed
+        self._speech_context_service = speech_context_service
         self._session: ConversationSession | None = None
         self._config: ConversationSessionConfig | None = None
         self._events: asyncio.Queue[ConvEvent] = asyncio.Queue()
@@ -824,6 +839,7 @@ class ConversationOrchestrator:
             policy=policy,
             turn_profile=config.turn_profile,
             include_word_timestamps=config.include_word_timestamps,
+            speech_context=config.speech_context,
             pace_response_done_to_audio=self._pace_response_done_to_audio,
             wait_for_output_playout=self._wait_for_output_playout,
             output_playout_observed=self._output_playout_observed,
@@ -833,6 +849,7 @@ class ConversationOrchestrator:
             scheduler=self._scheduler,
             config=engine_config,
             on_event=self._on_engine_event,
+            speech_context_service=self._speech_context_service,
         )
         await self._session.start()
         await self._events.put(ConvSessionCreatedEvent(config=config))
@@ -1034,6 +1051,7 @@ def serialize_session_config(config: ConversationSessionConfig) -> dict:
         "vad_backend": config.vad_backend,
         "turn_detector": config.turn_detector,
         "include_word_timestamps": config.include_word_timestamps,
+        "speech_context": config.speech_context,
         "output_sample_rate": config.sample_rate,
         "output_audio_format": "pcm16",
         "turn_policy": {

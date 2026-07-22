@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from vox.server.rtc_registry import RtcSessionRegistry
+from vox.speech_context.service import SpeechContextService
 
 
 @dataclass(frozen=True, slots=True)
@@ -11,6 +12,7 @@ class AppServices:
     scheduler: Any
     registry: Any
     store: Any
+    speech_context: SpeechContextService | None
 
 
 def app_state(request_or_ws_or_app: Any) -> Any:
@@ -24,6 +26,7 @@ def app_services(request_or_ws_or_app: Any) -> AppServices:
         scheduler=state.scheduler,
         registry=state.registry,
         store=state.store,
+        speech_context=getattr(state, "speech_context", None),
     )
 
 
@@ -33,6 +36,10 @@ def app_scheduler(request_or_ws_or_app: Any) -> Any:
 
 def app_store(request_or_ws_or_app: Any) -> Any:
     return app_state(request_or_ws_or_app).store
+
+
+def app_speech_context(request_or_ws_or_app: Any) -> SpeechContextService | None:
+    return getattr(app_state(request_or_ws_or_app), "speech_context", None)
 
 
 def app_rtc_registry(request_or_ws_or_app: Any) -> RtcSessionRegistry:

@@ -242,6 +242,38 @@ class TestPull:
         assert "cannot connect" in result.output or "cannot connect" in (result.output + (result.output or ""))
 
 
+class TestSpeechContext:
+    def test_status_reports_runtime_inventory(self, runner, monkeypatch):
+        from vox.speech_context import runtime
+
+        monkeypatch.setattr(runtime, "runtime_inventory", lambda: {"prosody": {"status": "missing"}})
+
+        result = runner.invoke(cli, ["speech-context", "status"])
+
+        assert result.exit_code == 0
+        assert json.loads(result.output) == {"prosody": {"status": "missing"}}
+
+    def test_install_forwards_explicit_license_acceptance(self, runner, monkeypatch):
+        from vox.speech_context import runtime
+
+        observed = {}
+
+        def install(*, accept_opensmile_research_license):
+            observed["accepted"] = accept_opensmile_research_license
+            return {"prosody": {"status": "ready"}}
+
+        monkeypatch.setattr(runtime, "install_speech_context_runtimes", install)
+
+        result = runner.invoke(
+            cli,
+            ["speech-context", "install", "--accept-opensmile-research-license"],
+        )
+
+        assert result.exit_code == 0
+        assert observed == {"accepted": True}
+        assert json.loads(result.output) == {"prosody": {"status": "ready"}}
+
+
 
 
 

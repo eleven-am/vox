@@ -50,6 +50,7 @@ from vox.operations.transcription import (
     TranscriptionResultBundle,
 )
 from vox.operations.voices import DeleteVoiceResult, ListedVoice, created_voice_payload, list_voices_payload
+from vox.speech_context.types import SpeechContext
 from vox.streaming.types import StreamTranscript
 
 
@@ -115,6 +116,12 @@ class FakeSTTAdapter(STTAdapter):
             model="fake-stt:latest",
             segments=(TranscriptSegment(text="hello grpc", start_ms=0, end_ms=1000),),
         )
+
+
+class FakeSpeechContextService:
+    async def analyze_chunks(self, chunks) -> SpeechContext:
+        assert tuple(chunks)
+        return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
 
 
 class TestHealthServicer:
@@ -320,18 +327,26 @@ class TestTranscriptionServicerMapping:
         store = _make_store(tmp_path)
         registry = MagicMock()
         scheduler = DummyScheduler(FakeSTTAdapter())
-        servicer = TranscriptionServicer(store, registry, scheduler)
+        servicer = TranscriptionServicer(
+            store,
+            registry,
+            scheduler,
+            FakeSpeechContextService(),
+        )
 
         response = await servicer.Transcribe(
             vox_pb2.TranscribeRequest(
                 model="fake-stt:latest",
                 audio=encode_wav(np.zeros(16_000, dtype=np.float32), 16_000),
                 format_hint="wav",
+                speech_context=True,
             ),
             FakeContext(),
         )
         assert response.text == "hello grpc"
         assert response.model == "fake-stt:latest"
+        assert response.speech_context["status"] == "failed"
+        assert list(response.speech_context["unavailable"]) == ["prosody", "audio_events"]
 
     @pytest.mark.asyncio
     async def test_transcribe_no_audio_aborts_with_invalid_argument(self, tmp_path):
@@ -481,6 +496,10 @@ class TestGrpcTranscriptMessages:
                     "words": [{"word": "Paris", "start_ms": 10, "end_ms": 210}],
                 }
             ],
+            speech_context=SpeechContext(
+                status="failed",
+                unavailable=("prosody", "audio_events"),
+            ),
         )
 
         message = stream_transcript_result(transcript)
@@ -492,6 +511,23 @@ class TestGrpcTranscriptMessages:
         assert list(message.topics) == ["travel"]
         assert message.words[0].confidence == pytest.approx(0.8)
         assert message.segments[0].words[0].word == "Paris"
+        assert not message.HasField("speech_context")
+
+    def test_stream_transcript_result_encodes_context_on_final_only(self):
+        from vox.grpc.transcript_messages import stream_transcript_result
+
+        message = stream_transcript_result(
+            StreamTranscript(
+                text="hello",
+                speech_context=SpeechContext(
+                    status="failed",
+                    unavailable=("prosody", "audio_events"),
+                ),
+            )
+        )
+
+        assert message.speech_context["status"] == "failed"
+        assert list(message.speech_context["unavailable"]) == ["prosody", "audio_events"]
 
     def test_annotate_response_encodes_entities_and_topics(self):
         from vox.grpc.transcript_messages import annotate_response
@@ -523,6 +559,7 @@ class TestGrpcStreamingMessages:
                 partial_stride_ms=400,
                 include_word_timestamps=True,
                 temperature=0.25,
+                speech_context=True,
             )
         )
 
@@ -534,6 +571,7 @@ class TestGrpcStreamingMessages:
         assert defaults.partial_stride_ms == 700
         assert defaults.include_word_timestamps is False
         assert defaults.temperature == 0.0
+        assert defaults.speech_context is False
 
         assert explicit.model == "parakeet"
         assert explicit.language == "fr"
@@ -543,6 +581,7 @@ class TestGrpcStreamingMessages:
         assert explicit.partial_stride_ms == 400
         assert explicit.include_word_timestamps is True
         assert explicit.temperature == pytest.approx(0.25)
+        assert explicit.speech_context is True
 
     def test_stream_output_message_encodes_event_variants(self):
         from vox.grpc.streaming_messages import stream_output_message

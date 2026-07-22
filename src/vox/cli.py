@@ -422,6 +422,36 @@ def pull(ctx, model: str, variant: str | None):
         sys.exit(1)
 
 
+@cli.group("speech-context", help="Manage the optional speech-context analyzer runtimes")
+def speech_context():
+    return None
+
+
+@speech_context.command("install", help="Install the isolated openSMILE and YAMNet runtimes")
+@click.option(
+    "--accept-opensmile-research-license",
+    is_flag=True,
+    help="Acknowledge the audEERING Research License before installing openSMILE",
+)
+def install_speech_context(accept_opensmile_research_license: bool):
+    from vox.speech_context.runtime import SpeechContextError, install_speech_context_runtimes
+
+    try:
+        inventory = install_speech_context_runtimes(
+            accept_opensmile_research_license=accept_opensmile_research_license,
+        )
+    except SpeechContextError as error:
+        raise click.ClickException(str(error)) from error
+    click.echo(json.dumps(inventory, indent=2, sort_keys=True))
+
+
+@speech_context.command("status", help="Show speech-context runtime readiness and disk usage")
+def speech_context_status():
+    from vox.speech_context.runtime import runtime_inventory
+
+    click.echo(json.dumps(runtime_inventory(), indent=2, sort_keys=True))
+
+
 @cli.command("list")
 @click.pass_context
 def list_models(ctx):

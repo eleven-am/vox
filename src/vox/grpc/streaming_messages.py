@@ -55,6 +55,7 @@ def stream_config_request(message: vox_pb2.StreamConfig) -> StreamingTranscripti
         partial_stride_ms=message.partial_stride_ms or 700,
         include_word_timestamps=bool(message.include_word_timestamps),
         temperature=float(message.temperature),
+        speech_context=bool(message.speech_context),
     )
 
 

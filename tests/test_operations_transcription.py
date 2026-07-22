@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import threading
 from contextlib import asynccontextmanager
 from unittest.mock import MagicMock
 
@@ -36,6 +38,7 @@ from vox.operations.transcription import (
     transcription_request_from_fields,
     word_timestamp_payload,
 )
+from vox.speech_context.types import SpeechContext
 
 
 def _wav_bytes(dur_s: float = 1.0, sr: int = 16_000) -> bytes:
@@ -117,6 +120,51 @@ def test_transcription_request_from_fields_preserves_positive_temperature():
     )
 
     assert request.temperature == 0.25
+
+
+class _ConcurrentSTT(FakeSTT):
+    def __init__(self, barrier: threading.Barrier) -> None:
+        super().__init__()
+        self._barrier = barrier
+        self._synchronized = False
+
+    def transcribe(self, audio, **kwargs) -> TranscribeResult:
+        if not self._synchronized:
+            self._synchronized = True
+            self._barrier.wait(timeout=1)
+        return super().transcribe(audio, **kwargs)
+
+
+class _ConcurrentContextService:
+    def __init__(self, barrier: threading.Barrier) -> None:
+        self._barrier = barrier
+
+    async def analyze_chunks(self, chunks) -> SpeechContext:
+        assert tuple(chunks)
+        await asyncio.to_thread(self._barrier.wait, 1)
+        return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+
+
+@pytest.mark.asyncio
+async def test_transcribe_runs_requested_speech_context_concurrently_with_stt():
+    barrier = threading.Barrier(2)
+    bundle = await transcribe(
+        scheduler=DummyScheduler(_ConcurrentSTT(barrier)),
+        registry=MagicMock(),
+        store=None,
+        request=TranscriptionRequest(
+            audio=_tone_wav_bytes(),
+            model="fake-stt:latest",
+            speech_context=True,
+        ),
+        speech_context_service=_ConcurrentContextService(barrier),
+    )
+
+    assert bundle.result.text
+    assert bundle.speech_context == SpeechContext(
+        status="failed",
+        unavailable=("prosody", "audio_events"),
+    )
 
 
 def test_annotate_request_from_fields_normalizes_transport_input():

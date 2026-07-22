@@ -26,22 +26,33 @@ from vox.operations.conversation import (
 )
 from vox.operations.conversation_runtime import ConversationRuntime
 from vox.operations.errors import OperationError
+from vox.speech_context.service import SpeechContextService
 
 logger = logging.getLogger(__name__)
 
 
 class ConversationServicer(vox_pb2_grpc.ConversationServiceServicer):
-    def __init__(self, store: BlobStore, registry: ModelRegistry, scheduler: Scheduler) -> None:
+    def __init__(
+        self,
+        store: BlobStore,
+        registry: ModelRegistry,
+        scheduler: Scheduler,
+        speech_context_service: SpeechContextService | None = None,
+    ) -> None:
         self._store = store
         self._registry = registry
         self._scheduler = scheduler
+        self._speech_context_service = speech_context_service
 
     async def Converse(
         self,
         request_iterator: AsyncIterator[vox_pb2.ConverseClientMessage],
         context,
     ) -> AsyncIterator[vox_pb2.ConverseServerMessage]:
-        orchestrator = ConversationOrchestrator(scheduler=self._scheduler)
+        orchestrator = ConversationOrchestrator(
+            scheduler=self._scheduler,
+            speech_context_service=self._speech_context_service,
+        )
         runtime = ConversationRuntime(
             orchestrator,
             require_config_message="send session_update first",

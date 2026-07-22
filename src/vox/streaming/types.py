@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
+
+import numpy as np
+from numpy.typing import NDArray
+
+from vox.speech_context.types import SpeechContext
 
 TARGET_SAMPLE_RATE = 16_000
 MS_PER_SAMPLE = TARGET_SAMPLE_RATE // 1000
@@ -20,6 +26,7 @@ class StreamSessionConfig:
     partial_stride_ms: int = 700
     include_word_timestamps: bool = False
     temperature: float = 0.0
+    speech_context: bool = False
 
 
 @dataclass
@@ -50,6 +57,9 @@ class StreamTranscript:
     entities: list[dict] | None = None
     topics: list[str] | None = None
     utterance_id: int = 0
+    speech_context: SpeechContext | None = None
+    audio: NDArray[np.float32] | None = None
+    _speech_context_task: asyncio.Task[SpeechContext] | None = None
 
 
 @dataclass

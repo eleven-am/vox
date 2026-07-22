@@ -6,8 +6,10 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
 
+from vox.audio.pipeline import AudioChunk
 from vox.conversation.types import TimerKey, TurnEvent, TurnEventType, TurnPolicy
-from vox.streaming.types import StreamTranscript
+from vox.speech_context.types import speech_context_payload
+from vox.streaming.types import TARGET_SAMPLE_RATE, StreamTranscript, samples_to_ms
 
 WIRE_TRANSCRIPT_DONE = "conversation.item.input_audio_transcription.completed"
 WIRE_TURN_EOU_PREDICTED = "turn.eou.predicted"
@@ -55,6 +57,8 @@ def transcript_done_payload(transcript: StreamTranscript, *, language: str) -> d
         payload["topics"] = transcript.topics
     if transcript.words:
         payload["words"] = transcript.words
+    if transcript.speech_context is not None:
+        payload["speech_context"] = speech_context_payload(transcript.speech_context)
     return payload
 
 
@@ -70,6 +74,7 @@ def coalesce_transcript_payload(previous: dict[str, Any], current: dict[str, Any
         return dict(previous)
 
     merged = dict(current)
+    merged.pop("speech_context", None)
     merged["transcript"] = append_transcript_text(previous_text, current_text)
     merged["start_ms"] = int(previous.get("start_ms", current.get("start_ms", 0)) or 0)
     merged["end_ms"] = max(
@@ -103,6 +108,7 @@ class PendingTranscriptFinalizer:
     language: str
     logger: logging.Logger = field(default_factory=lambda: logging.getLogger("vox.conversation.session"))
     pending: dict[str, Any] | None = None
+    pending_audio: list[AudioChunk] = field(default_factory=list)
 
     def remember_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self.pending is None:
@@ -112,7 +118,26 @@ class PendingTranscriptFinalizer:
         return self.pending
 
     def remember(self, transcript: StreamTranscript) -> dict[str, Any]:
-        return self.remember_payload(transcript_done_payload(transcript, language=self.language))
+        payload = transcript_done_payload(transcript, language=self.language)
+        audio = self._audio_chunk(transcript)
+        if self.pending is None:
+            self.pending = dict(payload)
+            self.pending_audio = [audio] if audio is not None else []
+            return self.pending
+
+        previous_text = str(self.pending.get("transcript") or "")
+        if is_transcript_revision(previous_text, transcript.text):
+            previous_norm = normalise_transcript_text(previous_text)
+            current_norm = normalise_transcript_text(transcript.text)
+            if len(current_norm) >= len(previous_norm):
+                self.pending = dict(payload)
+                self.pending_audio = [audio] if audio is not None else []
+            return self.pending
+
+        self.pending = coalesce_transcript_payload(self.pending, payload)
+        if audio is not None:
+            self.pending_audio.append(audio)
+        return self.pending
 
     def pending_text(self, default: str = "") -> str:
         if self.pending is None:
@@ -121,11 +146,29 @@ class PendingTranscriptFinalizer:
 
     def clear(self) -> None:
         self.pending = None
+        self.pending_audio.clear()
 
     def pop(self) -> dict[str, Any] | None:
-        payload = self.pending
-        self.pending = None
+        payload, _ = self.pop_with_audio()
         return payload
+
+    def pop_with_audio(self) -> tuple[dict[str, Any] | None, tuple[AudioChunk, ...]]:
+        payload = self.pending
+        audio = tuple(self.pending_audio)
+        self.pending = None
+        self.pending_audio.clear()
+        return payload, audio
+
+    @staticmethod
+    def _audio_chunk(transcript: StreamTranscript) -> AudioChunk | None:
+        if transcript.audio is None:
+            return None
+        return AudioChunk(
+            data=transcript.audio,
+            sample_rate=TARGET_SAMPLE_RATE,
+            duration_ms=samples_to_ms(transcript.audio.size),
+            offset_ms=transcript.start_ms,
+        )
 
     def log(self, payload: dict[str, Any]) -> None:
         self.logger.info(

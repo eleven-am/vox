@@ -89,6 +89,8 @@ def conversation_event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage 
         msg.entities.extend(entity_messages(event.entities))
         msg.topics.extend(str(topic) for topic in event.topics)
         msg.words.extend(word_timestamp_messages(event.words))
+        if event.speech_context is not None:
+            msg.speech_context.update(event.speech_context)
         return vox_pb2.ConverseServerMessage(transcript_done=msg)
     if isinstance(event, ConvResponseCreatedEvent):
         return vox_pb2.ConverseServerMessage(

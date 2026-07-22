@@ -107,6 +107,7 @@ message TranscribeRequest {
   float temperature = 5;
   string response_format = 6;
   string format_hint = 7;
+  bool speech_context = 8;
 }
 
 message TranscribeResponse {
@@ -118,6 +119,7 @@ message TranscribeResponse {
   repeated TranscriptSegment segments = 6;
   repeated Entity entities = 7;
   repeated string topics = 8;
+  google.protobuf.Struct speech_context = 9;
 }
 
 message Entity {
@@ -192,6 +194,7 @@ message StreamConfig {
   uint32 partial_stride_ms = 6;
   bool include_word_timestamps = 7;
   float temperature = 8;
+  bool speech_context = 9;
 }
 
 message AudioFrame {
@@ -243,6 +246,7 @@ message StreamTranscriptResult {
   repeated string topics = 10;
   repeated WordTimestamp words = 11;
   repeated TranscriptSegment segments = 12;
+  google.protobuf.Struct speech_context = 13;
 }
 
 message StreamErrorMessage {
@@ -492,6 +496,7 @@ message ConversationSessionUpdate {
   string turn_detector = 8;
   string turn_profile = 9;
   bool include_word_timestamps = 10;
+  bool speech_context = 11;
 }
 
 message ConversationAudioAppend {
@@ -551,6 +556,7 @@ message ConversationTranscriptDone {
   repeated Entity entities = 6;
   repeated string topics = 7;
   repeated WordTimestamp words = 8;
+  google.protobuf.Struct speech_context = 9;
 }
 
 message ConversationResponseCreated {

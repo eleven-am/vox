@@ -39,6 +39,7 @@ async def audio_stream(websocket: WebSocket):
             scheduler=services.scheduler,
             registry=services.registry,
             store=services.store,
+            speech_context_service=services.speech_context,
         )
         async def emit_events() -> None:
             await emit_ws_session_events(
@@ -82,6 +83,7 @@ async def audio_stream(websocket: WebSocket):
                                     False,
                                 ),
                                 temperature=data.get("temperature", 0.0) or 0.0,
+                                speech_context=data.get("speech_context", False),
                             )
                         )
                         continue

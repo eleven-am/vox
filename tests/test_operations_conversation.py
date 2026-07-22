@@ -389,7 +389,12 @@ def test_parse_session_update_prefers_canonical_fields_over_compatibility_aliase
 def test_serialize_session_config_round_trip_includes_policy_and_audio_format():
     config = parse_session_update(
         {
-            "session": {"stt_model": "x:1", "tts_model": "y:1", "sample_rate": 48_000},
+            "session": {
+                "stt_model": "x:1",
+                "tts_model": "y:1",
+                "sample_rate": 48_000,
+                "speech_context": True,
+            },
         }
     )
     payload = serialize_session_config(config)
@@ -398,6 +403,7 @@ def test_serialize_session_config_round_trip_includes_policy_and_audio_format():
     assert payload["output_audio_format"] == "pcm16"
     assert payload["output_sample_rate"] == 48_000
     assert payload["turn_profile"] == "default"
+    assert payload["speech_context"] is True
     assert payload["turn_policy"]["min_interrupt_duration_ms"] > 0
     assert payload["turn_policy"]["speaking_interrupt_min_duration_ms"] == 500
     assert payload["turn_policy"]["speaking_interrupt_min_words"] == 2
@@ -417,6 +423,7 @@ def test_serialize_conversation_event_preserves_transcript_metadata():
         entities=({"text": "hello", "label": "greeting"},),
         topics=("greeting",),
         words=({"word": "hello", "start": 0.1, "end": 0.9},),
+        speech_context={"schema_version": 1, "status": "complete"},
     )
 
     assert serialize_conversation_event(event) == {
@@ -429,6 +436,7 @@ def test_serialize_conversation_event_preserves_transcript_metadata():
         "entities": [{"text": "hello", "label": "greeting"}],
         "topics": ["greeting"],
         "words": [{"word": "hello", "start": 0.1, "end": 0.9}],
+        "speech_context": {"schema_version": 1, "status": "complete"},
     }
 
 

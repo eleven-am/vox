@@ -12,8 +12,10 @@ import numpy as np
 import pytest
 
 from vox.speech_context import runner
+from vox.speech_context import runtime as speech_context_runtime
 from vox.speech_context.opensmile_worker import _json_number
-from vox.speech_context.runner import RuntimeSpec, SpeechContextError
+from vox.speech_context.reducer import PROSODY_COLUMNS, SpeechContextReductionError
+from vox.speech_context.runtime import RuntimeSpec, SpeechContextError
 
 
 def _write_wav(path: Path, *, duration_ms: int = 1_200, frequency: float = 220.0) -> None:
@@ -41,6 +43,31 @@ def _worker_payload(raw: dict[str, Any]) -> dict[str, Any]:
             "gpu_status": "not_used",
         },
         "runtime": {"runtime_bytes": 2048, "model_bytes": 512, "status": "ready"},
+    }
+
+
+def _prosody_raw(**extra: Any) -> dict[str, Any]:
+    columns = list(PROSODY_COLUMNS.values())
+    return {
+        "low_level_descriptors": {
+            "columns": ["pitch", "loudness"],
+            "frames": [{"start_ms": 0.0, "end_ms": 20.0, "values": [3.0, 4.0]}],
+        },
+        "functionals": {
+            "columns": columns,
+            "frames": [{"start_ms": 0.0, "end_ms": 1200.0, "values": [3.0] * len(columns)}],
+        },
+        **extra,
+    }
+
+
+def _audio_events_raw(*, label: str = "Speech", score: float = 0.75, **extra: Any) -> dict[str, Any]:
+    return {
+        "classes": [{"index": 0, "id": "/m/speech", "label": label}],
+        "scores": [{"start_ms": 0.0, "end_ms": 960.0, "values": [score]}],
+        "embeddings": [{"start_ms": 0.0, "end_ms": 960.0, "values": [0.1, 0.2]}],
+        "log_mel_spectrogram": [{"start_ms": 0.0, "end_ms": 25.0, "values": [-1.0, -2.0]}],
+        **extra,
     }
 
 
@@ -96,24 +123,8 @@ async def test_all_analyzers_start_concurrently_and_preserve_complete_raw_output
     async def fake_worker(spec: RuntimeSpec, path: Path, **_kwargs: Any) -> dict[str, Any]:
         await wait_for_peers(spec.key, path)
         if spec.key == "prosody":
-            return _worker_payload({
-                "low_level_descriptors": {
-                    "columns": ["pitch", "loudness"],
-                    "frames": [{"start_ms": 0.0, "end_ms": 20.0, "values": [3.0, 4.0]}],
-                },
-                "functionals": {
-                    "columns": ["pitch_mean"],
-                    "frames": [{"start_ms": 0.0, "end_ms": 1200.0, "values": [3.0]}],
-                },
-            })
-        return _worker_payload({
-            "classes": [{"index": 0, "id": "/m/speech", "label": "Speech"}],
-            "scores": [{"start_ms": 0.0, "end_ms": 960.0, "values": [0.75]}],
-            "embeddings": [{"start_ms": 0.0, "end_ms": 960.0, "values": [0.1, 0.2]}],
-            "log_mel_spectrogram": [
-                {"start_ms": 0.0, "end_ms": 25.0, "values": [-1.0, -2.0]}
-            ],
-        })
+            return _worker_payload(_prosody_raw())
+        return _worker_payload(_audio_events_raw())
 
     monkeypatch.setattr(runner, "_run_transcription", fake_transcription)
     monkeypatch.setattr(runner, "_run_worker", fake_worker)
@@ -124,9 +135,7 @@ async def test_all_analyzers_start_concurrently_and_preserve_complete_raw_output
     assert evidence["execution"]["mode"] == "concurrent"
     assert evidence["execution"]["result_elapsed_sum_ms"] > evidence["execution"]["elapsed_ms"]
     assert evidence["results"]["transcription"]["raw"]["words"][1]["word"] == "out"
-    assert evidence["results"]["prosody"]["raw"]["low_level_descriptors"]["frames"][0][
-        "values"
-    ] == [3.0, 4.0]
+    assert evidence["results"]["prosody"]["raw"]["low_level_descriptors"]["frames"][0]["values"] == [3.0, 4.0]
     assert evidence["results"]["audio_events"]["raw"]["embeddings"][0]["values"] == [0.1, 0.2]
     assert evidence["timeline"] == {
         "origin_ms": 0,
@@ -142,6 +151,40 @@ async def test_all_analyzers_start_concurrently_and_preserve_complete_raw_output
     assert len({path for path in canonical_paths}) == 1
     assert canonical_paths[0].name == "input.wav"
     assert not canonical_paths[0].exists()
+    assert evidence["speech_context"]["status"] == "complete"
+    assert evidence["speech_context"]["prosody"] == {
+        "pitch": {
+            "mean_st": 3.0,
+            "median_st": 3.0,
+            "range_st": 3.0,
+            "variation": 3.0,
+        },
+        "energy": {
+            "mean": 3.0,
+            "range": 3.0,
+            "peaks_per_second": 3.0,
+        },
+        "voice_quality": {
+            "hnr_db": 3.0,
+            "jitter": 3.0,
+            "shimmer_db": 3.0,
+        },
+        "spectral_variation": 3.0,
+        "delivery": {
+            "voiced_segments_per_second": 3.0,
+            "mean_voiced_ms": 3000.0,
+            "mean_unvoiced_ms": 3000.0,
+        },
+    }
+    assert evidence["speech_context"]["audio_events"] == {
+        "candidates": [
+            {
+                "label": "Speech",
+                "spans": [[0, 960, 0.75]],
+            }
+        ]
+    }
+    assert evidence["speech_context"]["reduction_ms"] >= 0
 
 
 @pytest.mark.asyncio
@@ -153,7 +196,9 @@ async def test_backend_failure_is_explicit_without_erasing_other_evidence(tmp_pa
         raise RuntimeError("Parakeet is unavailable")
 
     async def fake_worker(spec: RuntimeSpec, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        return _worker_payload({"backend": spec.key, "complete": [1, 2, 3]})
+        if spec.key == "prosody":
+            return _worker_payload(_prosody_raw(complete=[1, 2, 3]))
+        return _worker_payload(_audio_events_raw(complete=[1, 2, 3]))
 
     monkeypatch.setattr(runner, "_run_transcription", failed_transcription)
     monkeypatch.setattr(runner, "_run_worker", fake_worker)
@@ -168,6 +213,38 @@ async def test_backend_failure_is_explicit_without_erasing_other_evidence(tmp_pa
     assert evidence["results"]["prosody"]["status"] == "ok"
     assert evidence["results"]["prosody"]["raw"]["complete"] == [1, 2, 3]
     assert evidence["results"]["audio_events"]["status"] == "ok"
+    assert evidence["speech_context"]["status"] == "complete"
+
+
+@pytest.mark.asyncio
+async def test_reducer_failure_is_explicit_without_erasing_raw_evidence(tmp_path, monkeypatch):
+    audio = tmp_path / "input.wav"
+    _write_wav(audio)
+
+    async def fake_transcription(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return _transcription_payload()
+
+    async def fake_worker(spec: RuntimeSpec, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        if spec.key == "prosody":
+            return _worker_payload(_prosody_raw())
+        return _worker_payload(_audio_events_raw())
+
+    def failed_reduction(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        raise SpeechContextReductionError("malformed analyzer output")
+
+    monkeypatch.setattr(runner, "_run_transcription", fake_transcription)
+    monkeypatch.setattr(runner, "_run_worker", fake_worker)
+    monkeypatch.setattr(runner, "reduce_speech_context", failed_reduction)
+
+    evidence = await runner.collect_speech_context_evidence(audio, base_url="http://vox.test")
+
+    assert evidence["results"]["prosody"]["raw"]["functionals"]["columns"] == list(PROSODY_COLUMNS.values())
+    assert evidence["results"]["audio_events"]["raw"]["classes"][0]["label"] == "Speech"
+    assert evidence["speech_context"]["status"] == "failed"
+    assert evidence["speech_context"]["error"] == {
+        "type": "SpeechContextReductionError",
+        "message": "malformed analyzer output",
+    }
 
 
 @pytest.mark.parametrize(
@@ -200,12 +277,15 @@ async def test_adversarial_audio_conditions_preserve_unfiltered_backend_evidence
         return _transcription_payload(case)
 
     async def fake_worker(spec: RuntimeSpec, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
-        return _worker_payload({
+        extra = {
             "case": case,
             "raw_event": raw_event,
             "all_scores": [0.01, 0.33, 0.89, 0.02],
             "backend": spec.key,
-        })
+        }
+        if spec.key == "prosody":
+            return _worker_payload(_prosody_raw(**extra))
+        return _worker_payload(_audio_events_raw(**extra))
 
     monkeypatch.setattr(runner, "_run_transcription", fake_transcription)
     monkeypatch.setattr(runner, "_run_worker", fake_worker)
@@ -217,11 +297,12 @@ async def test_adversarial_audio_conditions_preserve_unfiltered_backend_evidence
     for key in ("prosody", "audio_events"):
         assert evidence["results"][key]["raw"]["raw_event"] == raw_event
         assert evidence["results"][key]["raw"]["all_scores"] == [0.01, 0.33, 0.89, 0.02]
+    assert evidence["speech_context"]["status"] == "complete"
 
 
 def test_install_requires_explicit_opensmile_license_acceptance(tmp_path):
     with pytest.raises(SpeechContextError, match="explicit license acknowledgement"):
-        runner.install_experimental_runtimes(
+        speech_context_runtime.install_speech_context_runtimes(
             accept_opensmile_research_license=False,
             home=tmp_path,
         )
@@ -235,8 +316,8 @@ def test_existing_invalid_runtime_is_rejected_instead_of_repaired(tmp_path):
     sentinel = runtime / "user-state"
     sentinel.write_text("keep", encoding="utf-8")
 
-    with pytest.raises(SpeechContextError, match="does not match the experiment lock"):
-        runner._install_runtime(spec, home=tmp_path)
+    with pytest.raises(SpeechContextError, match="does not match the speech-context runtime lock"):
+        speech_context_runtime.install_runtime(spec, home=tmp_path)
 
     assert sentinel.read_text(encoding="utf-8") == "keep"
 
@@ -259,9 +340,9 @@ def test_runtime_installer_keeps_uv_cache_outside_the_venv_stage(tmp_path, monke
                 required.parent.mkdir(parents=True, exist_ok=True)
                 required.write_text("", encoding="utf-8")
 
-    monkeypatch.setattr(runner, "_run_install", fake_install)
+    monkeypatch.setattr(speech_context_runtime, "run_install", fake_install)
 
-    inventory = runner._install_runtime(spec, home=tmp_path)
+    inventory = speech_context_runtime.install_runtime(spec, home=tmp_path)
 
     assert inventory["status"] == "ready"
     assert observed_cache is not None
@@ -278,18 +359,18 @@ def test_runtime_marker_does_not_hide_missing_load_bearing_files(tmp_path):
         required.parent.mkdir(parents=True, exist_ok=True)
         required.write_text("", encoding="utf-8")
     (runtime / ".vox-speech-context-runtime.json").write_text(
-        json.dumps(runner._marker_payload(spec)),
+        json.dumps(speech_context_runtime.marker_payload(spec)),
         encoding="utf-8",
     )
 
-    assert runner._runtime_is_ready(spec, runtime)
+    assert speech_context_runtime.runtime_is_ready(spec, runtime)
     (runtime / "assets" / "yamnet_class_map.csv").unlink()
-    assert not runner._runtime_is_ready(spec, runtime)
+    assert not speech_context_runtime.runtime_is_ready(spec, runtime)
 
 
 def test_worker_environment_prevents_runtime_growth_from_bytecode(tmp_path):
     spec = runner.RUNTIME_SPECS["prosody"]
-    environment = runner._worker_environment(spec, tmp_path)
+    environment = speech_context_runtime.worker_environment(spec, tmp_path)
 
     assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
 
@@ -365,7 +446,7 @@ def test_nonfinite_prosody_values_remain_explicit_in_strict_json():
 
 
 def test_runtime_inventory_reports_explicit_missing_state(tmp_path):
-    inventory = runner.runtime_inventory(home=tmp_path)
+    inventory = speech_context_runtime.runtime_inventory(home=tmp_path)
     assert inventory["prosody"] == {
         "status": "missing",
         "path": str(tmp_path / "runtime" / "speech-context-prosody"),
@@ -374,6 +455,15 @@ def test_runtime_inventory_reports_explicit_missing_state(tmp_path):
         "license": "audEERING Research License",
     }
     assert inventory["audio_events"]["status"] == "missing"
+
+
+def test_runtime_locks_are_packaged_and_dependency_complete():
+    for spec in speech_context_runtime.RUNTIME_SPECS.values():
+        requirements = speech_context_runtime.requirements_path(spec)
+        assert requirements.parent.name == "assets"
+        assert requirements.is_file()
+        assert spec.no_deps is True
+        assert all("==" in line for line in requirements.read_text().splitlines())
 
 
 def test_runtime_marker_is_lock_derived_from_exact_requirements(tmp_path, monkeypatch):
@@ -386,13 +476,13 @@ def test_runtime_marker_is_lock_derived_from_exact_requirements(tmp_path, monkey
         module="test.worker",
         license="Apache-2.0",
     )
-    monkeypatch.setattr(runner, "_requirements_path", lambda _spec: requirements)
+    monkeypatch.setattr(speech_context_runtime, "requirements_path", lambda _spec: requirements)
 
-    marker = runner._marker_payload(spec)
+    marker = speech_context_runtime.marker_payload(spec)
 
     assert marker == {
         "schema_version": 1,
-        "requirements_sha256": runner._sha256_file(requirements),
+        "requirements_sha256": speech_context_runtime.sha256_file(requirements),
         "python": "3.12",
         "license": "Apache-2.0",
     }

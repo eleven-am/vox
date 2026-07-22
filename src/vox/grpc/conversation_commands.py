@@ -48,6 +48,7 @@ def conversation_session_update_to_command(
             turn_detector=update.turn_detector or DEFAULT_TURN_DETECTOR,
             policy_overrides=policy_overrides,
             include_word_timestamps=update.include_word_timestamps,
+            speech_context=update.speech_context,
         )
     )
 

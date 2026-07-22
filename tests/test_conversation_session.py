@@ -49,6 +49,7 @@ from vox.conversation.session import (
 )
 from vox.core.adapter import TTSAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+from vox.speech_context.types import SpeechContext
 from vox.streaming.types import SpeechStarted, SpeechStopped, StreamTranscript
 
 
@@ -189,6 +190,77 @@ async def _drain_events(session: ConversationSession, max_iterations: int = 20) 
         await asyncio.sleep(0)
         if session._event_queue.empty() and (session._tts_task is None or session._tts_task.done()):
             break
+
+
+@pytest.mark.asyncio
+async def test_pending_continuation_context_is_reanalyzed_as_one_timeline():
+    class RecordingContextService:
+        def __init__(self) -> None:
+            self.chunks = ()
+            self.timeline_offset_ms = None
+
+        async def analyze_chunks(self, chunks, *, timeline_offset_ms=0):
+            self.chunks = tuple(chunks)
+            self.timeline_offset_ms = timeline_offset_ms
+            return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+
+    context_service = RecordingContextService()
+    collector = EventCollector()
+    session = ConversationSession(
+        scheduler=MockScheduler(ScriptedTTSAdapter()),
+        config=ConversationConfig(
+            stt_model="fake-stt:latest",
+            tts_model="fake-tts:latest",
+            voice="default",
+            language="en",
+            speech_context=True,
+            policy=TurnPolicy(aec_warmup_ms=0),
+            interrupt_classifier=_AcceptAllClassifier(),
+        ),
+        on_event=collector,
+        speech_context_service=context_service,
+    )
+    original_context = SpeechContext(
+        status="failed",
+        unavailable=("prosody", "audio_events"),
+    )
+    session._transcript_finalizer.remember(
+        StreamTranscript(
+            text="first phrase",
+            start_ms=100,
+            end_ms=200,
+            audio=np.full(1_600, 0.1, dtype=np.float32),
+            speech_context=original_context,
+        )
+    )
+    session._transcript_finalizer.remember(
+        StreamTranscript(
+            text="second phrase",
+            start_ms=600,
+            end_ms=800,
+            audio=np.full(3_200, 0.2, dtype=np.float32),
+            speech_context=original_context,
+        )
+    )
+
+    await session._emit_pending_transcript_done()
+
+    assert [chunk.offset_ms for chunk in context_service.chunks] == [100, 600]
+    assert context_service.timeline_offset_ms == 100
+    assert collector.by_type(WIRE_TRANSCRIPT_DONE) == [
+        {
+            "type": WIRE_TRANSCRIPT_DONE,
+            "transcript": "first phrase second phrase",
+            "language": "en",
+            "start_ms": 100,
+            "end_ms": 800,
+            "speech_context": {
+                "schema_version": 1,
+                "status": "failed",
+                "unavailable": ["prosody", "audio_events"],
+            },
+        }
+    ]
 
 
 class TestInterruptionEventContracts:

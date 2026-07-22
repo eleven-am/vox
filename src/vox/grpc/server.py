@@ -18,6 +18,7 @@ from vox.grpc.streaming_servicer import StreamingServiceServicer
 from vox.grpc.synthesis_servicer import SynthesisServicer
 from vox.grpc.transcription_servicer import TranscriptionServicer
 from vox.server.rtc_registry import RtcSessionRegistry
+from vox.speech_context.service import SpeechContextService
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ async def start_grpc_server(
     registry: ModelRegistry,
     scheduler: Scheduler,
     rtc_registry: RtcSessionRegistry,
+    speech_context_service: SpeechContextService,
     port: int = 9090,
 ) -> grpc.aio.Server:
     server = grpc.aio.server(
@@ -46,19 +48,24 @@ async def start_grpc_server(
         ModelServicer(store, registry, scheduler), server,
     )
     vox_pb2_grpc.add_TranscriptionServiceServicer_to_server(
-        TranscriptionServicer(store, registry, scheduler), server,
+        TranscriptionServicer(store, registry, scheduler, speech_context_service), server,
     )
     vox_pb2_grpc.add_SynthesisServiceServicer_to_server(
         SynthesisServicer(store, registry, scheduler), server,
     )
     vox_pb2_grpc.add_StreamingServiceServicer_to_server(
-        StreamingServiceServicer(store, registry, scheduler), server,
+        StreamingServiceServicer(store, registry, scheduler, speech_context_service), server,
     )
     vox_pb2_grpc.add_ConversationServiceServicer_to_server(
-        ConversationServicer(store, registry, scheduler), server,
+        ConversationServicer(store, registry, scheduler, speech_context_service), server,
     )
     vox_pb2_grpc.add_RtcServiceServicer_to_server(
-        RtcServicer(scheduler=scheduler, rtc_registry=rtc_registry), server,
+        RtcServicer(
+            scheduler=scheduler,
+            rtc_registry=rtc_registry,
+            speech_context_service=speech_context_service,
+        ),
+        server,
     )
 
     service_names = (

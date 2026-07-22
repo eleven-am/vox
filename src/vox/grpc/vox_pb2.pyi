@@ -141,7 +141,7 @@ class DeleteResponse(_message.Message):
     def __init__(self, status: _Optional[str] = ...) -> None: ...
 
 class TranscribeRequest(_message.Message):
-    __slots__ = ("audio", "model", "language", "word_timestamps", "temperature", "response_format", "format_hint")
+    __slots__ = ("audio", "model", "language", "word_timestamps", "temperature", "response_format", "format_hint", "speech_context")
     AUDIO_FIELD_NUMBER: _ClassVar[int]
     MODEL_FIELD_NUMBER: _ClassVar[int]
     LANGUAGE_FIELD_NUMBER: _ClassVar[int]
@@ -149,6 +149,7 @@ class TranscribeRequest(_message.Message):
     TEMPERATURE_FIELD_NUMBER: _ClassVar[int]
     RESPONSE_FORMAT_FIELD_NUMBER: _ClassVar[int]
     FORMAT_HINT_FIELD_NUMBER: _ClassVar[int]
+    SPEECH_CONTEXT_FIELD_NUMBER: _ClassVar[int]
     audio: bytes
     model: str
     language: str
@@ -156,10 +157,11 @@ class TranscribeRequest(_message.Message):
     temperature: float
     response_format: str
     format_hint: str
-    def __init__(self, audio: _Optional[bytes] = ..., model: _Optional[str] = ..., language: _Optional[str] = ..., word_timestamps: bool = ..., temperature: _Optional[float] = ..., response_format: _Optional[str] = ..., format_hint: _Optional[str] = ...) -> None: ...
+    speech_context: bool
+    def __init__(self, audio: _Optional[bytes] = ..., model: _Optional[str] = ..., language: _Optional[str] = ..., word_timestamps: bool = ..., temperature: _Optional[float] = ..., response_format: _Optional[str] = ..., format_hint: _Optional[str] = ..., speech_context: bool = ...) -> None: ...
 
 class TranscribeResponse(_message.Message):
-    __slots__ = ("model", "text", "language", "duration_ms", "processing_ms", "segments", "entities", "topics")
+    __slots__ = ("model", "text", "language", "duration_ms", "processing_ms", "segments", "entities", "topics", "speech_context")
     MODEL_FIELD_NUMBER: _ClassVar[int]
     TEXT_FIELD_NUMBER: _ClassVar[int]
     LANGUAGE_FIELD_NUMBER: _ClassVar[int]
@@ -168,6 +170,7 @@ class TranscribeResponse(_message.Message):
     SEGMENTS_FIELD_NUMBER: _ClassVar[int]
     ENTITIES_FIELD_NUMBER: _ClassVar[int]
     TOPICS_FIELD_NUMBER: _ClassVar[int]
+    SPEECH_CONTEXT_FIELD_NUMBER: _ClassVar[int]
     model: str
     text: str
     language: str
@@ -176,7 +179,8 @@ class TranscribeResponse(_message.Message):
     segments: _containers.RepeatedCompositeFieldContainer[TranscriptSegment]
     entities: _containers.RepeatedCompositeFieldContainer[Entity]
     topics: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, model: _Optional[str] = ..., text: _Optional[str] = ..., language: _Optional[str] = ..., duration_ms: _Optional[int] = ..., processing_ms: _Optional[int] = ..., segments: _Optional[_Iterable[_Union[TranscriptSegment, _Mapping]]] = ..., entities: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ..., topics: _Optional[_Iterable[str]] = ...) -> None: ...
+    speech_context: _struct_pb2.Struct
+    def __init__(self, model: _Optional[str] = ..., text: _Optional[str] = ..., language: _Optional[str] = ..., duration_ms: _Optional[int] = ..., processing_ms: _Optional[int] = ..., segments: _Optional[_Iterable[_Union[TranscriptSegment, _Mapping]]] = ..., entities: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ..., topics: _Optional[_Iterable[str]] = ..., speech_context: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...) -> None: ...
 
 class Entity(_message.Message):
     __slots__ = ("type", "text", "start_char", "end_char")
@@ -277,7 +281,7 @@ class EndOfStream(_message.Message):
     def __init__(self) -> None: ...
 
 class StreamConfig(_message.Message):
-    __slots__ = ("language", "sample_rate", "model", "partials", "partial_window_ms", "partial_stride_ms", "include_word_timestamps", "temperature")
+    __slots__ = ("language", "sample_rate", "model", "partials", "partial_window_ms", "partial_stride_ms", "include_word_timestamps", "temperature", "speech_context")
     LANGUAGE_FIELD_NUMBER: _ClassVar[int]
     SAMPLE_RATE_FIELD_NUMBER: _ClassVar[int]
     MODEL_FIELD_NUMBER: _ClassVar[int]
@@ -286,6 +290,7 @@ class StreamConfig(_message.Message):
     PARTIAL_STRIDE_MS_FIELD_NUMBER: _ClassVar[int]
     INCLUDE_WORD_TIMESTAMPS_FIELD_NUMBER: _ClassVar[int]
     TEMPERATURE_FIELD_NUMBER: _ClassVar[int]
+    SPEECH_CONTEXT_FIELD_NUMBER: _ClassVar[int]
     language: str
     sample_rate: int
     model: str
@@ -294,7 +299,8 @@ class StreamConfig(_message.Message):
     partial_stride_ms: int
     include_word_timestamps: bool
     temperature: float
-    def __init__(self, language: _Optional[str] = ..., sample_rate: _Optional[int] = ..., model: _Optional[str] = ..., partials: bool = ..., partial_window_ms: _Optional[int] = ..., partial_stride_ms: _Optional[int] = ..., include_word_timestamps: bool = ..., temperature: _Optional[float] = ...) -> None: ...
+    speech_context: bool
+    def __init__(self, language: _Optional[str] = ..., sample_rate: _Optional[int] = ..., model: _Optional[str] = ..., partials: bool = ..., partial_window_ms: _Optional[int] = ..., partial_stride_ms: _Optional[int] = ..., include_word_timestamps: bool = ..., temperature: _Optional[float] = ..., speech_context: bool = ...) -> None: ...
 
 class AudioFrame(_message.Message):
     __slots__ = ("pcm16", "sample_rate")
@@ -353,7 +359,7 @@ class StreamSpeechStopped(_message.Message):
     def __init__(self, timestamp_ms: _Optional[int] = ...) -> None: ...
 
 class StreamTranscriptResult(_message.Message):
-    __slots__ = ("text", "is_partial", "start_ms", "end_ms", "audio_duration_ms", "processing_duration_ms", "model", "eou_probability", "entities", "topics", "words", "segments")
+    __slots__ = ("text", "is_partial", "start_ms", "end_ms", "audio_duration_ms", "processing_duration_ms", "model", "eou_probability", "entities", "topics", "words", "segments", "speech_context")
     TEXT_FIELD_NUMBER: _ClassVar[int]
     IS_PARTIAL_FIELD_NUMBER: _ClassVar[int]
     START_MS_FIELD_NUMBER: _ClassVar[int]
@@ -366,6 +372,7 @@ class StreamTranscriptResult(_message.Message):
     TOPICS_FIELD_NUMBER: _ClassVar[int]
     WORDS_FIELD_NUMBER: _ClassVar[int]
     SEGMENTS_FIELD_NUMBER: _ClassVar[int]
+    SPEECH_CONTEXT_FIELD_NUMBER: _ClassVar[int]
     text: str
     is_partial: bool
     start_ms: int
@@ -378,7 +385,8 @@ class StreamTranscriptResult(_message.Message):
     topics: _containers.RepeatedScalarFieldContainer[str]
     words: _containers.RepeatedCompositeFieldContainer[WordTimestamp]
     segments: _containers.RepeatedCompositeFieldContainer[TranscriptSegment]
-    def __init__(self, text: _Optional[str] = ..., is_partial: bool = ..., start_ms: _Optional[int] = ..., end_ms: _Optional[int] = ..., audio_duration_ms: _Optional[int] = ..., processing_duration_ms: _Optional[int] = ..., model: _Optional[str] = ..., eou_probability: _Optional[float] = ..., entities: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ..., topics: _Optional[_Iterable[str]] = ..., words: _Optional[_Iterable[_Union[WordTimestamp, _Mapping]]] = ..., segments: _Optional[_Iterable[_Union[TranscriptSegment, _Mapping]]] = ...) -> None: ...
+    speech_context: _struct_pb2.Struct
+    def __init__(self, text: _Optional[str] = ..., is_partial: bool = ..., start_ms: _Optional[int] = ..., end_ms: _Optional[int] = ..., audio_duration_ms: _Optional[int] = ..., processing_duration_ms: _Optional[int] = ..., model: _Optional[str] = ..., eou_probability: _Optional[float] = ..., entities: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ..., topics: _Optional[_Iterable[str]] = ..., words: _Optional[_Iterable[_Union[WordTimestamp, _Mapping]]] = ..., segments: _Optional[_Iterable[_Union[TranscriptSegment, _Mapping]]] = ..., speech_context: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...) -> None: ...
 
 class StreamErrorMessage(_message.Message):
     __slots__ = ("message",)
@@ -725,7 +733,7 @@ class ConversationTurnPolicy(_message.Message):
     def __init__(self, allow_interrupt_while_speaking: bool = ..., min_interrupt_duration_ms: _Optional[int] = ..., max_endpointing_delay_ms: _Optional[int] = ..., false_interruption_timeout_ms: _Optional[int] = ..., min_interrupt_words: _Optional[int] = ..., partial_interrupts: bool = ..., dynamic_endpointing: bool = ..., min_endpointing_delay_ms: _Optional[int] = ..., speaking_interrupt_min_duration_ms: _Optional[int] = ..., speaking_interrupt_min_words: _Optional[int] = ..., self_echo_min_words: _Optional[int] = ..., self_echo_min_overlap: _Optional[float] = ..., aec_warmup_ms: _Optional[int] = ..., backchannel_end_cooldown_ms: _Optional[int] = ..., vad_min_silence_ms: _Optional[int] = ...) -> None: ...
 
 class ConversationSessionUpdate(_message.Message):
-    __slots__ = ("stt_model", "tts_model", "voice", "language", "sample_rate", "policy", "vad_backend", "turn_detector", "turn_profile", "include_word_timestamps")
+    __slots__ = ("stt_model", "tts_model", "voice", "language", "sample_rate", "policy", "vad_backend", "turn_detector", "turn_profile", "include_word_timestamps", "speech_context")
     STT_MODEL_FIELD_NUMBER: _ClassVar[int]
     TTS_MODEL_FIELD_NUMBER: _ClassVar[int]
     VOICE_FIELD_NUMBER: _ClassVar[int]
@@ -736,6 +744,7 @@ class ConversationSessionUpdate(_message.Message):
     TURN_DETECTOR_FIELD_NUMBER: _ClassVar[int]
     TURN_PROFILE_FIELD_NUMBER: _ClassVar[int]
     INCLUDE_WORD_TIMESTAMPS_FIELD_NUMBER: _ClassVar[int]
+    SPEECH_CONTEXT_FIELD_NUMBER: _ClassVar[int]
     stt_model: str
     tts_model: str
     voice: str
@@ -746,7 +755,8 @@ class ConversationSessionUpdate(_message.Message):
     turn_detector: str
     turn_profile: str
     include_word_timestamps: bool
-    def __init__(self, stt_model: _Optional[str] = ..., tts_model: _Optional[str] = ..., voice: _Optional[str] = ..., language: _Optional[str] = ..., sample_rate: _Optional[int] = ..., policy: _Optional[_Union[ConversationTurnPolicy, _Mapping]] = ..., vad_backend: _Optional[str] = ..., turn_detector: _Optional[str] = ..., turn_profile: _Optional[str] = ..., include_word_timestamps: bool = ...) -> None: ...
+    speech_context: bool
+    def __init__(self, stt_model: _Optional[str] = ..., tts_model: _Optional[str] = ..., voice: _Optional[str] = ..., language: _Optional[str] = ..., sample_rate: _Optional[int] = ..., policy: _Optional[_Union[ConversationTurnPolicy, _Mapping]] = ..., vad_backend: _Optional[str] = ..., turn_detector: _Optional[str] = ..., turn_profile: _Optional[str] = ..., include_word_timestamps: bool = ..., speech_context: bool = ...) -> None: ...
 
 class ConversationAudioAppend(_message.Message):
     __slots__ = ("pcm16", "sample_rate")
@@ -825,7 +835,7 @@ class ConversationTranscriptDelta(_message.Message):
     def __init__(self, delta: _Optional[str] = ..., start_ms: _Optional[int] = ..., end_ms: _Optional[int] = ...) -> None: ...
 
 class ConversationTranscriptDone(_message.Message):
-    __slots__ = ("transcript", "language", "start_ms", "end_ms", "eou_probability", "entities", "topics", "words")
+    __slots__ = ("transcript", "language", "start_ms", "end_ms", "eou_probability", "entities", "topics", "words", "speech_context")
     TRANSCRIPT_FIELD_NUMBER: _ClassVar[int]
     LANGUAGE_FIELD_NUMBER: _ClassVar[int]
     START_MS_FIELD_NUMBER: _ClassVar[int]
@@ -834,6 +844,7 @@ class ConversationTranscriptDone(_message.Message):
     ENTITIES_FIELD_NUMBER: _ClassVar[int]
     TOPICS_FIELD_NUMBER: _ClassVar[int]
     WORDS_FIELD_NUMBER: _ClassVar[int]
+    SPEECH_CONTEXT_FIELD_NUMBER: _ClassVar[int]
     transcript: str
     language: str
     start_ms: int
@@ -842,7 +853,8 @@ class ConversationTranscriptDone(_message.Message):
     entities: _containers.RepeatedCompositeFieldContainer[Entity]
     topics: _containers.RepeatedScalarFieldContainer[str]
     words: _containers.RepeatedCompositeFieldContainer[WordTimestamp]
-    def __init__(self, transcript: _Optional[str] = ..., language: _Optional[str] = ..., start_ms: _Optional[int] = ..., end_ms: _Optional[int] = ..., eou_probability: _Optional[float] = ..., entities: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ..., topics: _Optional[_Iterable[str]] = ..., words: _Optional[_Iterable[_Union[WordTimestamp, _Mapping]]] = ...) -> None: ...
+    speech_context: _struct_pb2.Struct
+    def __init__(self, transcript: _Optional[str] = ..., language: _Optional[str] = ..., start_ms: _Optional[int] = ..., end_ms: _Optional[int] = ..., eou_probability: _Optional[float] = ..., entities: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ..., topics: _Optional[_Iterable[str]] = ..., words: _Optional[_Iterable[_Union[WordTimestamp, _Mapping]]] = ..., speech_context: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...) -> None: ...
 
 class ConversationResponseCreated(_message.Message):
     __slots__ = ("response_id", "generation_id")

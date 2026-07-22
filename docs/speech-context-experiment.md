@@ -10,8 +10,9 @@ file once and starts three independent analyses concurrently:
 - YAMNet scores, embeddings, and log-mel spectrogram frames.
 
 The JSON file is evidence for schema and product decisions. It is not a public
-contract. No model infers `angry`, `sad`, or any other combined emotion label,
-and no event score is filtered out.
+contract. No model infers `angry`, `sad`, or any other combined emotion label.
+The complete analyzer output remains under `results`; a deterministic reducer
+also writes a lossy, compact `speech_context` projection for comparison.
 
 ## Ownership and isolation
 
@@ -42,10 +43,13 @@ unchanged.
 
 YAMNet's TensorFlow Model Garden implementation and the selected full-output
 TFLite model are Apache-2.0. The model URL is versioned and its SHA-256 is
-verified before use:
+verified before use. AudioSet's v1 ontology is installed beside the model from
+a versioned, checksum-verified source under CC BY-SA 4.0. It is used internally
+to remove redundant ancestor labels from compact event candidates:
 
 - [YAMNet Model Garden documentation](https://github.com/tensorflow/models/tree/master/research/audioset/yamnet)
 - [YAMNet model card](https://www.kaggle.com/models/google/yamnet)
+- [AudioSet ontology](https://github.com/audioset/ontology)
 
 openSMILE 2.6.0 is **not** open source under Apache, MIT, or GPL. Its bundled
 audEERING Research License permits non-commercial research, education, and
@@ -106,6 +110,41 @@ The file records:
 - complete verbose Parakeet output;
 - every eGeMAPSv02 low-level and functional value;
 - every YAMNet class, score, embedding value, and spectrogram value.
+
+The compact `speech_context` projection removes representation detail rather
+than limiting which real-world events are allowed. Every class in YAMNet's
+catalog is eligible. Event scores below `0.05` are removed. A surviving class
+must appear in at least two overlapping score windows unless one window scores
+at least `0.2`. Only the three strongest eligible classes in each score window
+are considered. Consecutive windows for the same class become one bounded event
+candidate whose score is the maximum supporting score. An AudioSet ancestor is
+removed when a more specific descendant explains at least 80 percent of its
+time range. Events are emitted as candidates because YAMNet scores are not
+calibrated confidence values. Repeated occurrences of the same AudioSet class
+share one candidate with compact `[start_ms, end_ms, score]` spans. AudioSet
+class IDs and ancestry remain internal evidence and are not copied into the
+model-facing projection.
+
+The prosody projection removes low-level descriptor frames and all but 14
+conversation-relevant eGeMAPSv02 functionals. The retained groups describe
+pitch, energy, voice quality, spectral variation, and delivery. Durations are
+converted to milliseconds and finite values are rounded to three decimal
+places. Audio-event scores are rounded to two decimal places; embeddings and
+log-mel spectrograms are absent from the compact projection. Malformed class
+catalogs, ontology data, score vectors, timestamps, or required functional
+vectors fail reduction explicitly while the complete analyzer evidence remains
+in the file.
+
+An experimental result therefore has two distinct representations:
+
+```text
+results.*.raw       complete analyzer evidence for evaluation and debugging
+speech_context      compact lossy evidence intended to test application value
+```
+
+The reducer is stateless. It does not maintain speaker baselines, infer age or
+gender, select event labels by name, or decide how an application should alter
+its response.
 
 The prospective public vocabulary is deliberately generic: transcription,
 prosody, and audio events. Provider names, dependency names, source metadata,

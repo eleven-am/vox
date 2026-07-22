@@ -13,11 +13,14 @@ import numpy as np
 from numpy.typing import NDArray
 
 from vox.audio.merger import merge_transcripts
+from vox.audio.pipeline import AudioChunk
 from vox.audio.stt_runner import run_stt_with_leading_context
 from vox.core.adapter import STTAdapter
 from vox.core.adapter_acquisition import AdapterTypeMismatchError, acquire_typed_adapter
 from vox.core.scheduler import Scheduler
 from vox.core.types import TranscribeResult
+from vox.speech_context.service import SpeechContextService, cancel_speech_context_task
+from vox.speech_context.types import SpeechContext
 from vox.streaming.eou import ConversationTurn, EOUConfig, create_turn_detector
 from vox.streaming.types import (
     TARGET_SAMPLE_RATE,
@@ -175,9 +178,11 @@ class StreamPipeline:
         self,
         scheduler: Scheduler,
         config: StreamPipelineConfig | None = None,
+        speech_context_service: SpeechContextService | None = None,
     ) -> None:
         self._scheduler = scheduler
         self._config = config or StreamPipelineConfig()
+        self._speech_context_service = speech_context_service
         self._vad = VADProcessor(config=self._config.vad_config)
         self._eou_model = create_turn_detector(
             self._config.eou_config.model,
@@ -237,9 +242,22 @@ class StreamPipeline:
             if has_segment:
                 transcript = await self._transcribe_segment(segment)
                 if not transcript.text or not transcript.text.strip():
+                    await cancel_speech_context_task(transcript._speech_context_task)
                     return
                 self._append_pending_user_audio(segment.audio)
-                transcript = await self._add_eou_probability(transcript)
+                try:
+                    transcript = await self._add_eou_probability(transcript)
+                except asyncio.CancelledError:
+                    await cancel_speech_context_task(transcript._speech_context_task)
+                    raise
+                except Exception:
+                    await cancel_speech_context_task(transcript._speech_context_task)
+                    raise
+                transcript = replace(
+                    transcript,
+                    speech_context=await self._resolve_context_task(transcript._speech_context_task),
+                    _speech_context_task=None,
+                )
                 yield transcript
 
     async def _transcribe_segment(self, segment: SpeechSegment) -> StreamTranscript:
@@ -252,6 +270,11 @@ class StreamPipeline:
 
         language = self._session_config.language
         word_timestamps = self._session_config.include_word_timestamps
+        context_task = self._start_context_analysis(
+            segment.audio,
+            timeline_offset_ms=segment.start_ms,
+            enabled=self._session_config.speech_context,
+        )
 
         start = time.perf_counter()
         try:
@@ -268,8 +291,15 @@ class StreamPipeline:
                     word_timestamps=word_timestamps,
                     temperature=self._session_config.temperature,
                 )
+        except asyncio.CancelledError:
+            await cancel_speech_context_task(context_task)
+            raise
         except AdapterTypeMismatchError:
+            await cancel_speech_context_task(context_task)
             return StreamTranscript()
+        except Exception:
+            await cancel_speech_context_task(context_task)
+            raise
         processing_ms = int((time.perf_counter() - start) * 1000)
         segments, words = _segments_and_words(result)
 
@@ -283,6 +313,8 @@ class StreamPipeline:
             segments=segments,
             words=words,
             utterance_id=segment.utterance_id,
+            audio=segment.audio if self._session_config.speech_context else None,
+            _speech_context_task=context_task,
         )
 
     async def transcribe_async(
@@ -290,11 +322,18 @@ class StreamPipeline:
         audio: NDArray[np.float32],
         language: str | None = None,
         word_timestamps: bool = False,
+        include_speech_context: bool = False,
+        timeline_offset_ms: int = 0,
     ) -> StreamTranscript:
         if not self._session_config:
             return StreamTranscript()
 
         model = self._session_config.model
+        context_task = self._start_context_analysis(
+            audio,
+            timeline_offset_ms=timeline_offset_ms,
+            enabled=include_speech_context,
+        )
 
         start = time.perf_counter()
         try:
@@ -311,8 +350,16 @@ class StreamPipeline:
                     word_timestamps=word_timestamps,
                     temperature=self._session_config.temperature,
                 )
+        except asyncio.CancelledError:
+            await cancel_speech_context_task(context_task)
+            raise
         except AdapterTypeMismatchError:
+            await cancel_speech_context_task(context_task)
             return StreamTranscript()
+        except Exception:
+            await cancel_speech_context_task(context_task)
+            raise
+        speech_context = await self._resolve_context_task(context_task)
         processing_ms = int((time.perf_counter() - start) * 1000)
         segments, words = _segments_and_words(result)
 
@@ -323,7 +370,57 @@ class StreamPipeline:
             model=model,
             segments=segments,
             words=words,
+            speech_context=speech_context,
+            audio=audio if include_speech_context else None,
         )
+
+    def _start_context_analysis(
+        self,
+        audio: NDArray[np.float32],
+        *,
+        timeline_offset_ms: int,
+        enabled: bool,
+    ) -> asyncio.Task[SpeechContext] | None:
+        if not enabled:
+            return None
+        if self._speech_context_service is None:
+            return asyncio.create_task(self._unavailable_context())
+        chunk = AudioChunk(
+            data=audio,
+            sample_rate=TARGET_SAMPLE_RATE,
+            duration_ms=samples_to_ms(audio.size),
+            offset_ms=timeline_offset_ms,
+        )
+        return asyncio.create_task(
+            self._speech_context_service.analyze_chunks(
+                (chunk,),
+                timeline_offset_ms=timeline_offset_ms,
+            )
+        )
+
+    @staticmethod
+    async def _unavailable_context() -> SpeechContext:
+        return SpeechContext(
+            status="failed",
+            unavailable=("prosody", "audio_events"),
+        )
+
+    @staticmethod
+    async def _resolve_context_task(
+        task: asyncio.Task[SpeechContext] | None,
+    ) -> SpeechContext | None:
+        if task is None:
+            return None
+        try:
+            return await task
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Speech context analysis failed")
+            return SpeechContext(
+                status="failed",
+                unavailable=("prosody", "audio_events"),
+            )
 
     async def _transcribe_audio_with_context(
         self,

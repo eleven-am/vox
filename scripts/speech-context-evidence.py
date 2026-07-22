@@ -10,9 +10,11 @@ from pathlib import Path
 
 from vox.speech_context.runner import (
     DEFAULT_MODEL,
-    SpeechContextError,
     collect_speech_context_evidence,
-    install_experimental_runtimes,
+)
+from vox.speech_context.runtime import (
+    SpeechContextError,
+    install_speech_context_runtimes,
     runtime_inventory,
 )
 
@@ -63,7 +65,7 @@ def main() -> int:
     try:
         if args.command == "install":
             _write_json(
-                install_experimental_runtimes(
+                install_speech_context_runtimes(
                     accept_opensmile_research_license=args.accept_opensmile_research_license,
                     home=args.home,
                 )
@@ -85,7 +87,11 @@ def main() -> int:
             )
         )
         _write_json(evidence, output)
-        return 0 if all(result["status"] == "ok" for result in evidence["results"].values()) else 3
+        complete = (
+            all(result["status"] == "ok" for result in evidence["results"].values())
+            and evidence["speech_context"]["status"] == "complete"
+        )
+        return 0 if complete else 3
     except SpeechContextError as error:
         print(f"speech-context evidence failed: {error}", file=sys.stderr)
         return 2

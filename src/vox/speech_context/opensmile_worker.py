@@ -4,12 +4,14 @@ import importlib.metadata
 import importlib.util
 import math
 import wave
+from collections.abc import Iterator
 from pathlib import Path
 from types import ModuleType
 from typing import Any
 
 import numpy as np
 
+from vox.speech_context.reducer import reduce_prosody
 from vox.speech_context.worker import run_analysis_worker
 
 SAMPLE_RATE = 16_000
@@ -44,11 +46,12 @@ class OpenSmileAnalyzer:
         self._library = _load_core_library(self._core)
 
     @staticmethod
-    def _read_pcm(audio_path: str) -> bytes:
+    def _pcm_chunks(audio_path: str) -> Iterator[bytes]:
         with wave.open(audio_path, "rb") as handle:
             if handle.getnchannels() != 1 or handle.getsampwidth() != 2 or handle.getframerate() != SAMPLE_RATE:
                 raise ValueError("prosody worker requires mono 16 kHz PCM16 WAV input")
-            return handle.readframes(handle.getnframes())
+            while chunk := handle.readframes(SAMPLE_RATE * 30):
+                yield chunk
 
     def _options(self, level: str) -> dict[str, object]:
         config = self._core / "config"
@@ -62,7 +65,7 @@ class OpenSmileAnalyzer:
             "frameModeFunctionalsConf": str(config / "shared/FrameModeFunctionals.conf.inc"),
         }
 
-    def _extract(self, pcm: bytes, level: str) -> dict[str, Any]:
+    def _extract(self, audio_path: str, level: str) -> dict[str, Any]:
         smile = self._library.OpenSMILE()
         rows: list[dict[str, Any]] = []
         try:
@@ -84,8 +87,9 @@ class OpenSmileAnalyzer:
                 })
 
             smile.external_sink_set_callback_ex("extsink", collect)
-            if not smile.external_audio_source_write_data("extsource", pcm):
-                raise RuntimeError("openSMILE rejected the complete audio buffer")
+            for chunk in self._pcm_chunks(audio_path):
+                if not smile.external_audio_source_write_data("extsource", chunk):
+                    raise RuntimeError("openSMILE rejected an audio buffer")
             smile.external_audio_source_set_eoi("extsource")
             smile.run()
         finally:
@@ -93,13 +97,22 @@ class OpenSmileAnalyzer:
         return {"columns": columns, "frames": rows}
 
     def analyze(self, audio_path: str) -> dict[str, Any]:
-        pcm = self._read_pcm(audio_path)
         return {
-            "low_level_descriptors": self._extract(pcm, "lld"),
-            "functionals": self._extract(pcm, "func"),
+            "low_level_descriptors": self._extract(audio_path, "lld"),
+            "functionals": self._extract(audio_path, "func"),
         }
+
+    def analyze_compact(self, audio_path: str) -> dict[str, Any]:
+        return reduce_prosody({"functionals": self._extract(audio_path, "func")})
 
 
 if __name__ == "__main__":
     analyzer = OpenSmileAnalyzer()
-    raise SystemExit(run_analysis_worker(analyzer.analyze))
+    raise SystemExit(
+        run_analysis_worker(
+            {
+                "analyze": analyzer.analyze,
+                "analyze_compact": analyzer.analyze_compact,
+            }
+        )
+    )

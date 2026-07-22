@@ -14,6 +14,7 @@ from vox.operations.streaming_transcription import (
     DoneEvent,
     StreamingTranscriptionSession,
 )
+from vox.speech_context.service import SpeechContextService
 from vox.streaming.pipeline import StreamPipelineConfig
 
 logger = logging.getLogger(__name__)
@@ -26,12 +27,14 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
         store: BlobStore,
         registry: ModelRegistry,
         scheduler: Scheduler,
+        speech_context_service: SpeechContextService | None = None,
         pipeline_config: StreamPipelineConfig | None = None,
     ) -> None:
         self._store = store
         self._registry = registry
         self._scheduler = scheduler
         self._pipeline_config = pipeline_config or StreamPipelineConfig()
+        self._speech_context_service = speech_context_service
 
     async def StreamTranscribe(
         self,
@@ -43,6 +46,7 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
             registry=self._registry,
             store=self._store,
             pipeline_config=self._pipeline_config,
+            speech_context_service=self._speech_context_service,
         )
         out_queue: asyncio.Queue[vox_pb2.StreamOutput | None] = asyncio.Queue()
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import wave
 from contextlib import asynccontextmanager
 from typing import Any
 from unittest.mock import MagicMock
@@ -34,6 +35,7 @@ from vox.operations.streaming_transcription_longform import (
     longform_transcription_event_payload,
     normalize_longform_config,
 )
+from vox.speech_context.types import SpeechContext
 
 
 class FakeChunkingSTTAdapter(STTAdapter):
@@ -114,6 +116,18 @@ class FakeScheduler:
 class MissingScheduler:
     def acquire(self, model: str):
         raise ModelNotFoundError(model)
+
+
+class FakeSpeechContextService:
+    def __init__(self) -> None:
+        self.path = None
+        self.frames = 0
+
+    async def analyze_wave_path(self, audio_path) -> SpeechContext:
+        self.path = audio_path
+        with wave.open(str(audio_path), "rb") as handle:
+            self.frames = handle.getnframes()
+        return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
 
 
 class _StoreModel:
@@ -250,6 +264,52 @@ async def test_pcm16_chunks_emit_progress_and_done():
     assert done.language == "en"
     assert len(done.segments) == 1
     await session.close()
+
+
+@pytest.mark.asyncio
+async def test_longform_context_spools_audio_and_emits_only_on_done():
+    context_service = FakeSpeechContextService()
+    session = LongformTranscriptionSession(
+        scheduler=FakeScheduler(FakeChunkingSTTAdapter()),
+        registry=_make_registry(),
+        store=_make_store(stt="m:1"),
+        speech_context_service=context_service,
+    )
+    config = normalize_longform_config(
+        model="m:1",
+        sample_rate=16_000,
+        input_format="pcm16",
+        language=None,
+        word_timestamps=False,
+        temperature=0.0,
+        chunk_ms=1_000,
+        overlap_ms=0,
+        registry=_make_registry(),
+        store=_make_store(stt="m:1"),
+        speech_context=True,
+    )
+
+    await session.configure(config)
+    await session.submit_chunk(np.zeros(16_000, dtype=np.int16).tobytes())
+    await session.end_of_stream()
+    events = await _drain_events(session)
+    done = next(event for event in events if isinstance(event, LongformDoneEvent))
+
+    assert context_service.frames == 16_000
+    assert done.speech_context == SpeechContext(
+        status="failed",
+        unavailable=("prosody", "audio_events"),
+    )
+    assert all(
+        "speech_context" not in (longform_transcription_event_payload(event) or {})
+        for event in events
+        if not isinstance(event, LongformDoneEvent)
+    )
+    assert longform_transcription_event_payload(done)["speech_context"]["status"] == "failed"
+
+    await session.close()
+    assert context_service.path is not None
+    assert not context_service.path.exists()
 
 
 @pytest.mark.asyncio

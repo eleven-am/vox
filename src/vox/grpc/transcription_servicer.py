@@ -14,16 +14,24 @@ from vox.operations.transcription import (
     transcribe,
     transcription_request_from_fields,
 )
+from vox.speech_context.service import SpeechContextService
 
 logger = logging.getLogger(__name__)
 
 
 class TranscriptionServicer(vox_pb2_grpc.TranscriptionServiceServicer):
 
-    def __init__(self, store: BlobStore, registry: ModelRegistry, scheduler: Scheduler) -> None:
+    def __init__(
+        self,
+        store: BlobStore,
+        registry: ModelRegistry,
+        scheduler: Scheduler,
+        speech_context_service: SpeechContextService | None = None,
+    ) -> None:
         self._store = store
         self._registry = registry
         self._scheduler = scheduler
+        self._speech_context_service = speech_context_service
 
     async def Transcribe(self, request, context):
         async with map_route_errors_to_grpc(
@@ -40,12 +48,14 @@ class TranscriptionServicer(vox_pb2_grpc.TranscriptionServiceServicer):
                 word_timestamps=request.word_timestamps,
                 temperature=request.temperature,
                 annotate_text=True,
+                speech_context=bool(request.speech_context),
             )
             bundle = await transcribe(
                 scheduler=self._scheduler,
                 registry=self._registry,
                 store=self._store,
                 request=op_request,
+                speech_context_service=self._speech_context_service,
             )
 
         return transcribe_response(bundle)

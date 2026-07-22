@@ -33,6 +33,7 @@ def test_grpc_session_update_decodes_to_shared_command_shape():
             policy=vox_pb2.ConversationTurnPolicy(
                 speaking_interrupt_min_duration_ms=300,
             ),
+            speech_context=True,
         )
     )
 
@@ -44,6 +45,7 @@ def test_grpc_session_update_decodes_to_shared_command_shape():
     assert config.policy is not None
     assert config.policy.speaking_interrupt_min_duration_ms == 300
     assert config.policy.aec_warmup_ms == 250
+    assert config.speech_context is True
 
 
 def test_grpc_session_update_preserves_every_operation_owned_policy_override():

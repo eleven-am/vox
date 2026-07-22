@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -9,8 +10,9 @@ import pytest
 from tests.fakes import FakeTTSAdapter
 from vox.core.adapter import STTAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, TranscribeResult, TranscriptSegment
+from vox.speech_context.types import SpeechContext
 from vox.streaming.pipeline import StreamPipeline
-from vox.streaming.types import TARGET_SAMPLE_RATE, StreamSessionConfig
+from vox.streaming.types import TARGET_SAMPLE_RATE, SpeechStopped, StreamSessionConfig
 from vox.streaming.vad import SpeechSegment
 
 
@@ -268,3 +270,104 @@ async def test_transcribe_segment_splits_long_silence_gap_inside_one_vad_segment
     assert second_transcript.text == "second phrase"
 
     pipeline.shutdown()
+
+
+class _StoppedVad:
+    def __init__(self, segment: SpeechSegment) -> None:
+        self._segment = segment
+
+    def append(self, audio):
+        return (
+            SpeechStopped(
+                timestamp_ms=self._segment.end_ms,
+                utterance_id=self._segment.utterance_id,
+            ),
+            self._segment,
+        )
+
+
+class _EouGatedContextService:
+    def __init__(self) -> None:
+        self.eou_started = asyncio.Event()
+
+    async def analyze_chunks(self, chunks, *, timeline_offset_ms: int = 0) -> SpeechContext:
+        assert tuple(chunks)
+        assert timeline_offset_ms == 100
+        await self.eou_started.wait()
+        return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+
+
+@pytest.mark.asyncio
+async def test_realtime_pipeline_scores_eou_before_waiting_for_speech_context():
+    audio = np.full(3_200, 0.2, dtype=np.float32)
+    segment = SpeechSegment(audio=audio, start_ms=100, end_ms=300, utterance_id=4)
+    context_service = _EouGatedContextService()
+    pipeline = StreamPipeline(
+        scheduler=FakeScheduler(WholeUtteranceSTTAdapter()),
+        speech_context_service=context_service,
+    )
+    pipeline.configure(
+        StreamSessionConfig(
+            model="m:1",
+            language="en",
+            speech_context=True,
+        )
+    )
+    pipeline._vad = _StoppedVad(segment)
+
+    async def score_eou(transcript):
+        context_service.eou_started.set()
+        return transcript
+
+    pipeline._add_eou_probability = score_eou
+    events = await asyncio.wait_for(
+        anext(_collect_pipeline_events(pipeline, audio)),
+        timeout=1,
+    )
+
+    assert events[-1].speech_context is not None
+    assert events[-1].speech_context.status == "failed"
+    pipeline.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_realtime_pipeline_cancels_context_when_eou_scoring_fails():
+    class CancellationContextService:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.stopped = asyncio.Event()
+
+        async def analyze_chunks(self, chunks, *, timeline_offset_ms: int = 0):
+            assert tuple(chunks)
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.stopped.set()
+            return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+
+    audio = np.full(3_200, 0.2, dtype=np.float32)
+    segment = SpeechSegment(audio=audio, start_ms=100, end_ms=300, utterance_id=4)
+    context_service = CancellationContextService()
+    pipeline = StreamPipeline(
+        scheduler=FakeScheduler(WholeUtteranceSTTAdapter()),
+        speech_context_service=context_service,
+    )
+    pipeline.configure(StreamSessionConfig(model="m:1", language="en", speech_context=True))
+    pipeline._vad = _StoppedVad(segment)
+
+    async def fail_eou(transcript):
+        await context_service.started.wait()
+        raise RuntimeError("EOU failed")
+
+    pipeline._add_eou_probability = fail_eou
+
+    with pytest.raises(RuntimeError, match="EOU failed"):
+        await anext(_collect_pipeline_events(pipeline, audio))
+
+    assert context_service.stopped.is_set()
+    pipeline.shutdown()
+
+
+async def _collect_pipeline_events(pipeline: StreamPipeline, audio: np.ndarray):
+    yield [event async for event in pipeline.process_audio(audio)]

@@ -35,6 +35,7 @@ from vox.server.rtc_session_io import (
     prepare_rtc_control_event,
     send_client_event_to_browser,
 )
+from vox.speech_context.service import SpeechContextService
 
 RtcEventHandler = Callable[[dict[str, Any]], Awaitable[Any]]
 RtcConversationEventHandler = Callable[[ConvEvent, dict[str, Any]], Awaitable[Any]]
@@ -78,6 +79,7 @@ class RtcRuntime:
         transport: RtcControlTransport,
         emit: RtcEventHandler,
         emit_conversation: RtcConversationEventHandler | None = None,
+        speech_context_service: SpeechContextService | None = None,
     ) -> None:
         record = registry.get(session_id)
         if record is None:
@@ -106,7 +108,11 @@ class RtcRuntime:
         self._started = False
         self._closed = False
 
-        orchestrator = create_rtc_orchestrator(scheduler=scheduler, record=record)
+        orchestrator = create_rtc_orchestrator(
+            scheduler=scheduler,
+            record=record,
+            speech_context_service=speech_context_service,
+        )
         self.conversation = ConversationRuntime(
             orchestrator,
             allow_input_audio=False,

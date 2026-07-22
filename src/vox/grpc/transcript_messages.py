@@ -13,6 +13,7 @@ from vox.operations.transcription import (
     word_timestamp_payload,
     word_timestamp_payloads,
 )
+from vox.speech_context.types import speech_context_payload
 from vox.streaming.types import StreamTranscript
 
 
@@ -48,7 +49,7 @@ def transcript_segment_messages(segments: Any) -> list[vox_pb2.TranscriptSegment
 
 def transcribe_response(bundle: TranscriptionResultBundle) -> vox_pb2.TranscribeResponse:
     result = bundle.result
-    return vox_pb2.TranscribeResponse(
+    message = vox_pb2.TranscribeResponse(
         model=result.model,
         text=result.text,
         language=result.language or "",
@@ -58,6 +59,9 @@ def transcribe_response(bundle: TranscriptionResultBundle) -> vox_pb2.Transcribe
         entities=entity_messages(bundle.entities),
         topics=list(bundle.topics),
     )
+    if bundle.speech_context is not None:
+        message.speech_context.update(speech_context_payload(bundle.speech_context))
+    return message
 
 
 def annotate_response(result: AnnotateResult) -> vox_pb2.AnnotateResponse:
@@ -85,4 +89,6 @@ def stream_transcript_result(transcript: StreamTranscript) -> vox_pb2.StreamTran
         message.topics.extend(transcript.topics)
     message.words.extend(word_timestamp_messages(transcript.words))
     message.segments.extend(transcript_segment_messages(transcript.segments))
+    if transcript.speech_context is not None and not transcript.is_partial:
+        message.speech_context.update(speech_context_payload(transcript.speech_context))
     return message

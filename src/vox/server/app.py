@@ -25,6 +25,7 @@ from vox.server.preload import (
     should_preload_vad,
 )
 from vox.server.rtc_registry import RtcSessionRegistry
+from vox.speech_context.service import SpeechContextService
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,7 @@ async def lifespan(app: FastAPI):
                 services.registry,
                 services.scheduler,
                 rtc_registry,
+                services.speech_context,
                 port=grpc_port,
             )
 
@@ -90,8 +92,13 @@ async def lifespan(app: FastAPI):
                     await rtc_registry.close_all()
                     logger.info("RTC sessions stopped")
                 finally:
-                    await services.scheduler.stop()
-                    logger.info("Vox server stopped")
+                    try:
+                        if services.speech_context is not None:
+                            await services.speech_context.close()
+                            logger.info("Speech context workers stopped")
+                    finally:
+                        await services.scheduler.stop()
+                        logger.info("Vox server stopped")
 
 
 def create_app(
@@ -140,6 +147,7 @@ def create_app(
     app.state.store = store
     app.state.registry = registry
     app.state.scheduler = scheduler
+    app.state.speech_context = SpeechContextService(home=store.root)
     app.state.rtc_registry = RtcSessionRegistry()
     app.state.grpc_port = grpc_port
     app.state.preload_models = list(preload_models or [])

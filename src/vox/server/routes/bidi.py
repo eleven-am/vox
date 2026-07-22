@@ -69,6 +69,7 @@ async def transcriptions_stream(websocket: WebSocket):
                     overlap_ms=config_msg.get("overlap_ms"),
                     registry=services.registry,
                     store=services.store,
+                    speech_context=bool(config_msg.get("speech_context", False)),
                 ),
             )
             if config is None:
@@ -78,6 +79,7 @@ async def transcriptions_stream(websocket: WebSocket):
                 scheduler=services.scheduler,
                 registry=services.registry,
                 store=services.store,
+                speech_context_service=services.speech_context,
             )
             async with websocket_session_event_scope(
                 session,

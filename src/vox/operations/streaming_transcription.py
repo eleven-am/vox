@@ -18,6 +18,8 @@ from vox.operations.errors import (
     SessionNotConfiguredError,
 )
 from vox.operations.streaming_reporting import StreamingOperationErrorReporter
+from vox.speech_context.service import SpeechContextService
+from vox.speech_context.types import speech_context_payload
 from vox.streaming.annotation import enrich_transcript
 from vox.streaming.codecs import StreamResampler, pcm16_to_float32
 from vox.streaming.opus import OPUS_SAMPLE_RATE, OpusStreamDecoder
@@ -46,6 +48,7 @@ class StreamingTranscriptionConfig:
     partial_stride_ms: int = 700
     include_word_timestamps: bool = False
     temperature: float = 0.0
+    speech_context: bool = False
 
 
 @dataclass(frozen=True)
@@ -93,6 +96,7 @@ def streaming_transcription_config_from_fields(
     partial_stride_ms: object = 700,
     include_word_timestamps: object = False,
     temperature: object = 0.0,
+    speech_context: object = False,
 ) -> StreamingTranscriptionConfig:
     return StreamingTranscriptionConfig(
         model=str(model or ""),
@@ -103,6 +107,7 @@ def streaming_transcription_config_from_fields(
         partial_stride_ms=int(partial_stride_ms or 700),
         include_word_timestamps=bool(include_word_timestamps),
         temperature=float(temperature or 0.0),
+        speech_context=bool(speech_context),
     )
 
 
@@ -127,6 +132,8 @@ def streaming_transcript_payload(transcript: StreamTranscript) -> dict[str, Any]
         payload["words"] = transcript.words
     if transcript.segments:
         payload["segments"] = transcript.segments
+    if transcript.speech_context is not None and not transcript.is_partial:
+        payload["speech_context"] = speech_context_payload(transcript.speech_context)
     return payload
 
 
@@ -154,11 +161,13 @@ class StreamingTranscriptionSession(StreamingOperationErrorReporter):
         registry: Any,
         store: Any | None,
         pipeline_config: StreamPipelineConfig | None = None,
+        speech_context_service: SpeechContextService | None = None,
     ) -> None:
         self._scheduler = scheduler
         self._registry = registry
         self._store = store
         self._pipeline_config = pipeline_config
+        self._speech_context_service = speech_context_service
 
         self._config: StreamingTranscriptionConfig | None = None
         self._session_config: StreamSessionConfig | None = None
@@ -190,12 +199,14 @@ class StreamingTranscriptionSession(StreamingOperationErrorReporter):
             partial_stride_ms=int(config.partial_stride_ms or 700),
             include_word_timestamps=bool(config.include_word_timestamps),
             temperature=float(config.temperature or 0.0),
+            speech_context=bool(config.speech_context),
         )
         self._config = config
         self._session_config = session_config
         self._pipeline = StreamPipeline(
             scheduler=self._scheduler,
             config=self._pipeline_config,
+            speech_context_service=self._speech_context_service,
         )
         self._pipeline.configure(session_config)
         self._partial_service = PartialTranscriptService(
@@ -306,6 +317,7 @@ class StreamingTranscriptionSession(StreamingOperationErrorReporter):
                             audio=remaining,
                             language=self._session_config.language,
                             word_timestamps=self._session_config.include_word_timestamps,
+                            include_speech_context=self._session_config.speech_context,
                         )
                         if transcript.text and transcript.text.strip():
                             enrich_transcript(transcript, self._session_config.language)

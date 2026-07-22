@@ -359,6 +359,11 @@ def test_transcript_done_event_maps_metadata_with_shared_transcript_converters()
                     "confidence": 0.91,
                 },
             ),
+            speech_context={
+                "schema_version": 1,
+                "status": "failed",
+                "unavailable": ["prosody", "audio_events"],
+            },
         )
     )
 
@@ -370,6 +375,7 @@ def test_transcript_done_event_maps_metadata_with_shared_transcript_converters()
     assert list(transcript.topics) == ["travel"]
     assert transcript.words[0].word == "Alice"
     assert transcript.words[0].confidence == pytest.approx(0.91)
+    assert transcript.speech_context["status"] == "failed"
 
 
 def test_response_commands_decode_generation_id_with_backward_compat():

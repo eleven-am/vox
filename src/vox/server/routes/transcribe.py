@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, File, Form, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse
 
 from vox.operations.transcription import (
@@ -28,6 +28,7 @@ async def _run_transcribe(
     word_timestamps: bool,
     temperature: float,
     annotate_text: bool = False,
+    speech_context: bool = False,
 ):
     services = app_services(request)
 
@@ -45,12 +46,14 @@ async def _run_transcribe(
             word_timestamps=word_timestamps,
             temperature=temperature,
             annotate_text=annotate_text,
+            speech_context=speech_context,
         )
         bundle = await transcribe(
             scheduler=services.scheduler,
             registry=services.registry,
             store=services.store,
             request=op_request,
+            speech_context_service=services.speech_context,
         )
 
     return bundle
@@ -73,12 +76,19 @@ async def openai_transcribe(
     language: str | None = Form(None),  # noqa: B008
     response_format: str = Form("json"),  # noqa: B008
     temperature: float = Form(0.0),  # noqa: B008
+    speech_context: bool = Form(False),  # noqa: B008
 ):
+    if speech_context and response_format == "text":
+        raise HTTPException(
+            status_code=400,
+            detail="speech_context requires a structured JSON response format",
+        )
     verbose = response_format == "verbose_json"
     granularities = await _timestamp_granularities(request) if verbose else set()
     bundle = await _run_transcribe(
         request=request, file=file, model=model, language=language,
         word_timestamps="word" in granularities, temperature=temperature, annotate_text=verbose,
+        speech_context=speech_context,
     )
     response = openai_transcription_response(
         bundle,
