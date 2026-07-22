@@ -75,8 +75,8 @@ RUNTIME_SPECS = {
 }
 
 
-def repository_root() -> Path:
-    return Path(__file__).resolve().parents[3]
+def package_import_root() -> Path:
+    return Path(__file__).resolve().parents[2]
 
 
 def requirements_path(spec: RuntimeSpec) -> Path:
@@ -253,7 +253,7 @@ def worker_environment(spec: RuntimeSpec, runtime: Path) -> dict[str, str]:
             "TMPDIR",
         }
     }
-    allowed["PYTHONPATH"] = str(repository_root() / "src")
+    allowed["PYTHONPATH"] = str(package_import_root())
     allowed["PYTHONDONTWRITEBYTECODE"] = "1"
     if spec.key == "audio_events":
         allowed["VOX_SPEECH_CONTEXT_ASSETS"] = str(runtime / "assets")

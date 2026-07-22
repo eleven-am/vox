@@ -375,6 +375,18 @@ def test_worker_environment_prevents_runtime_growth_from_bytecode(tmp_path):
     assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
+def test_worker_environment_imports_vox_from_an_installed_package(tmp_path, monkeypatch):
+    module_path = tmp_path / "site-packages" / "vox" / "speech_context" / "runtime.py"
+    monkeypatch.setattr(speech_context_runtime, "__file__", str(module_path))
+
+    environment = speech_context_runtime.worker_environment(
+        runner.RUNTIME_SPECS["prosody"],
+        tmp_path,
+    )
+
+    assert environment["PYTHONPATH"] == str(tmp_path / "site-packages")
+
+
 @pytest.mark.asyncio
 async def test_transcription_upload_uses_async_safe_bytes_and_complete_timestamps(tmp_path, monkeypatch):
     audio = tmp_path / "input.wav"
