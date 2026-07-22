@@ -61,6 +61,16 @@ This licensing gate must be resolved before any production or public API work.
 
 ## Install and run
 
+Record a browser microphone sample as mono 16 kHz PCM16 WAV:
+
+```bash
+make speech-context-recorder
+```
+
+Then open `http://127.0.0.1:11436/speech-context-recorder.html`, record the
+sample, and save it. The recorder releases the microphone immediately after
+stopping and does not upload the audio anywhere.
+
 The install is deliberately separate from analysis:
 
 ```bash
