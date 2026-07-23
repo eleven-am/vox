@@ -8,7 +8,7 @@ HF_HOME_DIR="${HF_HOME:-$VOX_CACHE_DIR/huggingface}"
 HF_HUB_CACHE_DIR="${HUGGINGFACE_HUB_CACHE:-$HF_HOME_DIR/hub}"
 HF_XET_CACHE_DIR="${HF_XET_CACHE:-$HF_HOME_DIR/xet}"
 PIP_CACHE_PATH="${PIP_CACHE_DIR:-$VOX_CACHE_DIR/pip}"
-TMP_PATH="${TMPDIR:-$VOX_HOME_DIR/tmp}"
+TMP_PATH="${TMPDIR:-/tmp/vox}"
 
 export HF_HOME="$HF_HOME_DIR"
 export HUGGINGFACE_HUB_CACHE="$HF_HUB_CACHE_DIR"
@@ -26,7 +26,6 @@ install -d \
   "$VOX_HOME_DIR/models/blobs" \
   "$VOX_HOME_DIR/models/manifests" \
   "$VOX_HOME_DIR/models/manifests/library" \
-  "$VOX_HOME_DIR/tmp" \
   "$VOX_CACHE_DIR" \
   "$PIP_CACHE_PATH" \
   "$HF_HOME_DIR" \
@@ -47,7 +46,6 @@ chown vox:vox \
   "$VOX_HOME_DIR/models/blobs" \
   "$VOX_HOME_DIR/models/manifests" \
   "$VOX_HOME_DIR/models/manifests/library" \
-  "$VOX_HOME_DIR/tmp" \
   "$VOX_CACHE_DIR" \
   "$PIP_CACHE_PATH" \
   "$HF_HOME_DIR" \

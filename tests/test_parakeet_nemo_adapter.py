@@ -381,6 +381,7 @@ def test_load_spawns_worker_with_runtime_on_child_pythonpath(
     ready_runtime: Path, fake_host_cls, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv("VOX_SECRET_EXAMPLE", "leak")
+    monkeypatch.setenv("TMPDIR", "/tmp/vox")
 
     adapter, host = _loaded_adapter(fake_host_cls)
 
@@ -400,6 +401,7 @@ def test_load_spawns_worker_with_runtime_on_child_pythonpath(
     assert str(Path(vox.__file__).resolve().parents[1]) in python_paths
     assert str(Path(vox_parakeet.__file__).resolve().parents[1]) in python_paths
     assert host.env[module.WORKER_DEVICE_ENV] == "cuda"
+    assert host.env["TMPDIR"] == "/tmp/vox"
     assert "VOX_SECRET_EXAMPLE" not in host.env
     assert host.name == "parakeet-nemo"
     assert host.startup_timeout == module.DEFAULT_STARTUP_TIMEOUT_SECONDS
