@@ -263,7 +263,7 @@ def test_endpoint_commit_delay_uses_recent_pause_history_when_dynamic():
     )
 
     assert policy.commit_delay_ms(recent_pause_ms=[800, 1000, 1200]) == 1250
-    assert policy.commit_delay_ms(recent_pause_ms=[100]) == 1200
+    assert policy.commit_delay_ms(recent_pause_ms=[100]) == 650
 
 
 def test_endpoint_pause_history_records_clamped_recent_pauses():
@@ -298,7 +298,7 @@ def test_endpoint_commit_delay_ignores_pause_history_when_dynamic_disabled():
         )
     )
 
-    assert policy.commit_delay_ms(recent_pause_ms=[1600, 1800]) == 1200
+    assert policy.commit_delay_ms(recent_pause_ms=[1600, 1800]) == 650
 
 
 def test_endpoint_commit_delay_shrinks_with_eou_confidence():
@@ -312,7 +312,7 @@ def test_endpoint_commit_delay_shrinks_with_eou_confidence():
 
     base_ms = policy.commit_delay_ms()
 
-    assert base_ms == 1200
+    assert base_ms == 650
     assert policy.commit_delay_ms(eou_probability=1.0, eou_threshold=0.5) == 400
     mid_ms = policy.commit_delay_ms(eou_probability=0.75, eou_threshold=0.5)
     assert 400 < mid_ms < base_ms
@@ -329,9 +329,9 @@ def test_endpoint_commit_delay_extends_low_eou_but_keeps_missing_eou_fallback():
 
     low_confidence_ms = policy.commit_delay_ms(eou_probability=0.3, eou_threshold=0.5)
 
-    assert 1200 < low_confidence_ms < 3000
-    assert policy.commit_delay_ms(eou_probability=0.0, eou_threshold=0.5) == 3000
-    assert policy.commit_delay_ms(eou_probability=None, eou_threshold=0.5) == 1200
+    assert 650 < low_confidence_ms < 800
+    assert policy.commit_delay_ms(eou_probability=0.0, eou_threshold=0.5) == 800
+    assert policy.commit_delay_ms(eou_probability=None, eou_threshold=0.5) == 650
 
 
 def test_endpoint_commit_delay_is_monotonic_across_incomplete_confidence():
@@ -347,8 +347,27 @@ def test_endpoint_commit_delay_is_monotonic_across_incomplete_confidence():
     clearly_incomplete = policy.commit_delay_ms(eou_probability=0.25, eou_threshold=0.5)
     certainly_incomplete = policy.commit_delay_ms(eou_probability=0.0, eou_threshold=0.5)
 
-    assert 1200 < barely_incomplete < clearly_incomplete < certainly_incomplete
-    assert certainly_incomplete == 3000
+    assert 650 < barely_incomplete < clearly_incomplete < certainly_incomplete
+    assert certainly_incomplete == 800
+
+
+def test_endpoint_commit_delay_preserves_long_learned_pause_allowance():
+    policy = EndpointCommitDelayPolicy.from_turn_policy(
+        TurnPolicy(
+            max_endpointing_delay_ms=3000,
+            min_endpointing_delay_ms=400,
+            dynamic_endpointing=True,
+        )
+    )
+
+    assert (
+        policy.commit_delay_ms(
+            recent_pause_ms=[2400],
+            eou_probability=0.0,
+            eou_threshold=0.5,
+        )
+        == 3000
+    )
 
 
 def test_final_transcript_decision_emits_commit_eou_event_without_endpoint_timer():
@@ -403,7 +422,7 @@ def test_final_transcript_decision_defers_while_endpoint_timer_is_active():
         turn_detector="livekit",
     )
 
-    assert 1200 < decision.commit_delay_ms < 3000
+    assert 650 < decision.commit_delay_ms < 800
     assert decision.defer_commit
     assert not decision.eou_complete
     assert decision.eou_event is not None
@@ -412,7 +431,7 @@ def test_final_transcript_decision_defers_while_endpoint_timer_is_active():
     assert decision.eou_event["delay_ms"] == decision.commit_delay_ms
 
 
-def test_near_zero_eou_uses_profile_maximum_for_every_detector_backend():
+def test_near_zero_eou_uses_default_ceiling_for_every_detector_backend():
     policy = EndpointCommitDelayPolicy.from_turn_policy(
         TurnPolicy(
             max_endpointing_delay_ms=3000,
@@ -438,7 +457,7 @@ def test_near_zero_eou_uses_profile_maximum_for_every_detector_backend():
 
         assert decision.defer_commit
         assert not decision.eou_complete
-        assert decision.commit_delay_ms == 3000
+        assert decision.commit_delay_ms == 800
         assert decision.eou_event is not None
         assert decision.eou_event["turn_detector"] == turn_detector
         assert decision.eou_event["action"] == "wait"
@@ -462,7 +481,7 @@ def test_final_transcript_decision_defers_missing_eou_without_emitting_eou_event
         turn_detector="livekit",
     )
 
-    assert decision.commit_delay_ms == 1200
+    assert decision.commit_delay_ms == 650
     assert decision.defer_commit
     assert not decision.eou_complete
     assert decision.eou_event is None

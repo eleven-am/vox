@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import tempfile
 import threading
+import time
 import wave
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -150,6 +150,7 @@ class SpeechContextService:
 
     def _request_track(self, spec: RuntimeSpec, audio_path: Path) -> dict[str, Any]:
         host = self._host_for(spec)
+        started_at = time.perf_counter()
         response = host.request(
             {"op": "analyze_compact", "audio_path": str(audio_path)},
             timeout=self._timeout,
@@ -158,13 +159,12 @@ class SpeechContextService:
         if not isinstance(result, dict):
             raise ValueError(f"{spec.key} worker returned an invalid compact result")
         result = dict(result)
-        diagnostic = result.pop("_pre_reduction", None)
-        if isinstance(diagnostic, dict):
-            logger.info(
-                "speech context %s pre-reduction payload=%s",
-                "SenseVoice" if spec.key == "speaker" else "YAMNet",
-                json.dumps(diagnostic, separators=(",", ":"), sort_keys=True),
-            )
+        result.pop("_pre_reduction", None)
+        logger.info(
+            "speech context %s complete analysis_ms=%d",
+            "SenseVoice" if spec.key == "speaker" else "YAMNet",
+            round((time.perf_counter() - started_at) * 1000),
+        )
         return result
 
     def _host_for(self, spec: RuntimeSpec) -> WorkerHost:

@@ -177,7 +177,7 @@ async def test_service_reports_partial_without_leaking_internal_error():
 
 
 @pytest.mark.asyncio
-async def test_service_logs_both_pre_reduction_payloads_without_exposing_them(caplog):
+async def test_service_logs_compact_track_completion_without_payloads(caplog):
     service = SpeechContextService(host_factory=lambda spec: _DiagnosticHost(spec))
     chunk = AudioChunk(
         data=np.full(16_000, 0.1, dtype=np.float32),
@@ -189,10 +189,11 @@ async def test_service_logs_both_pre_reduction_payloads_without_exposing_them(ca
     with caplog.at_level(logging.INFO, logger="vox.speech_context.service"):
         context = await service.analyze_chunks((chunk,))
 
-    assert "speech context SenseVoice pre-reduction payload=" in caplog.text
-    assert '"text":"internal only"' in caplog.text
-    assert "speech context YAMNet pre-reduction payload=" in caplog.text
-    assert '"label":"Crying, sobbing","score":0.0412' in caplog.text
+    assert "speech context SenseVoice complete analysis_ms=" in caplog.text
+    assert "speech context YAMNet complete analysis_ms=" in caplog.text
+    assert "internal only" not in caplog.text
+    assert "Crying, sobbing" not in caplog.text
+    assert "pre-reduction" not in caplog.text
     assert "_pre_reduction" not in speech_context_payload(context)
     await service.close()
 

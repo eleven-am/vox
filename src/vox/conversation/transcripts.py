@@ -17,7 +17,8 @@ from vox.streaming.types import TARGET_SAMPLE_RATE, StreamTranscript, samples_to
 WIRE_TRANSCRIPT_DONE = "conversation.item.input_audio_transcription.completed"
 WIRE_TURN_EOU_PREDICTED = "turn.eou.predicted"
 TRANSCRIPT_REVISION_SIMILARITY = 0.78
-TRANSCRIPT_CONTINUATION_COMMIT_MS = 1200
+TRANSCRIPT_CONTINUATION_COMMIT_MS = 650
+TRANSCRIPT_LOW_EOU_MAX_EXTENSION_MS = 150
 
 
 def normalise_transcript_text(text: str) -> str:
@@ -265,7 +266,12 @@ class EndpointCommitDelayPolicy:
                 1.0,
                 max(0.0, (eou_threshold - eou_probability) / eou_threshold),
             )
-            return round(base_ms + incompletion * (max_delay_ms - base_ms))
+            available_extension_ms = max(0, max_delay_ms - base_ms)
+            extension_ms = min(
+                TRANSCRIPT_LOW_EOU_MAX_EXTENSION_MS,
+                available_extension_ms,
+            )
+            return round(base_ms + incompletion * extension_ms)
 
         floor_ms = min(min_delay_ms, base_ms)
         if eou_threshold >= 1.0:
