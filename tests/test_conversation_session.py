@@ -165,6 +165,8 @@ def _build_session(
     audio_preprocessor=None,
     pace_response_done_to_audio: bool = False,
     interrupt_classifier=None,
+    speech_context: bool = False,
+    speech_context_service=None,
 ) -> tuple[ConversationSession, EventCollector, ScriptedTTSAdapter]:
     tts = adapter or ScriptedTTSAdapter()
     scheduler = MockScheduler(tts)
@@ -179,8 +181,14 @@ def _build_session(
         interrupt_classifier=interrupt_classifier or _AcceptAllClassifier(),
         audio_preprocessor=audio_preprocessor,
         pace_response_done_to_audio=pace_response_done_to_audio,
+        speech_context=speech_context,
     )
-    session = ConversationSession(scheduler=scheduler, config=config, on_event=collector)
+    session = ConversationSession(
+        scheduler=scheduler,
+        config=config,
+        on_event=collector,
+        speech_context_service=speech_context_service,
+    )
     return session, collector, tts
 
 
@@ -266,6 +274,124 @@ async def test_pending_continuation_context_is_reanalyzed_as_one_timeline(caplog
             },
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_speech_context_timeline_starts_with_context_only_vad_audio():
+    class RecordingContextService:
+        def __init__(self) -> None:
+            self.chunks = ()
+            self.timeline_offset_ms = None
+
+        async def analyze_chunks(self, chunks, *, timeline_offset_ms=0):
+            self.chunks = tuple(chunks)
+            self.timeline_offset_ms = timeline_offset_ms
+            return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+
+    context_service = RecordingContextService()
+    session = ConversationSession(
+        scheduler=MockScheduler(ScriptedTTSAdapter()),
+        config=ConversationConfig(
+            stt_model="fake-stt:latest",
+            tts_model="fake-tts:latest",
+            voice="default",
+            language="en",
+            speech_context=True,
+            policy=TurnPolicy(aec_warmup_ms=0),
+            interrupt_classifier=_AcceptAllClassifier(),
+        ),
+        on_event=EventCollector(),
+        speech_context_service=context_service,
+    )
+    session._transcript_finalizer.remember_turn_audio(
+        utterance_id=1,
+        audio=np.full(4_800, 0.3, dtype=np.float32),
+        start_ms=100,
+    )
+    session._transcript_finalizer.remember_turn_audio(
+        utterance_id=2,
+        audio=np.full(3_200, 0.2, dtype=np.float32),
+        start_ms=600,
+    )
+    session._transcript_finalizer.remember(
+        StreamTranscript(
+            text="actual words",
+            start_ms=600,
+            end_ms=800,
+            audio=np.full(3_200, 0.2, dtype=np.float32),
+            utterance_id=2,
+        )
+    )
+
+    await session._emit_pending_transcript_done()
+
+    assert [chunk.offset_ms for chunk in context_service.chunks] == [100, 600]
+    assert context_service.timeline_offset_ms == 100
+
+
+@pytest.mark.asyncio
+async def test_single_segment_speech_context_is_analyzed_at_turn_finalization():
+    class RecordingContextService:
+        def __init__(self) -> None:
+            self.chunks = ()
+
+        async def analyze_chunks(self, chunks, *, timeline_offset_ms=0):
+            self.chunks = tuple(chunks)
+            return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+
+    context_service = RecordingContextService()
+    session, _, _ = _build_session(
+        speech_context=True,
+        speech_context_service=context_service,
+    )
+    session._transcript_finalizer.remember_turn_audio(
+        utterance_id=1,
+        audio=np.full(3_200, 0.2, dtype=np.float32),
+        start_ms=100,
+    )
+    session._transcript_finalizer.remember(
+        StreamTranscript(
+            text="actual words",
+            start_ms=100,
+            end_ms=300,
+            utterance_id=1,
+        )
+    )
+
+    await session._emit_pending_transcript_done()
+
+    assert [(chunk.offset_ms, chunk.duration_ms) for chunk in context_service.chunks] == [(100, 200)]
+
+
+@pytest.mark.asyncio
+async def test_single_segment_reuses_context_computed_concurrently_with_stt():
+    class UnexpectedContextService:
+        async def analyze_chunks(self, chunks, *, timeline_offset_ms=0):
+            raise AssertionError("single-segment context must not be analyzed twice")
+
+    session, collector, _ = _build_session(
+        speech_context=True,
+        speech_context_service=UnexpectedContextService(),
+    )
+    context = SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+    session._transcript_finalizer.remember_turn_audio(
+        utterance_id=1,
+        audio=np.full(3_200, 0.2, dtype=np.float32),
+        start_ms=100,
+    )
+    session._transcript_finalizer.remember(
+        StreamTranscript(
+            text="actual words",
+            start_ms=100,
+            end_ms=300,
+            utterance_id=1,
+            speech_context=context,
+        )
+    )
+
+    await session._emit_pending_transcript_done()
+
+    assert collector.by_type(WIRE_TRANSCRIPT_DONE)[0]["speech_context"]["status"] == "failed"
 
 
 class TestInterruptionEventContracts:
@@ -516,6 +642,32 @@ class TestResponseAdmission:
         assert result.rejection.code == ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH
         assert not collector.by_type(WIRE_RESPONSE_CREATED)
 
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_rejected_candidate_discards_audio_that_arrives_at_speech_stop(self):
+        session, _, _ = _build_session(
+            interrupt_classifier=_RejectAllClassifier(),
+            speech_context=True,
+        )
+        await session.start()
+        await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
+        await _drain_events(session)
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=2_000, utterance_id=7))
+        await session._evaluate_interrupt_candidate()
+        await session._forward_stream_event(
+            SpeechStopped(
+                timestamp_ms=2_300,
+                expects_transcript=True,
+                utterance_id=7,
+                start_ms=2_000,
+                end_ms=2_300,
+                audio=np.full(4_800, 0.2, dtype=np.float32),
+            )
+        )
+
+        assert session._transcript_finalizer.pending_turn_audio == {}
         await session.close()
 
     @pytest.mark.asyncio

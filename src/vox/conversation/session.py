@@ -775,6 +775,12 @@ class ConversationSession:
             )
         elif isinstance(stream_event, SpeechStopped):
             self._input_speech_active = False
+            if self._config.speech_context:
+                self._transcript_finalizer.remember_turn_audio(
+                    utterance_id=stream_event.utterance_id,
+                    audio=stream_event.audio,
+                    start_ms=stream_event.start_ms,
+                )
             if self._speech_session is not None:
                 self._speech_session.stop_speech()
             if stream_event.expects_transcript:
@@ -787,6 +793,13 @@ class ConversationSession:
                 expects_transcript=stream_event.expects_transcript,
             )
             await self._apply_interrupt_decision(interrupt_decision, resume_on_reject=False)
+            candidate = self._interrupt_detector.current()
+            if (
+                candidate is not None
+                and candidate.utterance_id == stream_event.utterance_id
+                and candidate.status is InterruptionCandidateStatus.REJECTED
+            ):
+                self._transcript_finalizer.discard_turn_audio(stream_event.utterance_id)
             await self._emit(
                 {
                     "type": WIRE_SPEECH_STOPPED,
@@ -839,6 +852,7 @@ class ConversationSession:
                     self._active_assistant_text(),
                 )
             ):
+                self._transcript_finalizer.discard_turn_audio(stream_event.utterance_id)
                 await self._emit_interruption_false_positive(
                     vad_active_ms=max(0, stream_event.end_ms - stream_event.start_ms),
                     partial_transcript=stream_event.text,
@@ -1300,11 +1314,12 @@ class ConversationSession:
         if payload is None:
             return
         if self._config.speech_context:
-            if len(audio) > 1 and self._speech_context_service is not None:
+            needs_analysis = len(audio) > 1 or "speech_context" not in payload
+            if needs_analysis and audio and self._speech_context_service is not None:
                 try:
                     context = await self._speech_context_service.analyze_chunks(
                         audio,
-                        timeline_offset_ms=int(payload.get("start_ms") or 0),
+                        timeline_offset_ms=min(chunk.offset_ms for chunk in audio),
                     )
                 except asyncio.CancelledError:
                     raise
@@ -1470,6 +1485,9 @@ class ConversationSession:
             )
             return
 
+        candidate = self._interrupt_detector.current()
+        if candidate is not None and candidate.candidate_id == decision.candidate_id:
+            self._transcript_finalizer.discard_turn_audio(candidate.utterance_id)
         await self._emit_interruption_false_positive(
             vad_active_ms=decision.vad_active_ms,
             partial_transcript=decision.transcript,
@@ -1505,6 +1523,7 @@ class ConversationSession:
             )
         except Exception:
             logger.exception("interruption detector raised; rejecting candidate")
+            self._transcript_finalizer.discard_turn_audio(candidate.utterance_id)
             await self._emit_interruption_false_positive(
                 vad_active_ms=vad_active_ms,
                 partial_transcript=candidate.cumulative_transcript or None,

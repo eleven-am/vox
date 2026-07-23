@@ -40,6 +40,9 @@ class SpeechStopped:
     timestamp_ms: int = 0
     expects_transcript: bool = True
     utterance_id: int = 0
+    start_ms: int = 0
+    end_ms: int = 0
+    audio: NDArray[np.float32] | None = None
 
 
 @dataclass

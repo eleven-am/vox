@@ -91,6 +91,19 @@ class WholeUtteranceSTTAdapter(STTAdapter):
         )
 
 
+class EmptySTTAdapter(WholeUtteranceSTTAdapter):
+    def transcribe(self, audio, **kwargs) -> TranscribeResult:
+        self.calls.append(audio.copy())
+        self.kwargs.append(dict(kwargs))
+        payload = _without_leading_context(audio)
+        duration_ms = int(payload.size / TARGET_SAMPLE_RATE * 1000)
+        return TranscribeResult(
+            text="",
+            language=kwargs.get("language") or "en",
+            duration_ms=duration_ms,
+        )
+
+
 class FakeScheduler:
     def __init__(self, adapter: STTAdapter) -> None:
         self._adapter = adapter
@@ -295,6 +308,32 @@ class _EouGatedContextService:
         assert timeline_offset_ms == 100
         await self.eou_started.wait()
         return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+
+
+@pytest.mark.asyncio
+async def test_realtime_pipeline_preserves_vad_audio_when_stt_is_empty():
+    audio = np.full(3_200, 0.2, dtype=np.float32)
+    segment = SpeechSegment(audio=audio, start_ms=100, end_ms=300, utterance_id=4)
+    pipeline = StreamPipeline(scheduler=FakeScheduler(EmptySTTAdapter()))
+    pipeline.configure(
+        StreamSessionConfig(
+            model="m:1",
+            language="en",
+            speech_context=True,
+        )
+    )
+    pipeline._vad = _StoppedVad(segment)
+
+    events = await anext(_collect_pipeline_events(pipeline, audio))
+
+    assert len(events) == 1
+    stopped = events[0]
+    assert isinstance(stopped, SpeechStopped)
+    assert stopped.start_ms == 100
+    assert stopped.end_ms == 300
+    assert stopped.utterance_id == 4
+    assert np.array_equal(stopped.audio, audio)
+    pipeline.shutdown()
 
 
 @pytest.mark.asyncio

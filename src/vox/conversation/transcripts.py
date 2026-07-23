@@ -6,6 +6,9 @@ from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from typing import Any
 
+import numpy as np
+from numpy.typing import NDArray
+
 from vox.audio.pipeline import AudioChunk
 from vox.conversation.types import TimerKey, TurnEvent, TurnEventType, TurnPolicy
 from vox.speech_context.types import speech_context_payload
@@ -109,6 +112,7 @@ class PendingTranscriptFinalizer:
     logger: logging.Logger = field(default_factory=lambda: logging.getLogger("vox.conversation.session"))
     pending: dict[str, Any] | None = None
     pending_audio: list[AudioChunk] = field(default_factory=list)
+    pending_turn_audio: dict[int, AudioChunk] = field(default_factory=dict)
 
     def remember_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self.pending is None:
@@ -144,9 +148,29 @@ class PendingTranscriptFinalizer:
             return default
         return str(self.pending.get("transcript", default))
 
+    def remember_turn_audio(
+        self,
+        *,
+        utterance_id: int,
+        audio: NDArray[np.float32] | None,
+        start_ms: int,
+    ) -> None:
+        if utterance_id <= 0 or audio is None or audio.size == 0:
+            return
+        self.pending_turn_audio[utterance_id] = AudioChunk(
+            data=audio,
+            sample_rate=TARGET_SAMPLE_RATE,
+            duration_ms=samples_to_ms(audio.size),
+            offset_ms=start_ms,
+        )
+
+    def discard_turn_audio(self, utterance_id: int) -> None:
+        self.pending_turn_audio.pop(utterance_id, None)
+
     def clear(self) -> None:
         self.pending = None
         self.pending_audio.clear()
+        self.pending_turn_audio.clear()
 
     def pop(self) -> dict[str, Any] | None:
         payload, _ = self.pop_with_audio()
@@ -154,9 +178,14 @@ class PendingTranscriptFinalizer:
 
     def pop_with_audio(self) -> tuple[dict[str, Any] | None, tuple[AudioChunk, ...]]:
         payload = self.pending
-        audio = tuple(self.pending_audio)
+        audio = (
+            tuple(sorted(self.pending_turn_audio.values(), key=lambda chunk: chunk.offset_ms))
+            if self.pending_turn_audio
+            else tuple(self.pending_audio)
+        )
         self.pending = None
         self.pending_audio.clear()
+        self.pending_turn_audio.clear()
         return payload, audio
 
     @staticmethod

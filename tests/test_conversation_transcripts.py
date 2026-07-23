@@ -202,6 +202,57 @@ def test_pending_transcript_finalizer_replaces_revision_audio_and_context():
     assert chunks[0].duration_ms == 200
 
 
+def test_pending_transcript_finalizer_prefers_complete_turn_audio_over_transcript_audio():
+    finalizer = PendingTranscriptFinalizer(language="en")
+    vocal_event = np.full(4_800, 0.3, dtype=np.float32)
+    spoken_audio = np.full(3_200, 0.2, dtype=np.float32)
+
+    finalizer.remember_turn_audio(
+        utterance_id=1,
+        audio=vocal_event,
+        start_ms=100,
+    )
+    finalizer.remember_turn_audio(
+        utterance_id=2,
+        audio=spoken_audio,
+        start_ms=600,
+    )
+    finalizer.remember(
+        StreamTranscript(
+            text="actual words",
+            start_ms=600,
+            end_ms=800,
+            audio=spoken_audio,
+            utterance_id=2,
+        )
+    )
+
+    payload, chunks = finalizer.pop_with_audio()
+
+    assert payload is not None
+    assert payload["transcript"] == "actual words"
+    assert [(chunk.offset_ms, chunk.duration_ms) for chunk in chunks] == [
+        (100, 300),
+        (600, 200),
+    ]
+
+
+def test_pending_transcript_finalizer_discards_false_positive_turn_audio():
+    finalizer = PendingTranscriptFinalizer(language="en")
+    finalizer.remember_turn_audio(
+        utterance_id=7,
+        audio=np.full(3_200, 0.2, dtype=np.float32),
+        start_ms=100,
+    )
+
+    finalizer.discard_turn_audio(7)
+    finalizer.remember(StreamTranscript(text="later", start_ms=900, audio=np.full(1_600, 0.1)))
+
+    _, chunks = finalizer.pop_with_audio()
+
+    assert [(chunk.offset_ms, chunk.duration_ms) for chunk in chunks] == [(900, 100)]
+
+
 def test_endpoint_commit_delay_uses_recent_pause_history_when_dynamic():
     policy = EndpointCommitDelayPolicy.from_turn_policy(
         TurnPolicy(

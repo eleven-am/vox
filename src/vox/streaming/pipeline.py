@@ -237,6 +237,13 @@ class StreamPipeline:
                 timestamp_ms=event.timestamp_ms,
                 expects_transcript=has_segment,
                 utterance_id=event.utterance_id,
+                start_ms=segment.start_ms if has_segment else event.timestamp_ms,
+                end_ms=segment.end_ms if has_segment else event.timestamp_ms,
+                audio=(
+                    segment.audio
+                    if has_segment and self._session_config is not None and self._session_config.speech_context
+                    else None
+                ),
             )
 
             if has_segment:
