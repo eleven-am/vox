@@ -157,7 +157,7 @@ tests in `tests/test_adapter_runtime.py` for behavior in
 | `vox-neutts` | `target-runtime` | `neutts` | NeuTTS backend installs into target runtime. |
 | `vox-openvoice` | `target-runtime` | `openvoice` | Upstream OpenVoice repo installs into target runtime. |
 | `vox-orpheus` | `target-runtime` | `orpheus` | Orpheus/vLLM backend installs into target runtime. |
-| `vox-parakeet` | `mixed` | `parakeet-nemo` | ONNX backend uses package deps; NeMo uses target runtime. |
+| `vox-parakeet` | `mixed` | `parakeet-nemo` | ONNX backend uses package deps; NeMo installs the adapter package with `--no-deps` and uses its target runtime. |
 | `vox-piper` | `target-runtime` | `piper` | Piper backend installs into target runtime. |
 | `vox-qwen` | `target-runtime` | `qwen-asr`, `qwen-tts` | ASR/TTS use separate target runtimes. |
 | `vox-sesame` | `target-runtime` | `sesame` | Transformers CSM runtime installs into target runtime. |

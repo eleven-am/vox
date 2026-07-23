@@ -241,6 +241,15 @@ class TestEnsure:
         resolver.ensure("parakeet", "vox-parakeet")
         assert runner.calls != []
 
+    def test_ensure_applies_parakeet_nemo_entry_install_policy(self, tmp_path: Path):
+        runner = _FakeRunner()
+        resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
+
+        with patch.object(AdapterResolver, "_scan_install_specs", return_value={}):
+            assert resolver.ensure("parakeet-stt-nemo", "vox-parakeet") is False
+
+        assert runner.calls[0][-2:] == ["--no-deps", "vox-parakeet"]
+
 
 class TestDiscover:
     def test_lists_global_and_isolated_adapters(self, tmp_path: Path):
@@ -367,6 +376,13 @@ class TestInstallCommand:
                 "vox-parakeet",
             ]
         ]
+
+    def test_skips_dependencies_for_parakeet_nemo_adapter(self, tmp_path: Path):
+        runner = _FakeRunner()
+        resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
+
+        assert resolver._install_package("vox-parakeet", adapter_name="parakeet-stt-nemo") is True
+        assert runner.calls[0][-2:] == ["--no-deps", "vox-parakeet"]
 
     def test_skip_dependencies_via_env_for_published_packages(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

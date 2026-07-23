@@ -33,6 +33,9 @@ DEFAULT_NO_DEPS_ADAPTER_PACKAGES = {
     "vox-voxtral",
     "vox-whisper",
 }
+DEFAULT_NO_DEPS_ADAPTER_NAMES = {
+    "parakeet-stt-nemo",
+}
 KNOWN_ADAPTER_PACKAGES = frozenset({
     "vox-chatterbox",
     "vox-cosyvoice",
@@ -195,7 +198,7 @@ class AdapterResolver:
             return False
 
         logger.info("Adapter '%s' installing %s from package registry...", adapter_name, package_name)
-        if not self._install_package(package_name):
+        if not self._install_package(package_name, adapter_name=adapter_name):
             return False
 
         self._sanitize_sys_path()
@@ -319,12 +322,15 @@ class AdapterResolver:
             logger.warning("Failed to inspect adapter version at '%s': %s", package_dir, exc)
         return None
 
-    def _install_package(self, package_name: str) -> bool:
+    def _install_package(self, package_name: str, *, adapter_name: str | None = None) -> bool:
         target_dir = self._adapter_install_dir(package_name)
         target_dir.mkdir(parents=True, exist_ok=True)
 
         install_timeout = int(os.environ.get(ADAPTER_INSTALL_TIMEOUT_ENV, "900"))
-        install_no_deps = package_name in DEFAULT_NO_DEPS_ADAPTER_PACKAGES
+        install_no_deps = (
+            package_name in DEFAULT_NO_DEPS_ADAPTER_PACKAGES
+            or adapter_name in DEFAULT_NO_DEPS_ADAPTER_NAMES
+        )
         install_no_deps = install_no_deps or os.environ.get(ADAPTERS_NO_DEPS_ENV, "").lower() in {
             "1",
             "true",
