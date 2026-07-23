@@ -573,15 +573,13 @@ def test_dead_worker_reads_as_unloaded_and_transcribe_raises(ready_runtime: Path
     assert host.requests == []
 
 
-def test_trim_forwards_trim_op_with_short_timeout(ready_runtime: Path, fake_host_cls):
+def test_trim_does_not_touch_live_nemo_worker(ready_runtime: Path, fake_host_cls):
     adapter, host = _loaded_adapter(fake_host_cls)
-    host.responses.append({"trimmed": True})
 
     adapter.trim()
 
-    assert host.requests[0]["payload"] == {"op": "trim"}
-    assert host.requests[0]["timeout"] == module.DEFAULT_TRIM_TIMEOUT_SECONDS
-    assert module.DEFAULT_TRIM_TIMEOUT_SECONDS < module.DEFAULT_REQUEST_TIMEOUT_SECONDS
+    assert adapter.is_loaded is True
+    assert host.requests == []
 
 
 def test_trim_is_noop_when_not_loaded(fake_host_cls):

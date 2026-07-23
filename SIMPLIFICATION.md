@@ -89,9 +89,9 @@ R2a and R2b share `conversation/session.py` and are strictly sequential.
   `_memory_budget_allows_locked`, and the `/v1/system/enforce-memory-budget`
   endpoint; `/v1/system/memory` keeps real telemetry, drops the policy block.
   Executed as batch R1b. FOLLOW-UP DONE (batch trim-real, 2026-07-20):
-  `adapter.trim()` implemented for the five adapters an inventory audit
-  proved genuinely releasable — ParakeetNemo and Voxtral-worker forward a
-  new worker-protocol `{"op": "trim"}` into the child (gc + guarded
+  `adapter.trim()` implemented for the adapters an inventory audit
+  proved genuinely releasable — Voxtral-worker forwards a worker-protocol
+  `{"op": "trim"}` into the child (gc + guarded
   `torch.cuda.empty_cache`/`synchronize` where the memory actually lives;
   parent-side `_clear_gpu_cache` provably cannot reach it), Voxtral
   in-process backend does the same in-process, OpenVoice clears its lazy
@@ -126,7 +126,13 @@ R2a and R2b share `conversation/session.py` and are strictly sequential.
   reservation stays REJECTED: an in-process trim racing a request is
   synchronize-latency (not corruption), worker trims already serialize on
   the request lock, and a reservation would block new requests behind a 30s
-  trim.
+  trim. PRODUCTION CORRECTION 2026-07-23: Parakeet NeMo is a deliberate
+  no-op trim. Its worker-level allocator trim was followed by an XID 31 GPU
+  memory page fault on the next transcription, aborting the worker with exit
+  code -6. The adapter therefore keeps its model-owned CUDA allocator state
+  intact while loaded; full worker unload is its only safe VRAM-release
+  boundary. Regression tests require `adapter.trim()` to leave the live
+  worker untouched and reject the removed worker `trim` operation.
 
 Gate: full suite + lint, nothing else changes.
 
@@ -388,8 +394,8 @@ post-release (test_rtc_runtime.py).
 
 Post-release follow-ups complete and externally re-reviewed to zero findings:
 budget vertical deleted (two-tier trim/unload stands); adapter.trim()
-implemented for the five genuinely-releasable adapters via the worker trim op
-and lazy-cache rebinds, scheduler trims off-loop, once per idle period;
+implemented only for adapters with proven releasable caches via the worker
+trim op and lazy-cache rebinds, scheduler trims off-loop, once per idle period;
 dead-worker orphaning; PDEATHSIG at worker entry with the expected-parent-PID
 contract (container PID-1 correct); RTC negotiation-generation contract
 (browser owns, vox echoes at enqueue time, gateways forward verbatim);

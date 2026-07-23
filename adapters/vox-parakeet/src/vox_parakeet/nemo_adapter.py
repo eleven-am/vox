@@ -39,7 +39,6 @@ DEFAULT_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 DEFAULT_VRAM_BYTES = 2_500_000_000
 DEFAULT_STARTUP_TIMEOUT_SECONDS = 1800.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 600.0
-DEFAULT_TRIM_TIMEOUT_SECONDS = 30.0
 STARTUP_TIMEOUT_ENV = "VOX_PARAKEET_STARTUP_TIMEOUT_S"
 REQUEST_TIMEOUT_ENV = "VOX_PARAKEET_REQUEST_TIMEOUT_S"
 WORKER_DEVICE_ENV = "VOX_PARAKEET_DEVICE"
@@ -295,12 +294,6 @@ class ParakeetNemoAdapter(STTAdapter):
     def is_loaded(self) -> bool:
         host = self._host
         return host is not None and host.alive
-
-    def trim(self) -> None:
-        host = self._host
-        if host is None or not host.alive:
-            return None
-        host.request({"op": "trim"}, timeout=DEFAULT_TRIM_TIMEOUT_SECONDS)
 
     def transcribe(
         self,
