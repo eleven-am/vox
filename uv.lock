@@ -2564,7 +2564,7 @@ wheels = [
 
 [[package]]
 name = "vox-runtime"
-version = "0.2.120"
+version = "0.2.121"
 source = { editable = "." }
 dependencies = [
     { name = "aioice" },
