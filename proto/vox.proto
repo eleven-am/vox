@@ -504,9 +504,18 @@ message ConversationAudioAppend {
   uint32 sample_rate = 2;
 }
 
+message ConversationResponseOutput {
+  optional string model = 1;
+  optional string voice = 2;
+  optional string language = 3;
+  optional float speed = 4;
+  google.protobuf.Struct params = 5;
+}
+
 message ConversationResponseStart {
   optional bool allow_interruptions = 1;
   string generation_id = 2;
+  ConversationResponseOutput output = 3;
 }
 
 message ConversationResponseDelta {
@@ -562,6 +571,7 @@ message ConversationTranscriptDone {
 message ConversationResponseCreated {
   string response_id = 1;
   string generation_id = 2;
+  ConversationResponseOutput output = 3;
 }
 
 message ConversationAudioDelta {

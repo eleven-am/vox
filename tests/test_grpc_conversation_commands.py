@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from vox.conversation.response_output import ResponseOutputOptions
 from vox.grpc import vox_pb2
 from vox.grpc.conversation_commands import (
     conversation_session_update_to_command,
@@ -131,6 +132,39 @@ def test_converse_response_start_preserves_allow_interruptions():
     )
 
     assert command == ResponseStartCommand(allow_interruptions=False)
+
+
+def test_grpc_response_start_preserves_typed_output_override_for_both_transports():
+    start = vox_pb2.ConversationResponseStart(
+        generation_id="gen-1",
+        output=vox_pb2.ConversationResponseOutput(
+            model="qwen3-tts:0.6b-clone",
+            language="fr",
+            speed=0.9,
+            params={"temperature": 0.7},
+        ),
+    )
+
+    converse = converse_client_message_to_command(
+        vox_pb2.ConverseClientMessage(response_start=start)
+    )
+    rtc = rtc_control_message_to_command(
+        vox_pb2.RtcControlClientMessage(response_start=start)
+    )
+
+    expected = ResponseStartCommand(
+        generation_id="gen-1",
+        output=ResponseOutputOptions(
+            model="qwen3-tts:0.6b-clone",
+            language="fr",
+            speed=converse.output.speed if converse.output is not None else None,
+            params={"temperature": 0.7},
+        ),
+    )
+    assert converse == expected
+    assert rtc == expected
+    assert converse.output is not None
+    assert converse.output.speed == pytest.approx(0.9)
 
 
 def test_response_delta_preserves_allow_interruptions_for_both_grpc_transports():

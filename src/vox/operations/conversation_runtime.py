@@ -91,6 +91,7 @@ class ConversationRuntime:
             await self.orchestrator.start_response(
                 allow_interruptions=command.allow_interruptions,
                 generation_id=command.generation_id,
+                output=command.output,
             )
             return
         if isinstance(command, ResponseDeltaCommand):

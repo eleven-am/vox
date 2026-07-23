@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 import logging
 import time
 from collections.abc import AsyncIterator
@@ -15,6 +14,10 @@ from vox.audio.pipeline import get_content_type, prepare_for_output
 from vox.core.adapter import TTSAdapter
 from vox.core.async_iterators import iterate_off_event_loop
 from vox.core.errors import ModelLoadError, VoxError
+from vox.core.synthesis_validation import (
+    call_accepts_keyword,
+    validate_adapter_synthesis_params,
+)
 from vox.core.types import SynthesizeChunk
 from vox.operations.defaults import resolve_requested_or_default_model
 from vox.operations.errors import (
@@ -101,63 +104,11 @@ class _TtsSynthesisContext:
     text_chunks: tuple[str, ...]
 
 
-def _call_accepts_keyword(call: Any, name: str) -> bool:
-    try:
-        signature = inspect.signature(call)
-    except (TypeError, ValueError):
-        return False
-    return name in signature.parameters or any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        for parameter in signature.parameters.values()
-    )
-
-
 def validate_synthesis_params(adapter: TTSAdapter, params: dict[str, Any]) -> None:
-    if not params:
-        return
-
-    supported = {param.name: param for param in adapter.synthesis_parameters()}
-    unknown = sorted(set(params) - set(supported))
-    if unknown:
-        names = ", ".join(unknown)
-        supported_names = ", ".join(sorted(supported)) or "none"
-        raise InvalidConfigError(
-            f"Unsupported synthesis parameter(s) for {adapter.info().name}: {names}. "
-            f"Supported parameters: {supported_names}"
-        )
-
-    for name, value in params.items():
-        spec = supported[name]
-        expected_type = spec.type.lower()
-        if expected_type == "number":
-            valid = isinstance(value, int | float) and not isinstance(value, bool)
-        elif expected_type == "integer":
-            valid = isinstance(value, int) and not isinstance(value, bool)
-        elif expected_type == "boolean":
-            valid = isinstance(value, bool)
-        elif expected_type == "string":
-            valid = isinstance(value, str)
-        else:
-            raise InvalidConfigError(
-                f"Adapter {adapter.info().name} declares unsupported parameter type "
-                f"{spec.type!r} for {name}"
-            )
-
-        if not valid:
-            raise InvalidConfigError(
-                f"Synthesis parameter {name!r} for {adapter.info().name} must be {expected_type}"
-            )
-
-        if expected_type in ("number", "integer"):
-            numeric = float(value)
-            if spec.min_value is not None and numeric < spec.min_value:
-                raise InvalidConfigError(
-                    f"Synthesis parameter {name!r} for {adapter.info().name} must be >= {spec.min_value}"
-                )
-            if spec.max_value is not None and numeric > spec.max_value:
-                raise InvalidConfigError(
-                    f"Synthesis parameter {name!r} for {adapter.info().name} must be <= {spec.max_value}"
-                )
+    try:
+        validate_adapter_synthesis_params(adapter, params)
+    except ValueError as exc:
+        raise InvalidConfigError(str(exc)) from exc
 
 
 def _split_for_adapter(text: str, adapter: TTSAdapter) -> list[str]:
@@ -181,7 +132,7 @@ def _validate_tts_synthesis_context(context: _TtsSynthesisContext, request: Synt
         "reference_audio": context.reference_audio,
         "reference_text": context.reference_text,
     }
-    if _call_accepts_keyword(context.adapter.validate_synthesis_request, "params"):
+    if call_accepts_keyword(context.adapter.validate_synthesis_request, "params"):
         kwargs["params"] = request.params
     context.adapter.validate_synthesis_request(**kwargs)
 
@@ -229,7 +180,7 @@ async def _iter_tts_synthesis_chunks(
             "reference_audio": context.reference_audio,
             "reference_text": context.reference_text,
         }
-        if _call_accepts_keyword(context.adapter.synthesize, "params"):
+        if call_accepts_keyword(context.adapter.synthesize, "params"):
             kwargs["params"] = request.params
         chunks = context.adapter.synthesize(text_chunk, **kwargs)
         async for chunk in iterate_off_event_loop(chunks):

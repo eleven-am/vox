@@ -10,6 +10,7 @@ from typing import Any
 import numpy as np
 
 from vox.core.adapter import TTSAdapter
+from vox.core.synthesis_validation import call_accepts_keyword
 from vox.operations.defaults import resolve_requested_or_default_model
 from vox.operations.errors import (
     EmptyInputError,
@@ -26,7 +27,7 @@ from vox.operations.model_acquisition import (
     release_entered_adapter_suppressing,
 )
 from vox.operations.streaming_reporting import StreamingOperationErrorReporter
-from vox.operations.synthesis import _call_accepts_keyword, validate_synthesis_params
+from vox.operations.synthesis import validate_synthesis_params
 from vox.operations.tts_chunking import effective_tts_text_cap, split_text_for_tts_adapter
 from vox.operations.voice_resolution import resolve_tts_voice_request
 from vox.streaming.codecs import float32_to_pcm16
@@ -247,7 +248,7 @@ class LongformSynthesisSession(StreamingOperationErrorReporter):
             "reference_audio": reference_audio,
             "reference_text": reference_text,
         }
-        if _call_accepts_keyword(adapter.validate_synthesis_request, "params"):
+        if call_accepts_keyword(adapter.validate_synthesis_request, "params"):
             validate_kwargs["params"] = config.params or {}
         adapter.validate_synthesis_request(**validate_kwargs)
 
@@ -329,7 +330,7 @@ class LongformSynthesisSession(StreamingOperationErrorReporter):
                 "reference_audio": resolved_voice.reference_audio,
                 "reference_text": resolved_voice.reference_text,
             }
-            if _call_accepts_keyword(adapter.synthesize, "params"):
+            if call_accepts_keyword(adapter.synthesize, "params"):
                 synth_kwargs["params"] = config.params or {}
             async for chunk in adapter.synthesize(text_chunk, **synth_kwargs):
                 audio = np.frombuffer(chunk.audio, dtype=np.float32)

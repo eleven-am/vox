@@ -4,6 +4,7 @@ import base64
 
 import pytest
 
+from vox.conversation.response_output import ResponseOutputConfig
 from vox.grpc import vox_pb2
 from vox.grpc.conversation_commands import (
     converse_client_message_to_command,
@@ -283,7 +284,17 @@ def test_pondsocket_and_grpc_rtc_signaling_decode_identically(
             code="session_failed",
             recoverable=False,
         ),
-        ConvResponseCreatedEvent(response_id="resp_1", generation_id="gen-1"),
+        ConvResponseCreatedEvent(
+            response_id="resp_1",
+            generation_id="gen-1",
+            output=ResponseOutputConfig(
+                model="chatterbox-tts-turbo:0.1.7",
+                voice="samantha",
+                language="fr",
+                speed=0.9,
+                params={"temperature": 0.7},
+            ),
+        ),
         ConvResponseCommittedEvent(response_id="resp_1", generation_id="gen-1"),
         ConvResponseDoneEvent(response_id="resp_1", generation_id="gen-1"),
         ConvResponseCancelledEvent(response_id="resp_1", generation_id="gen-1"),

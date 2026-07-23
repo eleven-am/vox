@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator
+from typing import Any
 
 from vox.core.scheduler import Scheduler
 from vox.grpc import vox_pb2, vox_pb2_grpc
@@ -36,10 +37,12 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
         self,
         *,
         scheduler: Scheduler,
+        store: Any | None = None,
         rtc_registry: RtcSessionRegistry,
         speech_context_service: SpeechContextService | None = None,
     ) -> None:
         self._scheduler = scheduler
+        self._store = store
         self._rtc_registry = rtc_registry
         self._speech_context_service = speech_context_service
 
@@ -85,6 +88,7 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                         try:
                             runtime = RtcRuntime(
                                 scheduler=self._scheduler,
+                                store=self._store,
                                 registry=self._rtc_registry,
                                 session_id=client_msg.attach.session_id,
                                 transport="grpc",

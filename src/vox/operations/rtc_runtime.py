@@ -74,6 +74,7 @@ class RtcRuntime:
         self,
         *,
         scheduler: Scheduler,
+        store: Any | None = None,
         registry: RtcSessionRegistry,
         session_id: str,
         transport: RtcControlTransport,
@@ -110,6 +111,7 @@ class RtcRuntime:
 
         orchestrator = create_rtc_orchestrator(
             scheduler=scheduler,
+            store=store,
             record=record,
             speech_context_service=speech_context_service,
         )

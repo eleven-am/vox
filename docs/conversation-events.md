@@ -442,6 +442,33 @@ Minimal PondSocket event sequence:
 
 Vox may begin TTS before `response.commit` when text reaches a good chunk boundary. Do not assume audio only starts after commit.
 
+### Response-Scoped Output
+
+`response.start` accepts an optional `output` object:
+
+```json
+{
+  "type": "response.start",
+  "generation_id": "gen-42",
+  "output": {
+    "model": "qwen3-tts:0.6b-clone",
+    "voice": "samantha",
+    "language": "fr",
+    "speed": 0.9,
+    "params": {"temperature": 0.7}
+  }
+}
+```
+
+Every field is optional. Omitted `model`, `voice`, and `language` fields inherit
+the session configuration; `speed` defaults to `1.0`; and `params` defaults to
+an empty object. Omitting `output` preserves the session-configured behavior.
+Vox resolves the object once when the response starts, uses that immutable
+selection for the entire response, and returns the effective object in
+`response.created`. The selected model must already be installed. Voice and
+adapter-specific parameter validation belongs to the selected TTS adapter.
+Changing response output does not renegotiate WebRTC.
+
 ### Generation Correlation
 
 `response.start`, `response.delta`, `response.commit`, and `response.cancel`
@@ -715,6 +742,8 @@ Payload includes:
 - `response_id`
 - optional `generation_id`, echoing the caller's `response.start`
   `generation_id`
+- `output`, containing the immutable effective `model`, optional `voice`,
+  `language`, `speed`, and `params` for this response
 
 Client behavior:
 

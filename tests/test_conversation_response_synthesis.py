@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from vox.conversation.response_output import ResponseOutputConfig
 from vox.conversation.response_stream import ResponseStream
 from vox.conversation.response_synthesis import synthesize_response_stream
 from vox.core.adapter import TTSAdapter
@@ -43,7 +44,10 @@ class RecordingTTSAdapter(TTSAdapter):
 
 
 async def _run_synthesis(adapter: RecordingTTSAdapter, *texts: str):
-    stream = ResponseStream.create(response_id="resp_1")
+    stream = ResponseStream.create(
+        response_id="resp_1",
+        output=ResponseOutputConfig(model="recording:1", voice="voice-a", language="fr"),
+    )
     audio_started = 0
     chunks: list[tuple[bytes, int]] = []
 

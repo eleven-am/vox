@@ -558,7 +558,9 @@ class TestBackchannelRejection:
     @pytest.mark.asyncio
     async def test_paused_output_buffers_audio_until_false_positive_resume(self):
         session, coll, _ = _build()
-        stream = session._response_lifecycle.start_stream()
+        stream = session._response_lifecycle.start_stream(
+            output=session._default_response_output,
+        )
         session._audio_output.pause()
 
         audio = np.full(480, 0.01, dtype=np.float32).tobytes()
@@ -577,7 +579,9 @@ class TestBackchannelRejection:
     @pytest.mark.asyncio
     async def test_resume_preserves_audio_order_when_new_chunks_arrive_mid_flush(self):
         session, coll, _ = _build()
-        stream = session._response_lifecycle.start_stream()
+        stream = session._response_lifecycle.start_stream(
+            output=session._default_response_output,
+        )
         session._audio_output.pause()
 
         chunk_a = np.full(480, 0.01, dtype=np.float32).tobytes()

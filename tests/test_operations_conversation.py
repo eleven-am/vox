@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import pytest
 
+from vox.audio.codecs import encode_wav
+from vox.conversation.response_output import ResponseOutputOptions
 from vox.conversation.session import (
     ERROR_CODE_RESPONSE_ALREADY_ACTIVE,
     ERROR_CODE_RESPONSE_REJECTED_TURN_STATE,
@@ -16,10 +19,13 @@ from vox.conversation.session import (
 )
 from vox.conversation.types import TurnEvent, TurnEventType
 from vox.core.adapter import TTSAdapter
+from vox.core.cloned_voices import create_stored_voice
+from vox.core.store import BlobStore
 from vox.core.types import (
     AdapterInfo,
     ModelFormat,
     ModelType,
+    SynthesisParameterInfo,
     SynthesizeChunk,
     VoiceInfo,
 )
@@ -69,9 +75,11 @@ from vox.operations.errors import (
 
 
 class ScriptedTTS(TTSAdapter):
-    def __init__(self, chunks: int = 2) -> None:
+    def __init__(self, chunks: int = 2, *, supports_voice_cloning: bool = False) -> None:
         self._chunks = chunks
+        self._supports_voice_cloning = supports_voice_cloning
         self.texts: list[str] = []
+        self.kwargs: list[dict[str, Any]] = []
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
@@ -80,6 +88,7 @@ class ScriptedTTS(TTSAdapter):
             architectures=("scripted",),
             default_sample_rate=24_000,
             supported_formats=(ModelFormat.ONNX,),
+            supports_voice_cloning=self._supports_voice_cloning,
         )
 
     def load(self, *a: Any, **k: Any) -> None: ...
@@ -94,6 +103,7 @@ class ScriptedTTS(TTSAdapter):
 
     async def synthesize(self, text, **kwargs):
         self.texts.append(text)
+        self.kwargs.append(kwargs)
         for _ in range(self._chunks):
             yield SynthesizeChunk(
                 audio=np.full(256, 0.02, dtype=np.float32).tobytes(),
@@ -107,10 +117,24 @@ class ScriptedTTS(TTSAdapter):
 class DummyScheduler:
     def __init__(self, adapter: Any) -> None:
         self._a = adapter
+        self.acquired: list[str] = []
 
     @asynccontextmanager
     async def acquire(self, _model: str):
+        self.acquired.append(_model)
         yield self._a
+
+
+class ParamScriptedTTS(ScriptedTTS):
+    def synthesis_parameters(self):
+        return (
+            SynthesisParameterInfo(
+                name="temperature",
+                type="number",
+                min_value=0.0,
+                max_value=2.0,
+            ),
+        )
 
 
 def test_parse_session_update_requires_stt_model():
@@ -843,6 +867,107 @@ async def test_response_lifecycle_events_echo_callers_generation_id():
     assert committed.generation_id == "gen-1"
     assert done.generation_id == "gen-1"
     assert created.response_id == committed.response_id == done.response_id
+    await orchestrator.close()
+
+
+@pytest.mark.asyncio
+async def test_response_output_override_is_snapshotted_used_and_echoed():
+    adapter = ParamScriptedTTS(chunks=1)
+    scheduler = DummyScheduler(adapter)
+    orchestrator = ConversationOrchestrator(scheduler=scheduler)
+    await orchestrator.start_session(
+        parse_session_update(
+            {
+                "session": {
+                    "stt_model": "x:1",
+                    "tts_model": "kokoro-tts:v1.0",
+                    "voice": "samantha",
+                    "language": "en",
+                }
+            }
+        )
+    )
+    options = ResponseOutputOptions(
+        model="qwen3-tts:0.6b-clone",
+        language="fr",
+        speed=0.9,
+        params={"temperature": 0.7},
+    )
+
+    await orchestrator.start_response(generation_id="gen-output", output=options)
+    await orchestrator.append_response_text("Bonjour.", generation_id="gen-output")
+    await orchestrator.commit_response(generation_id="gen-output")
+    await orchestrator.end_of_stream()
+
+    events = await _collect_orchestrator_events(orchestrator)
+    created = next(event for event in events if isinstance(event, ConvResponseCreatedEvent))
+    assert scheduler.acquired == ["qwen3-tts:0.6b-clone"]
+    assert adapter.kwargs == [
+        {
+            "voice": "samantha",
+            "speed": 0.9,
+            "language": "fr",
+            "reference_audio": None,
+            "reference_text": None,
+            "params": {"temperature": 0.7},
+        }
+    ]
+    assert created.output is not None
+    assert created.output.to_payload() == {
+        "model": "qwen3-tts:0.6b-clone",
+        "voice": "samantha",
+        "language": "fr",
+        "speed": 0.9,
+        "params": {"temperature": 0.7},
+    }
+    wire = serialize_conversation_event(created)
+    assert wire is not None
+    assert wire["output"] == created.output.to_payload()
+    await orchestrator.close()
+
+
+@pytest.mark.asyncio
+async def test_response_output_stored_voice_resolves_against_selected_adapter(tmp_path: Path):
+    store = BlobStore(root=tmp_path)
+    create_stored_voice(
+        store,
+        voice_id="samantha",
+        name="Samantha",
+        audio_bytes=encode_wav(np.full(16_000, 0.1, dtype=np.float32), 16_000),
+        content_type="audio/wav",
+        reference_text="hello there",
+    )
+    adapter = ScriptedTTS(chunks=1, supports_voice_cloning=True)
+    scheduler = DummyScheduler(adapter)
+    orchestrator = ConversationOrchestrator(scheduler=scheduler, store=store)
+    await orchestrator.start_session(
+        parse_session_update(
+            {
+                "session": {
+                    "stt_model": "x:1",
+                    "tts_model": "kokoro-tts:v1.0",
+                    "voice": "default",
+                }
+            }
+        )
+    )
+
+    await orchestrator.start_response(
+        generation_id="gen-clone",
+        output=ResponseOutputOptions(
+            model="chatterbox-tts-turbo:0.1.7",
+            voice="samantha",
+        ),
+    )
+    await orchestrator.append_response_text("Hello.", generation_id="gen-clone")
+    await orchestrator.commit_response(generation_id="gen-clone")
+    await orchestrator.end_of_stream()
+
+    assert scheduler.acquired == ["chatterbox-tts-turbo:0.1.7"]
+    assert len(adapter.kwargs) == 1
+    assert adapter.kwargs[0]["voice"] is None
+    assert adapter.kwargs[0]["reference_audio"] is not None
+    assert adapter.kwargs[0]["reference_text"] == "hello there"
     await orchestrator.close()
 
 

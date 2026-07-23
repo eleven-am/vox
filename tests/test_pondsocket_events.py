@@ -4,9 +4,18 @@ import logging
 
 import pytest
 
+from vox.conversation.response_output import ResponseOutputOptions
 from vox.operations.conversation import ConvDoneEvent, ConvResponseCreatedEvent
-from vox.operations.conversation_commands import ClientEventCommand, UnknownCommand
-from vox.operations.errors import ConversationCommandError, SessionNotConfiguredError
+from vox.operations.conversation_commands import (
+    ClientEventCommand,
+    ResponseStartCommand,
+    UnknownCommand,
+)
+from vox.operations.errors import (
+    ConversationCommandError,
+    InvalidConfigError,
+    SessionNotConfiguredError,
+)
 from vox.operations.rtc_runtime import RtcOfferCommand
 from vox.server.pondsocket_events import (
     broadcast_conversation_event_to_user,
@@ -32,6 +41,39 @@ def test_decode_rtc_offer_carries_generation():
 def test_decode_rtc_offer_without_generation_is_none():
     command = decode_pondsocket_command("rtc.offer", {"offer": {"type": "offer", "sdp": "offer-sdp"}})
     assert command.generation is None
+
+
+def test_decode_response_start_preserves_typed_output_override():
+    command = decode_pondsocket_command(
+        "response.start",
+        {
+            "generation_id": "gen-1",
+            "output": {
+                "model": "qwen3-tts:0.6b-clone",
+                "language": "fr",
+                "speed": 0.9,
+                "params": {"temperature": 0.7},
+            },
+        },
+    )
+
+    assert command == ResponseStartCommand(
+        generation_id="gen-1",
+        output=ResponseOutputOptions(
+            model="qwen3-tts:0.6b-clone",
+            language="fr",
+            speed=0.9,
+            params={"temperature": 0.7},
+        ),
+    )
+
+
+def test_decode_response_start_rejects_unknown_output_fields():
+    with pytest.raises(InvalidConfigError, match="unsupported field"):
+        decode_pondsocket_command(
+            "response.start",
+            {"output": {"model": "kokoro-tts:v1.0", "future_field": True}},
+        )
 
 
 class FakeChannel:

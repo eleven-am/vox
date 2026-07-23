@@ -62,6 +62,7 @@ async def start_grpc_server(
     vox_pb2_grpc.add_RtcServiceServicer_to_server(
         RtcServicer(
             scheduler=scheduler,
+            store=store,
             rtc_registry=rtc_registry,
             speech_context_service=speech_context_service,
         ),

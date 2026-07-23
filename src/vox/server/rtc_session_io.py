@@ -207,6 +207,7 @@ def prepare_rtc_control_event(
 def create_rtc_orchestrator(
     *,
     scheduler: Any,
+    store: Any | None = None,
     record: Any,
     speech_context_service: SpeechContextService | None = None,
 ) -> ConversationOrchestrator:
@@ -218,6 +219,7 @@ def create_rtc_orchestrator(
 
     orchestrator = ConversationOrchestrator(
         scheduler=scheduler,
+        store=store,
         pace_response_done_to_audio=True,
         audio_sink=send_rtc_audio,
         wait_for_output_playout=wait_for_rtc_playout,

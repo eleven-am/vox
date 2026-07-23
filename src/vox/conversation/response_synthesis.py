@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from vox.conversation.response_stream import ResponseStream
 from vox.conversation.text_buffer import StreamingTextBuffer, split_for_tts
 from vox.core.adapter import TTSAdapter
 from vox.core.async_iterators import iterate_off_event_loop
+from vox.core.synthesis_validation import (
+    call_accepts_keyword,
+    validate_adapter_synthesis_params,
+)
 
 AudioStartedCallback = Callable[[], Awaitable[None]]
 AudioChunkCallback = Callable[[bytes, int], Awaitable[None]]
@@ -18,11 +23,27 @@ async def synthesize_response_stream(
     adapter: TTSAdapter,
     stream: ResponseStream,
     voice: str | None,
-    language: str,
+    language: str | None,
+    speed: float = 1.0,
+    params: dict[str, Any] | None = None,
+    reference_audio: Any = None,
+    reference_text: str | None = None,
     on_audio_started: AudioStartedCallback,
     on_audio_chunk: AudioChunkCallback,
 ) -> bool:
     """Drain a committed response stream and synthesize its text incrementally."""
+
+    synthesis_params = dict(params or {})
+    validate_adapter_synthesis_params(adapter, synthesis_params)
+    validation_kwargs: dict[str, Any] = {
+        "voice": voice,
+        "language": language,
+        "reference_audio": reference_audio,
+        "reference_text": reference_text,
+    }
+    if call_accepts_keyword(adapter.validate_synthesis_request, "params"):
+        validation_kwargs["params"] = synthesis_params
+    adapter.validate_synthesis_request(**validation_kwargs)
 
     audio_started = False
     text_buffer = StreamingTextBuffer()
@@ -39,6 +60,10 @@ async def synthesize_response_stream(
                 stream=stream,
                 voice=voice,
                 language=language,
+                speed=speed,
+                params=synthesis_params,
+                reference_audio=reference_audio,
+                reference_text=reference_text,
                 audio_started=audio_started,
                 max_input_chars=max_input_chars,
                 on_audio_started=on_audio_started,
@@ -52,6 +77,10 @@ async def synthesize_response_stream(
             stream=stream,
             voice=voice,
             language=language,
+            speed=speed,
+            params=synthesis_params,
+            reference_audio=reference_audio,
+            reference_text=reference_text,
             audio_started=audio_started,
             max_input_chars=max_input_chars,
             on_audio_started=on_audio_started,
@@ -67,7 +96,11 @@ async def _synthesize_text(
     *,
     stream: ResponseStream,
     voice: str | None,
-    language: str,
+    language: str | None,
+    speed: float,
+    params: dict[str, Any],
+    reference_audio: Any,
+    reference_text: str | None,
     audio_started: bool,
     max_input_chars: int,
     on_audio_started: AudioStartedCallback,
@@ -75,11 +108,16 @@ async def _synthesize_text(
 ) -> bool:
     for chunk_text in split_for_tts(text, max_chars=max_input_chars):
         chunk_started = False
-        chunks = adapter.synthesize(
-            chunk_text,
-            voice=voice,
-            language=language,
-        )
+        synthesis_kwargs: dict[str, Any] = {
+            "voice": voice,
+            "speed": speed,
+            "language": language,
+            "reference_audio": reference_audio,
+            "reference_text": reference_text,
+        }
+        if call_accepts_keyword(adapter.synthesize, "params"):
+            synthesis_kwargs["params"] = params
+        chunks = adapter.synthesize(chunk_text, **synthesis_kwargs)
         async for chunk in iterate_off_event_loop(chunks):
             if chunk.is_final and not chunk.audio:
                 continue

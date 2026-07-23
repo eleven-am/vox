@@ -766,13 +766,29 @@ class ConversationAudioAppend(_message.Message):
     sample_rate: int
     def __init__(self, pcm16: _Optional[bytes] = ..., sample_rate: _Optional[int] = ...) -> None: ...
 
+class ConversationResponseOutput(_message.Message):
+    __slots__ = ("model", "voice", "language", "speed", "params")
+    MODEL_FIELD_NUMBER: _ClassVar[int]
+    VOICE_FIELD_NUMBER: _ClassVar[int]
+    LANGUAGE_FIELD_NUMBER: _ClassVar[int]
+    SPEED_FIELD_NUMBER: _ClassVar[int]
+    PARAMS_FIELD_NUMBER: _ClassVar[int]
+    model: str
+    voice: str
+    language: str
+    speed: float
+    params: _struct_pb2.Struct
+    def __init__(self, model: _Optional[str] = ..., voice: _Optional[str] = ..., language: _Optional[str] = ..., speed: _Optional[float] = ..., params: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...) -> None: ...
+
 class ConversationResponseStart(_message.Message):
-    __slots__ = ("allow_interruptions", "generation_id")
+    __slots__ = ("allow_interruptions", "generation_id", "output")
     ALLOW_INTERRUPTIONS_FIELD_NUMBER: _ClassVar[int]
     GENERATION_ID_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_FIELD_NUMBER: _ClassVar[int]
     allow_interruptions: bool
     generation_id: str
-    def __init__(self, allow_interruptions: bool = ..., generation_id: _Optional[str] = ...) -> None: ...
+    output: ConversationResponseOutput
+    def __init__(self, allow_interruptions: bool = ..., generation_id: _Optional[str] = ..., output: _Optional[_Union[ConversationResponseOutput, _Mapping]] = ...) -> None: ...
 
 class ConversationResponseDelta(_message.Message):
     __slots__ = ("delta", "allow_interruptions", "generation_id")
@@ -857,12 +873,14 @@ class ConversationTranscriptDone(_message.Message):
     def __init__(self, transcript: _Optional[str] = ..., language: _Optional[str] = ..., start_ms: _Optional[int] = ..., end_ms: _Optional[int] = ..., eou_probability: _Optional[float] = ..., entities: _Optional[_Iterable[_Union[Entity, _Mapping]]] = ..., topics: _Optional[_Iterable[str]] = ..., words: _Optional[_Iterable[_Union[WordTimestamp, _Mapping]]] = ..., speech_context: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...) -> None: ...
 
 class ConversationResponseCreated(_message.Message):
-    __slots__ = ("response_id", "generation_id")
+    __slots__ = ("response_id", "generation_id", "output")
     RESPONSE_ID_FIELD_NUMBER: _ClassVar[int]
     GENERATION_ID_FIELD_NUMBER: _ClassVar[int]
+    OUTPUT_FIELD_NUMBER: _ClassVar[int]
     response_id: str
     generation_id: str
-    def __init__(self, response_id: _Optional[str] = ..., generation_id: _Optional[str] = ...) -> None: ...
+    output: ConversationResponseOutput
+    def __init__(self, response_id: _Optional[str] = ..., generation_id: _Optional[str] = ..., output: _Optional[_Union[ConversationResponseOutput, _Mapping]] = ...) -> None: ...
 
 class ConversationAudioDelta(_message.Message):
     __slots__ = ("audio", "sample_rate", "response_id", "sequence")

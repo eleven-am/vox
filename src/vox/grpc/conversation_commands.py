@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from google.protobuf.json_format import MessageToDict
+
 from vox.conversation.profiles import DEFAULT_TURN_PROFILE
+from vox.conversation.response_output import ResponseOutputOptions
 from vox.grpc import vox_pb2
 from vox.grpc.conversation_policy import conversation_turn_policy_overrides
 from vox.operations.conversation import (
@@ -108,6 +111,23 @@ def _response_command(
     unknown_message_label: str,
 ) -> ConversationCommand:
     if kind == "response_start":
+        output = None
+        if client_msg.response_start.HasField("output"):
+            raw_output = client_msg.response_start.output
+            try:
+                output = ResponseOutputOptions(
+                    model=raw_output.model if raw_output.HasField("model") else None,
+                    voice=raw_output.voice if raw_output.HasField("voice") else None,
+                    language=raw_output.language if raw_output.HasField("language") else None,
+                    speed=raw_output.speed if raw_output.HasField("speed") else None,
+                    params=(
+                        MessageToDict(raw_output.params)
+                        if raw_output.HasField("params")
+                        else None
+                    ),
+                )
+            except ValueError as exc:
+                raise InvalidConfigError(str(exc)) from exc
         return ResponseStartCommand(
             allow_interruptions=(
                 client_msg.response_start.allow_interruptions
@@ -115,6 +135,7 @@ def _response_command(
                 else True
             ),
             generation_id=client_msg.response_start.generation_id or None,
+            output=output,
         )
     if kind == "response_delta":
         return ResponseDeltaCommand(

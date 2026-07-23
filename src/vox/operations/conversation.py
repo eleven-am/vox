@@ -14,6 +14,11 @@ from vox.conversation.profiles import (
     DEFAULT_TURN_PROFILE,
     resolve_turn_policy,
 )
+from vox.conversation.response_output import (
+    ResponseOutputConfig,
+    ResponseOutputOptions,
+    resolve_response_output,
+)
 from vox.conversation.session import (
     ERROR_CODE_COMMAND_INVALID,
     ERROR_CODE_RESPONSE_ALREADY_ACTIVE,
@@ -91,6 +96,7 @@ SESSION_UPDATE_POLICY_FIELDS = (
 RESPONSE_COMMAND_ENVELOPE_FIELDS = ("response",)
 RESPONSE_TEXT_COMPATIBILITY_FIELDS = ("text", "delta")
 RESPONSE_ALLOW_INTERRUPTION_FIELD = "allow_interruptions"
+RESPONSE_OUTPUT_FIELDS = frozenset({"model", "voice", "language", "speed", "params"})
 TURN_POLICY_OVERRIDE_FIELDS = (
     "allow_interrupt_while_speaking",
     "min_interrupt_duration_ms",
@@ -164,6 +170,7 @@ class ConvTranscriptDoneEvent:
 class ConvResponseCreatedEvent:
     response_id: str = ""
     generation_id: str | None = None
+    output: ResponseOutputConfig | None = None
 
 
 @dataclass(frozen=True)
@@ -341,10 +348,13 @@ def serialize_conversation_event(event: ConvEvent) -> dict | None:
             payload["speech_context"] = event.speech_context
         return payload
     if isinstance(event, ConvResponseCreatedEvent):
-        return _with_generation_id(
+        payload = _with_generation_id(
             {"type": WIRE_RESPONSE_CREATED, "response_id": event.response_id},
             event.generation_id,
         )
+        if event.output is not None:
+            payload["output"] = event.output.to_payload()
+        return payload
     if isinstance(event, ConvAudioDeltaEvent):
         return {
             "type": WIRE_AUDIO_DELTA,
@@ -586,6 +596,39 @@ def parse_response_generation_id(message: dict) -> str | None:
     return None
 
 
+def parse_response_output(message: dict) -> ResponseOutputOptions | None:
+    raw_output: Any = None
+    found = False
+    for payload in response_command_payloads(message):
+        if "output" in payload:
+            raw_output = payload["output"]
+            found = True
+            break
+    if not found or raw_output is None:
+        return None
+    if not isinstance(raw_output, dict):
+        raise InvalidConfigError("response.start output must be an object")
+
+    unknown = sorted(set(raw_output) - RESPONSE_OUTPUT_FIELDS)
+    if unknown:
+        raise InvalidConfigError(
+            f"response.start output contains unsupported field(s): {', '.join(unknown)}"
+        )
+    params = raw_output.get("params")
+    if params is not None and not isinstance(params, dict):
+        raise InvalidConfigError("response.start output params must be an object")
+    try:
+        return ResponseOutputOptions(
+            model=raw_output.get("model"),
+            voice=raw_output.get("voice"),
+            language=raw_output.get("language"),
+            speed=raw_output.get("speed"),
+            params=params,
+        )
+    except ValueError as exc:
+        raise InvalidConfigError(str(exc)) from exc
+
+
 def response_command_payloads(message: dict) -> tuple[dict, ...]:
     payloads: list[dict] = []
     for field in RESPONSE_COMMAND_ENVELOPE_FIELDS:
@@ -709,9 +752,23 @@ def parse_conversation_wire_event(event: dict) -> ConvEvent | None:
             ),
         )
     if t == WIRE_RESPONSE_CREATED:
+        output = None
+        raw_output = event.get("output")
+        if isinstance(raw_output, dict):
+            try:
+                output = ResponseOutputConfig(
+                    model=raw_output.get("model"),
+                    voice=raw_output.get("voice"),
+                    language=raw_output.get("language"),
+                    speed=raw_output.get("speed", 1.0),
+                    params=raw_output.get("params") or {},
+                )
+            except ValueError as exc:
+                raise InvalidConfigError(f"invalid response.created output: {exc}") from exc
         return ConvResponseCreatedEvent(
             response_id=str(event.get("response_id") or ""),
             generation_id=_wire_generation_id(event),
+            output=output,
         )
     if t == WIRE_AUDIO_DELTA:
         raw_audio = event.get("audio_pcm16")
@@ -803,6 +860,7 @@ class ConversationOrchestrator:
         self,
         *,
         scheduler: Any,
+        store: Any | None = None,
         pace_response_done_to_audio: bool = False,
         audio_sink: Callable[[ConvAudioDeltaEvent], Awaitable[None]] | None = None,
         wait_for_output_playout: Callable[[], Awaitable[None]] | None = None,
@@ -810,6 +868,7 @@ class ConversationOrchestrator:
         speech_context_service: SpeechContextService | None = None,
     ) -> None:
         self._scheduler = scheduler
+        self._store = store
         self._pace_response_done_to_audio = pace_response_done_to_audio
         self._audio_sink = audio_sink
         self._wait_for_output_playout = wait_for_output_playout
@@ -849,6 +908,7 @@ class ConversationOrchestrator:
             scheduler=self._scheduler,
             config=engine_config,
             on_event=self._on_engine_event,
+            store=self._store,
             speech_context_service=self._speech_context_service,
         )
         await self._session.start()
@@ -878,6 +938,7 @@ class ConversationOrchestrator:
         *,
         allow_interruptions: bool = True,
         generation_id: str | None = None,
+        output: ResponseOutputOptions | None = None,
     ) -> None:
         if self._session is None:
             raise SessionNotConfiguredError()
@@ -890,6 +951,12 @@ class ConversationOrchestrator:
         result = await self._session.start_response_stream(
             allow_interruptions=allow_interruptions,
             generation_id=generation_id,
+            output=resolve_response_output(
+                output,
+                model=self._config.tts_model,
+                voice=self._config.voice,
+                language=self._config.language,
+            ),
         )
         context = result.context
         logger.info(

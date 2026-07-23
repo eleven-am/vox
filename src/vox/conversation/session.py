@@ -56,6 +56,7 @@ from vox.conversation.response_lifecycle import (
     TerminalReason,
     TerminalRecord,
 )
+from vox.conversation.response_output import ResponseOutputConfig
 from vox.conversation.response_synthesis import synthesize_response_stream
 from vox.conversation.speech_guard import AssistantSpeechGuard
 from vox.conversation.state_machine import TurnStateMachine
@@ -71,6 +72,7 @@ from vox.conversation.types import (
 )
 from vox.core.adapter import TTSAdapter
 from vox.core.adapter_acquisition import AdapterTypeMismatchError, acquire_typed_adapter
+from vox.core.cloned_voices import resolve_voice_request
 from vox.core.scheduler import Scheduler
 from vox.core.tasks import reap_task
 from vox.speech_context.service import SpeechContextService
@@ -224,11 +226,18 @@ class ConversationSession:
         scheduler: Scheduler,
         config: ConversationConfig,
         on_event: EventEmitter,
+        store: Any | None = None,
         speech_context_service: SpeechContextService | None = None,
     ) -> None:
         self._scheduler = scheduler
         self._config = config
         self._on_event = on_event
+        self._store = store
+        self._default_response_output = ResponseOutputConfig(
+            model=config.tts_model,
+            voice=config.voice,
+            language=config.language,
+        )
 
         self._sm = TurnStateMachine(policy=config.policy)
         if config.interrupt_detector is None:
@@ -419,6 +428,7 @@ class ConversationSession:
         *,
         allow_interruptions: bool = True,
         generation_id: str | None = None,
+        output: ResponseOutputConfig | None = None,
     ) -> ResponseStartResult:
         if self._closed:
             return ResponseStartResult(
@@ -434,6 +444,7 @@ class ConversationSession:
                 self._attempt_response_start,
                 allow_interruptions=allow_interruptions,
                 generation_id=generation_id,
+                output=output,
             )
         )
 
@@ -928,6 +939,7 @@ class ConversationSession:
         *,
         allow_interruptions: bool = True,
         generation_id: str | None = None,
+        output: ResponseOutputConfig | None = None,
     ) -> ResponseStartResult:
         context = self._response_start_context()
         existing = self._response_lifecycle.open_uncommitted_stream()
@@ -952,6 +964,7 @@ class ConversationSession:
             return ResponseStartResult(context=context, rejection=rejected)
 
         stream = self._response_lifecycle.start_stream(
+            output=output or self._default_response_output,
             allow_interruptions=allow_interruptions,
             generation_id=generation_id,
         )
@@ -1008,15 +1021,30 @@ class ConversationSession:
         try:
             async with acquire_typed_adapter(
                 self._scheduler,
-                model=self._config.tts_model,
+                model=stream.output.model,
                 adapter_type=TTSAdapter,
                 expected_type="TTS",
             ) as adapter:
+                voice = stream.output.voice
+                language: str | None = stream.output.language
+                reference_audio = None
+                reference_text = None
+                if self._store is not None:
+                    voice, language, reference_audio, reference_text = resolve_voice_request(
+                        adapter,
+                        self._store,
+                        voice,
+                        language,
+                    )
                 await synthesize_response_stream(
                     adapter=adapter,
                     stream=stream,
-                    voice=self._config.voice,
-                    language=self._config.language,
+                    voice=voice,
+                    language=language,
+                    speed=stream.output.speed,
+                    params=stream.output.params_dict(),
+                    reference_audio=reference_audio,
+                    reference_text=reference_text,
                     on_audio_started=partial(self._notify_tts_audio_started, stream),
                     on_audio_chunk=partial(self._handle_tts_chunk, stream),
                 )
@@ -1380,7 +1408,14 @@ class ConversationSession:
         await self._emit(payload)
 
     async def _emit_response_created(self, stream: ResponseStream) -> None:
-        await self._emit_response_event(WIRE_RESPONSE_CREATED, stream)
+        payload: dict[str, Any] = {
+            "type": WIRE_RESPONSE_CREATED,
+            "response_id": stream.response_id,
+            "output": stream.output.to_payload(),
+        }
+        if stream.generation_id:
+            payload["generation_id"] = stream.generation_id
+        await self._emit(payload)
 
     async def _emit_response_committed(self, stream: ResponseStream) -> None:
         await self._emit_response_event(WIRE_RESPONSE_COMMITTED, stream)

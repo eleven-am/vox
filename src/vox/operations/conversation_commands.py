@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from vox.conversation.response_output import ResponseOutputOptions
 from vox.operations.conversation import ConversationSessionConfig
 from vox.operations.errors import InvalidConfigError
 
@@ -23,6 +24,7 @@ class AudioAppendCommand:
 class ResponseStartCommand:
     allow_interruptions: bool = True
     generation_id: str | None = None
+    output: ResponseOutputOptions | None = None
 
 
 @dataclass(frozen=True, slots=True)

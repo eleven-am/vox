@@ -881,10 +881,16 @@ class TestTerminalizeIdentity:
     @pytest.mark.asyncio
     async def test_stale_stream_outcome_cannot_terminalize_or_emit(self):
         session, collector, _ = _build_session()
-        stale = session._response_lifecycle.start_stream(generation_id="gen-old")
+        stale = session._response_lifecycle.start_stream(
+            output=session._default_response_output,
+            generation_id="gen-old",
+        )
         first_record = session._response_lifecycle.terminalize(stale, "cancelled")
         assert first_record is not None
-        live = session._response_lifecycle.start_stream(generation_id="gen-new")
+        live = session._response_lifecycle.start_stream(
+            output=session._default_response_output,
+            generation_id="gen-new",
+        )
 
         events_before = list(collector.events)
         await session._apply_tts_stream_outcome(
@@ -901,7 +907,9 @@ class TestTerminalizeIdentity:
     @pytest.mark.asyncio
     async def test_paused_pending_done_stream_survives_unaccepted_tts_completion(self):
         session, _, _ = _build_session()
-        stream = session._response_lifecycle.start_stream()
+        stream = session._response_lifecycle.start_stream(
+            output=session._default_response_output,
+        )
         stream.pending_done = True
 
         await session._apply_tts_stream_outcome(

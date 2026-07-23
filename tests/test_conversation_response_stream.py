@@ -4,11 +4,18 @@ import asyncio
 
 import pytest
 
+from vox.conversation.response_output import ResponseOutputConfig
 from vox.conversation.response_stream import RESPONSE_STREAM_QUEUE_MAX, AppendResult, ResponseStream
+
+OUTPUT = ResponseOutputConfig(model="tts:1", voice=None, language="en")
 
 
 def test_response_stream_create_uses_bounded_queue_and_response_metadata():
-    stream = ResponseStream.create(response_id="resp_1", allow_interruptions=False)
+    stream = ResponseStream.create(
+        response_id="resp_1",
+        output=OUTPUT,
+        allow_interruptions=False,
+    )
 
     assert stream.response_id == "resp_1"
     assert stream.allow_interruptions is False
@@ -18,7 +25,7 @@ def test_response_stream_create_uses_bounded_queue_and_response_metadata():
 
 @pytest.mark.asyncio
 async def test_response_stream_append_and_next_text_records_text_parts():
-    stream = ResponseStream.create(response_id="resp_1")
+    stream = ResponseStream.create(response_id="resp_1", output=OUTPUT)
 
     await stream.append_text("hello")
     await stream.append_text(" there")
@@ -30,7 +37,7 @@ async def test_response_stream_append_and_next_text_records_text_parts():
 
 @pytest.mark.asyncio
 async def test_response_stream_commit_marker_ends_text_iteration():
-    stream = ResponseStream.create(response_id="resp_1")
+    stream = ResponseStream.create(response_id="resp_1", output=OUTPUT)
 
     assert stream.mark_committed() is True
     assert stream.mark_committed() is False
@@ -41,7 +48,7 @@ async def test_response_stream_commit_marker_ends_text_iteration():
 
 @pytest.mark.asyncio
 async def test_response_stream_bounded_queue_blocks_when_full():
-    stream = ResponseStream.create(response_id="resp_1")
+    stream = ResponseStream.create(response_id="resp_1", output=OUTPUT)
     stream.queue = asyncio.Queue(maxsize=1)
 
     await stream.append_text("first")
@@ -52,7 +59,7 @@ async def test_response_stream_bounded_queue_blocks_when_full():
 
 @pytest.mark.asyncio
 async def test_closed_response_stream_rejects_append_and_end():
-    stream = ResponseStream.create(response_id="resp_1")
+    stream = ResponseStream.create(response_id="resp_1", output=OUTPUT)
 
     stream.close()
 
@@ -64,7 +71,7 @@ async def test_closed_response_stream_rejects_append_and_end():
 
 @pytest.mark.asyncio
 async def test_open_response_stream_reports_successful_append_and_end():
-    stream = ResponseStream.create(response_id="resp_1")
+    stream = ResponseStream.create(response_id="resp_1", output=OUTPUT)
 
     assert await stream.append_text("hello") is AppendResult.ACCEPTED
     assert await stream.enqueue_end() is AppendResult.ACCEPTED
@@ -73,7 +80,7 @@ async def test_open_response_stream_reports_successful_append_and_end():
 
 
 def test_response_stream_assistant_context_prefers_heard_text():
-    stream = ResponseStream.create(response_id="resp_1")
+    stream = ResponseStream.create(response_id="resp_1", output=OUTPUT)
     stream.text_parts.extend(["unheard ", "text"])
 
     assert stream.assistant_context_text() == "unheard text"

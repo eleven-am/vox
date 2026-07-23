@@ -12,6 +12,7 @@ from vox.operations.conversation import (
     deliver_wire_with_lifecycle_retry,
     parse_allow_interruptions,
     parse_response_generation_id,
+    parse_response_output,
     parse_response_text,
     parse_session_update,
     serialize_conversation_event,
@@ -186,6 +187,7 @@ def decode_pondsocket_command(event_name: str, payload: Any) -> ConversationComm
         return ResponseStartCommand(
             allow_interruptions=parse_allow_interruptions(message),
             generation_id=parse_response_generation_id(message),
+            output=parse_response_output(message),
         )
     if event_name == "response.delta":
         return ResponseDeltaCommand(

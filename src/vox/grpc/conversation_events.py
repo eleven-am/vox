@@ -27,6 +27,18 @@ from vox.operations.conversation import (
 )
 
 
+def _response_output_pb(output) -> vox_pb2.ConversationResponseOutput:
+    message = vox_pb2.ConversationResponseOutput(
+        model=output.model,
+        language=output.language,
+        speed=output.speed,
+    )
+    if output.voice is not None:
+        message.voice = output.voice
+    message.params.update(output.params_dict())
+    return message
+
+
 def conversation_error_pb(
     message: str,
     *,
@@ -93,12 +105,13 @@ def conversation_event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage 
             msg.speech_context.update(event.speech_context)
         return vox_pb2.ConverseServerMessage(transcript_done=msg)
     if isinstance(event, ConvResponseCreatedEvent):
-        return vox_pb2.ConverseServerMessage(
-            response_created=vox_pb2.ConversationResponseCreated(
-                response_id=event.response_id,
-                generation_id=event.generation_id or "",
-            ),
+        created = vox_pb2.ConversationResponseCreated(
+            response_id=event.response_id,
+            generation_id=event.generation_id or "",
         )
+        if event.output is not None:
+            created.output.CopyFrom(_response_output_pb(event.output))
+        return vox_pb2.ConverseServerMessage(response_created=created)
     if isinstance(event, ConvAudioDeltaEvent):
         return vox_pb2.ConverseServerMessage(
             audio_delta=vox_pb2.ConversationAudioDelta(

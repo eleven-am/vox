@@ -114,6 +114,7 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
         return False
 
     scheduler = app_scheduler(app)
+    store = getattr(app.state, "store", None)
     speech_context_service = app_speech_context(app)
     rtc_registry: RtcSessionRegistry = app_rtc_registry(app)
     conversation_runtimes: dict[str, _ConversationRuntime] = {}
@@ -131,6 +132,7 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
     async def build_conversation_runtime(channel: Channel, user_id: str, session_id: str) -> _ConversationRuntime:
         orchestrator = ConversationOrchestrator(
             scheduler=scheduler,
+            store=store,
             speech_context_service=speech_context_service,
         )
         conversation = ConversationRuntime(
@@ -159,6 +161,7 @@ def install_pondsocket_gateway(app: FastAPI, *, mount_path: str = "/v1/socket") 
     ) -> RtcRuntime:
         return RtcRuntime(
             scheduler=scheduler,
+            store=store,
             registry=rtc_registry,
             session_id=session_id,
             transport="pondsocket",

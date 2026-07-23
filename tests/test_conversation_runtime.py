@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from vox.conversation.response_output import ResponseOutputOptions
 from vox.operations.conversation import (
     ConvDoneEvent,
     ConversationSessionConfig,
@@ -45,6 +46,7 @@ class RuntimeOrchestratorSpy:
         *,
         allow_interruptions: bool = True,
         generation_id: str | None = None,
+        output: ResponseOutputOptions | None = None,
     ) -> None:
         self.calls.append(
             (
@@ -53,6 +55,7 @@ class RuntimeOrchestratorSpy:
                 {
                     "allow_interruptions": allow_interruptions,
                     "generation_id": generation_id,
+                    "output": output,
                 },
             )
         )
@@ -131,7 +134,11 @@ async def test_runtime_dispatches_typed_commands_and_preserves_pcm_identity():
         (
             "start_response",
             (),
-            {"allow_interruptions": False, "generation_id": "generation-7"},
+            {
+                "allow_interruptions": False,
+                "generation_id": "generation-7",
+                "output": None,
+            },
         ),
         (
             "append_response_text",

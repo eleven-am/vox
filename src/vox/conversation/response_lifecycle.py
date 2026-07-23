@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from vox.conversation.response_output import ResponseOutputConfig
 from vox.conversation.response_stream import AppendResult, ResponseStream
 
 TerminalReason = Literal["done", "cancelled", "failed"]
@@ -46,12 +47,14 @@ class ConversationResponseLifecycle:
     def start_stream(
         self,
         *,
+        output: ResponseOutputConfig,
         allow_interruptions: bool = True,
         generation_id: str | None = None,
     ) -> ResponseStream:
         self.counter += 1
         stream = ResponseStream.create(
             response_id=f"resp_{self.counter}",
+            output=output,
             allow_interruptions=allow_interruptions,
             generation_id=generation_id,
         )

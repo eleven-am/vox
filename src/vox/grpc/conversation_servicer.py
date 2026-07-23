@@ -51,6 +51,7 @@ class ConversationServicer(vox_pb2_grpc.ConversationServiceServicer):
     ) -> AsyncIterator[vox_pb2.ConverseServerMessage]:
         orchestrator = ConversationOrchestrator(
             scheduler=self._scheduler,
+            store=self._store,
             speech_context_service=self._speech_context_service,
         )
         runtime = ConversationRuntime(

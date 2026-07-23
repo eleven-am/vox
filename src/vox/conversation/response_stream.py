@@ -5,6 +5,8 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Final
 
+from vox.conversation.response_output import ResponseOutputConfig
+
 RESPONSE_STREAM_END: Final = object()
 RESPONSE_STREAM_QUEUE_MAX = 1024
 
@@ -26,6 +28,7 @@ class AppendResult(StrEnum):
 class ResponseStream:
     queue: asyncio.Queue[str | object]
     response_id: str
+    output: ResponseOutputConfig
     generation_id: str | None = None
     committed: bool = False
     pending_done: bool = False
@@ -40,12 +43,14 @@ class ResponseStream:
         cls,
         *,
         response_id: str,
+        output: ResponseOutputConfig,
         allow_interruptions: bool = True,
         generation_id: str | None = None,
     ) -> ResponseStream:
         return cls(
             queue=asyncio.Queue(maxsize=RESPONSE_STREAM_QUEUE_MAX),
             response_id=response_id,
+            output=output,
             generation_id=generation_id,
             allow_interruptions=allow_interruptions,
         )

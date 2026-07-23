@@ -398,7 +398,10 @@ class TestInterruptionEventContracts:
     @pytest.mark.asyncio
     async def test_response_lifecycle_event_shapes_are_owned_by_session_helpers(self):
         session, collector, _ = _build_session()
-        stream = session._response_lifecycle.start_stream(generation_id="gen-1")
+        stream = session._response_lifecycle.start_stream(
+            output=session._default_response_output,
+            generation_id="gen-1",
+        )
 
         await session._emit_response_created(stream)
         await session._emit_response_committed(stream)
@@ -409,7 +412,12 @@ class TestInterruptionEventContracts:
         await session._emit_error("boom", code=ERROR_CODE_COMMAND_INVALID)
 
         assert collector.events == [
-            {"type": WIRE_RESPONSE_CREATED, "response_id": "resp_1", "generation_id": "gen-1"},
+            {
+                "type": WIRE_RESPONSE_CREATED,
+                "response_id": "resp_1",
+                "generation_id": "gen-1",
+                "output": session._default_response_output.to_payload(),
+            },
             {"type": WIRE_RESPONSE_COMMITTED, "response_id": "resp_1", "generation_id": "gen-1"},
             {"type": WIRE_RESPONSE_DONE, "response_id": "resp_1", "generation_id": "gen-1"},
             {"type": WIRE_RESPONSE_CANCELLED, "response_id": "resp_1", "generation_id": "gen-1"},
@@ -424,7 +432,9 @@ class TestInterruptionEventContracts:
     @pytest.mark.asyncio
     async def test_response_lifecycle_events_omit_generation_when_unstamped(self):
         session, collector, _ = _build_session()
-        stream = session._response_lifecycle.start_stream()
+        stream = session._response_lifecycle.start_stream(
+            output=session._default_response_output,
+        )
 
         await session._emit_response_created(stream)
         record = session._response_lifecycle.terminalize(stream, "done")
@@ -432,14 +442,18 @@ class TestInterruptionEventContracts:
         await session._emit_response_done(record)
 
         assert collector.events == [
-            {"type": WIRE_RESPONSE_CREATED, "response_id": "resp_1"},
+            {
+                "type": WIRE_RESPONSE_CREATED,
+                "response_id": "resp_1",
+                "output": session._default_response_output.to_payload(),
+            },
             {"type": WIRE_RESPONSE_DONE, "response_id": "resp_1"},
         ]
 
     @pytest.mark.asyncio
     async def test_detected_interrupt_event_shape_is_owned_by_session_helper(self):
         session, collector, _ = _build_session()
-        session._response_lifecycle.start_stream()
+        session._response_lifecycle.start_stream(output=session._default_response_output)
 
         await session._emit_interruption_detected(
             vad_active_ms=420,
@@ -460,7 +474,7 @@ class TestInterruptionEventContracts:
     @pytest.mark.asyncio
     async def test_false_positive_interrupt_event_shape_is_owned_by_session_helper(self):
         session, collector, _ = _build_session()
-        session._response_lifecycle.start_stream()
+        session._response_lifecycle.start_stream(output=session._default_response_output)
 
         await session._emit_interruption_false_positive(
             vad_active_ms=120,
