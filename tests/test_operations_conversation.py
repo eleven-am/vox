@@ -423,7 +423,7 @@ def test_serialize_conversation_event_preserves_transcript_metadata():
         entities=({"text": "hello", "label": "greeting"},),
         topics=("greeting",),
         words=({"word": "hello", "start": 0.1, "end": 0.9},),
-        speech_context={"schema_version": 1, "status": "complete"},
+        speech_context={"schema_version": 2, "status": "complete"},
     )
 
     assert serialize_conversation_event(event) == {
@@ -436,7 +436,7 @@ def test_serialize_conversation_event_preserves_transcript_metadata():
         "entities": [{"text": "hello", "label": "greeting"}],
         "topics": ["greeting"],
         "words": [{"word": "hello", "start": 0.1, "end": 0.9}],
-        "speech_context": {"schema_version": 1, "status": "complete"},
+        "speech_context": {"schema_version": 2, "status": "complete"},
     }
 
 

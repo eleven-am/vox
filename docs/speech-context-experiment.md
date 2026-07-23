@@ -1,160 +1,115 @@
-# Speech-context evidence experiment
+# Speech context
 
-This branch evaluates speech context without replacing Parakeet, delaying its
-transcript, or adding a public Vox API. One local runner canonicalizes an audio
-file once and starts three independent analyses concurrently:
+Vox can enrich a finalized transcript with compact evidence about how the
+speaker sounded and what else was audible. It does not replace Parakeet and it
+does not interpret the evidence for the application.
 
-- the existing OpenAI-compatible transcription endpoint, using Parakeet by
-  default;
-- eGeMAPSv02 low-level descriptors and functionals;
-- YAMNet scores, embeddings, and log-mel spectrogram frames.
+The service runs two isolated CPU workers concurrently:
 
-The JSON file is evidence for schema and product decisions. It is not a public
-contract. No model infers `angry`, `sad`, or any other combined emotion label.
-The complete analyzer output remains under `results`; a deterministic reducer
-also writes a lossy, compact `speech_context` projection for comparison.
+- SenseVoiceSmall classifies speaker emotion and human vocal events.
+- YAMNet classifies general acoustic sounds.
 
-## Ownership and isolation
-
-The experiment owns audio canonicalization, concurrent execution, failure
-isolation, timing, and the shared timestamp origin. Parakeet remains owned by
-the running Vox server. The two experimental analyzers run in separate Python
-3.12 worker environments under:
+The workers receive the same canonical mono 16 kHz PCM16 WAV. Their runtimes
+and models live outside the Vox application environment:
 
 ```text
-$VOX_HOME/runtime/speech-context-prosody
+$VOX_HOME/runtime/speech-context-speaker
 $VOX_HOME/runtime/speech-context-audio-events
 ```
 
-Neither dependency set is added to `pyproject.toml`, the Vox image, adapter
-paths, or the application process. The prosody worker loads openSMILE's native
-API directly instead of importing its pandas/pyarrow wrapper. The worker
-protocol is carried over Vox's existing protected worker socket, so analyzer
-stdout cannot corrupt evidence.
+Neither runtime is bundled into a Vox image. The service uses Vox's protected
+worker protocol, keeps model imports out of the application process, and
+continues with a partial result when one worker is unavailable.
 
-The runner sends the same canonical mono 16 kHz PCM16 WAV to every analysis.
-Every timestamp in the JSON is milliseconds from the start of that WAV.
-openSMILE low-level descriptors carry their own start/end intervals. YAMNet
-scores and embeddings use 960 ms windows with 480 ms hops; spectrogram rows use
-25 ms windows with 10 ms hops. Parakeet's complete verbose response is retained
-unchanged.
+## Contract
 
-## Licensing gate
+The model-facing result is schema version 2:
 
-YAMNet's TensorFlow Model Garden implementation and the selected full-output
-TFLite model are Apache-2.0. The model URL is versioned and its SHA-256 is
-verified before use. AudioSet's v1 ontology is installed beside the model from
-a versioned, checksum-verified source under CC BY-SA 4.0. It is used internally
-to remove redundant ancestor labels from compact event candidates:
+```json
+{
+  "schema_version": 2,
+  "status": "complete",
+  "emotions": [
+    {"label": "surprised", "start_ms": 0, "end_ms": 2500}
+  ],
+  "vocal": [
+    {"label": "laughter", "start_ms": 7000, "end_ms": 10500}
+  ],
+  "sounds": [
+    {"label": "dog", "start_ms": 4300, "end_ms": 5200}
+  ]
+}
+```
 
-- [YAMNet Model Garden documentation](https://github.com/tensorflow/models/tree/master/research/audioset/yamnet)
-- [YAMNet model card](https://www.kaggle.com/models/google/yamnet)
-- [AudioSet ontology](https://github.com/audioset/ontology)
+`emotions` and `vocal` are owned by SenseVoice. `sounds` is owned by YAMNet.
+YAMNet's human-voice and respiratory branches are removed structurally through
+the AudioSet ontology so they cannot duplicate the speaker track. Other
+classes remain dynamic; the reducer does not maintain an allowlist of expected
+environmental sounds.
 
-openSMILE 2.6.0 is **not** open source under Apache, MIT, or GPL. Its bundled
-audEERING Research License permits non-commercial research, education, and
-personal experimentation while prohibiting commercial product use without a
-separate license. Vox therefore does not bundle it, publish it, install it as a
-normal dependency, or imply GPL compatibility. This experiment installs it
-only after the operator explicitly acknowledges those terms:
+Unknown emotion, speech, and silence labels are omitted. Overlapping windows
+with the same label are merged. Scores, model names, provider metadata,
+AudioSet identifiers, ancestry, transcripts, and raw vectors remain internal.
 
-- [openSMILE license](https://github.com/audeering/opensmile/blob/master/LICENSE)
-- [openSMILE Python documentation](https://audeering.github.io/opensmile-python/)
+`status` is `complete`, `partial`, or `failed`. When a requested worker fails,
+`unavailable` contains `speaker`, `sounds`, or both. A successful track appears
+as an empty array when it detects nothing.
 
-This licensing gate must be resolved before any production or public API work.
+## Installation
 
-## Install and run
+Install both isolated runtimes:
 
-Record a browser microphone sample as mono 16 kHz PCM16 WAV:
+```bash
+vox speech-context install
+vox speech-context status
+```
+
+The SenseVoice runtime uses the official sherpa-onnx int8 model. Its archive is
+pinned and checksum-verified before Vox extracts only the ONNX model and token
+file. YAMNet and its AudioSet metadata are also checksum-verified.
+
+Licenses:
+
+- sherpa-onnx: Apache-2.0
+- SenseVoice model: FunASR Model License; retain model attribution
+- YAMNet: Apache-2.0
+- AudioSet ontology: CC BY-SA 4.0
+
+openSMILE is not part of this service or its runtime.
+
+## Service harness
+
+Record a browser microphone sample:
 
 ```bash
 make speech-context-recorder
 ```
 
-Then open `http://127.0.0.1:11436/speech-context-recorder.html`, record the
-sample, and save it. The recorder releases the microphone immediately after
-stopping and does not upload the audio anywhere.
+Open `http://127.0.0.1:11436/speech-context-recorder.html`, record the sample,
+and save the WAV. The page releases the microphone immediately after stopping
+and uploads nothing.
 
-The install is deliberately separate from analysis:
+Run the production `SpeechContextService` directly, without starting Vox and
+without making an STT request:
 
 ```bash
-uv run python scripts/speech-context-evidence.py install \
-  --accept-opensmile-research-license
-
-uv run python scripts/speech-context-evidence.py analyze ./speech.wav \
-  --vox-url http://127.0.0.1:11435 \
-  --output ./speech-context.json
+make speech-context-service \
+  AUDIO=/path/to/speech.wav \
+  EVIDENCE=/path/to/result.json
 ```
 
-Set `VOX_API_KEY` instead of placing the key on the command line when the Vox
-server requires authentication. `--model` can override the default
-`parakeet-stt:tdt-0.6b-v3`.
+The output includes the canonical input identity, wall time, runtime sizes, and
+the exact public `speech_context` result. This is the clean service smoke test.
 
-The command writes evidence even if one analyzer fails and exits with status 3
-in that case. This preserves successful evidence while making partial results
-impossible to mistake for a complete run. Temporary canonical audio and the
-installer's private download caches are removed automatically.
+For deeper diagnostics, run the evidence harness:
 
-## Evidence shape
-
-The file records:
-
-- original and canonical audio hashes, byte counts, duration, channels, and
-  sample rate;
-- wall time for each analysis and the concurrent run;
-- process CPU time and peak RSS for local workers;
-- explicit unavailable values for Parakeet server CPU, RAM, VRAM, and model
-  size, because an HTTP client cannot measure those honestly;
-- zero GPU use for the two CPU-only local analyzers;
-- isolated runtime and model sizes;
-- complete verbose Parakeet output;
-- every eGeMAPSv02 low-level and functional value;
-- every YAMNet class, score, embedding value, and spectrogram value.
-
-The compact `speech_context` projection removes representation detail rather
-than limiting which real-world events are allowed. Every class in YAMNet's
-catalog is eligible. Event scores below `0.05` are removed. A surviving class
-must appear in at least two overlapping score windows unless one window scores
-at least `0.2`. Only the three strongest eligible classes in each score window
-are considered. Consecutive windows for the same class become one bounded event
-candidate whose score is the maximum supporting score. An AudioSet ancestor is
-removed when a more specific descendant explains at least 80 percent of its
-time range. Events are emitted as candidates because YAMNet scores are not
-calibrated confidence values. Repeated occurrences of the same AudioSet class
-share one candidate with compact `[start_ms, end_ms, score]` spans. AudioSet
-class IDs and ancestry remain internal evidence and are not copied into the
-model-facing projection.
-
-The prosody projection removes low-level descriptor frames and all but 14
-conversation-relevant eGeMAPSv02 functionals. The retained groups describe
-pitch, energy, voice quality, spectral variation, and delivery. Durations are
-converted to milliseconds and finite values are rounded to three decimal
-places. Audio-event scores are rounded to two decimal places; embeddings and
-log-mel spectrograms are absent from the compact projection. Malformed class
-catalogs, ontology data, score vectors, timestamps, or required functional
-vectors fail reduction explicitly while the complete analyzer evidence remains
-in the file.
-
-An experimental result therefore has two distinct representations:
-
-```text
-results.*.raw       complete analyzer evidence for evaluation and debugging
-speech_context      compact lossy evidence intended to test application value
+```bash
+make speech-context-evidence \
+  AUDIO=/path/to/speech.wav \
+  EVIDENCE=/path/to/evidence.json \
+  VOX_URL=http://127.0.0.1:11435
 ```
 
-The reducer is stateless. It does not maintain speaker baselines, infer age or
-gender, select event labels by name, or decide how an application should alter
-its response.
-
-The prospective public vocabulary is deliberately generic: transcription,
-prosody, and audio events. Provider names, dependency names, source metadata,
-and VAD internals are not part of a public schema.
-
-## Why VAD is absent
-
-VAD already owns speech activity in Vox, but there is not yet measured evidence
-that a required context signal is missing from the selected prosody and event
-tracks. Adding VAD-derived pause counts now would duplicate ownership and
-prejudge the experiment. No VAD object or field is emitted. After real
-controlled audio has been reviewed, VAD should be added only for a
-specific missing signal with a named regression test.
+That command runs Parakeet, SenseVoice, and YAMNet concurrently and retains raw
+worker output under `results`. The raw representation is diagnostic evidence,
+not a public contract.

@@ -15,20 +15,6 @@ from vox.speech_context.service import SpeechContextService, cancel_speech_conte
 from vox.speech_context.types import SpeechContext, speech_context_payload
 
 
-def _prosody() -> dict:
-    return {
-        "pitch": {"mean_st": 1.0, "median_st": 0.5, "range_st": 4.0, "variation": 0.2},
-        "energy": {"mean": -20.0, "range": 8.0, "peaks_per_second": 2.0},
-        "voice_quality": {"hnr_db": 12.0, "jitter": None, "shimmer_db": 0.4},
-        "spectral_variation": 0.3,
-        "delivery": {
-            "voiced_segments_per_second": 1.5,
-            "mean_voiced_ms": 300.0,
-            "mean_unvoiced_ms": 120.0,
-        },
-    }
-
-
 class _Host:
     def __init__(self, spec: RuntimeSpec, barrier: threading.Barrier | None = None) -> None:
         self.spec = spec
@@ -45,12 +31,21 @@ class _Host:
             self.frames.append(handle.getnframes())
         if self.barrier is not None:
             self.barrier.wait(timeout=1)
-        if self.spec.key == "prosody":
-            return {"result": _prosody()}
+        if self.spec.key == "speaker":
+            return {
+                "result": {
+                    "emotions": [
+                        {"label": "happy", "start_ms": 0, "end_ms": 200},
+                    ],
+                    "vocal": [
+                        {"label": "laughter", "start_ms": 100, "end_ms": 300},
+                    ],
+                }
+            }
         return {
             "result": {
-                "candidates": [
-                    {"label": "Laughter", "spans": [[0, 120, 0.9]]},
+                "sounds": [
+                    {"label": "dog", "start_ms": 400, "end_ms": 600, "score": 0.75},
                 ]
             }
         }
@@ -89,14 +84,15 @@ async def test_service_runs_tracks_concurrently_reuses_workers_and_preserves_tim
     second = await service.analyze_chunks(chunks, timeline_offset_ms=1_000)
     payload = speech_context_payload(first)
 
-    assert payload["status"] == "complete"
-    assert payload["audio_events"]["candidates"] == [
-        {"label": "Laughter", "spans": [[1_000, 1_120, 0.9]]},
-    ]
-    assert payload["prosody"]["voice_quality"]["jitter"] is None
-    assert set(payload) == {"schema_version", "status", "prosody", "audio_events"}
+    assert payload == {
+        "schema_version": 2,
+        "status": "complete",
+        "emotions": [{"label": "happy", "start_ms": 1000, "end_ms": 1200}],
+        "vocal": [{"label": "laughter", "start_ms": 1100, "end_ms": 1300}],
+        "sounds": [{"label": "dog", "start_ms": 1400, "end_ms": 1600, "score": 0.75}],
+    }
     assert speech_context_payload(second) == payload
-    assert set(hosts) == {"prosody", "audio_events"}
+    assert set(hosts) == {"speaker", "sounds"}
     assert all(host.calls == 2 for host in hosts.values())
     assert all(host.frames == [24_000, 24_000] for host in hosts.values())
 
@@ -106,7 +102,7 @@ async def test_service_runs_tracks_concurrently_reuses_workers_and_preserves_tim
 
 class _FailingHost(_Host):
     def request(self, payload: dict, *, timeout: float) -> dict:
-        if self.spec.key == "audio_events":
+        if self.spec.key == "sounds":
             raise RuntimeError("unavailable")
         return super().request(payload, timeout=timeout)
 
@@ -114,24 +110,47 @@ class _FailingHost(_Host):
 class _DiagnosticHost(_Host):
     def request(self, payload: dict, *, timeout: float) -> dict:
         response = super().request(payload, timeout=timeout)
-        if self.spec.key == "audio_events":
+        if self.spec.key == "speaker":
+            response["result"]["_pre_reduction"] = {
+                "windows": [
+                    {
+                        "start_ms": 0,
+                        "end_ms": 2500,
+                        "emotion": "<|SAD|>",
+                        "event": "<|Speech|>",
+                        "text": "internal only",
+                    }
+                ]
+            }
+        else:
             response["result"]["_pre_reduction"] = {
                 "chunks": [
                     {
                         "offset_ms": 0,
-                        "frame_count": 1,
-                        "omitted_frame_count": 0,
-                        "frames": [
-                            {
-                                "start_ms": 0.0,
-                                "end_ms": 960.0,
-                                "candidates": [{"label": "Crying, sobbing", "score": 0.0412}],
-                            }
+                        "class_maxima": [
+                            {"label": "Crying, sobbing", "score": 0.0412},
                         ],
-                        "class_maxima": [{"label": "Crying, sobbing", "score": 0.0412}],
                     }
                 ]
             }
+        return response
+
+
+class _MalformedSpeakerHost(_Host):
+    def request(self, payload: dict, *, timeout: float) -> dict:
+        response = super().request(payload, timeout=timeout)
+        if self.spec.key == "speaker":
+            response["result"]["vocal"] = [
+                {"label": "laughter", "start_ms": 200, "end_ms": 100},
+            ]
+        return response
+
+
+class _MalformedSoundScoreHost(_Host):
+    def request(self, payload: dict, *, timeout: float) -> dict:
+        response = super().request(payload, timeout=timeout)
+        if self.spec.key == "sounds":
+            response["result"]["sounds"][0]["score"] = 1.1
         return response
 
 
@@ -145,20 +164,20 @@ async def test_service_reports_partial_without_leaking_internal_error():
         offset_ms=0,
     )
 
-    context = await service.analyze_chunks((chunk,))
-    payload = speech_context_payload(context)
+    payload = speech_context_payload(await service.analyze_chunks((chunk,)))
 
-    assert payload["status"] == "partial"
-    assert payload["unavailable"] == ["audio_events"]
-    assert "prosody" in payload
-    assert "audio_events" not in payload
-    assert "error" not in payload
-
+    assert payload == {
+        "schema_version": 2,
+        "status": "partial",
+        "emotions": [{"label": "happy", "start_ms": 0, "end_ms": 200}],
+        "vocal": [{"label": "laughter", "start_ms": 100, "end_ms": 300}],
+        "unavailable": ["sounds"],
+    }
     await service.close()
 
 
 @pytest.mark.asyncio
-async def test_service_logs_pre_reduction_yamnet_diagnostic_without_exposing_it(caplog):
+async def test_service_logs_both_pre_reduction_payloads_without_exposing_them(caplog):
     service = SpeechContextService(host_factory=lambda spec: _DiagnosticHost(spec))
     chunk = AudioChunk(
         data=np.full(16_000, 0.1, dtype=np.float32),
@@ -170,12 +189,54 @@ async def test_service_logs_pre_reduction_yamnet_diagnostic_without_exposing_it(
     with caplog.at_level(logging.INFO, logger="vox.speech_context.service"):
         context = await service.analyze_chunks((chunk,))
 
+    assert "speech context SenseVoice pre-reduction payload=" in caplog.text
+    assert '"text":"internal only"' in caplog.text
     assert "speech context YAMNet pre-reduction payload=" in caplog.text
     assert '"label":"Crying, sobbing","score":0.0412' in caplog.text
-    assert context.audio_events is not None
-    assert [candidate.label for candidate in context.audio_events.candidates] == ["Laughter"]
     assert "_pre_reduction" not in speech_context_payload(context)
+    await service.close()
 
+
+@pytest.mark.asyncio
+async def test_service_rejects_malformed_speaker_track_atomically():
+    service = SpeechContextService(host_factory=lambda spec: _MalformedSpeakerHost(spec))
+    chunk = AudioChunk(
+        data=np.full(1_600, 0.1, dtype=np.float32),
+        sample_rate=16_000,
+        duration_ms=100,
+        offset_ms=0,
+    )
+
+    payload = speech_context_payload(await service.analyze_chunks((chunk,)))
+
+    assert payload == {
+        "schema_version": 2,
+        "status": "partial",
+        "sounds": [{"label": "dog", "start_ms": 400, "end_ms": 600, "score": 0.75}],
+        "unavailable": ["speaker"],
+    }
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_service_rejects_out_of_range_sound_score():
+    service = SpeechContextService(host_factory=lambda spec: _MalformedSoundScoreHost(spec))
+    chunk = AudioChunk(
+        data=np.full(1_600, 0.1, dtype=np.float32),
+        sample_rate=16_000,
+        duration_ms=100,
+        offset_ms=0,
+    )
+
+    payload = speech_context_payload(await service.analyze_chunks((chunk,)))
+
+    assert payload == {
+        "schema_version": 2,
+        "status": "partial",
+        "emotions": [{"label": "happy", "start_ms": 0, "end_ms": 200}],
+        "vocal": [{"label": "laughter", "start_ms": 100, "end_ms": 300}],
+        "unavailable": ["sounds"],
+    }
     await service.close()
 
 
@@ -191,11 +252,22 @@ async def test_service_analyzes_existing_wave_without_owning_the_file(tmp_path: 
 
     context = await service.analyze_wave_path(audio_path, timeline_offset_ms=500)
 
-    assert context.status == "complete"
     assert audio_path.is_file()
-    assert context.audio_events is not None
-    assert context.audio_events.candidates[0].spans[0].start_ms == 500
+    assert context.sounds is not None
+    assert context.sounds[0].start_ms == 900
+    await service.close()
 
+
+@pytest.mark.asyncio
+async def test_empty_audio_fails_both_tracks_without_starting_workers():
+    service = SpeechContextService(host_factory=lambda spec: pytest.fail(spec.key))
+
+    context = await service.analyze_chunks(())
+
+    assert context == SpeechContext(
+        status="failed",
+        unavailable=("speaker", "sounds"),
+    )
     await service.close()
 
 
@@ -210,11 +282,10 @@ async def test_context_task_cancellation_is_drained():
             await asyncio.Event().wait()
         finally:
             stopped.set()
-        return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+        return SpeechContext(status="failed", unavailable=("speaker", "sounds"))
 
     task = asyncio.create_task(analyze())
     await started.wait()
-
     await cancel_speech_context_task(task)
 
     assert task.cancelled()

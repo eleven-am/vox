@@ -443,14 +443,14 @@ class LongformTranscriptionSession(StreamingOperationErrorReporter):
         if not enabled:
             return None
         if task is None:
-            return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+            return SpeechContext(status="failed", unavailable=("speaker", "sounds"))
         try:
             return await task
         except asyncio.CancelledError:
             raise
         except Exception:
             logger.exception("Long-form speech context analysis failed")
-            return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+            return SpeechContext(status="failed", unavailable=("speaker", "sounds"))
 
     def _delete_context_file(self) -> None:
         state = self._state

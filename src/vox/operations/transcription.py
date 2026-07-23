@@ -399,7 +399,7 @@ async def transcribe(
         if context_task is None:
             speech_context = SpeechContext(
                 status="failed",
-                unavailable=("prosody", "audio_events"),
+                unavailable=("speaker", "sounds"),
             )
         else:
             try:
@@ -410,7 +410,7 @@ async def transcribe(
                 logger.exception("Speech context analysis failed")
                 speech_context = SpeechContext(
                     status="failed",
-                    unavailable=("prosody", "audio_events"),
+                    unavailable=("speaker", "sounds"),
                 )
 
     logger.info(

@@ -360,9 +360,9 @@ def test_transcript_done_event_maps_metadata_with_shared_transcript_converters()
                 },
             ),
             speech_context={
-                "schema_version": 1,
+                "schema_version": 2,
                 "status": "failed",
-                "unavailable": ["prosody", "audio_events"],
+                "unavailable": ["speaker", "sounds"],
             },
         )
     )

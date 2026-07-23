@@ -21,6 +21,7 @@ from vox.speech_context.runtime import (
     RuntimeSpec,
     SpeechContextError,
     create_worker_host,
+    runtime_inventory,
 )
 from vox.speech_context.runtime import (
     runtime_details as _runtime_inventory,
@@ -28,6 +29,8 @@ from vox.speech_context.runtime import (
 from vox.speech_context.runtime import (
     runtime_path as _runtime_path,
 )
+from vox.speech_context.service import SpeechContextService
+from vox.speech_context.types import speech_context_payload
 from vox.streaming.codecs import float32_to_pcm16
 
 SAMPLE_RATE = 16_000
@@ -192,7 +195,7 @@ async def collect_speech_context_evidence(
         )
     except SpeechContextReductionError as error:
         speech_context = {
-            "schema_version": 1,
+            "schema_version": 2,
             "status": "failed",
             "error": {"type": type(error).__name__, "message": str(error)},
         }
@@ -218,10 +221,44 @@ async def collect_speech_context_evidence(
             "unit": "milliseconds",
             "tracks": {
                 "transcription": "results.transcription.raw.words and .segments",
-                "prosody": "results.prosody.raw.low_level_descriptors.frames and .functionals.frames",
-                "audio_events": ("results.audio_events.raw.scores, .embeddings, and .log_mel_spectrogram"),
+                "speaker": "results.speaker.raw.windows",
+                "sounds": "results.sounds.raw.scores, .embeddings, and .log_mel_spectrogram",
             },
         },
         "results": results,
         "speech_context": speech_context,
+    }
+
+
+async def collect_speech_context_service_evidence(
+    audio_file: Path,
+    *,
+    timeout: float = 300.0,
+    home: Path | None = None,
+) -> dict[str, Any]:
+    """Run the production SpeechContextService without STT or any server."""
+    if not audio_file.is_file():
+        raise SpeechContextError(f"audio file does not exist: {audio_file}")
+
+    with tempfile.TemporaryDirectory(prefix="vox-speech-context-") as directory:
+        canonical_path = Path(directory) / "input.wav"
+        input_evidence = _canonicalize_audio(audio_file, canonical_path)
+        service = SpeechContextService(home=home, timeout=timeout)
+        started = time.perf_counter()
+        try:
+            context = await service.analyze_wave_path(canonical_path)
+        finally:
+            await service.close()
+        elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
+
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "created_at": datetime.now(UTC).isoformat(),
+        "input": input_evidence,
+        "execution": {
+            "mode": "speech_context_service",
+            "elapsed_ms": elapsed_ms,
+        },
+        "runtimes": runtime_inventory(home=home),
+        "speech_context": speech_context_payload(context),
     }

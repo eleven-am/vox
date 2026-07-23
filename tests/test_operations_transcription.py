@@ -142,7 +142,7 @@ class _ConcurrentContextService:
     async def analyze_chunks(self, chunks) -> SpeechContext:
         assert tuple(chunks)
         await asyncio.to_thread(self._barrier.wait, 1)
-        return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+        return SpeechContext(status="failed", unavailable=("speaker", "sounds"))
 
 
 @pytest.mark.asyncio
@@ -163,7 +163,7 @@ async def test_transcribe_runs_requested_speech_context_concurrently_with_stt():
     assert bundle.result.text
     assert bundle.speech_context == SpeechContext(
         status="failed",
-        unavailable=("prosody", "audio_events"),
+        unavailable=("speaker", "sounds"),
     )
 
 

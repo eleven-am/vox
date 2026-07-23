@@ -242,7 +242,7 @@ def test_streaming_event_payload_preserves_realtime_wire_contract():
 
 
 def test_streaming_event_payload_includes_context_only_on_final_transcripts():
-    context = SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+    context = SpeechContext(status="failed", unavailable=("speaker", "sounds"))
 
     final_payload = streaming_transcription_event_payload(
         TranscriptEvent(StreamTranscript(text="final", speech_context=context))
@@ -253,9 +253,9 @@ def test_streaming_event_payload_includes_context_only_on_final_transcripts():
 
     assert final_payload is not None
     assert final_payload["speech_context"] == {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "failed",
-        "unavailable": ["prosody", "audio_events"],
+        "unavailable": ["speaker", "sounds"],
     }
     assert partial_payload is not None
     assert "speech_context" not in partial_payload

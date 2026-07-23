@@ -141,7 +141,7 @@ def test_pending_transcript_finalizer_remembers_pops_clears_and_logs(caplog):
 
 def test_pending_transcript_finalizer_reanalyzes_continuations_as_one_timeline():
     finalizer = PendingTranscriptFinalizer(language="en")
-    context = SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+    context = SpeechContext(status="failed", unavailable=("speaker", "sounds"))
     first_audio = np.full(1_600, 0.1, dtype=np.float32)
     second_audio = np.full(3_200, 0.2, dtype=np.float32)
 
@@ -188,7 +188,7 @@ def test_pending_transcript_finalizer_replaces_revision_audio_and_context():
             audio=revision,
             speech_context=SpeechContext(
                 status="failed",
-                unavailable=("prosody", "audio_events"),
+                unavailable=("speaker", "sounds"),
             ),
         )
     )

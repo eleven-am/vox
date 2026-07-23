@@ -14,15 +14,13 @@ from typing import Any
 
 from vox.audio.pipeline import AudioChunk
 from vox.core.worker_host import WorkerHost
-from vox.speech_context.reducer import offset_audio_events
+from vox.speech_context.reducer import offset_context_spans
 from vox.speech_context.runtime import RUNTIME_SPECS, RuntimeSpec, create_worker_host
 from vox.speech_context.types import (
-    AudioEvents,
-    Prosody,
     SpeechContext,
+    SpeechContextSpan,
     SpeechContextTrack,
-    audio_events_from_payload,
-    prosody_from_payload,
+    spans_from_payload,
 )
 from vox.streaming.codecs import float32_to_pcm16
 
@@ -95,7 +93,7 @@ class SpeechContextService:
         if not chunks:
             return SpeechContext(
                 status="failed",
-                unavailable=("prosody", "audio_events"),
+                unavailable=("speaker", "sounds"),
             )
         with tempfile.TemporaryDirectory(prefix="vox-speech-context-") as directory:
             audio_path = Path(directory) / "input.wav"
@@ -161,9 +159,10 @@ class SpeechContextService:
             raise ValueError(f"{spec.key} worker returned an invalid compact result")
         result = dict(result)
         diagnostic = result.pop("_pre_reduction", None)
-        if spec.key == "audio_events" and isinstance(diagnostic, dict):
+        if isinstance(diagnostic, dict):
             logger.info(
-                "speech context YAMNet pre-reduction payload=%s",
+                "speech context %s pre-reduction payload=%s",
+                "SenseVoice" if spec.key == "speaker" else "YAMNet",
                 json.dumps(diagnostic, separators=(",", ":"), sort_keys=True),
             )
         return result
@@ -197,25 +196,36 @@ class SpeechContextService:
         timeline_offset_ms: int,
     ) -> SpeechContext:
         unavailable: list[SpeechContextTrack] = []
-        prosody: Prosody | None = None
-        audio_events: AudioEvents | None = None
+        emotions: tuple[SpeechContextSpan, ...] | None = None
+        vocal: tuple[SpeechContextSpan, ...] | None = None
+        sounds: tuple[SpeechContextSpan, ...] | None = None
         try:
-            raw_prosody = results.get("prosody")
-            if raw_prosody is not None:
-                prosody = prosody_from_payload(raw_prosody)
+            raw_speaker = results.get("speaker")
+            if raw_speaker is not None:
+                shifted = offset_context_spans(
+                    raw_speaker,
+                    offset_ms=timeline_offset_ms,
+                )
+                parsed_emotions = spans_from_payload(shifted, "emotions")
+                parsed_vocal = spans_from_payload(shifted, "vocal")
+                emotions = parsed_emotions
+                vocal = parsed_vocal
             else:
-                unavailable.append("prosody")
+                unavailable.append("speaker")
         except (TypeError, ValueError):
-            unavailable.append("prosody")
+            unavailable.append("speaker")
         try:
-            raw_events = results.get("audio_events")
-            if raw_events is not None:
-                shifted = offset_audio_events(raw_events, offset_ms=timeline_offset_ms)
-                audio_events = audio_events_from_payload(shifted)
+            raw_sounds = results.get("sounds")
+            if raw_sounds is not None:
+                shifted = offset_context_spans(
+                    raw_sounds,
+                    offset_ms=timeline_offset_ms,
+                )
+                sounds = spans_from_payload(shifted, "sounds")
             else:
-                unavailable.append("audio_events")
+                unavailable.append("sounds")
         except (TypeError, ValueError):
-            unavailable.append("audio_events")
+            unavailable.append("sounds")
         if not unavailable:
             status = "complete"
         elif len(unavailable) == 2:
@@ -224,8 +234,9 @@ class SpeechContextService:
             status = "partial"
         return SpeechContext(
             status=status,
-            prosody=prosody,
-            audio_events=audio_events,
+            emotions=emotions,
+            vocal=vocal,
+            sounds=sounds,
             unavailable=tuple(unavailable),
         )
 

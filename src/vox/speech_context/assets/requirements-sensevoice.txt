@@ -1,0 +1,3 @@
+numpy==2.3.5
+sherpa-onnx==1.13.2
+sherpa-onnx-core==1.13.2

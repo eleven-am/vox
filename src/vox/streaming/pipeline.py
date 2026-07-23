@@ -409,7 +409,7 @@ class StreamPipeline:
     async def _unavailable_context() -> SpeechContext:
         return SpeechContext(
             status="failed",
-            unavailable=("prosody", "audio_events"),
+            unavailable=("speaker", "sounds"),
         )
 
     @staticmethod
@@ -426,7 +426,7 @@ class StreamPipeline:
             logger.exception("Speech context analysis failed")
             return SpeechContext(
                 status="failed",
-                unavailable=("prosody", "audio_events"),
+                unavailable=("speaker", "sounds"),
             )
 
     async def _transcribe_audio_with_context(

@@ -127,7 +127,7 @@ class FakeSpeechContextService:
         self.path = audio_path
         with wave.open(str(audio_path), "rb") as handle:
             self.frames = handle.getnframes()
-        return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+        return SpeechContext(status="failed", unavailable=("speaker", "sounds"))
 
 
 class _StoreModel:
@@ -298,7 +298,7 @@ async def test_longform_context_spools_audio_and_emits_only_on_done():
     assert context_service.frames == 16_000
     assert done.speech_context == SpeechContext(
         status="failed",
-        unavailable=("prosody", "audio_events"),
+        unavailable=("speaker", "sounds"),
     )
     assert all(
         "speech_context" not in (longform_transcription_event_payload(event) or {})

@@ -246,32 +246,32 @@ class TestSpeechContext:
     def test_status_reports_runtime_inventory(self, runner, monkeypatch):
         from vox.speech_context import runtime
 
-        monkeypatch.setattr(runtime, "runtime_inventory", lambda: {"prosody": {"status": "missing"}})
+        monkeypatch.setattr(
+            runtime,
+            "runtime_inventory",
+            lambda: {"speaker": {"status": "missing"}},
+        )
 
         result = runner.invoke(cli, ["speech-context", "status"])
 
         assert result.exit_code == 0
-        assert json.loads(result.output) == {"prosody": {"status": "missing"}}
+        assert json.loads(result.output) == {"speaker": {"status": "missing"}}
 
-    def test_install_forwards_explicit_license_acceptance(self, runner, monkeypatch):
+    def test_install_installs_all_service_runtimes(self, runner, monkeypatch):
         from vox.speech_context import runtime
 
-        observed = {}
-
-        def install(*, accept_opensmile_research_license):
-            observed["accepted"] = accept_opensmile_research_license
-            return {"prosody": {"status": "ready"}}
+        def install():
+            return {"speaker": {"status": "ready"}, "sounds": {"status": "ready"}}
 
         monkeypatch.setattr(runtime, "install_speech_context_runtimes", install)
 
-        result = runner.invoke(
-            cli,
-            ["speech-context", "install", "--accept-opensmile-research-license"],
-        )
+        result = runner.invoke(cli, ["speech-context", "install"])
 
         assert result.exit_code == 0
-        assert observed == {"accepted": True}
-        assert json.loads(result.output) == {"prosody": {"status": "ready"}}
+        assert json.loads(result.output) == {
+            "sounds": {"status": "ready"},
+            "speaker": {"status": "ready"},
+        }
 
 
 

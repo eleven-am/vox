@@ -14,10 +14,10 @@ from numpy.typing import NDArray
 
 from vox.speech_context.audioset import enrich_audioset_classes
 from vox.speech_context.reducer import (
-    merge_audio_event_chunks,
-    offset_audio_events,
-    reduce_audio_events,
-    summarize_audio_event_scores,
+    merge_context_chunks,
+    offset_context_spans,
+    reduce_sound_events,
+    summarize_sound_scores,
 )
 from vox.speech_context.worker import run_analysis_worker
 
@@ -128,22 +128,24 @@ class YamnetAnalyzer:
                     hop_ms=SCORE_HOP_MS,
                 ),
             }
-            diagnostics.append({
-                "offset_ms": round(offset_samples / SAMPLE_RATE * 1000),
-                **summarize_audio_event_scores(raw_scores),
-            })
-            reduced = reduce_audio_events(
+            diagnostics.append(
+                {
+                    "offset_ms": round(offset_samples / SAMPLE_RATE * 1000),
+                    **summarize_sound_scores(raw_scores),
+                }
+            )
+            reduced = reduce_sound_events(
                 raw_scores,
                 duration_ms=duration_ms,
             )
             chunks.append(
-                offset_audio_events(
+                offset_context_spans(
                     reduced,
                     offset_ms=round(offset_samples / SAMPLE_RATE * 1000),
                 )
             )
             offset_samples += len(waveform)
-        merged = merge_audio_event_chunks(chunks)
+        merged = merge_context_chunks(chunks, fields=("sounds",))
         merged["_pre_reduction"] = {"chunks": diagnostics}
         return merged
 

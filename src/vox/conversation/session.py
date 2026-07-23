@@ -1327,14 +1327,14 @@ class ConversationSession:
                     logger.exception("Conversation speech context analysis failed")
                     context = SpeechContext(
                         status="failed",
-                        unavailable=("prosody", "audio_events"),
+                        unavailable=("speaker", "sounds"),
                     )
                 payload["speech_context"] = speech_context_payload(context)
             elif "speech_context" not in payload:
                 payload["speech_context"] = speech_context_payload(
                     SpeechContext(
                         status="failed",
-                        unavailable=("prosody", "audio_events"),
+                        unavailable=("speaker", "sounds"),
                     )
                 )
             context_payload = payload.get("speech_context")

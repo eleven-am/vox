@@ -121,7 +121,7 @@ class FakeSTTAdapter(STTAdapter):
 class FakeSpeechContextService:
     async def analyze_chunks(self, chunks) -> SpeechContext:
         assert tuple(chunks)
-        return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+        return SpeechContext(status="failed", unavailable=("speaker", "sounds"))
 
 
 class TestHealthServicer:
@@ -346,7 +346,7 @@ class TestTranscriptionServicerMapping:
         assert response.text == "hello grpc"
         assert response.model == "fake-stt:latest"
         assert response.speech_context["status"] == "failed"
-        assert list(response.speech_context["unavailable"]) == ["prosody", "audio_events"]
+        assert list(response.speech_context["unavailable"]) == ["speaker", "sounds"]
 
     @pytest.mark.asyncio
     async def test_transcribe_no_audio_aborts_with_invalid_argument(self, tmp_path):
@@ -498,7 +498,7 @@ class TestGrpcTranscriptMessages:
             ],
             speech_context=SpeechContext(
                 status="failed",
-                unavailable=("prosody", "audio_events"),
+                unavailable=("speaker", "sounds"),
             ),
         )
 
@@ -521,13 +521,13 @@ class TestGrpcTranscriptMessages:
                 text="hello",
                 speech_context=SpeechContext(
                     status="failed",
-                    unavailable=("prosody", "audio_events"),
+                    unavailable=("speaker", "sounds"),
                 ),
             )
         )
 
         assert message.speech_context["status"] == "failed"
-        assert list(message.speech_context["unavailable"]) == ["prosody", "audio_events"]
+        assert list(message.speech_context["unavailable"]) == ["speaker", "sounds"]
 
     def test_annotate_response_encodes_entities_and_topics(self):
         from vox.grpc.transcript_messages import annotate_response

@@ -210,7 +210,7 @@ async def test_pending_continuation_context_is_reanalyzed_as_one_timeline(caplog
         async def analyze_chunks(self, chunks, *, timeline_offset_ms=0):
             self.chunks = tuple(chunks)
             self.timeline_offset_ms = timeline_offset_ms
-            return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+            return SpeechContext(status="failed", unavailable=("speaker", "sounds"))
 
     context_service = RecordingContextService()
     collector = EventCollector()
@@ -230,7 +230,7 @@ async def test_pending_continuation_context_is_reanalyzed_as_one_timeline(caplog
     )
     original_context = SpeechContext(
         status="failed",
-        unavailable=("prosody", "audio_events"),
+        unavailable=("speaker", "sounds"),
     )
     session._transcript_finalizer.remember(
         StreamTranscript(
@@ -258,7 +258,7 @@ async def test_pending_continuation_context_is_reanalyzed_as_one_timeline(caplog
     assert context_service.timeline_offset_ms == 100
     assert (
         "conversation speech context emitted chunks=2 audio_ms=300 "
-        'payload={"schema_version":1,"status":"failed","unavailable":["prosody","audio_events"]}'
+        'payload={"schema_version":2,"status":"failed","unavailable":["speaker","sounds"]}'
     ) in caplog.text
     assert collector.by_type(WIRE_TRANSCRIPT_DONE) == [
         {
@@ -268,9 +268,9 @@ async def test_pending_continuation_context_is_reanalyzed_as_one_timeline(caplog
             "start_ms": 100,
             "end_ms": 800,
             "speech_context": {
-                "schema_version": 1,
+                "schema_version": 2,
                 "status": "failed",
-                "unavailable": ["prosody", "audio_events"],
+                "unavailable": ["speaker", "sounds"],
             },
         }
     ]
@@ -286,7 +286,7 @@ async def test_speech_context_timeline_starts_with_context_only_vad_audio():
         async def analyze_chunks(self, chunks, *, timeline_offset_ms=0):
             self.chunks = tuple(chunks)
             self.timeline_offset_ms = timeline_offset_ms
-            return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+            return SpeechContext(status="failed", unavailable=("speaker", "sounds"))
 
     context_service = RecordingContextService()
     session = ConversationSession(
@@ -337,7 +337,7 @@ async def test_single_segment_speech_context_is_analyzed_at_turn_finalization():
 
         async def analyze_chunks(self, chunks, *, timeline_offset_ms=0):
             self.chunks = tuple(chunks)
-            return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+            return SpeechContext(status="failed", unavailable=("speaker", "sounds"))
 
     context_service = RecordingContextService()
     session, _, _ = _build_session(
@@ -373,7 +373,7 @@ async def test_single_segment_reuses_context_computed_concurrently_with_stt():
         speech_context=True,
         speech_context_service=UnexpectedContextService(),
     )
-    context = SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+    context = SpeechContext(status="failed", unavailable=("speaker", "sounds"))
     session._transcript_finalizer.remember_turn_audio(
         utterance_id=1,
         audio=np.full(3_200, 0.2, dtype=np.float32),

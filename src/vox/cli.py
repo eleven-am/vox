@@ -427,19 +427,12 @@ def speech_context():
     return None
 
 
-@speech_context.command("install", help="Install the isolated openSMILE and YAMNet runtimes")
-@click.option(
-    "--accept-opensmile-research-license",
-    is_flag=True,
-    help="Acknowledge the audEERING Research License before installing openSMILE",
-)
-def install_speech_context(accept_opensmile_research_license: bool):
+@speech_context.command("install", help="Install the isolated SenseVoice and YAMNet runtimes")
+def install_speech_context():
     from vox.speech_context.runtime import SpeechContextError, install_speech_context_runtimes
 
     try:
-        inventory = install_speech_context_runtimes(
-            accept_opensmile_research_license=accept_opensmile_research_license,
-        )
+        inventory = install_speech_context_runtimes()
     except SpeechContextError as error:
         raise click.ClickException(str(error)) from error
     click.echo(json.dumps(inventory, indent=2, sort_keys=True))

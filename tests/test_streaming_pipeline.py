@@ -307,7 +307,7 @@ class _EouGatedContextService:
         assert tuple(chunks)
         assert timeline_offset_ms == 100
         await self.eou_started.wait()
-        return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+        return SpeechContext(status="failed", unavailable=("speaker", "sounds"))
 
 
 @pytest.mark.asyncio
@@ -383,7 +383,7 @@ async def test_realtime_pipeline_cancels_context_when_eou_scoring_fails():
                 await asyncio.Event().wait()
             finally:
                 self.stopped.set()
-            return SpeechContext(status="failed", unavailable=("prosody", "audio_events"))
+            return SpeechContext(status="failed", unavailable=("speaker", "sounds"))
 
     audio = np.full(3_200, 0.2, dtype=np.float32)
     segment = SpeechSegment(audio=audio, start_ms=100, end_ms=300, utterance_id=4)

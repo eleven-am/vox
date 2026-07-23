@@ -11,6 +11,7 @@ from pathlib import Path
 from vox.speech_context.runner import (
     DEFAULT_MODEL,
     collect_speech_context_evidence,
+    collect_speech_context_service_evidence,
 )
 from vox.speech_context.runtime import (
     SpeechContextError,
@@ -20,9 +21,7 @@ from vox.speech_context.runtime import (
 
 
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Collect internal Parakeet, prosody, and audio-event evidence for one audio file."
-    )
+    parser = argparse.ArgumentParser(description="Install and exercise Vox's isolated speech-context service.")
     parser.add_argument(
         "--home",
         type=Path,
@@ -31,12 +30,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
-    install = commands.add_parser("install", help="Install isolated experimental analyzer runtimes.")
-    install.add_argument(
-        "--accept-opensmile-research-license",
-        action="store_true",
-        help="Acknowledge that openSMILE is research/non-commercial software and is not bundled by Vox.",
-    )
+    commands.add_parser("install", help="Install isolated SenseVoice and YAMNet runtimes.")
 
     commands.add_parser("inventory", help="Show isolated analyzer runtime and model sizes.")
 
@@ -47,6 +41,14 @@ def _parser() -> argparse.ArgumentParser:
     analyze.add_argument("--api-key", default=os.environ.get("VOX_API_KEY"))
     analyze.add_argument("--model", default=DEFAULT_MODEL)
     analyze.add_argument("--timeout", type=float, default=300.0)
+
+    service = commands.add_parser(
+        "analyze-service",
+        help="Run only the production SpeechContextService; no Vox server or STT required.",
+    )
+    service.add_argument("audio_file", type=Path)
+    service.add_argument("--output", type=Path, default=None)
+    service.add_argument("--timeout", type=float, default=300.0)
     return parser
 
 
@@ -64,18 +66,24 @@ def main() -> int:
     args = _parser().parse_args()
     try:
         if args.command == "install":
-            _write_json(
-                install_speech_context_runtimes(
-                    accept_opensmile_research_license=args.accept_opensmile_research_license,
-                    home=args.home,
-                )
-            )
+            _write_json(install_speech_context_runtimes(home=args.home))
             return 0
         if args.command == "inventory":
             _write_json(runtime_inventory(home=args.home))
             return 0
 
         output = args.output or args.audio_file.with_suffix(".speech-context.json")
+        if args.command == "analyze-service":
+            evidence = asyncio.run(
+                collect_speech_context_service_evidence(
+                    args.audio_file,
+                    timeout=args.timeout,
+                    home=args.home,
+                )
+            )
+            _write_json(evidence, output)
+            return 0 if evidence["speech_context"]["status"] == "complete" else 3
+
         evidence = asyncio.run(
             collect_speech_context_evidence(
                 args.audio_file,
