@@ -12,6 +12,7 @@ from vox.speech_context.reducer import (
     reduce_audio_events,
     reduce_prosody,
     reduce_speech_context,
+    summarize_audio_event_scores,
 )
 
 PROSODY_COLUMNS = [
@@ -114,6 +115,51 @@ def test_audio_event_reduction_keeps_only_three_strongest_classes_per_window() -
         "Second",
         "Third",
     ]
+
+
+def test_audio_event_diagnostic_preserves_pre_reducer_rankings_and_weak_scores() -> None:
+    raw = {
+        "classes": _classes("Speech", "Crying", "Sneeze", "Throat clearing"),
+        "scores": [
+            _score_frame(0.0, 0.6, 0.0494, 0.55, 0.4),
+            _score_frame(480.0, 0.7, 0.1932, 0.2, 0.1),
+        ],
+    }
+
+    diagnostic = summarize_audio_event_scores(raw)
+
+    assert diagnostic == {
+        "frame_count": 2,
+        "omitted_frame_count": 0,
+        "frames": [
+            {
+                "start_ms": 0.0,
+                "end_ms": 960.0,
+                "candidates": [
+                    {"label": "Speech", "score": 0.6},
+                    {"label": "Sneeze", "score": 0.55},
+                    {"label": "Throat clearing", "score": 0.4},
+                    {"label": "Crying", "score": 0.0494},
+                ],
+            },
+            {
+                "start_ms": 480.0,
+                "end_ms": 1440.0,
+                "candidates": [
+                    {"label": "Speech", "score": 0.7},
+                    {"label": "Sneeze", "score": 0.2},
+                    {"label": "Crying", "score": 0.1932},
+                    {"label": "Throat clearing", "score": 0.1},
+                ],
+            },
+        ],
+        "class_maxima": [
+            {"label": "Speech", "score": 0.7},
+            {"label": "Sneeze", "score": 0.55},
+            {"label": "Throat clearing", "score": 0.4},
+            {"label": "Crying", "score": 0.1932},
+        ],
+    }
 
 
 def test_audio_event_reduction_removes_explained_ancestors_but_keeps_unrelated_events() -> None:

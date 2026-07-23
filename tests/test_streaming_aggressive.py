@@ -312,9 +312,46 @@ class TestVADConfigDefaults:
         assert isinstance(started, SpeechStarted)
         assert isinstance(stopped, SpeechStopped)
         assert segment is not None
+        assert started.timestamp_ms == 2_200
+        assert stopped.timestamp_ms == 3_900
+        assert segment.start_ms == 2_200
+        assert segment.end_ms == 3_900
         assert started.utterance_id == 2
         assert stopped.utterance_id == 2
         assert segment.utterance_id == 2
+
+    def test_timestamps_and_audio_survive_ring_buffer_rollover_before_speech(self):
+        class LateSpeechVAD:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def get_speech_timestamps(self, audio, **kwargs):
+                self.calls += 1
+                if self.calls == 21:
+                    return [{"start": 8_000, "end": 15_000}]
+                return []
+
+        processor = VADProcessor(config=VADConfig(speech_pre_roll_ms=300))
+        processor._vad_model = LateSpeechVAD()
+
+        silence = np.zeros(16_000, dtype=np.float32)
+        for _ in range(20):
+            event, segment = processor.append(silence)
+            assert event is None
+            assert segment is None
+
+        started, segment = processor.append(np.ones(16_000, dtype=np.float32))
+        assert isinstance(started, SpeechStarted)
+        assert started.timestamp_ms == 20_200
+        assert segment is None
+
+        stopped, segment = processor.append(silence)
+        assert isinstance(stopped, SpeechStopped)
+        assert stopped.timestamp_ms == 21_900
+        assert segment is not None
+        assert segment.start_ms == 20_200
+        assert segment.end_ms == 21_900
+        assert len(segment.audio) == 27_200
 
 
 class TestVADState:

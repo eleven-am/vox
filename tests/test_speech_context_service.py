@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import threading
 import wave
 from pathlib import Path
@@ -110,6 +111,30 @@ class _FailingHost(_Host):
         return super().request(payload, timeout=timeout)
 
 
+class _DiagnosticHost(_Host):
+    def request(self, payload: dict, *, timeout: float) -> dict:
+        response = super().request(payload, timeout=timeout)
+        if self.spec.key == "audio_events":
+            response["result"]["_pre_reduction"] = {
+                "chunks": [
+                    {
+                        "offset_ms": 0,
+                        "frame_count": 1,
+                        "omitted_frame_count": 0,
+                        "frames": [
+                            {
+                                "start_ms": 0.0,
+                                "end_ms": 960.0,
+                                "candidates": [{"label": "Crying, sobbing", "score": 0.0412}],
+                            }
+                        ],
+                        "class_maxima": [{"label": "Crying, sobbing", "score": 0.0412}],
+                    }
+                ]
+            }
+        return response
+
+
 @pytest.mark.asyncio
 async def test_service_reports_partial_without_leaking_internal_error():
     service = SpeechContextService(host_factory=lambda spec: _FailingHost(spec))
@@ -128,6 +153,28 @@ async def test_service_reports_partial_without_leaking_internal_error():
     assert "prosody" in payload
     assert "audio_events" not in payload
     assert "error" not in payload
+
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_service_logs_pre_reduction_yamnet_diagnostic_without_exposing_it(caplog):
+    service = SpeechContextService(host_factory=lambda spec: _DiagnosticHost(spec))
+    chunk = AudioChunk(
+        data=np.full(16_000, 0.1, dtype=np.float32),
+        sample_rate=16_000,
+        duration_ms=1_000,
+        offset_ms=0,
+    )
+
+    with caplog.at_level(logging.INFO, logger="vox.speech_context.service"):
+        context = await service.analyze_chunks((chunk,))
+
+    assert "speech context YAMNet pre-reduction payload=" in caplog.text
+    assert '"label":"Crying, sobbing","score":0.0412' in caplog.text
+    assert context.audio_events is not None
+    assert [candidate.label for candidate in context.audio_events.candidates] == ["Laughter"]
+    assert "_pre_reduction" not in speech_context_payload(context)
 
     await service.close()
 

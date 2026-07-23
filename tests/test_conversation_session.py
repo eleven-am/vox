@@ -193,7 +193,7 @@ async def _drain_events(session: ConversationSession, max_iterations: int = 20) 
 
 
 @pytest.mark.asyncio
-async def test_pending_continuation_context_is_reanalyzed_as_one_timeline():
+async def test_pending_continuation_context_is_reanalyzed_as_one_timeline(caplog):
     class RecordingContextService:
         def __init__(self) -> None:
             self.chunks = ()
@@ -243,10 +243,15 @@ async def test_pending_continuation_context_is_reanalyzed_as_one_timeline():
         )
     )
 
-    await session._emit_pending_transcript_done()
+    with caplog.at_level(logging.INFO, logger="vox.conversation.session"):
+        await session._emit_pending_transcript_done()
 
     assert [chunk.offset_ms for chunk in context_service.chunks] == [100, 600]
     assert context_service.timeline_offset_ms == 100
+    assert (
+        "conversation speech context emitted chunks=2 audio_ms=300 "
+        'payload={"schema_version":1,"status":"failed","unavailable":["prosody","audio_events"]}'
+    ) in caplog.text
     assert collector.by_type(WIRE_TRANSCRIPT_DONE) == [
         {
             "type": WIRE_TRANSCRIPT_DONE,

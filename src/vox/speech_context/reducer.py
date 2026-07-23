@@ -9,6 +9,10 @@ MIN_EVENT_WINDOWS = 2
 MAX_EVENT_CLASSES_PER_FRAME = 3
 ANCESTOR_EXPLANATION_RATIO = 0.8
 EVENT_SCORE_DECIMALS = 2
+DIAGNOSTIC_SCORE_DECIMALS = 4
+DIAGNOSTIC_CLASSES_PER_FRAME = 12
+DIAGNOSTIC_CLASS_MAXIMA = 24
+DIAGNOSTIC_MAX_FRAMES = 64
 FUNCTIONAL_DECIMALS = 3
 NONFINITE_FUNCTIONALS = frozenset({"NaN", "Infinity", "-Infinity"})
 
@@ -70,7 +74,7 @@ def _class_catalog(raw: dict[str, Any]) -> list[dict[str, Any]]:
     return catalog
 
 
-def _score_frames(raw: dict[str, Any], class_count: int) -> list[dict[str, Any]]:
+def _validated_score_frames(raw: dict[str, Any], class_count: int) -> list[dict[str, Any]]:
     frames = raw.get("scores")
     if not isinstance(frames, list):
         raise SpeechContextReductionError("audio event scores must be a list")
@@ -99,6 +103,16 @@ def _score_frames(raw: dict[str, Any], class_count: int) -> list[dict[str, Any]]
         ]
         if any(score < 0 or score > 1 for score in scores):
             raise SpeechContextReductionError(f"score frame {frame_index} values must be between zero and one")
+        validated.append({"start_ms": start_ms, "end_ms": end_ms, "scores": scores})
+        previous_start = start_ms
+    return validated
+
+
+def _score_frames(raw: dict[str, Any], class_count: int) -> list[dict[str, Any]]:
+    validated = _validated_score_frames(raw, class_count)
+    selected_frames: list[dict[str, Any]] = []
+    for frame in validated:
+        scores = frame["scores"]
         selected = {
             class_index: scores[class_index]
             for class_index in sorted(
@@ -106,9 +120,59 @@ def _score_frames(raw: dict[str, Any], class_count: int) -> list[dict[str, Any]]
                 key=lambda index: (-scores[index], index),
             )[:MAX_EVENT_CLASSES_PER_FRAME]
         }
-        validated.append({"start_ms": start_ms, "end_ms": end_ms, "selected": selected})
-        previous_start = start_ms
-    return validated
+        selected_frames.append({
+            "start_ms": frame["start_ms"],
+            "end_ms": frame["end_ms"],
+            "selected": selected,
+        })
+    return selected_frames
+
+
+def summarize_audio_event_scores(raw: dict[str, Any]) -> dict[str, Any]:
+    """Return a bounded, unthresholded view of model scores for diagnostics."""
+    catalog = _class_catalog(raw)
+    frames = _validated_score_frames(raw, len(catalog))
+    frame_summaries = []
+    maxima = [0.0] * len(catalog)
+    for frame in frames:
+        scores = frame["scores"]
+        for index, score in enumerate(scores):
+            maxima[index] = max(maxima[index], score)
+        ranked = sorted(range(len(scores)), key=lambda index: (-scores[index], index))
+        frame_summaries.append({
+            "start_ms": frame["start_ms"],
+            "end_ms": frame["end_ms"],
+            "candidates": [
+                {
+                    "label": catalog[index]["label"],
+                    "score": round(scores[index], DIAGNOSTIC_SCORE_DECIMALS),
+                }
+                for index in ranked[:DIAGNOSTIC_CLASSES_PER_FRAME]
+            ],
+        })
+
+    omitted_frames = max(0, len(frame_summaries) - DIAGNOSTIC_MAX_FRAMES)
+    if omitted_frames:
+        head_count = DIAGNOSTIC_MAX_FRAMES // 2
+        tail_count = DIAGNOSTIC_MAX_FRAMES - head_count
+        frame_summaries = [
+            *frame_summaries[:head_count],
+            *frame_summaries[-tail_count:],
+        ]
+
+    ranked_maxima = sorted(range(len(maxima)), key=lambda index: (-maxima[index], index))
+    return {
+        "frame_count": len(frames),
+        "omitted_frame_count": omitted_frames,
+        "frames": frame_summaries,
+        "class_maxima": [
+            {
+                "label": catalog[index]["label"],
+                "score": round(maxima[index], DIAGNOSTIC_SCORE_DECIMALS),
+            }
+            for index in ranked_maxima[:DIAGNOSTIC_CLASS_MAXIMA]
+        ],
+    }
 
 
 def _finish_event(

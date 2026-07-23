@@ -22,6 +22,7 @@ evidence.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -1320,6 +1321,14 @@ class ConversationSession:
                         status="failed",
                         unavailable=("prosody", "audio_events"),
                     )
+                )
+            context_payload = payload.get("speech_context")
+            if isinstance(context_payload, dict):
+                logger.info(
+                    "conversation speech context emitted chunks=%d audio_ms=%d payload=%s",
+                    len(audio),
+                    sum(chunk.duration_ms for chunk in audio),
+                    json.dumps(context_payload, separators=(",", ":"), sort_keys=True),
                 )
         self._transcript_finalizer.log(payload)
         await self._emit(payload)

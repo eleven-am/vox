@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import tempfile
 import threading
@@ -158,6 +159,13 @@ class SpeechContextService:
         result = response.get("result")
         if not isinstance(result, dict):
             raise ValueError(f"{spec.key} worker returned an invalid compact result")
+        result = dict(result)
+        diagnostic = result.pop("_pre_reduction", None)
+        if spec.key == "audio_events" and isinstance(diagnostic, dict):
+            logger.info(
+                "speech context YAMNet pre-reduction payload=%s",
+                json.dumps(diagnostic, separators=(",", ":"), sort_keys=True),
+            )
         return result
 
     def _host_for(self, spec: RuntimeSpec) -> WorkerHost:

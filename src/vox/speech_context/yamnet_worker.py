@@ -17,6 +17,7 @@ from vox.speech_context.reducer import (
     merge_audio_event_chunks,
     offset_audio_events,
     reduce_audio_events,
+    summarize_audio_event_scores,
 )
 from vox.speech_context.worker import run_analysis_worker
 
@@ -114,19 +115,25 @@ class YamnetAnalyzer:
 
     def analyze_compact(self, audio_path: str) -> dict[str, Any]:
         chunks: list[dict[str, Any]] = []
+        diagnostics: list[dict[str, Any]] = []
         offset_samples = 0
         for waveform in self._iter_waveforms(audio_path):
             scores = self._invoke(waveform)[0]
             duration_ms = len(waveform) / SAMPLE_RATE * 1000
+            raw_scores = {
+                "classes": self._classes,
+                "scores": self._timed_rows(
+                    scores,
+                    window_ms=SCORE_WINDOW_MS,
+                    hop_ms=SCORE_HOP_MS,
+                ),
+            }
+            diagnostics.append({
+                "offset_ms": round(offset_samples / SAMPLE_RATE * 1000),
+                **summarize_audio_event_scores(raw_scores),
+            })
             reduced = reduce_audio_events(
-                {
-                    "classes": self._classes,
-                    "scores": self._timed_rows(
-                        scores,
-                        window_ms=SCORE_WINDOW_MS,
-                        hop_ms=SCORE_HOP_MS,
-                    ),
-                },
+                raw_scores,
                 duration_ms=duration_ms,
             )
             chunks.append(
@@ -136,7 +143,9 @@ class YamnetAnalyzer:
                 )
             )
             offset_samples += len(waveform)
-        return merge_audio_event_chunks(chunks)
+        merged = merge_audio_event_chunks(chunks)
+        merged["_pre_reduction"] = {"chunks": diagnostics}
+        return merged
 
 
 if __name__ == "__main__":

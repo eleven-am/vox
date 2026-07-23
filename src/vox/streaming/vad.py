@@ -257,6 +257,7 @@ class VADProcessor:
     buffer: AudioRingBuffer = field(default_factory=lambda: AudioRingBuffer(MAX_BUFFER_SAMPLES))
     _vad_model: VADBackend | None = None
     _utterance_sequence: int = 0
+    _stream_samples: int = 0
 
     def __post_init__(self) -> None:
         if self._vad_model is None:
@@ -265,7 +266,18 @@ class VADProcessor:
     def _duration_ms(self) -> int:
         return len(self.buffer) // MS_PER_SAMPLE
 
+    def _stream_duration_ms(self) -> int:
+        return self._stream_samples // MS_PER_SAMPLE
+
+    def _buffer_start_ms(self) -> int:
+        return (self._stream_samples - len(self.buffer)) // MS_PER_SAMPLE
+
+    def _buffer_sample_for_timestamp(self, timestamp_ms: int) -> int:
+        buffer_start_sample = self._stream_samples - len(self.buffer)
+        return (timestamp_ms * MS_PER_SAMPLE) - buffer_start_sample
+
     def append(self, audio: NDArray[np.float32]) -> tuple[SpeechStarted | SpeechStopped | None, SpeechSegment | None]:
+        self._stream_samples += len(audio)
         self.buffer.append(audio)
 
         audio_window = self.buffer.get_last_n(VAD_WINDOW_SIZE_SAMPLES)
@@ -301,14 +313,17 @@ class VADProcessor:
                 return None, None
 
             if self.state.carryover:
-                self.state.audio_start_ms = 0
+                self.state.audio_start_ms = self._buffer_start_ms()
                 self.state.carryover = False
             else:
                 detected_start_ms = (
-                    self._duration_ms() - window_duration_ms + (speech_ts["start"] // MS_PER_SAMPLE)
+                    self._buffer_start_ms()
+                    + self._duration_ms()
+                    - window_duration_ms
+                    + (speech_ts["start"] // MS_PER_SAMPLE)
                 )
                 self.state.audio_start_ms = max(
-                    0,
+                    self._buffer_start_ms(),
                     detected_start_ms - max(0, int(self.config.speech_pre_roll_ms)),
                 )
             self.state.active = True
@@ -320,7 +335,7 @@ class VADProcessor:
             ), None
 
         if speech_ts is None:
-            self.state.audio_end_ms = self._duration_ms() - self.config.speech_pad_ms
+            self.state.audio_end_ms = self._stream_duration_ms() - self.config.speech_pad_ms
             segment = self._extract_segment()
             self._clear_buffer()
             if segment.end_ms - segment.start_ms < self.config.min_audio_duration_ms:
@@ -334,11 +349,12 @@ class VADProcessor:
                 utterance_id=segment.utterance_id,
             ), segment
 
-        if self._duration_ms() >= self.config.max_utterance_ms:
-            self.state.audio_end_ms = self._duration_ms() - self.config.speech_pad_ms
+        if self._stream_duration_ms() - self.state.audio_start_ms >= self.config.max_utterance_ms:
+            self.state.audio_end_ms = self._stream_duration_ms() - self.config.speech_pad_ms
             segment = self._extract_segment()
             overflow_audio = self.buffer.get_slice(
-                self.state.audio_end_ms * MS_PER_SAMPLE, len(self.buffer)
+                self._buffer_sample_for_timestamp(self.state.audio_end_ms),
+                len(self.buffer),
             )
             self._clear_buffer()
             if len(overflow_audio) > 0:
@@ -369,8 +385,8 @@ class VADProcessor:
                 utterance_id=self.state.utterance_id,
             )
 
-        start_sample = self.state.audio_start_ms * MS_PER_SAMPLE
-        end_sample = self.state.audio_end_ms * MS_PER_SAMPLE
+        start_sample = self._buffer_sample_for_timestamp(self.state.audio_start_ms)
+        end_sample = self._buffer_sample_for_timestamp(self.state.audio_end_ms)
 
         return SpeechSegment(
             audio=self.buffer.get_slice(start_sample, end_sample),
@@ -385,3 +401,4 @@ class VADProcessor:
 
     def reset(self) -> None:
         self._clear_buffer()
+        self._stream_samples = 0
