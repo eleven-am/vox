@@ -87,10 +87,13 @@ class TestConfigureLogging:
             assert logging.getLogger(name).level == logging.WARNING
 
     def test_vox_info_reaches_handler(self, capsys):
-        with patch.dict(os.environ, {
-            "VOX_LOG_LEVEL": "INFO",
-            "VOX_LOG_FORMAT": "plain",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "VOX_LOG_LEVEL": "INFO",
+                "VOX_LOG_FORMAT": "plain",
+            },
+        ):
             reset_for_tests()
             configure_logging()
             logging.getLogger("vox.test").info("hello")
@@ -98,15 +101,91 @@ class TestConfigureLogging:
             assert "hello" in captured.out
 
     def test_vox_debug_filtered_at_info_level(self, capsys):
-        with patch.dict(os.environ, {
-            "VOX_LOG_LEVEL": "INFO",
-            "VOX_LOG_FORMAT": "plain",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "VOX_LOG_LEVEL": "INFO",
+                "VOX_LOG_FORMAT": "plain",
+            },
+        ):
             reset_for_tests()
             configure_logging()
             logging.getLogger("vox.test").debug("should not appear")
             captured = capsys.readouterr()
             assert "should not appear" not in captured.out
+
+    def test_query_credentials_are_redacted_from_access_logs(self, capsys):
+        with patch.dict(
+            os.environ,
+            {
+                "VOX_LOG_LEVEL": "INFO",
+                "VOX_LOG_FORMAT": "plain",
+            },
+        ):
+            reset_for_tests()
+            configure_logging()
+            logging.getLogger("uvicorn.access").info(
+                '%s - "%s %s HTTP/%s" %d',
+                "127.0.0.1:5000",
+                "GET",
+                "/v1/socket?api_key=top-secret&mode=rtc",
+                "1.1",
+                101,
+            )
+
+            captured = capsys.readouterr()
+
+            assert "top-secret" not in captured.out
+            assert "api_key=[REDACTED]" in captured.out
+            assert "mode=rtc" in captured.out
+
+    def test_encoded_query_credential_names_are_redacted_from_access_logs(self, capsys):
+        with patch.dict(
+            os.environ,
+            {
+                "VOX_LOG_LEVEL": "INFO",
+                "VOX_LOG_FORMAT": "plain",
+            },
+        ):
+            reset_for_tests()
+            configure_logging()
+            logging.getLogger("uvicorn.access").info(
+                '%s - "%s %s HTTP/%s" %d',
+                "127.0.0.1:5000",
+                "GET",
+                "/v1/socket?%61pi_key=top-secret&api%5Fkey=second-secret&mode=rtc",
+                "1.1",
+                101,
+            )
+
+            captured = capsys.readouterr()
+
+            assert "top-secret" not in captured.out
+            assert "second-secret" not in captured.out
+            assert "%61pi_key=[REDACTED]" in captured.out
+            assert "api%5Fkey=[REDACTED]" in captured.out
+            assert "mode=rtc" in captured.out
+
+    def test_query_credentials_are_redacted_from_exception_tracebacks(self, capsys):
+        with patch.dict(
+            os.environ,
+            {
+                "VOX_LOG_LEVEL": "INFO",
+                "VOX_LOG_FORMAT": "plain",
+            },
+        ):
+            reset_for_tests()
+            configure_logging()
+            try:
+                raise RuntimeError("failed https://example.test/model?access_token=top-secret&mode=pull")
+            except RuntimeError:
+                logging.getLogger("vox.test").exception("adapter request failed")
+
+            captured = capsys.readouterr()
+
+            assert "top-secret" not in captured.out
+            assert "access_token=[REDACTED]" in captured.out
+            assert "mode=pull" in captured.out
 
 
 class TestRequestIdFilter:
@@ -133,7 +212,13 @@ class TestRequestIdFilter:
 
     def test_injects_default_dash_when_unset(self):
         record = logging.LogRecord(
-            "x", logging.INFO, "f", 1, "msg", None, None,
+            "x",
+            logging.INFO,
+            "f",
+            1,
+            "msg",
+            None,
+            None,
         )
         RequestIdFilter().filter(record)
         assert record.request_id == "-"
@@ -142,7 +227,13 @@ class TestRequestIdFilter:
         token = request_id_var.set("abc123")
         try:
             record = logging.LogRecord(
-                "x", logging.INFO, "f", 1, "msg", None, None,
+                "x",
+                logging.INFO,
+                "f",
+                1,
+                "msg",
+                None,
+                None,
             )
             RequestIdFilter().filter(record)
             assert record.request_id == "abc123"
@@ -150,10 +241,13 @@ class TestRequestIdFilter:
             request_id_var.reset(token)
 
     def test_emitted_log_line_contains_rid(self):
-        with patch.dict(os.environ, {
-            "VOX_LOG_LEVEL": "INFO",
-            "VOX_LOG_FORMAT": "plain",
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "VOX_LOG_LEVEL": "INFO",
+                "VOX_LOG_FORMAT": "plain",
+            },
+        ):
             reset_for_tests()
             configure_logging()
 

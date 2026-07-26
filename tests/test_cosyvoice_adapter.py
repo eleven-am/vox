@@ -358,7 +358,10 @@ def test_cosyvoice_bootstraps_runtime_when_missing(tmp_path):
     assert "https://github.com/FunAudioLLM/CosyVoice.git" in calls[0]
     install_call = next(call for call in calls if call[:2] == ["uv", "pip"])
     assert "--target" in install_call
-    assert str(tmp_path / "vox-home" / "runtime" / "cosyvoice") in install_call
+    runtime_dir = tmp_path / "vox-home" / "runtime" / "cosyvoice"
+    install_target = Path(install_call[install_call.index("--target") + 1])
+    assert install_target.parent == runtime_dir.parent
+    assert install_target.name.startswith(".cosyvoice.installing-")
     assert "HyperPyYAML==1.2.3" in install_call
     assert "huggingface-hub>=0.34,<1.0" in install_call
     assert "lightning==2.2.4" in install_call
@@ -421,7 +424,10 @@ def test_cosyvoice_prepare_runtime_bootstraps_without_loading_model(tmp_path):
     assert "v2.0" in calls[0]
     install_call = next(call for call in calls if call[:2] == ["uv", "pip"])
     assert "--target" in install_call
-    assert str(tmp_path / "vox-home" / "runtime" / "cosyvoice") in install_call
+    runtime_dir = tmp_path / "vox-home" / "runtime" / "cosyvoice"
+    install_target = Path(install_call[install_call.index("--target") + 1])
+    assert install_target.parent == runtime_dir.parent
+    assert install_target.name.startswith(".cosyvoice.installing-")
     assert "HyperPyYAML==1.2.3" in install_call
 
 
@@ -456,7 +462,10 @@ def test_cosyvoice_repairs_runtime_when_import_probe_is_broken(tmp_path):
     assert calls
     install_call = next(call for call in calls if call[:2] == ["uv", "pip"])
     assert "--target" in install_call
-    assert str(tmp_path / "vox-home" / "runtime" / "cosyvoice") in install_call
+    runtime_dir = tmp_path / "vox-home" / "runtime" / "cosyvoice"
+    install_target = Path(install_call[install_call.index("--target") + 1])
+    assert install_target.parent == runtime_dir.parent
+    assert install_target.name.startswith(".cosyvoice.installing-")
     assert "HyperPyYAML==1.2.3" in install_call
 
 

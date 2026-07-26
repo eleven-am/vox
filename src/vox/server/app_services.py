@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from vox.operations.models import PullTaskRegistry
 from vox.server.rtc_registry import RtcSessionRegistry
 from vox.speech_context.service import SpeechContextService
 
@@ -13,6 +14,7 @@ class AppServices:
     registry: Any
     store: Any
     speech_context: SpeechContextService | None
+    pull_tasks: PullTaskRegistry
 
 
 def app_state(request_or_ws_or_app: Any) -> Any:
@@ -27,6 +29,7 @@ def app_services(request_or_ws_or_app: Any) -> AppServices:
         registry=state.registry,
         store=state.store,
         speech_context=getattr(state, "speech_context", None),
+        pull_tasks=state.pull_tasks,
     )
 
 

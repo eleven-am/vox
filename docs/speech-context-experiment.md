@@ -77,6 +77,20 @@ Licenses:
 
 openSMILE is not part of this service or its runtime.
 
+## Resource ownership
+
+Speech-context admission is bounded to two accepted analyses and 256 MiB of
+source audio across running and waiting requests. One analysis runs at a time;
+SenseVoice and YAMNet execute concurrently within that analysis. Requests over
+either admission limit fail immediately instead of accumulating an unbounded
+executor queue.
+
+Cancellation invalidates the analysis, terminates its bound workers, waits for
+the request thread to return, and releases temporary WAV storage before
+admission is returned. Server shutdown first cancels active analyses and
+terminates workers, then drains request and cleanup tasks under the shared Vox
+shutdown deadline.
+
 ## Service harness
 
 Record a browser microphone sample:

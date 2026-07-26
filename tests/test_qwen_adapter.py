@@ -4,8 +4,10 @@ import asyncio
 import base64
 import importlib
 import json
+import signal
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -61,6 +63,55 @@ def _mock_faster_qwen_model():
         ]
     )
     return model
+
+
+class _BlockingSubprocess:
+    def __init__(self, payload: str) -> None:
+        self.pid = 4321
+        self.returncode: int | None = None
+        self.started = threading.Event()
+        self.terminated = threading.Event()
+        self.reaped = threading.Event()
+        self.payload = payload
+        self.stdin_payload: str | None = None
+
+    def run(self, cmd, **_):
+        self.started.set()
+        self.terminated.wait(2.0)
+        self.reaped.set()
+        return subprocess.CompletedProcess(cmd, self.returncode or 0, self.payload, "")
+
+    def communicate(self, input=None, timeout=None):
+        self.stdin_payload = input
+        self.started.set()
+        if not self.terminated.wait(timeout):
+            raise subprocess.TimeoutExpired([], timeout)
+        self.reaped.set()
+        return self.payload, ""
+
+    def poll(self):
+        return self.returncode
+
+    def terminate(self):
+        self.returncode = -15
+        self.terminated.set()
+
+    def kill(self):
+        self.returncode = -9
+        self.terminated.set()
+
+    def wait(self, timeout=None):
+        if not self.terminated.wait(timeout):
+            raise subprocess.TimeoutExpired([], timeout)
+        self.reaped.set()
+        return self.returncode
+
+
+def _completed_subprocess(payload: str) -> _BlockingSubprocess:
+    process = _BlockingSubprocess(payload)
+    process.returncode = 0
+    process.terminated.set()
+    return process
 
 
 class TestQwen3ASRAdapterInfo:
@@ -159,10 +210,12 @@ class TestQwen3ASRAdapterInfo:
         model_cls.from_pretrained.return_value = model_instance
 
         aligner_instance = MagicMock()
-        aligner_instance.align.return_value = [[
-            SimpleNamespace(text="hello", start_time=0.0, end_time=0.5, confidence=0.99),
-            SimpleNamespace(text="world", start_time=0.5, end_time=1.0, confidence=0.98),
-        ]]
+        aligner_instance.align.return_value = [
+            [
+                SimpleNamespace(text="hello", start_time=0.0, end_time=0.5, confidence=0.99),
+                SimpleNamespace(text="world", start_time=0.5, end_time=1.0, confidence=0.98),
+            ]
+        ]
         forced_aligner_cls.from_pretrained.return_value = aligner_instance
 
         with patch.dict("sys.modules", {"torch": torch_mock, "qwen_asr": qwen_asr_module, "qwen_tts": MagicMock()}):
@@ -192,9 +245,11 @@ class TestQwen3ASRAdapterInfo:
         model_cls.from_pretrained.return_value = model_instance
 
         aligner_instance = MagicMock()
-        aligner_instance.align.return_value = [[
-            SimpleNamespace(text="hello", start_time=0.0, end_time=0.5, confidence=0.99),
-        ]]
+        aligner_instance.align.return_value = [
+            [
+                SimpleNamespace(text="hello", start_time=0.0, end_time=0.5, confidence=0.99),
+            ]
+        ]
         forced_aligner_cls.from_pretrained.return_value = aligner_instance
 
         with patch.dict("sys.modules", {"torch": torch_mock, "qwen_asr": qwen_asr_module, "qwen_tts": MagicMock()}):
@@ -624,6 +679,7 @@ class TestQwen3TTSAdapterInfo:
             ref = np.linspace(0.0, 0.5, num=24_000, dtype=np.float32)
 
             with patch.object(adapter, "_stream_subprocess", side_effect=fake_subprocess) as subprocess:
+
                 async def run():
                     chunks = []
                     async for chunk in adapter.synthesize("Hello", language="en", reference_audio=ref):
@@ -824,7 +880,8 @@ class TestQwen3TTSAdapterInfo:
 
             adapter = Qwen3TTSAdapter()
             adapter.load(
-                "local-path", "cuda",
+                "local-path",
+                "cuda",
                 _source="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
                 default_voice="Ryan",
             )
@@ -876,19 +933,21 @@ class TestQwen3TTSAdapterInfo:
             adapter._device = "cpu"
 
             audio_bytes = np.zeros(2400, dtype=np.float32).tobytes()
-            payload = json.dumps({
-                "sample_rate": 24000,
-                "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
-            })
+            payload = json.dumps(
+                {
+                    "sample_rate": 24000,
+                    "audio_b64": base64.b64encode(audio_bytes).decode("ascii"),
+                }
+            )
 
             ref_paths_seen = []
 
-            def fake_run(cmd, **_):
+            def fake_popen(cmd, **_):
                 args = dict(zip(cmd[::2], cmd[1::2], strict=False))
                 ref_paths_seen.append(args.get("--ref-audio-path"))
                 assert "--mode" in cmd
                 assert cmd[cmd.index("--mode") + 1] == "clone"
-                return subprocess.CompletedProcess(cmd, 0, payload, "")
+                return _completed_subprocess(payload)
 
             async def collect():
                 out = []
@@ -900,7 +959,7 @@ class TestQwen3TTSAdapterInfo:
                     out.append(chunk)
                 return out
 
-            with patch("vox_qwen.tts_adapter.subprocess.run", side_effect=fake_run):
+            with patch("vox_qwen.tts_adapter.subprocess.Popen", side_effect=fake_popen):
                 chunks = asyncio.run(collect())
 
             assert chunks[-1].is_final is True
@@ -918,22 +977,67 @@ class TestQwen3TTSAdapterInfo:
             adapter._device = "cpu"
 
             audio = np.zeros(24_000, dtype=np.float32).tobytes()
-            payload = json.dumps({
-                "sample_rate": 24_000,
-                "audio_b64": base64.b64encode(audio).decode("ascii"),
-            })
+            payload = json.dumps(
+                {
+                    "sample_rate": 24_000,
+                    "audio_b64": base64.b64encode(audio).decode("ascii"),
+                }
+            )
 
-            def fake_run(cmd, **_):
+            def fake_popen(cmd, **_):
                 assert "--seed" in cmd
                 assert cmd[cmd.index("--seed") + 1] == "777"
-                return subprocess.CompletedProcess(cmd, 0, payload, "")
+                return _completed_subprocess(payload)
 
             async def collect():
                 async for _ in adapter.synthesize("hello", params={"seed": 777}):
                     pass
 
-            with patch("vox_qwen.tts_adapter.subprocess.run", side_effect=fake_run):
+            with patch("vox_qwen.tts_adapter.subprocess.Popen", side_effect=fake_popen):
                 asyncio.run(collect())
+
+    def test_subprocess_fallback_keeps_private_text_out_of_process_arguments(self):
+        with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            adapter._loaded = True
+            adapter._subprocess_only = True
+            adapter._mode = "clone"
+            adapter._model_id = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+            adapter._device = "cpu"
+
+            audio = np.zeros(24_000, dtype=np.float32).tobytes()
+            payload = json.dumps(
+                {
+                    "sample_rate": 24_000,
+                    "audio_b64": base64.b64encode(audio).decode("ascii"),
+                }
+            )
+            process = _completed_subprocess(payload)
+            private_text = "private synthesis text"
+            private_reference = "private reference transcript"
+
+            def fake_popen(cmd, **_):
+                assert private_text not in cmd
+                assert private_reference not in cmd
+                return process
+
+            async def collect():
+                async for _ in adapter.synthesize(
+                    private_text,
+                    reference_audio=np.zeros(24_000, dtype=np.float32),
+                    reference_text=private_reference,
+                ):
+                    pass
+
+            with patch("vox_qwen.tts_adapter.subprocess.Popen", side_effect=fake_popen):
+                asyncio.run(collect())
+
+            assert json.loads(process.stdin_payload or "{}") == {
+                "text": private_text,
+                "reference_text": private_reference,
+            }
 
     def test_list_voices_returns_supported_speakers(self):
         torch_mock = _mock_torch()
@@ -990,10 +1094,12 @@ class TestQwen3TTSAdapterInfo:
             adapter._device = "cpu"
 
             audio = np.zeros(24_000, dtype=np.float32).tobytes()
-            payload = json.dumps({
-                "sample_rate": 24_000,
-                "audio_b64": base64.b64encode(audio).decode("ascii"),
-            })
+            payload = json.dumps(
+                {
+                    "sample_rate": 24_000,
+                    "audio_b64": base64.b64encode(audio).decode("ascii"),
+                }
+            )
 
             async def collect():
                 chunks = []
@@ -1001,8 +1107,8 @@ class TestQwen3TTSAdapterInfo:
                     chunks.append(chunk)
                 return chunks
 
-            completed = subprocess.CompletedProcess([], 0, payload, "")
-            with patch("vox_qwen.tts_adapter.subprocess.run", return_value=completed):
+            completed = _completed_subprocess(payload)
+            with patch("vox_qwen.tts_adapter.subprocess.Popen", return_value=completed):
                 chunks = asyncio.run(collect())
 
             assert any(chunk.audio for chunk in chunks)
@@ -1020,10 +1126,12 @@ class TestQwen3TTSAdapterInfo:
             adapter._device = "cpu"
 
             audio = np.zeros(24_000, dtype=np.float32).tobytes()
-            payload = json.dumps({
-                "sample_rate": 24_000,
-                "audio_b64": base64.b64encode(audio).decode("ascii"),
-            })
+            payload = json.dumps(
+                {
+                    "sample_rate": 24_000,
+                    "audio_b64": base64.b64encode(audio).decode("ascii"),
+                }
+            )
 
             async def collect():
                 chunks = []
@@ -1031,12 +1139,100 @@ class TestQwen3TTSAdapterInfo:
                     chunks.append(chunk)
                 return chunks
 
-            completed = subprocess.CompletedProcess([], 0, payload, "")
-            with patch("vox_qwen.tts_adapter.subprocess.run", return_value=completed):
+            completed = _completed_subprocess(payload)
+            with patch("vox_qwen.tts_adapter.subprocess.Popen", return_value=completed):
                 chunks = asyncio.run(collect())
 
             assert any(chunk.audio for chunk in chunks)
             assert chunks[-1].is_final is True
+
+    def test_cancelled_subprocess_fallback_is_terminated_and_reaped(self):
+        with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            adapter._loaded = True
+            adapter._subprocess_only = True
+            adapter._model_id = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+            adapter._device = "cpu"
+            payload = json.dumps({"sample_rate": 24_000, "audio_b64": ""})
+            process = _BlockingSubprocess(payload)
+
+            async def run():
+                task = asyncio.create_task(
+                    adapter._synthesize_via_subprocess(
+                        mode="custom",
+                        text="hello",
+                        language="en",
+                    )
+                )
+                assert await asyncio.to_thread(process.started.wait, 1.0)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+                assert process.terminated.is_set()
+                assert process.reaped.is_set()
+                assert adapter._active_subprocesses == set()
+
+            def kill_process_group(_, sig):
+                if sig == signal.SIGTERM:
+                    process.terminate()
+                else:
+                    process.kill()
+
+            try:
+                with (
+                    patch("vox_qwen.tts_adapter.subprocess.Popen", return_value=process),
+                    patch("vox_qwen.tts_adapter.subprocess.run", side_effect=process.run),
+                    patch("vox_qwen.tts_adapter.os.killpg", side_effect=kill_process_group),
+                ):
+                    asyncio.run(run())
+            finally:
+                process.terminated.set()
+
+    def test_unload_terminates_active_subprocess_fallback(self):
+        with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):
+            from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
+            adapter = Qwen3TTSAdapter()
+            adapter._loaded = True
+            adapter._subprocess_only = True
+            adapter._model_id = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"
+            adapter._device = "cpu"
+            payload = json.dumps({"sample_rate": 24_000, "audio_b64": ""})
+            process = _BlockingSubprocess(payload)
+
+            async def run():
+                task = asyncio.create_task(
+                    adapter._synthesize_via_subprocess(
+                        mode="custom",
+                        text="hello",
+                        language="en",
+                    )
+                )
+                assert await asyncio.to_thread(process.started.wait, 1.0)
+                await asyncio.to_thread(adapter.unload)
+                assert process.terminated.is_set()
+                assert process.reaped.is_set()
+                assert adapter._active_subprocesses == set()
+                with pytest.raises(RuntimeError, match="subprocess failed"):
+                    await task
+
+            def kill_process_group(_, sig):
+                if sig == signal.SIGTERM:
+                    process.terminate()
+                else:
+                    process.kill()
+
+            try:
+                with (
+                    patch("vox_qwen.tts_adapter.subprocess.Popen", return_value=process),
+                    patch("vox_qwen.tts_adapter.subprocess.run", side_effect=process.run),
+                    patch("vox_qwen.tts_adapter.os.killpg", side_effect=kill_process_group),
+                ):
+                    asyncio.run(run())
+            finally:
+                process.terminated.set()
 
     def test_list_voices_returns_empty(self):
         with patch.dict("sys.modules", {"torch": _mock_torch(), "qwen_asr": MagicMock(), "qwen_tts": MagicMock()}):

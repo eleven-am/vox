@@ -119,6 +119,7 @@ async def reply_pondsocket_error(
     code: str = "command_invalid",
     recoverable: bool = True,
     generation_id: str | None = None,
+    generation: int | None = None,
 ) -> None:
     if ctx.has_replied():
         return
@@ -129,6 +130,8 @@ async def reply_pondsocket_error(
     }
     if generation_id:
         payload["generation_id"] = generation_id
+    if generation is not None:
+        payload["generation"] = generation
     with suppress(Exception):
         await ctx.reply("error", payload)
 
@@ -149,8 +152,9 @@ def decode_pondsocket_command(event_name: str, payload: Any) -> ConversationComm
         )
     if event_name == "rtc.ice_candidate":
         candidate = message.get("candidate")
+        generation = _optional_int(message.get("generation"))
         if candidate is None:
-            return RtcCandidateCommand(candidate=None)
+            return RtcCandidateCommand(candidate=None, generation=generation)
         if isinstance(candidate, dict):
             return RtcCandidateCommand(
                 candidate=str(candidate.get("candidate") or ""),
@@ -163,8 +167,9 @@ def decode_pondsocket_command(event_name: str, payload: Any) -> ConversationComm
                 username_fragment=_optional_string(
                     candidate.get("usernameFragment") or candidate.get("username_fragment")
                 ),
+                generation=generation,
             )
-        return RtcCandidateCommand(candidate=str(candidate))
+        return RtcCandidateCommand(candidate=str(candidate), generation=generation)
     if event_name == "rtc.close":
         return RtcCloseCommand(reason=str(message.get("reason") or "client_closed"))
     if event_name == "session.update":
@@ -226,6 +231,7 @@ async def handle_pondsocket_control_event(
     if runtime is None:
         await reply_pondsocket_error(ctx, missing_message)
         return
+    command = None
     try:
         command = decode_pondsocket_command(ctx.event_name, ctx.get_payload())
         await runtime.dispatch(command)
@@ -237,7 +243,12 @@ async def handle_pondsocket_control_event(
             code=code,
             recoverable=recoverable,
             generation_id=generation_id,
+            generation=getattr(command, "generation", None),
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception(error_log_message)
-        await reply_pondsocket_error(ctx, str(exc))
+        await reply_pondsocket_error(
+            ctx,
+            str(exc),
+            generation=getattr(command, "generation", None),
+        )

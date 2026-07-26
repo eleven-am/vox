@@ -36,6 +36,7 @@ def candidate_timer_arming_ms(
 
 class InterruptionDecisionAction(StrEnum):
     DEFER = "defer"
+    PROVISIONAL_REJECT = "provisional_reject"
     CONFIRM = "confirm"
     REJECT = "reject"
 
@@ -69,6 +70,7 @@ class InterruptionCandidate:
     final_transcript: str = ""
     status: InterruptionCandidateStatus = InterruptionCandidateStatus.PENDING
     decision_reason: str | None = None
+    provisional_rejection_reason: str | None = None
 
     def vad_active_ms(self, now: float) -> int:
         end = self.stopped_at if self.stopped_at is not None else now
@@ -229,7 +231,7 @@ class EvidenceBasedInterruptDetector:
         candidate.assistant_text = assistant_text
 
         if self.is_self_echo(text, assistant_text):
-            return self._decide(candidate, InterruptionDecisionAction.REJECT, "self_echo_transcript")
+            return self._provisionally_reject(candidate, "self_echo_transcript")
 
         if text and self._classifier.should_short_circuit(text):
             return self._decide(
@@ -288,6 +290,8 @@ class EvidenceBasedInterruptDetector:
             duration_ms,
             sample_rate,
         )
+        if not self._candidate_is_current_and_pending(candidate):
+            return self._defer("stale_final_decision", candidate)
         supported, reason = self._final_is_supported(
             strong_text=strong_text,
             word_count=word_count,
@@ -361,8 +365,12 @@ class EvidenceBasedInterruptDetector:
                 sample_rate,
             )
         except Exception:
+            if not self._candidate_is_current_and_pending(candidate):
+                return self._defer("stale_timeout_decision", candidate)
             return self._decide(candidate, InterruptionDecisionAction.REJECT, "classifier_error")
 
+        if not self._candidate_is_current_and_pending(candidate):
+            return self._defer("stale_timeout_decision", candidate)
         if acoustic_speech:
             return self._decide(candidate, InterruptionDecisionAction.CONFIRM, "acoustic_speech")
         return self._decide(candidate, InterruptionDecisionAction.REJECT, "insufficient_acoustic_evidence")
@@ -384,6 +392,9 @@ class EvidenceBasedInterruptDetector:
         if candidate is None or not self._matches(candidate, utterance_id):
             return None
         return candidate
+
+    def _candidate_is_current_and_pending(self, candidate: InterruptionCandidate) -> bool:
+        return self._candidate is candidate and candidate.status is InterruptionCandidateStatus.PENDING
 
     @staticmethod
     def _matches(candidate: InterruptionCandidate, utterance_id: int) -> bool:
@@ -425,6 +436,25 @@ class EvidenceBasedInterruptDetector:
                 candidate.latest_partial_duration_ms,
             ),
             transcript=(candidate.final_transcript or candidate.cumulative_transcript or None),
+        )
+
+    def _provisionally_reject(
+        self,
+        candidate: InterruptionCandidate,
+        reason: str,
+    ) -> InterruptionDecision:
+        if candidate.provisional_rejection_reason == reason:
+            return self._defer("provisional_rejection_already_observed", candidate)
+        candidate.provisional_rejection_reason = reason
+        return InterruptionDecision(
+            action=InterruptionDecisionAction.PROVISIONAL_REJECT,
+            reason=reason,
+            candidate_id=candidate.candidate_id,
+            vad_active_ms=max(
+                candidate.vad_active_ms(candidate.last_observed_at),
+                candidate.latest_partial_duration_ms,
+            ),
+            transcript=candidate.cumulative_transcript or None,
         )
 
     @staticmethod

@@ -141,13 +141,12 @@ class DeleteResponse(_message.Message):
     def __init__(self, status: _Optional[str] = ...) -> None: ...
 
 class TranscribeRequest(_message.Message):
-    __slots__ = ("audio", "model", "language", "word_timestamps", "temperature", "response_format", "format_hint", "speech_context")
+    __slots__ = ("audio", "model", "language", "word_timestamps", "temperature", "format_hint", "speech_context")
     AUDIO_FIELD_NUMBER: _ClassVar[int]
     MODEL_FIELD_NUMBER: _ClassVar[int]
     LANGUAGE_FIELD_NUMBER: _ClassVar[int]
     WORD_TIMESTAMPS_FIELD_NUMBER: _ClassVar[int]
     TEMPERATURE_FIELD_NUMBER: _ClassVar[int]
-    RESPONSE_FORMAT_FIELD_NUMBER: _ClassVar[int]
     FORMAT_HINT_FIELD_NUMBER: _ClassVar[int]
     SPEECH_CONTEXT_FIELD_NUMBER: _ClassVar[int]
     audio: bytes
@@ -155,10 +154,9 @@ class TranscribeRequest(_message.Message):
     language: str
     word_timestamps: bool
     temperature: float
-    response_format: str
     format_hint: str
     speech_context: bool
-    def __init__(self, audio: _Optional[bytes] = ..., model: _Optional[str] = ..., language: _Optional[str] = ..., word_timestamps: bool = ..., temperature: _Optional[float] = ..., response_format: _Optional[str] = ..., format_hint: _Optional[str] = ..., speech_context: bool = ...) -> None: ...
+    def __init__(self, audio: _Optional[bytes] = ..., model: _Optional[str] = ..., language: _Optional[str] = ..., word_timestamps: bool = ..., temperature: _Optional[float] = ..., format_hint: _Optional[str] = ..., speech_context: bool = ...) -> None: ...
 
 class TranscribeResponse(_message.Message):
     __slots__ = ("model", "text", "language", "duration_ms", "processing_ms", "segments", "entities", "topics", "speech_context")
@@ -235,22 +233,20 @@ class WordTimestamp(_message.Message):
     def __init__(self, word: _Optional[str] = ..., start_ms: _Optional[int] = ..., end_ms: _Optional[int] = ..., confidence: _Optional[float] = ...) -> None: ...
 
 class SynthesizeRequest(_message.Message):
-    __slots__ = ("model", "input", "voice", "speed", "language", "response_format", "params")
+    __slots__ = ("model", "input", "voice", "speed", "language", "params")
     MODEL_FIELD_NUMBER: _ClassVar[int]
     INPUT_FIELD_NUMBER: _ClassVar[int]
     VOICE_FIELD_NUMBER: _ClassVar[int]
     SPEED_FIELD_NUMBER: _ClassVar[int]
     LANGUAGE_FIELD_NUMBER: _ClassVar[int]
-    RESPONSE_FORMAT_FIELD_NUMBER: _ClassVar[int]
     PARAMS_FIELD_NUMBER: _ClassVar[int]
     model: str
     input: str
     voice: str
     speed: float
     language: str
-    response_format: str
     params: _struct_pb2.Struct
-    def __init__(self, model: _Optional[str] = ..., input: _Optional[str] = ..., voice: _Optional[str] = ..., speed: _Optional[float] = ..., language: _Optional[str] = ..., response_format: _Optional[str] = ..., params: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...) -> None: ...
+    def __init__(self, model: _Optional[str] = ..., input: _Optional[str] = ..., voice: _Optional[str] = ..., speed: _Optional[float] = ..., language: _Optional[str] = ..., params: _Optional[_Union[_struct_pb2.Struct, _Mapping]] = ...) -> None: ...
 
 class AudioChunk(_message.Message):
     __slots__ = ("audio", "sample_rate", "is_final")
@@ -499,36 +495,44 @@ class RtcSessionDescription(_message.Message):
     def __init__(self, type: _Optional[str] = ..., sdp: _Optional[str] = ...) -> None: ...
 
 class RtcControlAnswer(_message.Message):
-    __slots__ = ("session_id", "answer")
+    __slots__ = ("session_id", "answer", "generation")
     SESSION_ID_FIELD_NUMBER: _ClassVar[int]
     ANSWER_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
     session_id: str
     answer: RtcSessionDescription
-    def __init__(self, session_id: _Optional[str] = ..., answer: _Optional[_Union[RtcSessionDescription, _Mapping]] = ...) -> None: ...
+    generation: int
+    def __init__(self, session_id: _Optional[str] = ..., answer: _Optional[_Union[RtcSessionDescription, _Mapping]] = ..., generation: _Optional[int] = ...) -> None: ...
 
 class RtcIceCandidate(_message.Message):
-    __slots__ = ("candidate", "sdp_mid", "sdp_m_line_index", "username_fragment")
+    __slots__ = ("candidate", "sdp_mid", "sdp_m_line_index", "username_fragment", "generation")
     CANDIDATE_FIELD_NUMBER: _ClassVar[int]
     SDP_MID_FIELD_NUMBER: _ClassVar[int]
     SDP_M_LINE_INDEX_FIELD_NUMBER: _ClassVar[int]
     USERNAME_FRAGMENT_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
     candidate: str
     sdp_mid: str
     sdp_m_line_index: int
     username_fragment: str
-    def __init__(self, candidate: _Optional[str] = ..., sdp_mid: _Optional[str] = ..., sdp_m_line_index: _Optional[int] = ..., username_fragment: _Optional[str] = ...) -> None: ...
+    generation: int
+    def __init__(self, candidate: _Optional[str] = ..., sdp_mid: _Optional[str] = ..., sdp_m_line_index: _Optional[int] = ..., username_fragment: _Optional[str] = ..., generation: _Optional[int] = ...) -> None: ...
 
 class RtcIceCandidatesComplete(_message.Message):
-    __slots__ = ()
-    def __init__(self) -> None: ...
+    __slots__ = ("generation",)
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
+    generation: int
+    def __init__(self, generation: _Optional[int] = ...) -> None: ...
 
 class RtcControlOffer(_message.Message):
-    __slots__ = ("offer", "restart")
+    __slots__ = ("offer", "restart", "generation")
     OFFER_FIELD_NUMBER: _ClassVar[int]
     RESTART_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
     offer: RtcSessionDescription
     restart: bool
-    def __init__(self, offer: _Optional[_Union[RtcSessionDescription, _Mapping]] = ..., restart: bool = ...) -> None: ...
+    generation: int
+    def __init__(self, offer: _Optional[_Union[RtcSessionDescription, _Mapping]] = ..., restart: bool = ..., generation: _Optional[int] = ...) -> None: ...
 
 class RtcControlClose(_message.Message):
     __slots__ = ("reason",)
@@ -545,16 +549,18 @@ class RtcControlClosed(_message.Message):
     def __init__(self, session_id: _Optional[str] = ..., reason: _Optional[str] = ...) -> None: ...
 
 class RtcSignalingError(_message.Message):
-    __slots__ = ("message", "code", "recoverable", "generation_id")
+    __slots__ = ("message", "code", "recoverable", "generation_id", "generation")
     MESSAGE_FIELD_NUMBER: _ClassVar[int]
     CODE_FIELD_NUMBER: _ClassVar[int]
     RECOVERABLE_FIELD_NUMBER: _ClassVar[int]
     GENERATION_ID_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_FIELD_NUMBER: _ClassVar[int]
     message: str
     code: str
     recoverable: bool
     generation_id: str
-    def __init__(self, message: _Optional[str] = ..., code: _Optional[str] = ..., recoverable: bool = ..., generation_id: _Optional[str] = ...) -> None: ...
+    generation: int
+    def __init__(self, message: _Optional[str] = ..., code: _Optional[str] = ..., recoverable: bool = ..., generation_id: _Optional[str] = ..., generation: _Optional[int] = ...) -> None: ...
 
 class RtcWireEvent(_message.Message):
     __slots__ = ("type", "payload_json")

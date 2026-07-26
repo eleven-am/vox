@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import sys
+import threading
 import types
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -26,6 +28,28 @@ class _FakeRunner:
 
     def __call__(self, cmd, timeout):
         self.calls.append(cmd)
+        if self.returncode == 0 and "--target" in cmd:
+            target = Path(cmd[cmd.index("--target") + 1])
+            package_name = cmd[-1]
+            normalized = package_name.replace("-", "_")
+            dist_info = target / f"{normalized}-1.0.0.dist-info"
+            dist_info.mkdir(parents=True, exist_ok=True)
+            (dist_info / "METADATA").write_text(
+                f"Metadata-Version: 2.1\nName: {package_name}\nVersion: 1.0.0\n",
+                encoding="utf-8",
+            )
+            (dist_info / "entry_points.txt").write_text(
+                "[vox.adapters]\n"
+                "evil = fake_adapter:FakeAdapter\n"
+                "fake = fake_adapter:FakeAdapter\n"
+                "parakeet = fake_adapter:FakeAdapter\n"
+                "parakeet-stt-nemo = fake_adapter:FakeAdapter\n",
+                encoding="utf-8",
+            )
+            (target / "fake_adapter.py").write_text(
+                "class FakeAdapter:\n    pass\n",
+                encoding="utf-8",
+            )
         return MagicMock(returncode=self.returncode, stderr=self.stderr)
 
 
@@ -37,9 +61,7 @@ def _make_resolver(
 ) -> AdapterResolver:
     with patch(
         "vox.core.adapter_resolution.entry_points",
-        return_value=[
-            _ep_mock(name, cls) for name, cls in (adapters or {}).items()
-        ],
+        return_value=[_ep_mock(name, cls) for name, cls in (adapters or {}).items()],
     ):
         return AdapterResolver(
             tmp_path,
@@ -96,6 +118,37 @@ class TestResolve:
 
         assert "fake" not in resolver._installed_specs
 
+    def test_adapter_path_activation_is_process_wide_serialized(self, tmp_path: Path):
+        first_path = tmp_path / ADAPTERS_DIR / "vox-first"
+        second_path = tmp_path / ADAPTERS_DIR / "vox-second"
+        first_path.mkdir(parents=True)
+        second_path.mkdir()
+        first_entered = threading.Event()
+        release_first = threading.Event()
+        second_entered = threading.Event()
+        resolver = _make_resolver(tmp_path, adapters={})
+
+        def first() -> None:
+            with resolver._activated_path(first_path):
+                first_entered.set()
+                assert release_first.wait(timeout=2)
+                assert sys.path[0] == str(first_path)
+
+        def second() -> None:
+            with resolver._activated_path(second_path):
+                second_entered.set()
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first_future = executor.submit(first)
+            assert first_entered.wait(timeout=2)
+            second_future = executor.submit(second)
+            assert not second_entered.wait(timeout=0.05)
+            release_first.set()
+            first_future.result(timeout=2)
+            second_future.result(timeout=2)
+
+        assert second_entered.is_set()
+
     def test_drops_broken_isolated_adapter_spec_when_import_fails(self, tmp_path: Path):
         package_dir = tmp_path / ADAPTERS_DIR / "vox-broken"
         package_dir.mkdir(parents=True)
@@ -140,9 +193,7 @@ class TestEnsure:
 
         runner = _FakeRunner()
         resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
-        with patch.object(
-            AdapterResolver, "_scan_install_specs", return_value={"fake": spec}
-        ) as rescan_mock:
+        with patch.object(AdapterResolver, "_scan_install_specs", return_value={"fake": spec}) as rescan_mock:
             assert resolver.ensure("fake", "vox-fake") is True
         assert rescan_mock.called
         assert runner.calls == []
@@ -298,11 +349,103 @@ class TestInstalledVersion:
 
 
 class TestInstallCommand:
+    def test_staged_adapter_install_rolls_back_publication(self, tmp_path: Path):
+        resolver = _make_resolver(
+            tmp_path,
+            adapters={},
+            runner=_FakeRunner(),
+        )
+
+        mutation = resolver.stage("fake", "vox-parakeet")
+
+        assert mutation.ready is True
+        assert (tmp_path / ADAPTERS_DIR / "vox-parakeet").is_dir()
+        mutation.rollback()
+        assert not (tmp_path / ADAPTERS_DIR / "vox-parakeet").exists()
+
+    def test_failed_install_preserves_previous_adapter_byte_for_byte(self, tmp_path: Path):
+        target = tmp_path / ADAPTERS_DIR / "vox-kokoro"
+        target.mkdir(parents=True)
+        (target / "stable.txt").write_bytes(b"stable")
+
+        def runner(cmd: list[str], timeout: int):
+            install_target = Path(cmd[cmd.index("--target") + 1])
+            install_target.mkdir(parents=True, exist_ok=True)
+            (install_target / "partial.txt").write_bytes(b"partial")
+            return MagicMock(returncode=1, stderr="failed")
+
+        resolver = _make_resolver(
+            tmp_path,
+            adapters={},
+            runner=runner,
+        )
+
+        assert resolver._install_package("vox-kokoro") is False
+        assert {path.relative_to(target): path.read_bytes() for path in target.rglob("*") if path.is_file()} == {
+            Path("stable.txt"): b"stable"
+        }
+        assert not any(path.name.startswith(".vox-kokoro.installing-") for path in target.parent.iterdir())
+
+    def test_unverified_success_does_not_replace_previous_adapter(self, tmp_path: Path):
+        target = tmp_path / ADAPTERS_DIR / "vox-kokoro"
+        target.mkdir(parents=True)
+        (target / "stable.txt").write_bytes(b"stable")
+
+        def runner(cmd: list[str], timeout: int):
+            install_target = Path(cmd[cmd.index("--target") + 1])
+            install_target.mkdir(parents=True, exist_ok=True)
+            (install_target / "unverified.txt").write_bytes(b"unverified")
+            return MagicMock(returncode=0, stderr="")
+
+        resolver = _make_resolver(
+            tmp_path,
+            adapters={},
+            runner=runner,
+        )
+
+        assert resolver._install_package("vox-kokoro") is False
+        assert {path.relative_to(target): path.read_bytes() for path in target.rglob("*") if path.is_file()} == {
+            Path("stable.txt"): b"stable"
+        }
+
+    def test_broken_adapter_entry_point_does_not_replace_previous_adapter(self, tmp_path: Path):
+        target = tmp_path / ADAPTERS_DIR / "vox-fake"
+        target.mkdir(parents=True)
+        (target / "stable.txt").write_bytes(b"stable")
+
+        def runner(cmd: list[str], timeout: int):
+            install_target = Path(cmd[cmd.index("--target") + 1])
+            dist_info = install_target / "vox_fake-2.0.0.dist-info"
+            dist_info.mkdir(parents=True)
+            (dist_info / "METADATA").write_text(
+                "Metadata-Version: 2.1\nName: vox-fake\nVersion: 2.0.0\n",
+                encoding="utf-8",
+            )
+            (dist_info / "entry_points.txt").write_text(
+                "[vox.adapters]\nfake = missing_adapter:FakeAdapter\n",
+                encoding="utf-8",
+            )
+            return MagicMock(returncode=0, stderr="")
+
+        resolver = _make_resolver(
+            tmp_path,
+            adapters={},
+            runner=runner,
+        )
+
+        assert resolver._install_package("vox-fake", adapter_name="fake") is False
+        assert {path.relative_to(target): path.read_bytes() for path in target.rglob("*") if path.is_file()} == {
+            Path("stable.txt"): b"stable"
+        }
+
     def test_skip_dependencies_for_curated_published_packages(self, tmp_path: Path):
         runner = _FakeRunner()
         resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
 
         assert resolver._install_package("vox-kokoro") is True
+        install_target = runner.calls[0][runner.calls[0].index("--target") + 1]
+        assert Path(install_target).parent == tmp_path / "adapters"
+        assert Path(install_target).name.startswith(".vox-kokoro.installing-")
         assert runner.calls == [
             [
                 "uv",
@@ -311,7 +454,7 @@ class TestInstallCommand:
                 "--python",
                 sys.executable,
                 "--target",
-                str(tmp_path / "adapters" / "vox-kokoro"),
+                install_target,
                 "--upgrade",
                 "--refresh-package",
                 "vox-kokoro",
@@ -324,22 +467,21 @@ class TestInstallCommand:
         "package_name",
         ["vox-chatterbox", "vox-sesame", "vox-whisper"],
     )
-    def test_skip_dependencies_for_torch_backed_target_runtime_packages(
-        self, tmp_path: Path, package_name: str
-    ):
+    def test_skip_dependencies_for_torch_backed_target_runtime_packages(self, tmp_path: Path, package_name: str):
         runner = _FakeRunner()
         resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
 
         assert resolver._install_package(package_name) is True
         assert runner.calls[0][-2:] == ["--no-deps", package_name]
 
-    def test_includes_dependencies_for_non_curated_published_packages(
-        self, tmp_path: Path
-    ):
+    def test_includes_dependencies_for_non_curated_published_packages(self, tmp_path: Path):
         runner = _FakeRunner()
         resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
 
         assert resolver._install_package("vox-example") is True
+        install_target = runner.calls[0][runner.calls[0].index("--target") + 1]
+        assert Path(install_target).parent == tmp_path / "adapters"
+        assert Path(install_target).name.startswith(".vox-example.installing-")
         assert runner.calls == [
             [
                 "uv",
@@ -348,7 +490,7 @@ class TestInstallCommand:
                 "--python",
                 sys.executable,
                 "--target",
-                str(tmp_path / "adapters" / "vox-example"),
+                install_target,
                 "--upgrade",
                 "--refresh-package",
                 "vox-example",
@@ -361,6 +503,9 @@ class TestInstallCommand:
         resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
 
         assert resolver._install_package("vox-parakeet") is True
+        install_target = runner.calls[0][runner.calls[0].index("--target") + 1]
+        assert Path(install_target).parent == tmp_path / "adapters"
+        assert Path(install_target).name.startswith(".vox-parakeet.installing-")
         assert runner.calls == [
             [
                 "uv",
@@ -369,7 +514,7 @@ class TestInstallCommand:
                 "--python",
                 sys.executable,
                 "--target",
-                str(tmp_path / "adapters" / "vox-parakeet"),
+                install_target,
                 "--upgrade",
                 "--refresh-package",
                 "vox-parakeet",
@@ -384,9 +529,7 @@ class TestInstallCommand:
         assert resolver._install_package("vox-parakeet", adapter_name="parakeet-stt-nemo") is True
         assert runner.calls[0][-2:] == ["--no-deps", "vox-parakeet"]
 
-    def test_skip_dependencies_via_env_for_published_packages(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_skip_dependencies_via_env_for_published_packages(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setenv(ADAPTERS_NO_DEPS_ENV, "1")
 
         runner = _FakeRunner()

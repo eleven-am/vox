@@ -12,6 +12,7 @@ import torch
 from numpy.typing import NDArray
 
 from vox.core.adapter import STTAdapter
+from vox.core.transcription_logging import log_transcription_result
 from vox.core.types import (
     AdapterInfo,
     ModelFormat,
@@ -29,8 +30,19 @@ logger = logging.getLogger(__name__)
 VOXTRAL_SAMPLE_RATE = 16_000
 
 SUPPORTED_LANGUAGES = (
-    "en", "es", "fr", "pt", "hi", "de", "nl", "it",
-    "ru", "zh", "ja", "ko", "ar",
+    "en",
+    "es",
+    "fr",
+    "pt",
+    "hi",
+    "de",
+    "nl",
+    "it",
+    "ru",
+    "zh",
+    "ja",
+    "ko",
+    "ar",
 )
 
 _VRAM_ESTIMATES: dict[str, int] = {
@@ -70,7 +82,6 @@ def _load_voxtral_stt_runtime() -> tuple[type[Any], type[Any]]:
 
 
 class VoxtralSTTAdapter(STTAdapter):
-
     def __init__(self) -> None:
         self._model: Any | None = None
         self._processor: Any | None = None
@@ -139,9 +150,6 @@ class VoxtralSTTAdapter(STTAdapter):
             raise RuntimeError("Voxtral STT model is not loaded — call load() first")
 
         if language is None:
-
-
-
             language = "en"
             logger.warning(
                 "No language provided for Voxtral STT; defaulting to 'en' because the "
@@ -158,10 +166,7 @@ class VoxtralSTTAdapter(STTAdapter):
             return_dict=True,
             return_tensors="pt",
         )
-        return {
-            k: v.to(self._model.device) if hasattr(v, "to") else v
-            for k, v in inputs.items()
-        }
+        return {k: v.to(self._model.device) if hasattr(v, "to") else v for k, v in inputs.items()}
 
     def transcribe(
         self,
@@ -204,10 +209,11 @@ class VoxtralSTTAdapter(STTAdapter):
                 ),
             )
 
-        if not text:
-            logger.warning("Empty transcription for %dms audio", audio_duration_ms)
-        else:
-            logger.info("Transcribed %dms audio: %s", audio_duration_ms, text[:80])
+        log_transcription_result(
+            logger,
+            audio_duration_ms=audio_duration_ms,
+            text=text,
+        )
 
         return TranscribeResult(
             text=text,

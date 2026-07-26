@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import io
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -31,6 +32,7 @@ from vox.core.types import (
 )
 from vox.operations.defaults import resolve_default_model
 from vox.operations.errors import InvalidConfigError, ModelInUseError
+from vox.operations.models import PullEvent, PullTaskRegistry
 from vox.operations.transcription import format_hint_from_content_type
 
 
@@ -42,21 +44,35 @@ def _wav_bytes(dur_s: float = 1.0, sr: int = 16_000) -> bytes:
 class FakeSTTAdapter(STTAdapter):
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="fake-stt", type=ModelType.STT,
-            architectures=("fake",), default_sample_rate=16000,
+            name="fake-stt",
+            type=ModelType.STT,
+            architectures=("fake",),
+            default_sample_rate=16000,
             supported_formats=(ModelFormat.ONNX,),
             supports_word_timestamps=True,
         )
-    def load(self, *a, **k): pass
-    def unload(self): pass
+
+    def load(self, *a, **k):
+        pass
+
+    def unload(self):
+        pass
+
     @property
-    def is_loaded(self): return True
+    def is_loaded(self):
+        return True
+
     def transcribe(self, audio, **kwargs) -> TranscribeResult:
         return TranscribeResult(
-            text="hello world", language="en", duration_ms=1000, model="test",
+            text="hello world",
+            language="en",
+            duration_ms=1000,
+            model="test",
             segments=(
                 TranscriptSegment(
-                    text="hello world", start_ms=0, end_ms=1000,
+                    text="hello world",
+                    start_ms=0,
+                    end_ms=1000,
                     words=(
                         WordTimestamp(word="hello", start_ms=0, end_ms=500, confidence=0.99),
                         WordTimestamp(word="world", start_ms=500, end_ms=1000, confidence=0.98),
@@ -69,16 +85,26 @@ class FakeSTTAdapter(STTAdapter):
 class FakeTTSAdapter(TTSAdapter):
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="fake-tts", type=ModelType.TTS,
-            architectures=("fake",), default_sample_rate=24000,
+            name="fake-tts",
+            type=ModelType.TTS,
+            architectures=("fake",),
+            default_sample_rate=24000,
             supported_formats=(ModelFormat.ONNX,),
         )
-    def load(self, *a, **k): pass
-    def unload(self): pass
+
+    def load(self, *a, **k):
+        pass
+
+    def unload(self):
+        pass
+
     @property
-    def is_loaded(self): return True
+    def is_loaded(self):
+        return True
+
     def list_voices(self):
         return [VoiceInfo(id="default", name="Default", language="en")]
+
     async def synthesize(self, text, **kw):
         yield SynthesizeChunk(audio=np.zeros(24000, dtype=np.float32).tobytes(), sample_rate=24000, is_final=True)
 
@@ -93,11 +119,20 @@ class MockScheduler(FakeScheduler):
         self.preloaded: list[str] = []
         self.trimmed: list[str] = []
 
-    def list_loaded(self): return self._loaded
-    def set_loaded(self, ms): self._loaded = ms
-    def set_unload_result(self, v: bool): self._unload = v
-    def set_unload_error(self, error: Exception): self._unload_error = error
-    def set_acquire_error(self, error: Exception): self._acquire_error = error
+    def list_loaded(self):
+        return self._loaded
+
+    def set_loaded(self, ms):
+        self._loaded = ms
+
+    def set_unload_result(self, v: bool):
+        self._unload = v
+
+    def set_unload_error(self, error: Exception):
+        self._unload_error = error
+
+    def set_acquire_error(self, error: Exception):
+        self._acquire_error = error
 
     @asynccontextmanager
     async def acquire(self, name: str):
@@ -110,13 +145,18 @@ class MockScheduler(FakeScheduler):
         if self._unload_error is not None:
             raise self._unload_error
         return self._unload
-    async def preload(self, name: str) -> None: self.preloaded.append(name)
+
+    async def preload(self, name: str) -> None:
+        self.preloaded.append(name)
+
     async def trim(self, name: str) -> bool:
         self.trimmed.append(name)
         return self._unload
+
     async def trim_idle(self, *, min_idle_seconds: int = 0) -> list[str]:
         self.trimmed.append(f"idle:{min_idle_seconds}")
         return ["fake:latest"]
+
     def memory_snapshot(self):
         return VramSnapshot(
             device=DeviceMemoryInfo(device="cuda", free_bytes=5_000, total_bytes=20_000),
@@ -132,6 +172,7 @@ def _build_app(scheduler: MockScheduler | None = None, registry: Any = None, sto
     app.state.scheduler = scheduler or MockScheduler()
     app.state.registry = registry or MagicMock()
     app.state.store = store or MagicMock(list_models=MagicMock(return_value=[]))
+    app.state.pull_tasks = PullTaskRegistry()
 
     resolver = getattr(app.state.registry, "resolve_model_ref", None)
     if (
@@ -162,6 +203,13 @@ class TestHealth:
         resp = client.get("/v1/health")
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
+
+    @pytest.mark.parametrize("path", ["/health", "/healthz", "/readyz"])
+    def test_health_aliases_match_canonical_endpoint(self, client: TestClient, path: str):
+        response = client.get(path)
+
+        assert response.status_code == 200
+        assert response.json() == {"status": "ok"}
 
     def test_ps_no_models_loaded(self, client: TestClient):
         resp = client.get("/v1/models/loaded")
@@ -257,9 +305,11 @@ class TestSystemMemory:
 
     def test_unload_idle_endpoint_unloads_inactive_models(self):
         scheduler = MockScheduler()
-        scheduler.set_loaded([
-            LoadedModelInfo(name="fake", tag="latest", type=ModelType.STT, device="cuda", ref_count=0),
-        ])
+        scheduler.set_loaded(
+            [
+                LoadedModelInfo(name="fake", tag="latest", type=ModelType.STT, device="cuda", ref_count=0),
+            ]
+        )
         client = TestClient(_build_app(scheduler=scheduler))
 
         resp = client.post("/v1/models/unload_idle")
@@ -269,9 +319,11 @@ class TestSystemMemory:
 
     def test_unload_idle_endpoint_maps_operation_errors(self):
         scheduler = MockScheduler()
-        scheduler.set_loaded([
-            LoadedModelInfo(name="fake", tag="latest", type=ModelType.STT, device="cuda", ref_count=0),
-        ])
+        scheduler.set_loaded(
+            [
+                LoadedModelInfo(name="fake", tag="latest", type=ModelType.STT, device="cuda", ref_count=0),
+            ]
+        )
         scheduler.set_unload_error(ModelInUseError("fake:latest"))
         client = TestClient(_build_app(scheduler=scheduler))
 
@@ -289,12 +341,73 @@ class TestListModels:
 
 
 class TestPullModels:
+    @pytest.mark.asyncio
+    async def test_pull_stream_detaches_when_http_consumer_closes(self):
+        from vox.server.routes import models
+
+        class Events:
+            def __init__(self):
+                self.closed = False
+                self.sent = False
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self.sent:
+                    await asyncio.Future()
+                self.sent = True
+                return PullEvent(status="pulling")
+
+            async def aclose(self):
+                self.closed = True
+
+        events = Events()
+        request = MagicMock()
+        request.app = _build_app()
+        with patch("vox.server.routes.models.pull_model", return_value=events):
+            response = await models.pull_model_route(
+                models.PullRequest(name="foo:latest"),
+                request,
+            )
+
+        iterator = response.body_iterator
+        await iterator.__anext__()
+        await iterator.aclose()
+
+        assert events.closed is True
+
+    def test_pull_uses_the_application_task_owner(self):
+        app = _build_app()
+        captured = {}
+
+        async def events():
+            yield PullEvent(status="success")
+
+        def start_pull(**kwargs):
+            captured.update(kwargs)
+            return events()
+
+        with patch("vox.server.routes.models.pull_model", side_effect=start_pull):
+            response = TestClient(app).post(
+                "/v1/models/pull",
+                json={"name": "foo:latest"},
+            )
+
+        assert response.status_code == 200
+        assert captured["tasks"] is app.state.pull_tasks
+
     def test_pull_emits_ndjson_with_status_lines(self, tmp_path: Path):
         store = BlobStore(root=tmp_path)
         registry = MagicMock()
         registry.lookup.return_value = {
-            "architecture": "fake", "type": "stt", "adapter": "fake", "format": "onnx",
-            "source": "owner/repo", "parameters": {}, "adapter_package": "",
+            "architecture": "fake",
+            "type": "stt",
+            "adapter": "fake",
+            "format": "onnx",
+            "source": "owner/repo",
+            "parameters": {},
+            "adapter_package": "",
         }
         registry.resolve_model_ref.side_effect = lambda n, t, explicit_tag=False: (n, t)
         scheduler = MockScheduler()
@@ -307,9 +420,7 @@ class TestPullModels:
             patch("huggingface_hub.HfApi") as mock_api_cls,
             patch("huggingface_hub.hf_hub_download", return_value=str(downloaded)),
         ):
-            mock_api_cls.return_value.repo_info.return_value = MagicMock(
-                siblings=[MagicMock(rfilename="model.bin")]
-            )
+            mock_api_cls.return_value.repo_info.return_value = MagicMock(siblings=[MagicMock(rfilename="model.bin")])
             resp = client.post("/v1/models/pull", json={"name": "foo:latest"})
         assert resp.status_code == 200
         assert resp.headers["content-type"].startswith("application/x-ndjson")
@@ -371,6 +482,19 @@ class TestTranscribeMapping:
         body = resp.json()
         assert set(body.keys()) == {"text"}
         assert body["text"] == "hello world"
+
+    def test_transcription_upload_over_configured_limit_returns_413(self, monkeypatch):
+        monkeypatch.setenv("VOX_MAX_UPLOAD_BYTES", "8")
+        client = self._client()
+
+        response = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("a.wav", io.BytesIO(b"123456789"), "audio/wav")},
+            data={"model": "test-stt:latest"},
+        )
+
+        assert response.status_code == 413
+        assert response.json()["detail"] == "upload exceeds the 8 byte limit"
 
     def test_text_format_returns_plain(self):
         client = self._client()
@@ -649,6 +773,20 @@ class TestVoicesMapping:
         assert body["name"] == "Roy"
         assert (store.voices_dir / body["id"] / "reference.wav").is_file()
 
+    def test_voice_upload_over_configured_limit_returns_413(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setenv("VOX_MAX_UPLOAD_BYTES", "8")
+        store = BlobStore(root=tmp_path)
+        client = TestClient(_build_app(store=store))
+
+        response = client.post(
+            "/v1/audio/voices",
+            files={"audio_sample": ("sample.wav", io.BytesIO(b"123456789"), "audio/wav")},
+            data={"name": "Roy"},
+        )
+
+        assert response.status_code == 413
+        assert response.json()["detail"] == "upload exceeds the 8 byte limit"
+
     def test_create_voice_invalid_reference_maps_to_422(self, tmp_path: Path):
         store = BlobStore(root=tmp_path)
         client = TestClient(_build_app(store=store))
@@ -703,7 +841,9 @@ class TestVoicesMapping:
 
         store = BlobStore(root=tmp_path)
         create_stored_voice(
-            store, voice_id="voice1234", name="Roy",
+            store,
+            voice_id="voice1234",
+            name="Roy",
             audio_bytes=encode_wav(np.full(16_000, 0.1, dtype=np.float32), 16_000),
             content_type="audio/wav",
         )
@@ -717,7 +857,9 @@ class TestVoicesMapping:
 
         store = BlobStore(root=tmp_path)
         create_stored_voice(
-            store, voice_id="voice1234", name="Roy",
+            store,
+            voice_id="voice1234",
+            name="Roy",
             audio_bytes=encode_wav(np.full(16_000, 0.1, dtype=np.float32), 16_000),
             content_type="audio/wav",
         )
@@ -734,8 +876,12 @@ class TestVoicesMapping:
 class TestResolveDefaultModel:
     def test_resolve_default_model_prefers_pulled(self):
         pulled = ModelInfo(
-            name="whisper", tag="large-v3", type=ModelType.STT,
-            format=ModelFormat.ONNX, architecture="whisper", adapter="whisper",
+            name="whisper",
+            tag="large-v3",
+            type=ModelType.STT,
+            format=ModelFormat.ONNX,
+            architecture="whisper",
+            adapter="whisper",
             size_bytes=100,
         )
         store = MagicMock()
@@ -775,13 +921,20 @@ class TestFormatHintFromContentType:
 
 def _make_manifest():
     return Manifest(
-        layers=[ManifestLayer(
-            media_type="application/vox.model.onnx",
-            digest="sha256-abc123", size=1024, filename="model.onnx",
-        )],
+        layers=[
+            ManifestLayer(
+                media_type="application/vox.model.onnx",
+                digest="sha256-abc123",
+                size=1024,
+                filename="model.onnx",
+            )
+        ],
         config={
-            "architecture": "whisper", "type": "stt", "adapter": "whisper",
-            "format": "onnx", "description": "Test model",
+            "architecture": "whisper",
+            "type": "stt",
+            "adapter": "whisper",
+            "format": "onnx",
+            "description": "Test model",
         },
     )
 
@@ -815,18 +968,21 @@ class TestShowModelMapping:
 
 
 class TestDeleteModelMapping:
-    def test_delete_model_success(self):
+    def test_delete_model_success(self, tmp_path: Path):
         manifest = _make_manifest()
-        store = _make_store_mock(resolve_model=manifest)
+        store = BlobStore(root=tmp_path)
+        store.save_manifest("whisper", "large-v3", manifest)
         scheduler = MockScheduler()
         scheduler.set_unload_result(True)
         client = TestClient(_build_app(scheduler=scheduler, store=store))
         resp = client.delete("/v1/models/whisper:large-v3")
         assert resp.status_code == 200
         assert resp.json()["status"] == "success"
+        assert store.resolve_model("whisper", "large-v3") is None
 
-    def test_delete_model_in_use_409(self):
-        store = _make_store_mock()
+    def test_delete_model_in_use_409(self, tmp_path: Path):
+        store = BlobStore(root=tmp_path)
+        store.save_manifest("whisper", "large-v3", _make_manifest())
         scheduler = MockScheduler()
         scheduler.set_unload_result(False)
         client = TestClient(_build_app(scheduler=scheduler, store=store))
@@ -834,8 +990,8 @@ class TestDeleteModelMapping:
         assert resp.status_code == 409
         assert "in use" in resp.json()["detail"].lower()
 
-    def test_delete_model_not_found_404(self):
-        store = _make_store_mock(resolve_model=None)
+    def test_delete_model_not_found_404(self, tmp_path: Path):
+        store = BlobStore(root=tmp_path)
         scheduler = MockScheduler()
         scheduler.set_unload_result(True)
         client = TestClient(_build_app(scheduler=scheduler, store=store))
@@ -871,3 +1027,26 @@ class TestCreateApp:
 
         assert resp.status_code == 200
         assert resp.headers["access-control-allow-origin"] == "http://localhost:8000"
+
+    def test_create_app_cors_supports_delete_and_request_ids(self, tmp_path, monkeypatch):
+        from vox.server.app import create_app
+
+        monkeypatch.setenv("VOX_CORS_ORIGINS", "http://localhost:8000")
+        client = TestClient(create_app(vox_home=tmp_path))
+
+        preflight = client.options(
+            "/v1/audio/voices/voice1234",
+            headers={
+                "origin": "http://localhost:8000",
+                "access-control-request-method": "DELETE",
+                "access-control-request-headers": "authorization,x-request-id",
+            },
+        )
+        health = client.get(
+            "/v1/health",
+            headers={"origin": "http://localhost:8000"},
+        )
+
+        assert preflight.status_code == 200
+        assert "x-request-id" in preflight.headers["access-control-allow-headers"].lower()
+        assert "x-request-id" in health.headers["access-control-expose-headers"].lower()

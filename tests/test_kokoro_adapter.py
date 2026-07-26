@@ -91,9 +91,7 @@ class _FakeKokoro:
 
     async def create_stream(self, text, voice, *, lang, speed, trim=True):
         calls = getattr(self, "stream_calls", [])
-        calls.append(
-            {"text": text, "voice": voice, "lang": lang, "speed": speed, "trim": trim}
-        )
+        calls.append({"text": text, "voice": voice, "lang": lang, "speed": speed, "trim": trim})
         self.stream_calls = calls
         yield np.array([0.0, 0.25, -0.25], dtype=np.float32), 24000
 
@@ -156,9 +154,7 @@ class _FakePipeline:
         self.device = device
         self.calls = []
         self._voices = ["af_heart", "bf_emma"]
-        type(self).inits.append(
-            {"lang_code": lang_code, "model": model, "device": device}
-        )
+        type(self).inits.append({"lang_code": lang_code, "model": model, "device": device})
 
     def __call__(self, text, *, voice, speed, split_pattern):
         self.calls.append(
@@ -183,9 +179,7 @@ def _install_fake_modules(*, providers=None):
 
     fake_ort = ModuleType("onnxruntime")
     fake_ort.InferenceSession = MagicMock(return_value=_FakeSession())
-    fake_ort.get_available_providers = MagicMock(
-        return_value=providers or ["CPUExecutionProvider"]
-    )
+    fake_ort.get_available_providers = MagicMock(return_value=providers or ["CPUExecutionProvider"])
 
     sys.modules["kokoro_onnx"] = fake_kokoro
     sys.modules["onnxruntime"] = fake_ort
@@ -313,10 +307,7 @@ def test_kokoro_synthesize_uses_bcp47_language_tags(tmp_path: Path):
     adapter.load(str(model_dir), "cpu")
 
     async def _collect():
-        return [
-            chunk
-            async for chunk in adapter.synthesize("Hello world", voice="af_heart")
-        ]
+        return [chunk async for chunk in adapter.synthesize("Hello world", voice="af_heart")]
 
     chunks = asyncio.run(_collect())
 
@@ -350,10 +341,7 @@ def test_kokoro_synthesize_normalizes_generic_english(tmp_path: Path):
     adapter.load(str(model_dir), "cpu")
 
     async def _collect():
-        return [
-            chunk
-            async for chunk in adapter.synthesize("Hello world", voice="af_heart", language="en")
-        ]
+        return [chunk async for chunk in adapter.synthesize("Hello world", voice="af_heart", language="en")]
 
     chunks = asyncio.run(_collect())
 
@@ -769,18 +757,13 @@ def test_kokoro_torch_loads_native_runtime_and_streams_audio(tmp_path: Path):
         adapter.load(str(model_dir), "cpu")
 
     assert adapter.is_loaded is True
-    assert _FakePipeline.inits == [
-        {"lang_code": "a", "model": str(model_dir / "kokoro-v1_0.pth"), "device": "cpu"}
-    ]
+    assert _FakePipeline.inits == [{"lang_code": "a", "model": str(model_dir / "kokoro-v1_0.pth"), "device": "cpu"}]
     voice_ids = [voice.id for voice in adapter.list_voices()]
     assert voice_ids[:4] == ["af_alloy", "af_aoede", "af_bella", "af_heart"]
     assert "bf_emma" in voice_ids
 
     async def _collect():
-        return [
-            chunk
-            async for chunk in adapter.synthesize("Hello world", voice="bf_emma")
-        ]
+        return [chunk async for chunk in adapter.synthesize("Hello world", voice="bf_emma")]
 
     with patch.object(KokoroTorchAdapter, "_import_runtime", return_value=fake_kokoro):
         chunks = asyncio.run(_collect())
@@ -893,10 +876,7 @@ def test_kokoro_torch_honors_explicit_language_override(tmp_path: Path):
         adapter.load(str(model_dir), "cpu")
 
     async def _collect():
-        return [
-            chunk
-            async for chunk in adapter.synthesize("Hello world", voice="af_heart", language="en-gb")
-        ]
+        return [chunk async for chunk in adapter.synthesize("Hello world", voice="af_heart", language="en-gb")]
 
     with patch.object(KokoroTorchAdapter, "_import_runtime", return_value=fake_kokoro):
         chunks = asyncio.run(_collect())
@@ -998,7 +978,8 @@ def test_kokoro_torch_runtime_install_verifies_target_population(tmp_path: Path,
     def fake_run(cmd, capture_output, text, timeout):
         calls.append(cmd)
         if len(calls) == 2:
-            expected.mkdir(parents=True, exist_ok=True)
+            install_target = Path(cmd[cmd.index("--target") + 1])
+            (install_target / "transformers").mkdir(parents=True, exist_ok=True)
         return SimpleNamespace(returncode=0, stderr="", stdout="")
 
     monkeypatch.setattr("vox_kokoro.torch_adapter.subprocess.run", fake_run)
@@ -1060,12 +1041,12 @@ def test_kokoro_onnx_runtime_bootstrap_excludes_onnxruntime(tmp_path: Path, monk
     from vox_kokoro import adapter as adapter_module
 
     calls: list[list[str]] = []
-    runtime_root = tmp_path / "vox-home" / "runtime" / "kokoro-onnx"
 
     def _fake_run(cmd: list[str], **kwargs):
         calls.append(cmd)
         if "kokoro-onnx>=0.4.5,<0.5.0" in cmd:
-            (runtime_root / "kokoro_onnx").mkdir(parents=True, exist_ok=True)
+            install_target = Path(cmd[cmd.index("--target") + 1])
+            (install_target / "kokoro_onnx").mkdir(parents=True, exist_ok=True)
         return MagicMock(returncode=0, stderr="")
 
     with patch("vox_kokoro.adapter.subprocess.run", side_effect=_fake_run):
@@ -1089,13 +1070,13 @@ def test_kokoro_torch_runtime_bootstrap_installs_spacy_model(tmp_path: Path, mon
     from vox_kokoro import torch_adapter as torch_adapter_module
 
     calls: list[list[str]] = []
-    runtime_root = tmp_path / "vox-home" / "runtime" / "kokoro"
 
     def _fake_run(cmd: list[str], **kwargs):
         calls.append(cmd)
         if "transformers>=4.57.6,<4.58" in cmd:
+            install_target = Path(cmd[cmd.index("--target") + 1])
             for package_name in ("transformers", "accelerate", "huggingface_hub", "tokenizers", "safetensors"):
-                (runtime_root / package_name).mkdir(parents=True, exist_ok=True)
+                (install_target / package_name).mkdir(parents=True, exist_ok=True)
         return MagicMock(returncode=0, stderr="")
 
     spacy_model_checks = iter([False, True])

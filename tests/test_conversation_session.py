@@ -257,8 +257,8 @@ async def test_pending_continuation_context_is_reanalyzed_as_one_timeline(caplog
     assert [chunk.offset_ms for chunk in context_service.chunks] == [100, 600]
     assert context_service.timeline_offset_ms == 100
     assert (
-        "conversation speech context emitted chunks=2 audio_ms=300 "
-        'payload={"schema_version":2,"status":"failed","unavailable":["speaker","sounds"]}'
+        "conversation speech context emitted chunks=2 audio_ms=300 status=failed "
+        "emotions=0 vocal=0 sounds=0 unavailable=2"
     ) in caplog.text
     assert collector.by_type(WIRE_TRANSCRIPT_DONE) == [
         {
@@ -451,13 +451,14 @@ class TestInterruptionEventContracts:
         ]
 
     @pytest.mark.asyncio
-    async def test_detected_interrupt_event_shape_is_owned_by_session_helper(self):
+    async def test_detected_interrupt_event_shape_is_owned_by_session_helper(self, caplog):
         session, collector, _ = _build_session()
         session._response_lifecycle.start_stream(output=session._default_response_output)
+        caplog.set_level(logging.INFO, logger="vox.conversation.session")
 
         await session._emit_interruption_detected(
             vad_active_ms=420,
-            partial_transcript="stop there",
+            partial_transcript="private interruption text",
             reason="partial_keyword",
         )
 
@@ -466,10 +467,12 @@ class TestInterruptionEventContracts:
                 "type": WIRE_INTERRUPTION_DETECTED,
                 "response_id": "resp_1",
                 "vad_active_ms": 420,
-                "partial_transcript": "stop there",
+                "partial_transcript": "private interruption text",
                 "reason": "partial_keyword",
             }
         ]
+        assert "private interruption text" not in caplog.text
+        assert "transcript_chars=25" in caplog.text
 
     @pytest.mark.asyncio
     async def test_false_positive_interrupt_event_shape_is_owned_by_session_helper(self):
@@ -819,7 +822,7 @@ class TestLifecycle:
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_final_transcript_logs_client_facing_payload(self, caplog):
+    async def test_final_transcript_logs_metadata_without_client_text(self, caplog):
         session, collector, _ = _build_session()
         await session.start()
 
@@ -841,11 +844,12 @@ class TestLifecycle:
         assert any(
             record.name == "vox.conversation.session"
             and "conversation final transcript emitted" in record.message
-            and "client facing final text" in record.message
+            and "chars=24" in record.message
             and "start_ms=100" in record.message
             and "end_ms=900" in record.message
             for record in caplog.records
         )
+        assert "client facing final text" not in caplog.text
 
         await session.close()
 
@@ -906,6 +910,49 @@ class TestLifecycle:
         assert session.state == TurnState.THINKING
 
         await session.close()
+
+    @pytest.mark.asyncio
+    async def test_slow_transcription_is_not_recorded_as_a_thinking_pause(self):
+        session, collector, _ = _build_session(
+            policy=TurnPolicy(
+                max_endpointing_delay_ms=3000,
+                min_endpointing_delay_ms=350,
+                dynamic_endpointing=True,
+                aec_warmup_ms=0,
+            ),
+        )
+        await session.start()
+
+        try:
+            await session._forward_stream_event(SpeechStarted(timestamp_ms=0, utterance_id=1))
+            await _drain_events(session)
+            await session._forward_stream_event(SpeechStopped(timestamp_ms=700, utterance_id=1))
+            await _drain_events(session)
+            session._last_speech_stopped_at = time.monotonic() - 2.0
+            await session._forward_stream_event(
+                StreamTranscript(
+                    text="I have not finished",
+                    eou_probability=0.0,
+                    start_ms=0,
+                    end_ms=700,
+                    utterance_id=1,
+                )
+            )
+            await _drain_events(session)
+
+            predicted = collector.by_type(WIRE_TURN_EOU_PREDICTED)
+            assert predicted[-1]["delay_ms"] == 1200
+            assert session._endpoint_pause_history.values() == ()
+
+            session._last_speech_stopped_at = time.monotonic() - 0.9
+            await session._forward_stream_event(SpeechStarted(timestamp_ms=1600, utterance_id=2))
+            await _drain_events(session)
+
+            observed_pause_ms = session._endpoint_pause_history.values()
+            assert len(observed_pause_ms) == 1
+            assert 850 <= observed_pause_ms[0] <= 1000
+        finally:
+            await session.close()
 
     @pytest.mark.asyncio
     async def test_incomplete_clause_survives_endpoint_expiry_racing_resumed_speech(self):

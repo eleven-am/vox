@@ -116,7 +116,8 @@ class TestPiperAdapter:
             mock.stderr = ""
             calls.append(cmd)
             if "piper-tts>=1.2.0,<2.0.0" in cmd:
-                (tmp_path / "vox-home" / "runtime" / "piper" / "piper").mkdir(parents=True, exist_ok=True)
+                install_target = Path(cmd[cmd.index("--target") + 1])
+                (install_target / "piper").mkdir(parents=True, exist_ok=True)
                 sys.modules["piper"] = piper_module
             return mock
 
@@ -137,7 +138,10 @@ class TestPiperAdapter:
         assert len(install_calls) == 2
         assert install_calls[0][:2] == ["uv", "pip"]
         assert "--target" in install_calls[0]
-        assert str(tmp_path / "vox-home" / "runtime" / "piper") in install_calls[0]
+        runtime_dir = tmp_path / "vox-home" / "runtime" / "piper"
+        install_target = Path(install_calls[0][install_calls[0].index("--target") + 1])
+        assert install_target.parent == runtime_dir.parent
+        assert install_target.name.startswith(".piper.installing-")
         assert "piper-tts>=1.2.0,<2.0.0" in install_calls[0]
         assert "--no-deps" in install_calls[0]
         assert "pathvalidate>=3,<4" in install_calls[1]

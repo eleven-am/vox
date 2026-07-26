@@ -13,6 +13,7 @@ from starlette.websockets import WebSocketDisconnect
 from vox.core.adapter import TTSAdapter
 from vox.core.store import BlobStore
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+from vox.operations.models import PullTaskRegistry
 from vox.server.routes.bidi import router as bidi_router
 
 LONG_TEXT = (
@@ -32,15 +33,20 @@ class _CapturingTTS(TTSAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="cap-tts", type=ModelType.TTS,
-            architectures=("cap",), default_sample_rate=24_000,
+            name="cap-tts",
+            type=ModelType.TTS,
+            architectures=("cap",),
+            default_sample_rate=24_000,
             supported_formats=(ModelFormat.ONNX,),
             max_input_chars=self._cap,
         )
+
     def load(self, *a, **k): ...
     def unload(self): ...
     @property
-    def is_loaded(self): return True
+    def is_loaded(self):
+        return True
+
     def list_voices(self):
         return [VoiceInfo(id="default", name="Default")]
 
@@ -48,7 +54,8 @@ class _CapturingTTS(TTSAdapter):
         self.calls.append(text)
         yield SynthesizeChunk(
             audio=np.zeros(512, dtype=np.float32).tobytes(),
-            sample_rate=24_000, is_final=False,
+            sample_rate=24_000,
+            is_final=False,
         )
         yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
 
@@ -73,6 +80,7 @@ def _build_app(adapter, tmp_path: Path):
     reg.resolve_model_ref.side_effect = lambda n, t, explicit_tag=False: (n, t or "latest")
     app.state.registry = reg
     app.state.scheduler = _DummyScheduler(adapter)
+    app.state.pull_tasks = PullTaskRegistry()
     app.include_router(bidi_router)
     return app
 
@@ -102,12 +110,14 @@ class TestAdapterDeclaredCap:
         client = TestClient(app)
 
         with client.websocket_connect("/v1/audio/speech/stream") as ws:
-            ws.send_json({
-                "type": "config",
-                "model": "cap-tts:latest",
-                "voice": "default",
-                "response_format": "pcm16",
-            })
+            ws.send_json(
+                {
+                    "type": "config",
+                    "model": "cap-tts:latest",
+                    "voice": "default",
+                    "response_format": "pcm16",
+                }
+            )
             ready = ws.receive_json()
             assert ready["type"] == "ready"
             assert ready["chunk_chars"] == 0
@@ -115,7 +125,6 @@ class TestAdapterDeclaredCap:
             ws.send_json({"type": "text", "text": LONG_TEXT})
             ws.send_json({"type": "end"})
             _drain(ws)
-
 
         assert len(adapter.calls) == 1
         assert adapter.calls[0] == LONG_TEXT
@@ -127,21 +136,21 @@ class TestAdapterDeclaredCap:
         client = TestClient(app)
 
         with client.websocket_connect("/v1/audio/speech/stream") as ws:
-            ws.send_json({
-                "type": "config",
-                "model": "cap-tts:latest",
-                "voice": "default",
-                "response_format": "pcm16",
-            })
+            ws.send_json(
+                {
+                    "type": "config",
+                    "model": "cap-tts:latest",
+                    "voice": "default",
+                    "response_format": "pcm16",
+                }
+            )
             assert ws.receive_json()["chunk_chars"] == 200
             ws.send_json({"type": "text", "text": LONG_TEXT})
             ws.send_json({"type": "end"})
             _drain(ws)
 
-
         assert len(adapter.calls) >= 2
         for chunk in adapter.calls:
-
             assert len(chunk) <= 300
 
     def test_cap_short_text_sent_whole(self, tmp_path: Path):
@@ -151,12 +160,14 @@ class TestAdapterDeclaredCap:
         client = TestClient(app)
 
         with client.websocket_connect("/v1/audio/speech/stream") as ws:
-            ws.send_json({
-                "type": "config",
-                "model": "cap-tts:latest",
-                "voice": "default",
-                "response_format": "pcm16",
-            })
+            ws.send_json(
+                {
+                    "type": "config",
+                    "model": "cap-tts:latest",
+                    "voice": "default",
+                    "response_format": "pcm16",
+                }
+            )
             ws.receive_json()
             ws.send_json({"type": "text", "text": LONG_TEXT})
             ws.send_json({"type": "end"})
@@ -174,13 +185,15 @@ class TestClientOverride:
         client = TestClient(app)
 
         with client.websocket_connect("/v1/audio/speech/stream") as ws:
-            ws.send_json({
-                "type": "config",
-                "model": "cap-tts:latest",
-                "voice": "default",
-                "response_format": "pcm16",
-                "chunk_chars": 150,
-            })
+            ws.send_json(
+                {
+                    "type": "config",
+                    "model": "cap-tts:latest",
+                    "voice": "default",
+                    "response_format": "pcm16",
+                    "chunk_chars": 150,
+                }
+            )
             ready = ws.receive_json()
             assert ready["chunk_chars"] == 150
 
@@ -197,13 +210,15 @@ class TestClientOverride:
         client = TestClient(app)
 
         with client.websocket_connect("/v1/audio/speech/stream") as ws:
-            ws.send_json({
-                "type": "config",
-                "model": "cap-tts:latest",
-                "voice": "default",
-                "response_format": "pcm16",
-                "chunk_chars": 0,
-            })
+            ws.send_json(
+                {
+                    "type": "config",
+                    "model": "cap-tts:latest",
+                    "voice": "default",
+                    "response_format": "pcm16",
+                    "chunk_chars": 0,
+                }
+            )
             ready = ws.receive_json()
             assert ready["chunk_chars"] == 0
 
@@ -219,13 +234,15 @@ class TestClientOverride:
         client = TestClient(app)
 
         with client.websocket_connect("/v1/audio/speech/stream") as ws:
-            ws.send_json({
-                "type": "config",
-                "model": "cap-tts:latest",
-                "voice": "default",
-                "response_format": "pcm16",
-                "chunk_chars": "not-a-number",
-            })
+            ws.send_json(
+                {
+                    "type": "config",
+                    "model": "cap-tts:latest",
+                    "voice": "default",
+                    "response_format": "pcm16",
+                    "chunk_chars": "not-a-number",
+                }
+            )
             msg = ws.receive_json()
             assert msg["type"] == "error"
             assert "chunk_chars" in msg["message"]
@@ -234,24 +251,34 @@ class TestClientOverride:
 class TestKokoroDefaults:
     def test_kokoro_adapter_declares_chunk_cap(self):
         from unittest.mock import patch
-        with patch.dict("sys.modules", {
-            "onnxruntime": MagicMock(),
-            "kokoro_onnx": MagicMock(),
-        }):
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "onnxruntime": MagicMock(),
+                "kokoro_onnx": MagicMock(),
+            },
+        ):
             from vox_kokoro.adapter import KokoroAdapter
+
             info = KokoroAdapter().info()
             assert info.max_input_chars == 250
 
     def test_kokoro_torch_adapter_declares_chunk_cap(self):
         from unittest.mock import patch
-        with patch.dict("sys.modules", {
-            "torch": MagicMock(),
-            "torchaudio": MagicMock(),
-            "huggingface_hub": MagicMock(),
-            "kokoro": MagicMock(),
-            "kokoro.pipeline": MagicMock(),
-        }):
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "torch": MagicMock(),
+                "torchaudio": MagicMock(),
+                "huggingface_hub": MagicMock(),
+                "kokoro": MagicMock(),
+                "kokoro.pipeline": MagicMock(),
+            },
+        ):
             from vox_kokoro.torch_adapter import KokoroTorchAdapter
+
             info = KokoroTorchAdapter().info()
             assert info.max_input_chars == 250
 
@@ -259,11 +286,16 @@ class TestKokoroDefaults:
 class TestQwen3Defaults:
     def test_qwen3_tts_adapter_declares_zero_cap(self):
         from unittest.mock import patch
-        with patch.dict("sys.modules", {
-            "torch": MagicMock(),
-            "qwen_asr": MagicMock(),
-            "qwen_tts": MagicMock(),
-        }):
+
+        with patch.dict(
+            "sys.modules",
+            {
+                "torch": MagicMock(),
+                "qwen_asr": MagicMock(),
+                "qwen_tts": MagicMock(),
+            },
+        ):
             from vox_qwen.tts_adapter import Qwen3TTSAdapter
+
             info = Qwen3TTSAdapter().info()
             assert info.max_input_chars == 0

@@ -9,6 +9,8 @@ import time
 import wave
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,36 @@ from vox.speech_context.types import (
 from vox.streaming.codecs import float32_to_pcm16
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_MAX_ADMITTED_ANALYSES = 2
+DEFAULT_MAX_ADMITTED_AUDIO_BYTES = 256 * 1024 * 1024
+
+
+class SpeechContextCapacityError(RuntimeError):
+    pass
+
+
+@dataclass(eq=False)
+class _AnalysisRun:
+    cancelled: threading.Event = field(default_factory=threading.Event)
+    _hosts: dict[str, WorkerHost] = field(default_factory=dict)
+    _lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def bind_host(self, key: str, host: WorkerHost) -> bool:
+        with self._lock:
+            if self.cancelled.is_set():
+                return False
+            self._hosts[key] = host
+            return True
+
+    def cancel(self) -> tuple[tuple[str, WorkerHost], ...]:
+        with self._lock:
+            self.cancelled.set()
+            return tuple(self._hosts.items())
+
+    def ensure_active(self) -> None:
+        if self.cancelled.is_set():
+            raise RuntimeError("speech context analysis cancelled")
 
 
 async def cancel_speech_context_task(
@@ -48,13 +80,26 @@ class SpeechContextService:
         home: Path | None = None,
         timeout: float = 300.0,
         host_factory: Callable[[RuntimeSpec], WorkerHost] | None = None,
+        max_admitted_analyses: int = DEFAULT_MAX_ADMITTED_ANALYSES,
+        max_admitted_audio_bytes: int = DEFAULT_MAX_ADMITTED_AUDIO_BYTES,
     ) -> None:
         self._home = home
         self._timeout = timeout
         self._host_factory = host_factory
         self._hosts: dict[str, WorkerHost] = {}
         self._host_lock = threading.Lock()
+        self._state_lock = threading.Lock()
+        self._analysis_slots = asyncio.Semaphore(1)
+        self._analysis_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="speech-context-analysis")
         self._track_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="speech-context")
+        self._max_admitted_analyses = max(1, int(max_admitted_analyses))
+        self._max_admitted_audio_bytes = max(1, int(max_admitted_audio_bytes))
+        self._admitted_analyses = 0
+        self._admitted_audio_bytes = 0
+        self._analysis_tasks: set[asyncio.Task[Any]] = set()
+        self._cleanup_tasks: set[asyncio.Task[Any]] = set()
+        self._active_runs: set[_AnalysisRun] = set()
+        self._close_lock = asyncio.Lock()
         self._closed = False
 
     async def analyze_chunks(
@@ -64,10 +109,12 @@ class SpeechContextService:
         timeline_offset_ms: int = 0,
     ) -> SpeechContext:
         frozen = tuple(chunks)
-        return await asyncio.to_thread(
+        audio_bytes = sum(int(chunk.data.nbytes) for chunk in frozen)
+        return await self._run_analysis(
             self._analyze_chunks_sync,
             frozen,
             timeline_offset_ms,
+            audio_bytes=audio_bytes,
         )
 
     async def analyze_wave_path(
@@ -76,20 +123,119 @@ class SpeechContextService:
         *,
         timeline_offset_ms: int = 0,
     ) -> SpeechContext:
-        return await asyncio.to_thread(
+        try:
+            audio_bytes = audio_path.stat().st_size
+        except OSError:
+            audio_bytes = 0
+        return await self._run_analysis(
             self._analyze_wave_path_sync,
             audio_path,
             timeline_offset_ms,
+            audio_bytes=audio_bytes,
         )
 
     async def close(self) -> None:
-        await asyncio.to_thread(self._close_sync)
+        async with self._close_lock:
+            with self._state_lock:
+                if self._closed:
+                    return
+                self._closed = True
+                tasks = tuple(self._analysis_tasks)
+                runs = tuple(self._active_runs)
+            for run in runs:
+                run.cancel()
+            for task in tasks:
+                task.cancel()
+            hosts = self._detach_all_hosts()
+            await asyncio.to_thread(self._close_hosts, hosts)
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            while self._cleanup_tasks:
+                await asyncio.gather(*tuple(self._cleanup_tasks), return_exceptions=True)
+            await asyncio.to_thread(self._shutdown_executors)
+
+    async def _run_analysis(
+        self,
+        function: Callable[..., SpeechContext],
+        *args: Any,
+        audio_bytes: int,
+    ) -> SpeechContext:
+        self._admit(audio_bytes)
+        current = asyncio.current_task()
+        if current is None:
+            self._release_admission(audio_bytes)
+            raise RuntimeError("speech context analysis requires an asyncio task")
+        self._analysis_tasks.add(current)
+        acquired = False
+        run: _AnalysisRun | None = None
+        work: asyncio.Future[SpeechContext] | None = None
+        try:
+            await self._analysis_slots.acquire()
+            acquired = True
+            with self._state_lock:
+                if self._closed:
+                    raise RuntimeError("speech context service is closed")
+                run = _AnalysisRun()
+                self._active_runs.add(run)
+            loop = asyncio.get_running_loop()
+            work = loop.run_in_executor(
+                self._analysis_executor,
+                partial(function, *args, run),
+            )
+            try:
+                return await asyncio.shield(work)
+            except asyncio.CancelledError:
+                cleanup = asyncio.create_task(self._cancel_and_drain(run, work))
+                self._cleanup_tasks.add(cleanup)
+                cleanup.add_done_callback(self._cleanup_tasks.discard)
+                while not cleanup.done():
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await asyncio.shield(cleanup)
+                with contextlib.suppress(Exception):
+                    cleanup.result()
+                raise
+        finally:
+            if run is not None:
+                with self._state_lock:
+                    self._active_runs.discard(run)
+            if acquired:
+                self._analysis_slots.release()
+            self._analysis_tasks.discard(current)
+            self._release_admission(audio_bytes)
+
+    async def _cancel_and_drain(
+        self,
+        run: _AnalysisRun,
+        work: asyncio.Future[SpeechContext],
+    ) -> None:
+        hosts = run.cancel()
+        await asyncio.to_thread(self._retire_hosts, hosts)
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await asyncio.shield(work)
+
+    def _admit(self, audio_bytes: int) -> None:
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeError("speech context service is closed")
+            count_full = self._admitted_analyses >= self._max_admitted_analyses
+            bytes_full = audio_bytes > self._max_admitted_audio_bytes - self._admitted_audio_bytes
+            if count_full or bytes_full:
+                raise SpeechContextCapacityError("speech context analysis capacity exceeded")
+            self._admitted_analyses += 1
+            self._admitted_audio_bytes += audio_bytes
+
+    def _release_admission(self, audio_bytes: int) -> None:
+        with self._state_lock:
+            self._admitted_analyses -= 1
+            self._admitted_audio_bytes -= audio_bytes
 
     def _analyze_chunks_sync(
         self,
         chunks: tuple[AudioChunk, ...],
         timeline_offset_ms: int,
+        run: _AnalysisRun,
     ) -> SpeechContext:
+        run.ensure_active()
         if not chunks:
             return SpeechContext(
                 status="failed",
@@ -98,15 +244,18 @@ class SpeechContextService:
         with tempfile.TemporaryDirectory(prefix="vox-speech-context-") as directory:
             audio_path = Path(directory) / "input.wav"
             self._write_wave(audio_path, chunks)
-            return self._analyze_wave_path_sync(audio_path, timeline_offset_ms)
+            run.ensure_active()
+            return self._analyze_wave_path_sync(audio_path, timeline_offset_ms, run)
 
     def _analyze_wave_path_sync(
         self,
         audio_path: Path,
         timeline_offset_ms: int,
+        run: _AnalysisRun,
     ) -> SpeechContext:
+        run.ensure_active()
         futures = {
-            key: self._track_executor.submit(self._request_track, spec, audio_path)
+            key: self._track_executor.submit(self._request_track, spec, audio_path, run)
             for key, spec in RUNTIME_SPECS.items()
         }
         results: dict[str, dict[str, Any] | None] = {}
@@ -116,6 +265,7 @@ class SpeechContextService:
             except Exception as error:
                 logger.warning("speech context %s unavailable: %s", key, error)
                 results[key] = None
+        run.ensure_active()
         return self._assemble(results, timeline_offset_ms=timeline_offset_ms)
 
     @staticmethod
@@ -148,8 +298,17 @@ class SpeechContextService:
             handle.writeframes(block[: count * 2])
             remaining -= count
 
-    def _request_track(self, spec: RuntimeSpec, audio_path: Path) -> dict[str, Any]:
+    def _request_track(
+        self,
+        spec: RuntimeSpec,
+        audio_path: Path,
+        run: _AnalysisRun,
+    ) -> dict[str, Any]:
+        run.ensure_active()
         host = self._host_for(spec)
+        if not run.bind_host(spec.key, host):
+            self._retire_hosts(((spec.key, host),))
+            run.ensure_active()
         started_at = time.perf_counter()
         response = host.request(
             {"op": "analyze_compact", "audio_path": str(audio_path)},
@@ -188,6 +347,33 @@ class SpeechContextService:
             )
             self._hosts[spec.key] = host
             return host
+
+    def _detach_all_hosts(self) -> tuple[WorkerHost, ...]:
+        with self._host_lock:
+            hosts = tuple(self._hosts.values())
+            self._hosts = {}
+            return hosts
+
+    def _retire_hosts(self, hosts: tuple[tuple[str, WorkerHost], ...]) -> None:
+        for key, host in hosts:
+            should_close = False
+            with self._host_lock:
+                if self._hosts.get(key) is host:
+                    self._hosts.pop(key, None)
+                    should_close = True
+            if should_close:
+                with contextlib.suppress(Exception):
+                    host.close()
+
+    @staticmethod
+    def _close_hosts(hosts: tuple[WorkerHost, ...]) -> None:
+        for host in hosts:
+            with contextlib.suppress(Exception):
+                host.close()
+
+    def _shutdown_executors(self) -> None:
+        self._analysis_executor.shutdown(wait=True, cancel_futures=True)
+        self._track_executor.shutdown(wait=True, cancel_futures=True)
 
     @staticmethod
     def _assemble(
@@ -239,15 +425,3 @@ class SpeechContextService:
             sounds=sounds,
             unavailable=tuple(unavailable),
         )
-
-    def _close_sync(self) -> None:
-        with self._host_lock:
-            if self._closed:
-                return
-            self._closed = True
-            hosts = tuple(self._hosts.values())
-            self._hosts = {}
-        self._track_executor.shutdown(wait=True, cancel_futures=False)
-        for host in hosts:
-            with contextlib.suppress(Exception):
-                host.close()

@@ -111,10 +111,7 @@ def _print_tts_progress(event: dict[str, object]) -> None:
     chunks_completed = int(event.get("chunks_completed", 0))
     chunks_total = int(event.get("chunks_total", 0))
     click.echo(
-        (
-            f"[progress] chars={completed_chars}/{total_chars} "
-            f"chunks={chunks_completed}/{chunks_total}"
-        ),
+        (f"[progress] chars={completed_chars}/{total_chars} chunks={chunks_completed}/{chunks_total}"),
         err=True,
     )
 
@@ -297,7 +294,7 @@ def _chunk_text_for_stream(text: str, max_chars: int = DEFAULT_STREAM_TEXT_CHARS
 
     sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", cleaned) if part.strip()]
     if not sentences:
-        return [cleaned[i:i + max_chars] for i in range(0, len(cleaned), max_chars)]
+        return [cleaned[i : i + max_chars] for i in range(0, len(cleaned), max_chars)]
 
     chunks: list[str] = []
     current = ""
@@ -312,7 +309,7 @@ def _chunk_text_for_stream(text: str, max_chars: int = DEFAULT_STREAM_TEXT_CHARS
             current = sentence
             continue
         for idx in range(0, len(sentence), max_chars):
-            chunks.append(sentence[idx:idx + max_chars])
+            chunks.append(sentence[idx : idx + max_chars])
         current = ""
 
     if current:
@@ -343,11 +340,15 @@ def cli(ctx, host: str):
     help="Seconds idle before trimming non-essential model memory. 0 disables.",
 )
 @click.option(
-    "--preload", "preload_models", multiple=True,
+    "--preload",
+    "preload_models",
+    multiple=True,
     help="Model ref to warm at startup (repeatable). Env: VOX_PRELOAD=ref1,ref2",
 )
 @click.option(
-    "--preload-vad", is_flag=True, envvar="VOX_PRELOAD_VAD",
+    "--preload-vad",
+    is_flag=True,
+    envvar="VOX_PRELOAD_VAD",
     help="Warm the Silero VAD model at startup",
 )
 @click.option(
@@ -357,9 +358,15 @@ def cli(ctx, host: str):
     help="Warm a turn detector at startup, such as livekit",
 )
 def serve(
-    port: int, grpc_port: int, bind_host: str, device: str,
-    max_loaded: int, ttl: int, idle_trim_ttl: int,
-    preload_models: tuple[str, ...], preload_vad: bool,
+    port: int,
+    grpc_port: int,
+    bind_host: str,
+    device: str,
+    max_loaded: int,
+    ttl: int,
+    idle_trim_ttl: int,
+    preload_models: tuple[str, ...],
+    preload_vad: bool,
     preload_turn_detector: str | None,
 ):
     """Start the Vox server."""
@@ -376,6 +383,7 @@ def serve(
         ttl_seconds=ttl,
         idle_trim_seconds=idle_trim_ttl,
         grpc_port=grpc_port if grpc_port > 0 else None,
+        bind_host=bind_host,
         preload_models=list(preload_models),
         preload_vad=preload_vad,
         preload_turn_detector=preload_turn_detector,
@@ -461,8 +469,7 @@ def list_models(ctx):
         for m in models:
             size = _format_size(m.get("size_bytes", 0))
             click.echo(
-                f"{m['name']:<30} {m['type']:<6} "
-                f"{m.get('format', ''):<8} {size:<12} {m.get('description', '')[:50]}"
+                f"{m['name']:<30} {m['type']:<6} {m.get('format', ''):<8} {size:<12} {m.get('description', '')[:50]}"
             )
     except (httpx.HTTPError, json.JSONDecodeError, KeyError) as e:
         _handle_request_error(e, host)
@@ -587,14 +594,17 @@ def stream_transcribe(
     try:
         chunks = _iter_pcm16_audio_chunks(audio_file, target_rate=TARGET_SAMPLE_RATE, chunk_ms=send_chunk_ms)
         with connect(ws_url, compression=None, max_queue=None, max_size=None, open_timeout=30) as ws:
-            _send_ws_json(ws, {
-                "type": "config",
-                "model": model,
-                "input_format": "pcm16",
-                "sample_rate": TARGET_SAMPLE_RATE,
-                "language": language,
-                "word_timestamps": word_timestamps,
-            })
+            _send_ws_json(
+                ws,
+                {
+                    "type": "config",
+                    "model": model,
+                    "input_format": "pcm16",
+                    "sample_rate": TARGET_SAMPLE_RATE,
+                    "language": language,
+                    "word_timestamps": word_timestamps,
+                },
+            )
             _receive_ready_event(ws)
 
             for chunk in chunks:
@@ -653,14 +663,17 @@ def stream_synthesize(
     cleanup_output = False
     try:
         with connect(ws_url, compression=None, max_queue=None, max_size=None, open_timeout=30) as ws:
-            _send_ws_json(ws, {
-                "type": "config",
-                "model": model,
-                "voice": voice,
-                "language": language,
-                "speed": speed,
-                "response_format": "pcm16",
-            })
+            _send_ws_json(
+                ws,
+                {
+                    "type": "config",
+                    "model": model,
+                    "voice": voice,
+                    "language": language,
+                    "speed": speed,
+                    "response_format": "pcm16",
+                },
+            )
             _receive_ready_event(ws)
 
             for chunk in text_chunks:

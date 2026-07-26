@@ -212,6 +212,69 @@ def test_close_during_inflight_request_does_not_hang():
     assert process_gone(pid)
 
 
+class _UnkillableProcess:
+    pid = 991_337
+    returncode = None
+    stdin = None
+
+    def __init__(self) -> None:
+        self.wait_timeouts: list[float | None] = []
+
+    def poll(self):
+        return None
+
+    def wait(self, timeout=None):
+        self.wait_timeouts.append(timeout)
+        if timeout is None:
+            time.sleep(0.2)
+            return None
+        raise subprocess.TimeoutExpired("synthetic", timeout)
+
+
+class _SyntheticSocket:
+    def shutdown(self, _how):
+        return None
+
+
+def _unkillable_host() -> tuple[WorkerHost, _UnkillableProcess, list[signal.Signals]]:
+    host = object.__new__(WorkerHost)
+    process = _UnkillableProcess()
+    signals: list[signal.Signals] = []
+    host._name = "unkillable"
+    host._alive = True
+    host._request_lock = threading.Lock()
+    host._sock = _SyntheticSocket()
+    host._kill_timeout = 0.01
+    host._proc = process
+    host._close_pipes = lambda: None
+    host._kill_group = signals.append
+    return host, process, signals
+
+
+def test_close_bounds_wait_after_sigkill():
+    host, process, signals = _unkillable_host()
+    started = time.monotonic()
+
+    with pytest.raises(WorkerError, match="did not exit after SIGKILL"):
+        host.close(grace=0.01)
+
+    assert time.monotonic() - started < 0.1
+    assert process.wait_timeouts == [0.01, 0.01, 0.01]
+    assert signals == [signal.SIGTERM, signal.SIGKILL]
+
+
+def test_protocol_anomaly_bounds_wait_after_sigkill():
+    host, process, signals = _unkillable_host()
+    started = time.monotonic()
+
+    with pytest.raises(WorkerError, match="did not exit after SIGKILL"):
+        host._anomaly("protocol failed")
+
+    assert time.monotonic() - started < 0.1
+    assert process.wait_timeouts == [host._kill_timeout]
+    assert signals == [signal.SIGKILL]
+
+
 def count_open_fds() -> int:
     return len(os.listdir("/dev/fd"))
 
@@ -278,6 +341,13 @@ def test_worker_parent_lost_only_when_env_present_and_ppid_differs(monkeypatch):
     monkeypatch.setattr(worker_host_module.os, "getppid", lambda: 1)
     monkeypatch.setenv(WORKER_PARENT_PID_ENV, "1")
     assert worker_parent_lost() is False
+
+
+def test_worker_main_refuses_readiness_after_parent_loss(monkeypatch):
+    monkeypatch.setattr(worker_host_module, "install_parent_death_signal", lambda: None)
+    monkeypatch.setattr(worker_host_module, "worker_parent_lost", lambda: True)
+
+    assert worker_host_module.worker_main(lambda request: request) == 1
 
 
 def test_handler_error_frame_fails_request_but_worker_survives():

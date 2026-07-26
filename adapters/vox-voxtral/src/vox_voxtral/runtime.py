@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib
 import os
 import platform
-import shutil
 import subprocess
 import sys
 import sysconfig
@@ -14,6 +13,11 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from vox.core.adapter_runtime import (
+    install_target_runtime_requirements,
+    staged_target_runtime,
+)
 
 
 @dataclass(frozen=True)
@@ -94,6 +98,13 @@ def _run(
         timeout=timeout,
         env=env,
     )
+
+
+def _run_target_install(
+    cmd: list[str],
+    timeout: int,
+) -> subprocess.CompletedProcess[str]:
+    return _run(cmd, timeout=timeout)
 
 
 def _ensure_venv(venv_dir: Path) -> Path:
@@ -267,11 +278,7 @@ def _has_vllm_omni_runtime(python_bin: Path, *, extra_pythonpaths: list[str] | N
 
     purelib = _purelib(python_bin)
     stage_config = purelib / "vllm_omni" / "model_executor" / "stage_configs" / "voxtral_tts.yaml"
-    return (
-        (purelib / "vllm").exists()
-        and (purelib / "vllm_omni").exists()
-        and stage_config.is_file()
-    )
+    return (purelib / "vllm").exists() and (purelib / "vllm_omni").exists() and stage_config.is_file()
 
 
 def _normalized_package_version(package_name: str) -> str | None:
@@ -581,9 +588,6 @@ def ensure_voxtral_stt_runtime() -> str:
     runtime_dir.mkdir(parents=True, exist_ok=True)
     runtime_path = str(runtime_dir)
 
-    fallback_file = runtime_dir / "_vox_runtime_fallback_paths.pth"
-    fallback_file.write_text(f"{_app_purelib()}\n", encoding="utf-8")
-
     if runtime_path in sys.path:
         sys.path.remove(runtime_path)
     sys.path.insert(0, runtime_path)
@@ -608,46 +612,17 @@ def ensure_voxtral_stt_runtime() -> str:
     _clear_stt_runtime_modules()
     importlib.invalidate_caches()
 
-    if required_specs:
-        installers = [
-            [
-                "uv",
-                "pip",
-                "install",
-                "--python",
-                sys.executable,
-                "--target",
-                runtime_path,
-                "--upgrade",
-                *required_specs,
-            ],
-            [
-                sys.executable,
-                "-m",
-                "pip",
-                "install",
-                "--target",
-                runtime_path,
-                "--upgrade",
-                *required_specs,
-            ],
-        ]
+    if required_specs and not install_target_runtime_requirements(
+        runtime_dir,
+        required_specs,
+        timeout=1800,
+        install_runner=_run_target_install,
+        context="Voxtral STT runtime install",
+    ):
+        raise RuntimeError("Failed to install Voxtral STT runtime dependencies.")
 
-        install_error = ""
-        for installer in installers:
-            result = None
-            try:
-                result = _run(installer, timeout=1800)
-            except FileNotFoundError:
-                continue
-            if result.returncode == 0:
-                break
-            install_error = result.stderr.strip() or result.stdout.strip()
-        else:
-            raise RuntimeError(
-                "Failed to install Voxtral STT runtime dependencies. "
-                f"stderr: {install_error}"
-            )
+    fallback_file = runtime_dir / "_vox_runtime_fallback_paths.pth"
+    fallback_file.write_text(f"{_app_purelib()}\n", encoding="utf-8")
 
     return runtime_path
 
@@ -656,13 +631,25 @@ def ensure_voxtral_tts_runtime(*, extra_pythonpaths: list[str] | None = None) ->
     venv_dir = _runtime_venv()
     python_bin = _ensure_venv(venv_dir)
 
-    if not _has_gpu_torch(python_bin):
-        shutil.rmtree(venv_dir, ignore_errors=True)
-        python_bin = _ensure_venv(venv_dir)
-        _install_gpu_torch(python_bin)
-
-    if not _has_vllm_omni_runtime(python_bin, extra_pythonpaths=extra_pythonpaths):
-        _install_vllm_runtime(python_bin)
+    if not _has_gpu_torch(python_bin) or not _has_vllm_omni_runtime(
+        python_bin,
+        extra_pythonpaths=extra_pythonpaths,
+    ):
+        with staged_target_runtime(venv_dir) as stage:
+            stage_python = _ensure_venv(stage)
+            if not _has_gpu_torch(stage_python):
+                _install_gpu_torch(stage_python)
+            if not _has_vllm_omni_runtime(
+                stage_python,
+                extra_pythonpaths=extra_pythonpaths,
+            ):
+                _install_vllm_runtime(stage_python)
+            if not _has_gpu_torch(stage_python) or not _has_vllm_omni_runtime(
+                stage_python,
+                extra_pythonpaths=extra_pythonpaths,
+            ):
+                raise RuntimeError("Voxtral TTS runtime verification failed")
+        python_bin = _python_bin(venv_dir)
 
     env = _build_env(
         python_bin,

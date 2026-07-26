@@ -17,6 +17,7 @@ from vox.audio.pipeline import prepare_for_output
 from vox.core.adapter import TTSAdapter
 from vox.core.store import BlobStore
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+from vox.operations.models import PullTaskRegistry
 from vox.server.routes.bidi import router as bidi_router
 from vox.streaming.mp3 import Mp3StreamEncoder
 
@@ -63,19 +64,23 @@ class TestEncodeOpus:
         audio = _sine(dur_s=0.5)
         data = encode_opus(audio, 24_000)
         import soundfile as sf
+
         decoded, sr = sf.read(io.BytesIO(data), dtype="float32")
         assert sr == 24_000
         assert decoded.size > 0
 
 
 class TestPrepareForOutput:
-    @pytest.mark.parametrize("fmt,ct,min_size", [
-        ("wav", "audio/wav", 1000),
-        ("flac", "audio/flac", 500),
-        ("pcm", "audio/L16", 1000),
-        ("mp3", "audio/mpeg", 500),
-        ("opus", "audio/opus", 500),
-    ])
+    @pytest.mark.parametrize(
+        "fmt,ct,min_size",
+        [
+            ("wav", "audio/wav", 1000),
+            ("flac", "audio/flac", 500),
+            ("pcm", "audio/L16", 1000),
+            ("mp3", "audio/mpeg", 500),
+            ("opus", "audio/opus", 500),
+        ],
+    )
     def test_all_formats_produce_data(self, fmt, ct, min_size):
         audio = _sine(dur_s=0.5)
         data, content_type = prepare_for_output(audio, 24_000, fmt)
@@ -122,13 +127,11 @@ class TestMp3StreamEncoder:
         audio = _sine(dur_s=2.0)
         pcm = (audio * 32767).astype(np.int16).tobytes()
 
-
         quarter = len(pcm) // 4
         data = b""
         for i in range(4):
             data += enc.encode(pcm[i * quarter : (i + 1) * quarter])
         data += enc.flush()
-
 
         assert 20_000 < len(data) < 60_000
 
@@ -149,14 +152,19 @@ class TestMp3StreamEncoder:
 class _MP3TTS(TTSAdapter):
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="mp3-test-tts", type=ModelType.TTS,
-            architectures=("test",), default_sample_rate=24_000,
+            name="mp3-test-tts",
+            type=ModelType.TTS,
+            architectures=("test",),
+            default_sample_rate=24_000,
             supported_formats=(ModelFormat.ONNX,),
         )
+
     def load(self, *a, **k): ...
     def unload(self): ...
     @property
-    def is_loaded(self): return True
+    def is_loaded(self):
+        return True
+
     def list_voices(self):
         return [VoiceInfo(id="default", name="Default")]
 
@@ -188,6 +196,7 @@ def _build_app(tmp_path: Path):
     reg.resolve_model_ref.side_effect = lambda n, t, explicit_tag=False: (n, t or "latest")
     app.state.registry = reg
     app.state.scheduler = _DummyScheduler(_MP3TTS())
+    app.state.pull_tasks = PullTaskRegistry()
     app.include_router(bidi_router)
     return app
 
@@ -198,12 +207,14 @@ class TestBidiMp3Streaming:
         mp3_chunks: list[bytes] = []
 
         with client.websocket_connect("/v1/audio/speech/stream") as ws:
-            ws.send_json({
-                "type": "config",
-                "model": "mp3-test-tts:latest",
-                "voice": "default",
-                "response_format": "mp3",
-            })
+            ws.send_json(
+                {
+                    "type": "config",
+                    "model": "mp3-test-tts:latest",
+                    "voice": "default",
+                    "response_format": "mp3",
+                }
+            )
             ready = ws.receive_json()
             assert ready["type"] == "ready"
             assert ready["response_format"] == "mp3"
@@ -231,21 +242,20 @@ class TestBidiMp3Streaming:
         assert full[0] == 0xFF
         assert full[1] & 0xE0 == 0xE0
 
-        sync_count = sum(
-            1 for i in range(len(full) - 1)
-            if full[i] == 0xFF and (full[i + 1] & 0xE0) == 0xE0
-        )
+        sync_count = sum(1 for i in range(len(full) - 1) if full[i] == 0xFF and (full[i + 1] & 0xE0) == 0xE0)
         assert sync_count >= 5
 
     def test_unsupported_format_rejected(self, tmp_path: Path):
         client = TestClient(_build_app(tmp_path))
         with client.websocket_connect("/v1/audio/speech/stream") as ws:
-            ws.send_json({
-                "type": "config",
-                "model": "mp3-test-tts:latest",
-                "voice": "default",
-                "response_format": "wav",
-            })
+            ws.send_json(
+                {
+                    "type": "config",
+                    "model": "mp3-test-tts:latest",
+                    "voice": "default",
+                    "response_format": "wav",
+                }
+            )
             msg = ws.receive_json()
             assert msg["type"] == "error"
             assert "Unsupported response_format" in msg["message"]

@@ -17,6 +17,7 @@ import torch
 from numpy.typing import NDArray
 
 from vox.core.adapter import STTAdapter
+from vox.core.transcription_logging import log_transcription_result
 from vox.core.types import (
     AdapterInfo,
     ModelFormat,
@@ -33,9 +34,36 @@ QWEN_ASR_SAMPLE_RATE = 16_000
 QWEN_ASR_FORCE_ALIGNER = "Qwen/Qwen3-ForcedAligner-0.6B"
 
 SUPPORTED_LANGUAGES = (
-    "zh", "en", "ja", "ko", "fr", "de", "es", "pt", "it", "nl",
-    "ru", "ar", "hi", "vi", "th", "id", "ms", "pl", "tr", "uk",
-    "cs", "ro", "hu", "el", "bg", "sv", "da", "fi", "no", "he",
+    "zh",
+    "en",
+    "ja",
+    "ko",
+    "fr",
+    "de",
+    "es",
+    "pt",
+    "it",
+    "nl",
+    "ru",
+    "ar",
+    "hi",
+    "vi",
+    "th",
+    "id",
+    "ms",
+    "pl",
+    "tr",
+    "uk",
+    "cs",
+    "ro",
+    "hu",
+    "el",
+    "bg",
+    "sv",
+    "da",
+    "fi",
+    "no",
+    "he",
 )
 
 _QWEN_LANGUAGE_LABELS = {
@@ -156,19 +184,16 @@ def _load_qwen_asr_model() -> Any:
     class _MissingForcedAligner:
         @classmethod
         def from_pretrained(cls, *_args: Any, **_kwargs: Any) -> Any:
-            raise RuntimeError(
-                "Qwen3-ASR word timestamps require the qwen-asr forced aligner runtime"
-            )
+            raise RuntimeError("Qwen3-ASR word timestamps require the qwen-asr forced aligner runtime")
 
     stub.Qwen3ForcedAligner = _MissingForcedAligner
     sys.modules[_QWEN_FORCE_ALIGNER_STUB_MODULE] = stub
     try:
         from qwen_asr.inference.qwen3_asr import Qwen3ASRModel
+
         return Qwen3ASRModel
     except ImportError as exc:  # pragma: no cover - depends on runtime image
-        raise RuntimeError(
-            "Qwen3-ASR requires the qwen-asr runtime package; install qwen-asr in the image"
-        ) from exc
+        raise RuntimeError("Qwen3-ASR requires the qwen-asr runtime package; install qwen-asr in the image") from exc
 
 
 def _load_qwen_forced_aligner() -> Any:
@@ -189,15 +214,13 @@ def _load_qwen_forced_aligner() -> Any:
     sys.modules.pop(_QWEN_FORCE_ALIGNER_STUB_MODULE, None)
     try:
         from qwen_asr.inference.qwen3_forced_aligner import Qwen3ForcedAligner
+
         return Qwen3ForcedAligner
     except ImportError as exc:  # pragma: no cover - depends on runtime image
-        raise RuntimeError(
-            "Qwen3-ASR word timestamps require the qwen-asr forced aligner runtime"
-        ) from exc
+        raise RuntimeError("Qwen3-ASR word timestamps require the qwen-asr forced aligner runtime") from exc
 
 
 class Qwen3ASRAdapter(STTAdapter):
-
     def __init__(self) -> None:
         self._model: Any = None
         self._processor: Any = None
@@ -379,10 +402,11 @@ class Qwen3ASRAdapter(STTAdapter):
                 ),
             )
 
-        if not text:
-            logger.warning("Empty transcription for %dms audio", audio_duration_ms)
-        else:
-            logger.info("Transcribed %dms audio: %s", audio_duration_ms, text[:80])
+        log_transcription_result(
+            logger,
+            audio_duration_ms=audio_duration_ms,
+            text=text,
+        )
 
         return TranscribeResult(
             text=text,
@@ -405,11 +429,13 @@ class Qwen3ASRAdapter(STTAdapter):
                 continue
             start_ms = int(float(ts_str) * 1000)
             end_ms = int(float(matches[i + 1][0]) * 1000) if i + 1 < len(matches) else start_ms + 500
-            words.append(WordTimestamp(
-                word=word_text,
-                start_ms=start_ms,
-                end_ms=end_ms,
-            ))
+            words.append(
+                WordTimestamp(
+                    word=word_text,
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                )
+            )
 
         return tuple(words)
 
@@ -417,7 +443,7 @@ class Qwen3ASRAdapter(STTAdapter):
         if not self._loaded or self._model is None:
             raise RuntimeError("Qwen3-ASR model is not loaded — call load() first")
 
-        snippet = audio[:QWEN_ASR_SAMPLE_RATE * 10]
+        snippet = audio[: QWEN_ASR_SAMPLE_RATE * 10]
         temp_path = self._audio_to_temp_wav(snippet)
         try:
             results = self._model.transcribe(audio=temp_path)

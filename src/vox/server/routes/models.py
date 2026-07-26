@@ -37,14 +37,17 @@ async def pull_model_route(req: PullRequest, request: Request):
     with map_operation_errors_to_http():
         events = pull_model(
             store=services.store,
-            scheduler=services.scheduler,
             registry=services.registry,
             request=model_reference_request_from_fields(name=req.name, variant=req.variant),
+            tasks=services.pull_tasks,
         )
 
     async def stream():
-        async for event in events:
-            yield json.dumps(pull_event_payload(event)) + "\n"
+        try:
+            async for event in events:
+                yield json.dumps(pull_event_payload(event)) + "\n"
+        finally:
+            await events.aclose()
 
     return StreamingResponse(stream(), media_type="application/x-ndjson")
 

@@ -123,7 +123,7 @@ class _FakeScheduler:
         self.acquired: list[str] = []
 
     async def start(self): ...
-    async def stop(self): ...
+    async def stop(self, *, deadline: float | None = None): ...
 
     @asynccontextmanager
     async def acquire(self, model: str):
@@ -238,7 +238,6 @@ class TestLifespanIntegration:
         app.state.scheduler = fake_sched
         app.state.grpc_port = None
 
-
         with TestClient(app) as _:
             pass
 
@@ -254,7 +253,6 @@ class TestLifespanIntegration:
         with TestClient(app) as _:
             pass
 
-
         assert fake_sched.acquired[0] == "explicit:1"
         assert "env-a:1" in fake_sched.acquired
         assert "env-b:2" in fake_sched.acquired
@@ -268,7 +266,6 @@ class TestLifespanIntegration:
 
         with TestClient(app) as _:
             pass
-
 
         assert fake_sched.acquired.count("shared:1") == 1
 
@@ -291,6 +288,7 @@ class TestCLISignature:
 
     def test_serve_has_preload_options(self):
         from vox.cli import serve
+
         opt_names = {p.name for p in serve.params}
         assert "preload_models" in opt_names
         assert "preload_vad" in opt_names

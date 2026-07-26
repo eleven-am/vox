@@ -85,7 +85,7 @@ class TestRegexEdgeCases:
         text = "prefix roy@example.com suffix"
         entities = _regex_entities(text)
         email = next(e for e in entities if e.type == "EMAIL")
-        assert text[email.start_char:email.end_char] == email.text
+        assert text[email.start_char : email.end_char] == email.text
 
 
 class TestCleanChunkAdversarial:
@@ -146,6 +146,7 @@ class TestMockedTopicRanking:
         class _E:
             def __init__(self, label, text, s, e):
                 self.label_, self.text, self.start_char, self.end_char = label, text, s, e
+
         class _T:
             def __init__(self, pos, lemma, i, is_stop=False, is_punct=False, text=None):
                 self.pos_, self.lemma_, self.i, self.is_stop, self.is_punct = pos, lemma, i, is_stop, is_punct
@@ -158,19 +159,25 @@ class TestMockedTopicRanking:
             toks = []
             for idx, w in enumerate(words):
                 is_det = idx == 0 and len(words) > 1 and w.lower() in _DETERMINERS
-                toks.append(_T(
-                    pos="DET" if is_det else "NOUN",
-                    lemma=w.lower(),
-                    i=start + idx,
-                    is_stop=is_det,
-                    text=w,
-                ))
+                toks.append(
+                    _T(
+                        pos="DET" if is_det else "NOUN",
+                        lemma=w.lower(),
+                        i=start + idx,
+                        is_stop=is_det,
+                        text=w,
+                    )
+                )
+
             class _C:
                 def __init__(c):
                     c.text = text
                     c.start = start
                     c._toks = toks
-                def __iter__(c): return iter(c._toks)
+
+                def __iter__(c):
+                    return iter(c._toks)
+
             return _C()
 
         class _Doc:
@@ -178,31 +185,40 @@ class TestMockedTopicRanking:
                 s.ents = [_E(*e) for e in ents]
                 s._tokens = [_T(*t) for t in tokens]
                 s.noun_chunks = [_chunk_from_text(*c) for c in chunks]
-            def __iter__(s): return iter(s._tokens)
+
+            def __iter__(s):
+                return iter(s._tokens)
+
         return _Doc()
 
     def _with_mock(self, doc):
         class _NLP:
-            def __call__(s, text): return doc
+            def __call__(s, text):
+                return doc
+
         return patch.object(ner, "_get_model", return_value=_NLP())
 
     def test_frequency_tiebreak_by_first_seen(self):
-        doc = self._make_doc(chunks=[
-            ("first phrase", 0),
-            ("second phrase", 3),
-            ("first phrase", 6),
-            ("second phrase", 9),
-        ])
+        doc = self._make_doc(
+            chunks=[
+                ("first phrase", 0),
+                ("second phrase", 3),
+                ("first phrase", 6),
+                ("second phrase", 9),
+            ]
+        )
         with self._with_mock(doc):
             _, topics = annotate("x", "en")
         assert topics == ["first phrase", "second phrase"]
 
     def test_stopwords_excluded_from_singles(self):
-        doc = self._make_doc(tokens=[
-            ("NOUN", "account", 0, False, False),
-            ("NOUN", "the", 1, True, False),
-            ("NOUN", "customer", 2, False, False),
-        ])
+        doc = self._make_doc(
+            tokens=[
+                ("NOUN", "account", 0, False, False),
+                ("NOUN", "the", 1, True, False),
+                ("NOUN", "customer", 2, False, False),
+            ]
+        )
         with self._with_mock(doc):
             _, topics = annotate("x", "en")
         assert topics == ["account", "customer"]
@@ -214,10 +230,12 @@ class TestMockedTopicRanking:
         assert topics == ["london"]
 
     def test_short_lemma_dropped(self):
-        doc = self._make_doc(tokens=[
-            ("NOUN", "a", 0, False, False),
-            ("NOUN", "ox", 1, False, False),
-        ])
+        doc = self._make_doc(
+            tokens=[
+                ("NOUN", "a", 0, False, False),
+                ("NOUN", "ox", 1, False, False),
+            ]
+        )
         with self._with_mock(doc):
             _, topics = annotate("x", "en")
         assert topics == ["ox"]
@@ -239,10 +257,12 @@ class TestMockedTopicRanking:
         assert topics1 == topics2
 
     def test_punct_token_excluded(self):
-        doc = self._make_doc(tokens=[
-            ("NOUN", ",", 0, False, True),
-            ("NOUN", "banana", 1, False, False),
-        ])
+        doc = self._make_doc(
+            tokens=[
+                ("NOUN", ",", 0, False, True),
+                ("NOUN", "banana", 1, False, False),
+            ]
+        )
         with self._with_mock(doc):
             _, topics = annotate("x", "en")
         assert topics == ["banana"]
@@ -266,7 +286,6 @@ class TestConcurrentModelLoad:
             for t in threads:
                 t.join()
 
-
         assert counter["calls"] == 20
 
     def test_slow_load_does_not_block_cached_language_lookup(self):
@@ -274,12 +293,13 @@ class TestConcurrentModelLoad:
         ner._missing_languages.clear()
         ner._models["fr"] = object()
 
-        release = threading.Event()
         entered = threading.Event()
         original_lock = ner._language_load_lock("en")
+        holder: threading.Thread | None = None
 
         original_lock.acquire()
         try:
+
             def hold_en_load():
                 entered.set()
                 ner._get_model("en")
@@ -300,7 +320,9 @@ class TestConcurrentModelLoad:
             assert result.get("model") is ner._models["fr"]
         finally:
             original_lock.release()
-            release.set()
+            if holder is not None:
+                holder.join(timeout=1)
+                assert not holder.is_alive()
 
 
 class TestAnnotateDoesNotPollutecaOnFailure:
@@ -308,11 +330,9 @@ class TestAnnotateDoesNotPollutecaOnFailure:
         ner._models.clear()
         ner._missing_languages.clear()
 
-
         with patch.object(ner, "_get_model", return_value=None):
             annotate("hello", "en")
             annotate("hello", "en")
-
 
         assert "en" not in ner._models
 

@@ -114,7 +114,7 @@ def test_coalesce_transcript_payload_appends_continuations_and_metadata():
     ]
 
 
-def test_pending_transcript_finalizer_remembers_pops_clears_and_logs(caplog):
+def test_pending_transcript_finalizer_remembers_pops_clears_and_logs_without_text(caplog):
     finalizer = PendingTranscriptFinalizer(language="en")
     finalizer.remember(StreamTranscript(text="first", start_ms=0, end_ms=100))
     finalizer.remember(StreamTranscript(text="second", start_ms=150, end_ms=300))
@@ -130,13 +130,14 @@ def test_pending_transcript_finalizer_remembers_pops_clears_and_logs(caplog):
     assert finalizer.pending_text("fallback") == "fallback"
 
     caplog.set_level(logging.INFO, logger="vox.conversation.session")
-    finalizer.log({"transcript": "logged", "start_ms": 1, "end_ms": 2})
+    finalizer.log({"transcript": "private transcript", "start_ms": 1, "end_ms": 2})
     assert any(
         record.name == "vox.conversation.session"
         and "conversation final transcript emitted" in record.message
-        and "logged" in record.message
+        and "chars=18" in record.message
         for record in caplog.records
     )
+    assert "private transcript" not in caplog.text
 
 
 def test_pending_transcript_finalizer_reanalyzes_continuations_as_one_timeline():
@@ -329,8 +330,8 @@ def test_endpoint_commit_delay_extends_low_eou_but_keeps_missing_eou_fallback():
 
     low_confidence_ms = policy.commit_delay_ms(eou_probability=0.3, eou_threshold=0.5)
 
-    assert 650 < low_confidence_ms < 800
-    assert policy.commit_delay_ms(eou_probability=0.0, eou_threshold=0.5) == 800
+    assert 900 < low_confidence_ms < 1200
+    assert policy.commit_delay_ms(eou_probability=0.0, eou_threshold=0.5) == 1200
     assert policy.commit_delay_ms(eou_probability=None, eou_threshold=0.5) == 650
 
 
@@ -347,8 +348,25 @@ def test_endpoint_commit_delay_is_monotonic_across_incomplete_confidence():
     clearly_incomplete = policy.commit_delay_ms(eou_probability=0.25, eou_threshold=0.5)
     certainly_incomplete = policy.commit_delay_ms(eou_probability=0.0, eou_threshold=0.5)
 
-    assert 650 < barely_incomplete < clearly_incomplete < certainly_incomplete
-    assert certainly_incomplete == 800
+    assert 900 < barely_incomplete < clearly_incomplete < certainly_incomplete
+    assert certainly_incomplete == 1200
+
+
+def test_endpoint_commit_delay_protects_uncertain_continuations_without_delaying_high_confidence():
+    policy = EndpointCommitDelayPolicy.from_turn_policy(
+        TurnPolicy(
+            max_endpointing_delay_ms=3000,
+            min_endpointing_delay_ms=350,
+            dynamic_endpointing=False,
+        )
+    )
+
+    assert policy.commit_delay_ms(eou_probability=0.0, eou_threshold=0.5) == 1200
+    assert policy.commit_delay_ms(eou_probability=0.5, eou_threshold=0.5) == 1000
+    assert policy.commit_delay_ms(eou_probability=0.7, eou_threshold=0.5) == 680
+    assert policy.commit_delay_ms(eou_probability=0.75, eou_threshold=0.5) == 600
+    assert policy.commit_delay_ms(eou_probability=0.85, eou_threshold=0.5) == 440
+    assert policy.commit_delay_ms(eou_probability=1.0, eou_threshold=0.5) == 350
 
 
 def test_endpoint_commit_delay_preserves_long_learned_pause_allowance():
@@ -368,6 +386,28 @@ def test_endpoint_commit_delay_preserves_long_learned_pause_allowance():
         )
         == 3000
     )
+
+
+def test_endpoint_commit_delay_does_not_apply_pause_history_to_complete_turns():
+    policy = EndpointCommitDelayPolicy.from_turn_policy(
+        TurnPolicy(
+            max_endpointing_delay_ms=3000,
+            min_endpointing_delay_ms=350,
+            dynamic_endpointing=True,
+        )
+    )
+
+    without_history = policy.commit_delay_ms(
+        eou_probability=0.75,
+        eou_threshold=0.5,
+    )
+    with_history = policy.commit_delay_ms(
+        recent_pause_ms=[1800, 2200],
+        eou_probability=0.75,
+        eou_threshold=0.5,
+    )
+
+    assert with_history == without_history
 
 
 def test_final_transcript_decision_emits_commit_eou_event_without_endpoint_timer():
@@ -422,7 +462,7 @@ def test_final_transcript_decision_defers_while_endpoint_timer_is_active():
         turn_detector="livekit",
     )
 
-    assert 650 < decision.commit_delay_ms < 800
+    assert 900 < decision.commit_delay_ms < 1200
     assert decision.defer_commit
     assert not decision.eou_complete
     assert decision.eou_event is not None
@@ -457,7 +497,7 @@ def test_near_zero_eou_uses_default_ceiling_for_every_detector_backend():
 
         assert decision.defer_commit
         assert not decision.eou_complete
-        assert decision.commit_delay_ms == 800
+        assert decision.commit_delay_ms == 1200
         assert decision.eou_event is not None
         assert decision.eou_event["turn_detector"] == turn_detector
         assert decision.eou_event["action"] == "wait"

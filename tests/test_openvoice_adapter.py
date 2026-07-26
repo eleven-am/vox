@@ -196,7 +196,10 @@ class TestOpenVoiceAdapterInfo:
         assert calls[0][0] == "uv"
         assert calls[0][1:5] == ["pip", "install", "--python", sys.executable]
         assert "--target" in calls[0]
-        assert "/tmp/vox-openvoice-test-home/runtime/openvoice" in calls[0]
+        runtime_dir = Path("/tmp/vox-openvoice-test-home/runtime/openvoice")
+        install_target = Path(calls[0][calls[0].index("--target") + 1])
+        assert install_target.parent == runtime_dir.parent
+        assert install_target.name.startswith(".openvoice.installing-")
         assert "--no-build-isolation" in calls[0]
         assert "--no-deps" in calls[0]
         assert "resampy==0.4.3" in calls[0]

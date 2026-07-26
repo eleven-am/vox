@@ -53,6 +53,7 @@ class ConversationRuntime:
         self._end_task: asyncio.Task[None] | None = None
         self._close_task: asyncio.Task[None] | None = None
         self._lifecycle_lock = asyncio.Lock()
+        self._closing = False
 
     def start_event_pump(self, handler: EventHandler) -> asyncio.Task[None]:
         if self._event_task is not None:
@@ -61,6 +62,9 @@ class ConversationRuntime:
         return self._event_task
 
     def start_background_task(self, coroutine: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
+        if self._closing:
+            coroutine.close()
+            raise RuntimeError("conversation runtime is closing")
         task = asyncio.create_task(coroutine)
         self._background_tasks.add(task)
 
@@ -150,17 +154,14 @@ class ConversationRuntime:
 
     @staticmethod
     async def _await_owned_task(task: asyncio.Task[None]) -> None:
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            await asyncio.shield(task)
-            raise
+        await asyncio.shield(task)
 
     async def _pump_events(self, handler: EventHandler) -> None:
         async for event in self.orchestrator.events():
             await handler(event)
 
     async def _close_once(self) -> None:
+        self._closing = True
         end_error: BaseException | None = None
         try:
             await self.end_input()
@@ -175,6 +176,9 @@ class ConversationRuntime:
             for task in tasks:
                 await reap_task(task)
             await self.orchestrator.close()
+            owned = tuple(task for task in (self._event_task, *tasks) if task is not None and not task.done())
+            if owned:
+                await asyncio.gather(*owned, return_exceptions=True)
         if end_error is not None:
             raise end_error
 

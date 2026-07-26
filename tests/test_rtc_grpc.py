@@ -70,13 +70,19 @@ def _attach(session_id: str) -> vox_pb2.RtcControlClientMessage:
     return vox_pb2.RtcControlClientMessage(attach=vox_pb2.RtcControlAttach(session_id=session_id))
 
 
-def _offer(sdp: str = "offer-sdp", *, restart: bool = False) -> vox_pb2.RtcControlClientMessage:
-    return vox_pb2.RtcControlClientMessage(
-        offer=vox_pb2.RtcControlOffer(
-            offer=vox_pb2.RtcSessionDescription(type="offer", sdp=sdp),
-            restart=restart,
-        )
+def _offer(
+    sdp: str = "offer-sdp",
+    *,
+    restart: bool = False,
+    generation: int | None = None,
+) -> vox_pb2.RtcControlClientMessage:
+    offer = vox_pb2.RtcControlOffer(
+        offer=vox_pb2.RtcSessionDescription(type="offer", sdp=sdp),
+        restart=restart,
     )
+    if generation is not None:
+        offer.generation = generation
+    return vox_pb2.RtcControlClientMessage(offer=offer)
 
 
 async def _collect_all(servicer: RtcServicer, messages, *, timeout: float = 2.0):
@@ -180,10 +186,11 @@ async def test_rtc_grpc_full_signaling_uses_one_ordered_stream(monkeypatch):
                     sdp_mid="0",
                     sdp_m_line_index=0,
                     username_fragment="ufrag",
+                    generation=4,
                 )
             ),
-            vox_pb2.RtcControlClientMessage(candidates_complete=vox_pb2.RtcIceCandidatesComplete()),
-            _offer(),
+            vox_pb2.RtcControlClientMessage(candidates_complete=vox_pb2.RtcIceCandidatesComplete(generation=4)),
+            _offer(generation=4),
             vox_pb2.RtcControlClientMessage(close=vox_pb2.RtcControlClose(reason="test_complete")),
         ],
     )
@@ -196,11 +203,58 @@ async def test_rtc_grpc_full_signaling_uses_one_ordered_stream(monkeypatch):
     assert output[0].attached.session_id == record.session_id
     assert output[0].attached.provider == "grpc"
     assert output[1].answer.answer.sdp == "answer-sdp"
+    assert output[1].answer.generation == 4
     assert [candidate.candidate for candidate in applied_candidates] == [
         "candidate:first",
         None,
     ]
     assert applied_candidates[0].sdp_m_line_index == 0
+    assert [candidate.generation for candidate in applied_candidates] == [4, 4]
+
+
+@pytest.mark.asyncio
+async def test_rtc_grpc_failed_answer_delivery_rolls_back_offer(monkeypatch):
+    import vox.grpc.rtc_servicer as rtc_servicer_module
+
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="grpc")
+    committed = 0
+    rolled_back = 0
+    original_put = rtc_servicer_module.put_grpc_output_queue
+
+    async def commit() -> None:
+        nonlocal committed
+        committed += 1
+
+    async def rollback() -> None:
+        nonlocal rolled_back
+        rolled_back += 1
+
+    async def fake_exchange(**_kwargs):
+        return RtcOfferAnswer(
+            session_id=record.session_id,
+            answer_type="answer",
+            sdp="answer-sdp",
+            commit_callback=commit,
+            rollback_callback=rollback,
+        )
+
+    async def fail_answer(queue, item, *, consumer_closed):
+        if item.WhichOneof("msg") == "answer":
+            return False
+        return await original_put(queue, item, consumer_closed=consumer_closed)
+
+    monkeypatch.setattr(rtc_runtime_module, "exchange_server_rtc_offer", fake_exchange)
+    monkeypatch.setattr(rtc_servicer_module, "put_grpc_output_queue", fail_answer)
+
+    output = await _collect_all(
+        _servicer(registry),
+        [_attach(record.session_id), _offer(generation=4)],
+    )
+
+    assert [message.WhichOneof("msg") for message in output] == ["attached", "error", "closed"]
+    assert committed == 0
+    assert rolled_back == 1
 
 
 @pytest.mark.asyncio
@@ -210,6 +264,7 @@ async def test_rtc_grpc_server_candidate_and_completion_are_typed_messages():
     candidate = rtc_runtime_event_pb(
         {
             "type": "rtc.ice_candidate",
+            "generation": 6,
             "candidate": {
                 "candidate": "candidate:server",
                 "sdpMid": "audio",
@@ -217,12 +272,43 @@ async def test_rtc_grpc_server_candidate_and_completion_are_typed_messages():
             },
         }
     )
-    complete = rtc_runtime_event_pb({"type": "rtc.ice_candidate", "candidate": None})
+    complete = rtc_runtime_event_pb({"type": "rtc.ice_candidate", "candidate": None, "generation": 6})
 
     assert candidate.WhichOneof("msg") == "candidate"
     assert candidate.candidate.sdp_mid == "audio"
     assert candidate.candidate.sdp_m_line_index == 0
+    assert candidate.candidate.generation == 6
     assert complete.WhichOneof("msg") == "candidates_complete"
+    assert complete.candidates_complete.generation == 6
+
+
+def test_rtc_grpc_answer_preserves_negotiation_generation():
+    from vox.grpc.rtc_messages import rtc_runtime_event_pb
+
+    answer = rtc_runtime_event_pb(
+        {
+            "type": "rtc.answer",
+            "session_id": "rtc_1",
+            "generation": 11,
+            "answer": {"type": "answer", "sdp": "answer-sdp"},
+        }
+    )
+
+    assert answer.answer.generation == 11
+
+
+def test_rtc_grpc_signaling_error_preserves_negotiation_generation():
+    from vox.grpc.rtc_messages import rtc_runtime_event_pb
+
+    error = rtc_runtime_event_pb(
+        {
+            "type": "rtc.signaling_error",
+            "message": "failed",
+            "generation": 13,
+        }
+    )
+
+    assert error.error.generation == 13
 
 
 @pytest.mark.asyncio
@@ -234,6 +320,20 @@ async def test_rtc_grpc_requires_attach_first():
 
     assert output[0].WhichOneof("msg") == "error"
     assert "attach first" in output[0].error.message
+
+
+@pytest.mark.asyncio
+async def test_rtc_grpc_dispatch_error_preserves_offer_generation():
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="grpc")
+
+    output = await _collect_all(
+        _servicer(registry),
+        [_attach(record.session_id), _offer(restart=True, generation=17)],
+    )
+
+    error = next(message.error for message in output if message.WhichOneof("msg") == "error")
+    assert error.generation == 17
 
 
 @pytest.mark.asyncio

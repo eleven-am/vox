@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from contextlib import asynccontextmanager
 from typing import Any
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -169,7 +171,7 @@ async def test_transcribe_segment_keeps_wrong_adapter_type_as_empty_transcript_a
     assert transcript.text == ""
     assert scheduler.closed
 
-    pipeline.shutdown()
+    await pipeline.shutdown()
 
 
 @pytest.mark.asyncio
@@ -183,9 +185,7 @@ async def test_transcribe_segment_prefers_complete_whole_utterance_over_gap_span
     second = np.full(int(1.3 * TARGET_SAMPLE_RATE), 0.5, dtype=np.float32)
     audio = np.concatenate([first, gap, second])
 
-    transcript = await pipeline._transcribe_segment(
-        SpeechSegment(audio=audio, start_ms=0, end_ms=3000, utterance_id=7)
-    )
+    transcript = await pipeline._transcribe_segment(SpeechSegment(audio=audio, start_ms=0, end_ms=3000, utterance_id=7))
 
     assert transcript.text == "just to hold my waist from behind and he turns me over"
     assert transcript.start_ms == 0
@@ -195,7 +195,7 @@ async def test_transcribe_segment_prefers_complete_whole_utterance_over_gap_span
     assert len(adapter.calls) == 1
     assert np.allclose(adapter.calls[0][: 5 * TARGET_SAMPLE_RATE], 0)
 
-    pipeline.shutdown()
+    await pipeline.shutdown()
 
 
 @pytest.mark.asyncio
@@ -225,7 +225,7 @@ async def test_transcribe_segment_passes_session_stt_options_to_every_rescue_cal
         {"language": "fr", "word_timestamps": True, "temperature": 0.4},
     ]
 
-    pipeline.shutdown()
+    await pipeline.shutdown()
 
 
 @pytest.mark.asyncio
@@ -239,9 +239,7 @@ async def test_transcribe_segment_splits_clear_internal_silence_gap_when_whole_i
     second = np.full(int(1.3 * TARGET_SAMPLE_RATE), 0.5, dtype=np.float32)
     audio = np.concatenate([first, gap, second])
 
-    transcript = await pipeline._transcribe_segment(
-        SpeechSegment(audio=audio, start_ms=0, end_ms=3000)
-    )
+    transcript = await pipeline._transcribe_segment(SpeechSegment(audio=audio, start_ms=0, end_ms=3000))
 
     assert transcript.text == "Yeah. second phrase"
     assert transcript.start_ms == 0
@@ -250,7 +248,7 @@ async def test_transcribe_segment_splits_clear_internal_silence_gap_when_whole_i
     assert len(adapter.calls) == 3
     assert all(np.allclose(call[: 5 * TARGET_SAMPLE_RATE], 0) for call in adapter.calls)
 
-    pipeline.shutdown()
+    await pipeline.shutdown()
 
 
 @pytest.mark.asyncio
@@ -264,25 +262,19 @@ async def test_transcribe_segment_splits_long_silence_gap_inside_one_vad_segment
     second = np.full(int(1.3 * TARGET_SAMPLE_RATE), 0.5, dtype=np.float32)
     audio = np.concatenate([first, gap, second])
 
-    transcript = await pipeline._transcribe_segment(
-        SpeechSegment(audio=audio, start_ms=0, end_ms=4100)
-    )
+    transcript = await pipeline._transcribe_segment(SpeechSegment(audio=audio, start_ms=0, end_ms=4100))
 
     assert transcript.text == "Yeah. second phrase"
     assert transcript.audio_duration_ms == 4100
     assert len(adapter.calls) == 3
 
-    first_transcript = await pipeline._transcribe_segment(
-        SpeechSegment(audio=first, start_ms=0, end_ms=800)
-    )
-    second_transcript = await pipeline._transcribe_segment(
-        SpeechSegment(audio=second, start_ms=2800, end_ms=4100)
-    )
+    first_transcript = await pipeline._transcribe_segment(SpeechSegment(audio=first, start_ms=0, end_ms=800))
+    second_transcript = await pipeline._transcribe_segment(SpeechSegment(audio=second, start_ms=2800, end_ms=4100))
 
     assert first_transcript.text == "Yeah."
     assert second_transcript.text == "second phrase"
 
-    pipeline.shutdown()
+    await pipeline.shutdown()
 
 
 class _StoppedVad:
@@ -333,7 +325,7 @@ async def test_realtime_pipeline_preserves_vad_audio_when_stt_is_empty():
     assert stopped.end_ms == 300
     assert stopped.utterance_id == 4
     assert np.array_equal(stopped.audio, audio)
-    pipeline.shutdown()
+    await pipeline.shutdown()
 
 
 @pytest.mark.asyncio
@@ -366,7 +358,7 @@ async def test_realtime_pipeline_scores_eou_before_waiting_for_speech_context():
 
     assert events[-1].speech_context is not None
     assert events[-1].speech_context.status == "failed"
-    pipeline.shutdown()
+    await pipeline.shutdown()
 
 
 @pytest.mark.asyncio
@@ -405,7 +397,37 @@ async def test_realtime_pipeline_cancels_context_when_eou_scoring_fails():
         await anext(_collect_pipeline_events(pipeline, audio))
 
     assert context_service.stopped.is_set()
-    pipeline.shutdown()
+    await pipeline.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_shutdown_does_not_block_event_loop():
+    class BlockingExecutor:
+        def __init__(self) -> None:
+            self.thread_id: int | None = None
+
+        def shutdown(self, *, wait: bool, cancel_futures: bool) -> None:
+            assert wait is True
+            assert cancel_futures is True
+            self.thread_id = threading.get_ident()
+            threading.Event().wait(0.1)
+
+    pipeline = StreamPipeline(MagicMock())
+    pipeline._executor.shutdown(wait=True)
+    executor = BlockingExecutor()
+    pipeline._executor = executor
+    ticked = asyncio.Event()
+
+    async def tick() -> None:
+        await asyncio.sleep(0.01)
+        ticked.set()
+
+    ticker = asyncio.create_task(tick())
+    await pipeline.shutdown()
+    await ticker
+
+    assert ticked.is_set()
+    assert executor.thread_id != threading.get_ident()
 
 
 async def _collect_pipeline_events(pipeline: StreamPipeline, audio: np.ndarray):

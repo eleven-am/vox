@@ -114,15 +114,13 @@ def _load_voxtral_tts_runtime() -> tuple[type[Any], type[Any], type[Any], type[A
         from vllm_omni import AsyncOmni
     except ImportError as exc:
         raise RuntimeError(
-            "Voxtral TTS requires vllm>=0.18.0, vllm-omni>=0.18.0, and "
-            "mistral-common[audio]>=1.10.0"
+            "Voxtral TTS requires vllm>=0.18.0, vllm-omni>=0.18.0, and mistral-common[audio]>=1.10.0"
         ) from exc
 
     return AsyncOmni, SamplingParams, SpeechRequest, MistralTokenizer
 
 
 class VoxtralTTSAdapter(TTSAdapter):
-
     def __init__(self) -> None:
         self._backend: OmniBackend | None = None
         self._runtime: Any | None = None
@@ -164,9 +162,7 @@ class VoxtralTTSAdapter(TTSAdapter):
         self._placement_tier = kwargs.pop("_placement_tier", None)
         self._placement_extras = dict(kwargs.pop("_placement_extras", {}) or {})
         if device == "cpu":
-            raise RuntimeError(
-                "Voxtral TTS on Vox requires CUDA + vLLM-Omni; CPU and MPS are not supported"
-            )
+            raise RuntimeError("Voxtral TTS on Vox requires CUDA + vLLM-Omni; CPU and MPS are not supported")
         self._device = "cuda"
 
         log_stats = bool(kwargs.pop("log_stats", False))
@@ -206,6 +202,7 @@ class VoxtralTTSAdapter(TTSAdapter):
                 exc,
             )
 
+        self._release_inprocess_runtime()
         self._backend = self._make_worker_backend(explicit_stage_configs_path=explicit_stage_configs_path)
         self._subprocess_only = True
         self._loaded = True
@@ -237,6 +234,17 @@ class VoxtralTTSAdapter(TTSAdapter):
             env=runtime.env,
         )
 
+    def _release_inprocess_runtime(self) -> None:
+        runtime = self._runtime
+        self._runtime = None
+        self._tokenizer = None
+        self._speech_request_cls = None
+        if runtime is None:
+            return
+        shutdown = getattr(runtime, "shutdown", None)
+        if callable(shutdown):
+            shutdown()
+
     def unload(self) -> None:
         if self._backend is not None:
             backend = self._backend
@@ -254,7 +262,8 @@ class VoxtralTTSAdapter(TTSAdapter):
 
     @property
     def is_loaded(self) -> bool:
-        return self._loaded
+        backend = self._backend
+        return self._loaded and backend is not None and backend.alive
 
     def trim(self) -> None:
         backend = self._backend
@@ -271,7 +280,7 @@ class VoxtralTTSAdapter(TTSAdapter):
         reference_audio: NDArray[np.float32] | None = None,
         reference_text: str | None = None,
     ) -> AsyncIterator[SynthesizeChunk]:
-        if not self._loaded:
+        if not self.is_loaded:
             raise RuntimeError("Voxtral TTS model is not loaded — call load() first")
 
         if not text or not text.strip():
@@ -314,9 +323,7 @@ class VoxtralTTSAdapter(TTSAdapter):
                             )
                         continue
                     voice_id = (
-                        getattr(voice, "id", None)
-                        or getattr(voice, "name", None)
-                        or getattr(voice, "voice", None)
+                        getattr(voice, "id", None) or getattr(voice, "name", None) or getattr(voice, "voice", None)
                     )
                     if voice_id:
                         normalized.append(

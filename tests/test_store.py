@@ -7,6 +7,8 @@ import io
 import json
 import logging
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -36,10 +38,6 @@ def _save_minimal_manifest(store: BlobStore, name: str, tag: str, digest: str, s
     return manifest
 
 
-
-
-
-
 class TestWriteBlob:
     def test_write_blob_computes_correct_sha256(self, tmp_path: Path):
         store = _make_store(tmp_path)
@@ -64,6 +62,7 @@ class TestWriteBlob:
 
         class ExplodingIO(io.BytesIO):
             """Raises after the first read."""
+
             _first = True
 
             def read(self, n=-1):
@@ -75,13 +74,51 @@ class TestWriteBlob:
         with pytest.raises(OSError, match="disk on fire"):
             store.write_blob(ExplodingIO())
 
-
         remaining = list(store.blobs_dir.iterdir())
         assert remaining == []
 
 
+class TestStoreWriter:
+    def test_writer_lease_excludes_another_process(self, tmp_path: Path):
+        store = _make_store(tmp_path)
+        code = "\n".join(
+            (
+                "import sys",
+                "from pathlib import Path",
+                "from vox.core.store import BlobStore, StoreWriterBusyError",
+                "store = BlobStore(root=Path(sys.argv[1]))",
+                "try:",
+                "    store.acquire_writer_lease(timeout=0.1)",
+                "except StoreWriterBusyError:",
+                "    raise SystemExit(0)",
+                "raise SystemExit(1)",
+            )
+        )
 
+        with store.writer_lease():
+            result = subprocess.run(
+                [sys.executable, "-c", code, str(tmp_path)],
+                cwd=Path(__file__).parents[1],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=2,
+            )
 
+        assert result.returncode == 0, result.stderr
+
+    def test_fenced_writer_cannot_publish_a_manifest(self, tmp_path: Path):
+        store = _make_store(tmp_path)
+        manifest = Manifest(config={"type": "stt", "format": "onnx"})
+
+        with store.writer_lease() as writer:
+            epoch_path = store.transaction_root / "store-writer.epoch"
+            epoch_path.write_text(str(writer.epoch + 1))
+
+            with pytest.raises(RuntimeError, match="fenced"):
+                store.save_manifest("model", "latest", manifest)
+
+        assert store.resolve_model("model", "latest") is None
 
 
 class TestManifestOperations:
@@ -90,7 +127,10 @@ class TestManifestOperations:
         original = Manifest(
             layers=[
                 ManifestLayer(
-                    media_type="application/vox.model.onnx", digest="sha256-aaa", size=100, filename="m.onnx",
+                    media_type="application/vox.model.onnx",
+                    digest="sha256-aaa",
+                    size=100,
+                    filename="m.onnx",
                 ),
                 ManifestLayer(media_type="application/vox.voices", digest="sha256-bbb", size=50, filename="voices.bin"),
             ],
@@ -121,6 +161,17 @@ class TestManifestOperations:
         assert second is not None and second.layers[0].digest == "sha256-bbb"
         leftover = list((store.manifests_dir / "parakeet").glob("*.tmp"))
         assert leftover == []
+
+    def test_manifest_staging_files_are_not_visible_as_models(self, tmp_path: Path):
+        store = _make_store(tmp_path)
+        _save_minimal_manifest(store, "model", "latest", "sha256-aaa", 100)
+        staging = store.manifest_staging_dir
+        staging.mkdir(parents=True, exist_ok=True)
+        (staging / "latest.crashed.tmp").write_text("{}")
+
+        models = store.list_models()
+
+        assert [model.full_name for model in models] == ["model:latest"]
 
     def test_list_models_returns_all_stored(self, tmp_path: Path):
         store = _make_store(tmp_path)
@@ -167,10 +218,6 @@ class TestManifestOperations:
         assert [m.tag for m in models] == ["good"]
 
 
-
-
-
-
 class TestDeleteModel:
     def test_delete_model_removes_manifest(self, tmp_path: Path):
         store = _make_store(tmp_path)
@@ -190,17 +237,80 @@ class TestDeleteModel:
         assert not parent.exists(), "Empty parent directory should be removed"
 
 
-
-
-
-
 class TestGcBlobs:
+    def test_gc_blobs_reads_layer_roots_without_model_info_construction(
+        self,
+        tmp_path: Path,
+    ):
+        store = _make_store(tmp_path)
+        referenced = store.write_blob(io.BytesIO(b"referenced"))
+        orphan = store.write_blob(io.BytesIO(b"orphan"))
+        path = store.manifests_dir / "broken" / "latest"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "layers": [
+                        {
+                            "media_type": "application/vox.model.bin",
+                            "digest": referenced,
+                            "size": 10,
+                            "filename": "model.bin",
+                        }
+                    ],
+                    "config": {},
+                }
+            )
+        )
+        old_mtime = time.time() - 7200
+        os.utime(store.get_blob_path(referenced), (old_mtime, old_mtime))
+        os.utime(store.get_blob_path(orphan), (old_mtime, old_mtime))
+
+        assert store.list_models() == []
+        assert store.gc_blobs(grace_seconds=0) == 1
+        assert store.has_blob(referenced)
+        assert not store.has_blob(orphan)
+
+    def test_gc_blobs_deletes_nothing_when_a_manifest_is_unreadable(
+        self,
+        tmp_path: Path,
+    ):
+        store = _make_store(tmp_path)
+        orphan = store.write_blob(io.BytesIO(b"orphan"))
+        path = store.manifests_dir / "broken" / "latest"
+        path.parent.mkdir(parents=True)
+        path.write_text("{")
+        old_mtime = time.time() - 7200
+        os.utime(store.get_blob_path(orphan), (old_mtime, old_mtime))
+
+        assert store.gc_blobs(grace_seconds=0) == 0
+        assert store.has_blob(orphan)
+
+    @pytest.mark.parametrize("broken", (False, True))
+    def test_gc_blobs_deletes_nothing_when_manifest_root_is_a_symlink(
+        self,
+        tmp_path: Path,
+        broken: bool,
+    ):
+        store = _make_store(tmp_path)
+        orphan = store.write_blob(io.BytesIO(b"orphan"))
+        target = tmp_path / "external-manifests"
+        if not broken:
+            target.mkdir()
+        store.manifests_dir.parent.mkdir(parents=True)
+        store.manifests_dir.symlink_to(target, target_is_directory=True)
+        old_mtime = time.time() - 7200
+        os.utime(store.get_blob_path(orphan), (old_mtime, old_mtime))
+
+        assert store.gc_blobs(grace_seconds=0) == 0
+        assert store.has_blob(orphan)
+
     def test_gc_blobs_removes_unreferenced(self, tmp_path: Path):
         store = _make_store(tmp_path)
 
         d1 = store.write_blob(io.BytesIO(b"referenced"))
         d2 = store.write_blob(io.BytesIO(b"orphan"))
-
 
         _save_minimal_manifest(store, "whisper", "latest", d1, 10)
 
@@ -222,6 +332,24 @@ class TestGcBlobs:
         removed = store.gc_blobs()
         assert removed == 0
         assert store.has_blob(d2)
+
+    def test_gc_blobs_keeps_old_deduplicated_blob_until_manifest_publication(self, tmp_path: Path):
+        store = _make_store(tmp_path)
+        data = b"deduplicated-model"
+        digest = store.write_blob(io.BytesIO(data))
+        old_mtime = time.time() - 7200
+        os.utime(store.get_blob_path(digest), (old_mtime, old_mtime))
+
+        with store.blob_lease() as lease:
+            leased_digest = lease.write_blob(io.BytesIO(data))
+
+            assert leased_digest == digest
+            assert store.gc_blobs() == 0
+            assert store.has_blob(digest)
+            _save_minimal_manifest(store, "whisper", "latest", digest, len(data))
+
+        assert store.gc_blobs() == 0
+        assert store.has_blob(digest)
 
     def test_gc_blobs_keeps_referenced(self, tmp_path: Path):
         store = _make_store(tmp_path)
@@ -253,14 +381,9 @@ class TestGcBlobs:
         recent_tmp = store.blobs_dir / "inprogress.tmp"
         recent_tmp.write_bytes(b"still writing")
 
-
         removed = store.gc_blobs()
         assert removed == 0
         assert recent_tmp.exists()
-
-
-
-
 
 
 class TestManifestLayerValidation:

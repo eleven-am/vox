@@ -7,9 +7,11 @@ import json
 import logging
 import os
 import random
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import AsyncIterator
 from contextlib import contextmanager
@@ -46,7 +48,16 @@ FASTER_QWEN_TTS_IMPORT = "faster_qwen3_tts"
 FASTER_QWEN_MIN_TORCH = (2, 5, 1)
 
 SUPPORTED_LANGUAGES = (
-    "zh", "en", "ja", "ko", "fr", "de", "ru", "es", "pt", "it",
+    "zh",
+    "en",
+    "ja",
+    "ko",
+    "fr",
+    "de",
+    "ru",
+    "es",
+    "pt",
+    "it",
 )
 
 _QWEN_LANGUAGE_LABELS = {
@@ -185,9 +196,7 @@ def _resolve_supported_speaker(speaker: str, supported_speakers: list[str]) -> s
             return candidate
 
     available = ", ".join(supported_speakers)
-    raise ValueError(
-        f"Unknown Qwen3-TTS speaker '{speaker}'. Available speakers: {available}"
-    )
+    raise ValueError(f"Unknown Qwen3-TTS speaker '{speaker}'. Available speakers: {available}")
 
 
 def _detect_mode(model_id: str, *, override: str | None = None) -> str:
@@ -271,7 +280,7 @@ async def _stream_model_output(output: Any, default_sample_rate: int) -> AsyncIt
             continue
         chunk_size = sample_rate * 2
         for i in range(0, len(audio), chunk_size):
-            chunk = audio[i:i + chunk_size]
+            chunk = audio[i : i + chunk_size]
             yield SynthesizeChunk(
                 audio=chunk.tobytes(),
                 sample_rate=sample_rate,
@@ -323,11 +332,10 @@ def _load_qwen_tts_model() -> Any:
     )
     try:
         from qwen_tts import Qwen3TTSModel
+
         return Qwen3TTSModel
     except ImportError as exc:  # pragma: no cover - depends on runtime image
-        raise RuntimeError(
-            "Qwen3-TTS requires the qwen-tts runtime package; install qwen-tts in the image"
-        ) from exc
+        raise RuntimeError("Qwen3-TTS requires the qwen-tts runtime package; install qwen-tts in the image") from exc
 
 
 def _load_faster_qwen_tts_model() -> Any:
@@ -348,15 +356,13 @@ def _load_faster_qwen_tts_model() -> Any:
     )
     try:
         from faster_qwen3_tts import FasterQwen3TTS
+
         return FasterQwen3TTS
     except ImportError as exc:  # pragma: no cover - depends on runtime image
-        raise RuntimeError(
-            "Faster Qwen3-TTS requires the faster-qwen3-tts runtime package"
-        ) from exc
+        raise RuntimeError("Faster Qwen3-TTS requires the faster-qwen3-tts runtime package") from exc
 
 
 class Qwen3TTSAdapter(TTSAdapter):
-
     def __init__(self) -> None:
         self._model: Any = None
         self._tokenizer: Any = None
@@ -369,6 +375,8 @@ class Qwen3TTSAdapter(TTSAdapter):
         self._mode: str = "custom"
         self._subprocess_only = False
         self._backend = "qwen-tts"
+        self._subprocess_lock = threading.Lock()
+        self._active_subprocesses: set[subprocess.Popen[str]] = set()
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
@@ -481,9 +489,15 @@ class Qwen3TTSAdapter(TTSAdapter):
             self._loaded = True
 
     def unload(self) -> None:
+        with self._subprocess_lock:
+            self._loaded = False
+            processes = tuple(self._active_subprocesses)
+        for process in processes:
+            self._terminate_subprocess(process)
+        with self._subprocess_lock:
+            self._active_subprocesses.difference_update(processes)
         self._model = None
         self._tokenizer = None
-        self._loaded = False
         self._subprocess_only = False
         self._model_ref = ""
         self._backend = "qwen-tts"
@@ -577,7 +591,6 @@ class Qwen3TTSAdapter(TTSAdapter):
             ):
                 yield chunk
             return
-
 
         if reference_audio is not None:
             raise ValueError(
@@ -676,8 +689,7 @@ class Qwen3TTSAdapter(TTSAdapter):
                 if not _is_cuda_graph_capture_error(exc):
                     raise
                 logger.warning(
-                    "Faster Qwen3-TTS clone failed with CUDA graph capture; "
-                    "retrying with official subprocess backend"
+                    "Faster Qwen3-TTS clone failed with CUDA graph capture; retrying with official subprocess backend"
                 )
                 async for chunk in self._stream_subprocess(
                     mode="clone",
@@ -715,7 +727,9 @@ class Qwen3TTSAdapter(TTSAdapter):
             import soundfile as sf
 
             with tempfile.NamedTemporaryFile(
-                prefix="qwen3-fast-ref-", suffix=".wav", delete=False,
+                prefix="qwen3-fast-ref-",
+                suffix=".wav",
+                delete=False,
             ) as fd:
                 ref_tmp = Path(fd.name)
             sf.write(
@@ -765,7 +779,7 @@ class Qwen3TTSAdapter(TTSAdapter):
             yield SynthesizeChunk(audio=b"", sample_rate=sample_rate, is_final=True)
             return
         for i in range(0, len(audio), chunk_size):
-            chunk = audio[i:i + chunk_size]
+            chunk = audio[i : i + chunk_size]
             yield SynthesizeChunk(
                 audio=chunk,
                 sample_rate=sample_rate,
@@ -797,8 +811,6 @@ class Qwen3TTSAdapter(TTSAdapter):
             self._device,
             "--mode",
             mode,
-            "--text",
-            text,
             "--language",
             language,
         ]
@@ -813,7 +825,9 @@ class Qwen3TTSAdapter(TTSAdapter):
                 import soundfile as sf
 
                 with tempfile.NamedTemporaryFile(
-                    prefix="qwen3-ref-", suffix=".wav", delete=False,
+                    prefix="qwen3-ref-",
+                    suffix=".wav",
+                    delete=False,
                 ) as fd:
                     ref_tmp = Path(fd.name)
                 sf.write(
@@ -822,21 +836,18 @@ class Qwen3TTSAdapter(TTSAdapter):
                     QWEN_TTS_SAMPLE_RATE,
                 )
                 cmd.extend(["--ref-audio-path", str(ref_tmp)])
-                if reference_text:
-                    cmd.extend(["--ref-text", reference_text])
             else:
                 if speaker:
                     cmd.extend(["--speaker", speaker])
-                if reference_text:
-                    cmd.extend(["--instruct", reference_text])
 
-            result = await asyncio.to_thread(
-                subprocess.run,
+            returncode, stdout, stderr = await self._run_subprocess(
                 cmd,
-                capture_output=True,
-                text=True,
-                timeout=1800,
-                check=False,
+                stdin_payload=json.dumps(
+                    {
+                        "text": text,
+                        "reference_text": reference_text,
+                    }
+                ),
             )
         finally:
             if ref_tmp is not None:
@@ -845,11 +856,11 @@ class Qwen3TTSAdapter(TTSAdapter):
                 except OSError:
                     logger.warning("Failed to remove temporary reference audio %s", ref_tmp)
 
-        if result.returncode != 0:
-            detail = result.stderr.strip() or result.stdout.strip()
+        if returncode != 0:
+            detail = stderr.strip() or stdout.strip()
             raise RuntimeError(f"Qwen3-TTS subprocess failed: {detail}")
 
-        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        lines = [line for line in stdout.splitlines() if line.strip()]
         if not lines:
             raise RuntimeError("Qwen3-TTS subprocess returned no payload")
 
@@ -857,6 +868,68 @@ class Qwen3TTSAdapter(TTSAdapter):
         audio = base64.b64decode(payload["audio_b64"])
         sample_rate = int(payload["sample_rate"])
         return audio, sample_rate
+
+    async def _run_subprocess(
+        self,
+        cmd: list[str],
+        *,
+        stdin_payload: str,
+    ) -> tuple[int, str, str]:
+        with self._subprocess_lock:
+            if not self._loaded:
+                raise RuntimeError("Qwen3-TTS adapter is not loaded")
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
+            )
+            self._active_subprocesses.add(process)
+
+        communication = asyncio.create_task(
+            asyncio.to_thread(
+                process.communicate,
+                stdin_payload,
+                timeout=1800,
+            )
+        )
+        try:
+            stdout, stderr = await asyncio.shield(communication)
+        except asyncio.CancelledError:
+            await asyncio.to_thread(self._terminate_subprocess, process)
+            await asyncio.shield(communication)
+            raise
+        except subprocess.TimeoutExpired as exc:
+            await asyncio.to_thread(self._terminate_subprocess, process)
+            raise RuntimeError("Qwen3-TTS subprocess timed out after 1800 seconds") from exc
+        except BaseException:
+            await asyncio.to_thread(self._terminate_subprocess, process)
+            raise
+        finally:
+            with self._subprocess_lock:
+                self._active_subprocesses.discard(process)
+
+        return process.returncode or 0, stdout, stderr
+
+    @staticmethod
+    def _terminate_subprocess(process: subprocess.Popen[str]) -> None:
+        if process.poll() is not None:
+            process.wait()
+            return
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except (PermissionError, ProcessLookupError):
+            process.terminate()
+        try:
+            process.wait(timeout=5.0)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (PermissionError, ProcessLookupError):
+                process.kill()
+            process.wait()
 
     def list_voices(self) -> list[VoiceInfo]:
         if not self._supported_speakers:

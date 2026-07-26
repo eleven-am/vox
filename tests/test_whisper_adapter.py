@@ -126,7 +126,9 @@ class TestWhisperAdapterInfo:
 
             target_dir = tmp_path / "runtime" / "whisper"
             install_cmd = subprocess_run.call_args.args[0]
-            assert str(target_dir) in install_cmd
+            install_target = Path(install_cmd[install_cmd.index("--target") + 1])
+            assert install_target.parent == target_dir.parent
+            assert install_target.name.startswith(".whisper.installing-")
             assert sys.path[0] == str(target_dir)
 
     def test_bootstrap_repairs_stale_runtime_sentinel(self, tmp_path: Path):

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 import vox.operations.rtc_signaling as rtc_operations
@@ -15,6 +17,21 @@ from vox.operations.rtc_signaling import (
 )
 from vox.server.rtc_ice import InvalidIceCandidateError
 from vox.server.rtc_registry import RtcSessionRegistry
+
+
+class _PreparedAnswer:
+    def __init__(self, record, sdp: str) -> None:
+        self.session_id = record.session_id
+        self.answer_type = "answer"
+        self.sdp = sdp
+        self.attachment = SimpleNamespace(attempt_id="attempt")
+        self._record = record
+
+    async def commit(self) -> None:
+        self._record.browser_attached = True
+
+    async def rollback(self) -> None:
+        self._record.browser_attached = False
 
 
 def test_create_rtc_session_owns_bootstrap_shape(monkeypatch):
@@ -49,11 +66,7 @@ async def test_server_offer_attaches_session_without_a_secondary_token(monkeypat
 
     async def fake_answer(**kwargs):
         captured.update(kwargs)
-        return {
-            "session_id": record.session_id,
-            "type": "answer",
-            "sdp": "answer-sdp",
-        }
+        return _PreparedAnswer(record, "answer-sdp")
 
     monkeypatch.setattr(rtc_operations, "create_browser_rtc_answer", fake_answer)
 
@@ -64,11 +77,78 @@ async def test_server_offer_attaches_session_without_a_secondary_token(monkeypat
 
     assert result.session_id == record.session_id
     assert result.sdp == "answer-sdp"
+    await result.commit()
     assert captured == {
         "registry": registry,
         "record": record,
         "offer": {"type": "offer", "sdp": "offer-sdp"},
+        "restart": False,
+        "generation": None,
     }
+    assert record.browser_attached is True
+
+
+@pytest.mark.asyncio
+async def test_failed_server_offer_does_not_consume_browser_attachment(monkeypatch):
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket")
+    attempts = 0
+
+    async def answer(**_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("invalid offer")
+        return _PreparedAnswer(record, "answer-sdp")
+
+    monkeypatch.setattr(rtc_operations, "create_browser_rtc_answer", answer)
+
+    with pytest.raises(RuntimeError, match="invalid offer"):
+        await exchange_server_rtc_offer(
+            registry=registry,
+            request=RtcOfferRequest(record.session_id, "offer", "broken"),
+        )
+
+    assert record.browser_attached is False
+
+    result = await exchange_server_rtc_offer(
+        registry=registry,
+        request=RtcOfferRequest(record.session_id, "offer", "valid"),
+    )
+    await result.commit()
+
+    assert result.sdp == "answer-sdp"
+    assert record.browser_attached is True
+
+
+@pytest.mark.asyncio
+async def test_server_restart_replaces_an_attached_browser_session(monkeypatch):
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="grpc")
+    record.browser_attached = True
+    captured = {}
+
+    async def answer(**kwargs):
+        captured.update(kwargs)
+        return _PreparedAnswer(record, "replacement-answer")
+
+    monkeypatch.setattr(rtc_operations, "create_browser_rtc_answer", answer)
+
+    result = await exchange_server_rtc_offer(
+        registry=registry,
+        request=RtcOfferRequest(
+            record.session_id,
+            "offer",
+            "replacement-offer",
+            restart=True,
+            generation=12,
+        ),
+    )
+    await result.commit()
+
+    assert result.sdp == "replacement-answer"
+    assert captured["restart"] is True
+    assert captured["generation"] == 12
     assert record.browser_attached is True
 
 
@@ -103,4 +183,3 @@ async def test_invalid_candidate_is_a_transport_neutral_operation_error(monkeypa
             registry=registry,
             request=RtcCandidateRequest(record.session_id, "candidate:not-valid"),
         )
-

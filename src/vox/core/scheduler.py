@@ -7,7 +7,7 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from vox.core.adapter import STTAdapter, TTSAdapter, TurnDetectorAdapter
 from vox.core.adapter_runtime import run_with_adapter_runtime_lock
@@ -231,11 +231,13 @@ class Scheduler:
         self._idle_trim_seconds = max(0, int(idle_trim_seconds))
         self._shutdown_timeout_seconds = max(0.1, float(shutdown_timeout_seconds))
         self._models: dict[str, _LoadedModel] = {}
+        self._orphaned_models: dict[int, _LoadedModel] = {}
         self._lock = asyncio.Lock()
         self._lifecycle_lock = asyncio.Lock()
         self._load_tasks: dict[str, asyncio.Task[_LoadedModel]] = {}
         self._maintenance_tasks: set[asyncio.Task[Any]] = set()
         self._cleanup_task: asyncio.Task | None = None
+        self._stopping = False
 
     def _normalize_model_ref(self, model_name: str) -> str:
         """Resolve aliases so all cache keys use the canonical registry ref."""
@@ -263,35 +265,71 @@ class Scheduler:
         if self._cleanup_task is None:
             self._cleanup_task = asyncio.create_task(self._ttl_cleanup_loop())
 
-    async def stop(self) -> None:
-        """Stop cleanup and unload all models."""
+    async def stop(self, *, deadline: float | None = None) -> None:
+        deadline = time.monotonic() + self._shutdown_timeout_seconds if deadline is None else deadline
+        async with self._lock:
+            self._stopping = True
         if self._cleanup_task:
-            await reap_task(self._cleanup_task)
+            remaining = self._shutdown_remaining(deadline, "cleanup")
+            await reap_task(self._cleanup_task, timeout=remaining)
             self._cleanup_task = None
         async with self._lock:
             load_tasks = tuple(self._load_tasks.values())
-        if load_tasks:
-            await asyncio.gather(*(asyncio.shield(task) for task in load_tasks), return_exceptions=True)
-        while self._maintenance_tasks:
-            tasks = tuple(self._maintenance_tasks)
-            await asyncio.gather(*(asyncio.shield(task) for task in tasks), return_exceptions=True)
-        await self._wait_for_idle_models()
-        await self.unload_all()
-        if self._models:
-            names = ", ".join(sorted(self._models))
+        await self._wait_for_shutdown_tasks(load_tasks, deadline, "model loads")
+        await self._drain_maintenance_tasks(deadline)
+        await self._wait_for_idle_models(deadline)
+        await self._drain_maintenance_tasks(deadline)
+        await self.unload_all(deadline=deadline)
+        await self._unload_orphans(deadline=deadline)
+        if self._models or self._orphaned_models:
+            names = ", ".join(
+                sorted(
+                    {
+                        *self._models,
+                        *(loaded.full_name for loaded in self._orphaned_models.values()),
+                    }
+                )
+            )
             raise RuntimeError(f"scheduler shutdown left loaded models: {names}")
 
-    async def _wait_for_idle_models(self) -> None:
-        deadline = time.monotonic() + self._shutdown_timeout_seconds
+    @staticmethod
+    def _shutdown_remaining(deadline: float, phase: str) -> float:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError(f"scheduler shutdown timed out waiting for {phase}")
+        return remaining
+
+    async def _wait_for_shutdown_tasks(
+        self,
+        tasks: tuple[asyncio.Task[Any], ...],
+        deadline: float,
+        phase: str,
+    ) -> None:
+        if not tasks:
+            return
+        remaining = self._shutdown_remaining(deadline, phase)
+        done, pending = await asyncio.wait(tasks, timeout=remaining)
+        if done:
+            await asyncio.gather(*done, return_exceptions=True)
+        if pending:
+            raise RuntimeError(f"scheduler shutdown timed out waiting for {phase}")
+
+    async def _drain_maintenance_tasks(self, deadline: float) -> None:
+        while self._maintenance_tasks:
+            tasks = tuple(self._maintenance_tasks)
+            await self._wait_for_shutdown_tasks(tasks, deadline, "model maintenance")
+            await asyncio.sleep(0)
+
+    async def _wait_for_idle_models(self, deadline: float) -> None:
         while True:
             async with self._lock:
-                busy = tuple(model for model in self._models.values() if model.has_work)
+                busy = tuple(
+                    model for model in (*self._models.values(), *self._orphaned_models.values()) if model.has_work
+                )
             if not busy:
                 return
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                names = ", ".join(sorted(model.full_name for model in busy))
-                raise RuntimeError(f"scheduler shutdown timed out waiting for active models: {names}")
+            names = ", ".join(sorted(model.full_name for model in busy))
+            remaining = self._shutdown_remaining(deadline, f"active models: {names}")
             physical = tuple(model.adapter for model in busy if model.physical_work_count > 0)
             if physical:
                 await asyncio.gather(
@@ -369,6 +407,44 @@ class Scheduler:
                     loaded.lifecycle_error = error
                     self._finish_maintenance(loaded)
         return results
+
+    async def _complete_orphan_teardown(
+        self,
+        full_name: str,
+        loaded: _LoadedModel,
+        reason: str,
+    ) -> str | None:
+        try:
+            await loaded.adapter.wait_execution_idle()
+        except Exception as error:
+            result = str(error)
+        else:
+            result = (await self._teardown_off_loop([(full_name, loaded, reason)])).get(full_name)
+        async with self._lock:
+            if self._orphaned_models.get(id(loaded)) is loaded:
+                if result is None:
+                    self._orphaned_models.pop(id(loaded), None)
+                else:
+                    loaded.lifecycle_error = result
+                self._finish_maintenance(loaded)
+        return result
+
+    def _schedule_orphan_teardown_locked(
+        self,
+        full_name: str,
+        loaded: _LoadedModel,
+        reason: str,
+    ) -> asyncio.Task[Any] | None:
+        if loaded.maintenance is not None:
+            return None
+        self._begin_maintenance(loaded, reason)
+        return self._start_maintenance_task(
+            self._complete_orphan_teardown(
+                full_name,
+                loaded,
+                reason,
+            )
+        )
 
     async def _complete_trims(
         self,
@@ -574,7 +650,19 @@ class Scheduler:
             vram_bytes=estimated_vram_bytes if actual_device != "cpu" else 0,
         )
         async with self._lock:
-            self._models[full_name] = loaded
+            stopped_while_loading = self._stopping
+            if not stopped_while_loading:
+                self._models[full_name] = loaded
+        if stopped_while_loading:
+            cleanup_error = await asyncio.to_thread(
+                run_with_adapter_runtime_lock,
+                _unload_adapter_blocking,
+                full_name,
+                adapter,
+                "load completed after scheduler stop",
+            )
+            detail = f"; cleanup failed: {cleanup_error}" if cleanup_error else ""
+            raise ModelLoadError(f"Scheduler stopped while loading {full_name}{detail}")
         return loaded
 
     async def _evict_lru(self) -> None:
@@ -611,6 +699,8 @@ class Scheduler:
 
     async def _ensure_loaded(self, full_name: str) -> _LoadedModel:
         async with self._lock:
+            if self._stopping:
+                raise ModelLoadError(f"Scheduler is stopping; cannot load {full_name}")
             loaded = self._models.get(full_name)
             if loaded is not None:
                 return loaded
@@ -630,6 +720,8 @@ class Scheduler:
         while True:
             maintenance_done: asyncio.Event | None = None
             async with self._lock:
+                if self._stopping:
+                    raise ModelLoadError(f"Scheduler is stopping; cannot acquire {full_name}")
                 loaded = self._models.get(full_name)
                 if loaded is not None and loaded.maintenance is not None:
                     maintenance_done = loaded.maintenance_done
@@ -639,15 +731,19 @@ class Scheduler:
                         f"Model {full_name} has an unresolved lifecycle failure: {loaded.lifecycle_error}"
                     )
                 if loaded is not None and not loaded.adapter.is_loaded:
-                    if not loaded.is_busy:
-                        logger.warning("Evicting %s from cache: adapter reports unloaded", full_name)
-                    else:
-                        logger.warning(
-                            "Orphaning %s from cache: adapter reports unloaded with %d active references",
-                            full_name,
-                            loaded.ref_count,
-                        )
+                    logger.warning(
+                        "Retiring %s from cache: adapter reports unloaded with %d active references",
+                        full_name,
+                        loaded.ref_count,
+                    )
                     del self._models[full_name]
+                    self._orphaned_models[id(loaded)] = loaded
+                    if loaded.ref_count == 0:
+                        self._schedule_orphan_teardown_locked(
+                            full_name,
+                            loaded,
+                            "dead adapter retirement",
+                        )
                     loaded = None
                 if loaded is not None:
                     loaded.ref_count += 1
@@ -673,6 +769,12 @@ class Scheduler:
                 loaded.ref_count -= 1
                 if self._models.get(full_name) is loaded:
                     loaded.last_used = time.time()
+                elif self._orphaned_models.get(id(loaded)) is loaded and loaded.ref_count == 0:
+                    self._schedule_orphan_teardown_locked(
+                        full_name,
+                        loaded,
+                        "orphan release",
+                    )
 
     async def preload(self, model_name: str) -> None:
         """Pre-load a model into memory."""
@@ -685,10 +787,13 @@ class Scheduler:
     ) -> dict[str, str | None]:
         if not items:
             return {}
-        return await asyncio.to_thread(
-            run_with_adapter_runtime_lock,
-            _teardown_adapters_blocking,
-            [(name, loaded.adapter, reason) for name, loaded, reason in items],
+        return cast(
+            dict[str, str | None],
+            await asyncio.to_thread(
+                run_with_adapter_runtime_lock,
+                _teardown_adapters_blocking,
+                [(name, loaded.adapter, reason) for name, loaded, reason in items],
+            ),
         )
 
     async def unload(self, model_name: str) -> bool:
@@ -745,7 +850,7 @@ class Scheduler:
             trimmed = await self._await_owned_task(task)
             return trimmed
 
-    async def unload_all(self) -> None:
+    async def unload_all(self, *, deadline: float | None = None) -> None:
         """Unload all idle models. Models with active references are left in place."""
         async with self._lifecycle_lock:
             async with self._lock:
@@ -762,7 +867,29 @@ class Scheduler:
             task = self._start_maintenance_task(
                 self._complete_unloads([(name, loaded, "unload_all") for name, loaded in removable])
             )
-            await self._await_owned_task(task)
+            if deadline is None:
+                await self._await_owned_task(task)
+            else:
+                await self._wait_for_shutdown_tasks((task,), deadline, "model unload")
+
+    async def _unload_orphans(self, *, deadline: float | None = None) -> None:
+        async with self._lifecycle_lock:
+            async with self._lock:
+                removable = [loaded for loaded in self._orphaned_models.values() if not loaded.is_busy]
+                tasks: list[asyncio.Task[Any]] = []
+                for loaded in removable:
+                    task = self._schedule_orphan_teardown_locked(
+                        loaded.full_name,
+                        loaded,
+                        "orphan shutdown",
+                    )
+                    if task is not None:
+                        tasks.append(task)
+            if deadline is None:
+                if tasks:
+                    await asyncio.gather(*(self._await_owned_task(task) for task in tasks))
+            else:
+                await self._wait_for_shutdown_tasks(tuple(tasks), deadline, "orphan unload")
 
     def list_loaded(self) -> list[LoadedModelInfo]:
         """List currently loaded models."""

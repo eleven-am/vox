@@ -79,6 +79,7 @@ def rtc_control_message_to_command(
             offer_type=client_msg.offer.offer.type or "offer",
             sdp=client_msg.offer.offer.sdp,
             restart=client_msg.offer.restart,
+            generation=(client_msg.offer.generation if client_msg.offer.HasField("generation") else None),
         )
     if kind == "candidate":
         candidate = client_msg.candidate
@@ -87,9 +88,14 @@ def rtc_control_message_to_command(
             sdp_mid=candidate.sdp_mid if candidate.HasField("sdp_mid") else None,
             sdp_m_line_index=(candidate.sdp_m_line_index if candidate.HasField("sdp_m_line_index") else None),
             username_fragment=(candidate.username_fragment if candidate.HasField("username_fragment") else None),
+            generation=candidate.generation if candidate.HasField("generation") else None,
         )
     if kind == "candidates_complete":
-        return RtcCandidateCommand(candidate=None)
+        complete = client_msg.candidates_complete
+        return RtcCandidateCommand(
+            candidate=None,
+            generation=complete.generation if complete.HasField("generation") else None,
+        )
     if kind == "close":
         return RtcCloseCommand(reason=client_msg.close.reason or "client_closed")
     if kind == "session_update":
@@ -120,11 +126,7 @@ def _response_command(
                     voice=raw_output.voice if raw_output.HasField("voice") else None,
                     language=raw_output.language if raw_output.HasField("language") else None,
                     speed=raw_output.speed if raw_output.HasField("speed") else None,
-                    params=(
-                        MessageToDict(raw_output.params)
-                        if raw_output.HasField("params")
-                        else None
-                    ),
+                    params=(MessageToDict(raw_output.params) if raw_output.HasField("params") else None),
                 )
             except ValueError as exc:
                 raise InvalidConfigError(str(exc)) from exc

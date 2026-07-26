@@ -402,3 +402,53 @@ contract (container PID-1 correct); RTC negotiation-generation contract
 offer-error correlation to signaling errors only. Released as v0.2.111 with
 adapter package bumps: vox-parakeet 0.2.32, vox-voxtral 0.2.33,
 vox-openvoice 0.2.6, vox-kokoro 0.2.21, vox-qwen 0.2.17.
+
+## Program status — 2026-07-26
+
+The lifecycle stabilization pass preserves R0-R4 and closes the later audit
+findings without restoring deleted state mirrors or broad policy layers.
+Generation-safe RTC restart, provisional interruption evidence, queue
+close/epoch invalidation, physical task ownership, bounded speech-context
+admission, atomic runtime publication, blob publication leases, truthful
+transport errors, log redaction, upload limits, and Vox-owned scratch cleanup
+are pinned by adversarial tests.
+
+Recorded-speech endpointing evidence replaces the overly aggressive
+incomplete-turn delay with a confidence-shaped 1000-1200 ms allowance and
+preserves the previous curve at EOU confidence 0.85 and above. The benchmark
+uses production dynamic pause history and a conservative zero processing-time
+lower bound for continuation prefixes because prefix-specific Parakeet timings
+were not captured. The candidate matches the historical `v0.2.94`
+false-endpoint count on the selected natural pauses. Its overall terminal mean
+is 118.4 ms lower and its complete-turn mean is 185.0 ms lower.
+
+The complete local suite and deterministic lifecycle soaks are the pre-commit
+gate. Accelerator allocation cannot be measured on the local Mac and remains a
+separate hardware validation gate before a later deployment; no synthetic VRAM
+number is accepted as evidence.
+
+Crash consistency now extends the KEEP-ledger law to model publication. Each
+pull journals its previous manifest, candidate blobs, and ordered directory
+swaps before mutation. The canonical manifest plus durable commit state decides
+rollback versus roll-forward before any registry reader exists. Superseded
+journals clean only their own artifacts, so an older failed cleanup cannot
+overwrite a later pull. The journal replaces mtime-based recovery as the
+authority for active pull transactions; scoped stale-directory cleanup remains
+only for pre-journal residue.
+
+RTC restart now applies the same single-owner rule. Peer attachments move
+through active, pending, and retired ownership; no cleanup path discards the
+last reference before physical close succeeds. A stalled retired peer blocks a
+new restart rather than allowing unbounded peer and task accumulation. The
+shared output track serializes handoff reads and commits PCM consumption only
+after pacing and epoch validation, preserving audio order without a parallel
+handoff buffer or retry subsystem.
+
+The final review extends that ownership model to failed RTC teardown and dead
+model workers. Registry teardown retries under bounded backoff while retaining
+the same session record. A scheduler entry replaced after worker death moves to
+an owned retired set until final release, physical execution drain, adapter
+unload, and execution-lane close. RTC callback admission now names the one
+committed negotiation attempt instead of retaining a lossy discarded-attempt
+history. Qwen one-shot workers receive private synthesis content over stdin
+rather than argv.

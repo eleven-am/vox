@@ -133,7 +133,9 @@ class TestSesameAdapterInfo:
         first = calls[0]
         assert first[:2] == ["uv", "pip"]
         assert "--target" in first
-        assert str(runtime_dir) in first
+        install_target = Path(first[first.index("--target") + 1])
+        assert install_target.parent == runtime_dir.parent
+        assert install_target.name.startswith(".sesame.installing-")
         assert "transformers>=4.52.1,<5" in first
         assert "sentencepiece>=0.2.0" in first
 
@@ -186,11 +188,13 @@ class TestSesameAdapterSynthesis:
             adapter._device = "cpu"
 
             chunks = []
+
             async def collect() -> None:
                 async for chunk in adapter.synthesize("Hello Sesame", voice="0"):
                     chunks.append(chunk)
 
             import asyncio
+
             asyncio.run(collect())
 
             assert len(chunks) == 2
@@ -276,6 +280,7 @@ class TestSesameAdapterSynthesis:
                     pass
 
             import asyncio
+
             with pytest.raises(ValueError, match="reference_audio and reference_text"):
                 asyncio.run(collect())
 

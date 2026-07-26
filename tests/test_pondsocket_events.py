@@ -16,7 +16,7 @@ from vox.operations.errors import (
     InvalidConfigError,
     SessionNotConfiguredError,
 )
-from vox.operations.rtc_runtime import RtcOfferCommand
+from vox.operations.rtc_runtime import RtcCandidateCommand, RtcOfferCommand
 from vox.server.pondsocket_events import (
     broadcast_conversation_event_to_user,
     broadcast_wire_to_user,
@@ -41,6 +41,30 @@ def test_decode_rtc_offer_carries_generation():
 def test_decode_rtc_offer_without_generation_is_none():
     command = decode_pondsocket_command("rtc.offer", {"offer": {"type": "offer", "sdp": "offer-sdp"}})
     assert command.generation is None
+
+
+def test_decode_rtc_candidate_and_completion_carry_generation():
+    candidate = decode_pondsocket_command(
+        "rtc.ice_candidate",
+        {
+            "candidate": {
+                "candidate": "candidate:1",
+                "sdpMid": "0",
+            },
+            "generation": 7,
+        },
+    )
+    complete = decode_pondsocket_command(
+        "rtc.ice_candidate",
+        {"candidate": None, "generation": 7},
+    )
+
+    assert candidate == RtcCandidateCommand(
+        candidate="candidate:1",
+        sdp_mid="0",
+        generation=7,
+    )
+    assert complete == RtcCandidateCommand(candidate=None, generation=7)
 
 
 def test_decode_response_start_preserves_typed_output_override():
@@ -461,6 +485,39 @@ async def test_handle_pondsocket_control_event_replies_with_operation_error():
 
 
 @pytest.mark.asyncio
+async def test_handle_pondsocket_control_event_preserves_offer_generation_on_error():
+    ctx = FakeContext(
+        event_name="rtc.offer",
+        payload={
+            "offer": {"type": "offer", "sdp": "offer-sdp"},
+            "restart": True,
+            "generation": 17,
+        },
+    )
+    runtime = FakeRuntime(SessionNotConfiguredError())
+
+    await handle_pondsocket_control_event(
+        ctx,
+        runtime=runtime,
+        missing_message="session not attached",
+        error_log_message="unexpected",
+        logger=FakeLogger(),
+    )
+
+    assert ctx.replies == [
+        (
+            "error",
+            {
+                "message": "Session not configured",
+                "code": "command_invalid",
+                "recoverable": True,
+                "generation": 17,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_handle_pondsocket_control_event_replies_with_typed_conversation_error():
     ctx = FakeContext(event_name="response.delta", payload={"delta": "late"})
     runtime = FakeRuntime(
@@ -535,6 +592,4 @@ async def test_handle_pondsocket_control_event_logs_unexpected_errors():
     )
 
     assert logger.exceptions == ["unexpected control error"]
-    assert ctx.replies == [
-        ("error", {"message": "boom", "code": "command_invalid", "recoverable": True})
-    ]
+    assert ctx.replies == [("error", {"message": "boom", "code": "command_invalid", "recoverable": True})]

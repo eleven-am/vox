@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import importlib
 import logging
-import shutil
 import subprocess
 import tempfile
 from collections.abc import AsyncIterator
@@ -18,6 +17,7 @@ from vox.core.adapter_runtime import (
     activate_runtime_path,
     install_target_runtime_requirements,
     purge_runtime_modules,
+    staged_target_runtime,
     write_app_fallback_path,
 )
 from vox.core.adapter_runtime import (
@@ -62,16 +62,16 @@ def _install_spark_runtime() -> None:
     runtime_path = Path(_ensure_runtime_path())
     spark_file = runtime_path / "cli" / "SparkTTS.py"
     if not spark_file.is_file():
-        if any(runtime_path.iterdir()):
-            shutil.rmtree(runtime_path)
-            runtime_path.mkdir(parents=True, exist_ok=True)
-            write_app_fallback_path(runtime_path)
-        result = _run_git_command(
-            ["git", "clone", "--depth", "1", SPARK_REPO, str(runtime_path)],
-            timeout=900,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to clone Spark-TTS runtime: {result.stderr.strip()}")
+        with staged_target_runtime(runtime_path) as stage:
+            result = _run_git_command(
+                ["git", "clone", "--depth", "1", SPARK_REPO, str(stage)],
+                timeout=900,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"Failed to clone Spark-TTS runtime: {result.stderr.strip()}")
+            if not (stage / "cli" / "SparkTTS.py").is_file():
+                raise RuntimeError("Spark-TTS runtime source checkout is incomplete.")
+            write_app_fallback_path(stage)
 
     if not install_target_runtime_requirements(
         runtime_path,
@@ -228,7 +228,7 @@ class SparkTTSAdapter(TTSAdapter):
         chunk_size = SPARK_SAMPLE_RATE * 2
         for i in range(0, len(audio), chunk_size):
             yield SynthesizeChunk(
-                audio=audio[i:i + chunk_size].tobytes(),
+                audio=audio[i : i + chunk_size].tobytes(),
                 sample_rate=SPARK_SAMPLE_RATE,
                 is_final=False,
             )

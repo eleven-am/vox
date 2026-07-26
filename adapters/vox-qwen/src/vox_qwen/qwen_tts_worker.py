@@ -14,20 +14,20 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--model-id", required=True)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--mode", choices=("custom", "clone"), default="custom")
-    parser.add_argument("--text", required=True)
     parser.add_argument("--language", default="English")
 
     parser.add_argument("--speaker")
-    parser.add_argument("--instruct")
 
     parser.add_argument("--ref-audio-path")
-    parser.add_argument("--ref-text")
     parser.add_argument("--seed", type=int)
     return parser.parse_args()
 
 
 def main() -> int:
     args = _parse_args()
+    request = json.load(sys.stdin)
+    text = str(request["text"])
+    reference_text = request.get("reference_text")
     original_stdout = sys.stdout
 
     with contextlib.redirect_stdout(sys.stderr):
@@ -65,29 +65,25 @@ def main() -> int:
 
             ref_audio, ref_sr = sf.read(args.ref_audio_path, dtype="float32", always_2d=False)
             wavs, sample_rate = model.generate_voice_clone(
-                text=args.text,
+                text=text,
                 language=args.language,
                 ref_audio=(ref_audio, int(ref_sr)),
-                ref_text=args.ref_text,
+                ref_text=reference_text,
             )
         else:
             if not args.speaker:
                 raise SystemExit("custom mode requires --speaker")
             wavs, sample_rate = model.generate_custom_voice(
-                text=args.text,
+                text=text,
                 language=args.language,
                 speaker=args.speaker,
-                instruct=args.instruct,
+                instruct=reference_text,
             )
 
     if not isinstance(wavs, (list, tuple)):
         wavs = [wavs]
 
-    audio = b"".join(
-        wav.astype("float32", copy=False).tobytes()
-        for wav in wavs
-        if getattr(wav, "size", 0)
-    )
+    audio = b"".join(wav.astype("float32", copy=False).tobytes() for wav in wavs if getattr(wav, "size", 0))
     payload = {
         "sample_rate": int(sample_rate),
         "audio_b64": base64.b64encode(audio).decode("ascii"),

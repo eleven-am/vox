@@ -114,6 +114,14 @@ Vox finishes gathering candidates. Candidates that arrive before their remote
 description are buffered in order. ICE restart uses another `rtc.offer` with
 `restart: true` on the same control channel.
 
+Pre-negotiation buffering is bounded. Vox accepts at most 256 remote ICE
+candidates before the matching offer. Backend-to-browser application events
+waiting for the data channel are limited to 128 events and 262144 encoded
+bytes. Exceeding either limit rejects the command instead of growing session
+memory. Every generated negotiation carries a generation number; candidates,
+completion markers, descriptions, media callbacks, and close callbacks from an
+older generation are ignored after a restart.
+
 After signaling, the channel also accepts `session.update`, `response.start`,
 `response.delta`, `response.commit`, `response.cancel`, and `client.event`. It
 emits the conversation events plus `browser.event` for browser data-channel
@@ -330,11 +338,17 @@ declaring end of speech. It is the dominant fixed contributor to endpointing
 latency; profiles tune it (`headset` 600, `browser_default` 800, `noisy_room`
 1200, otherwise 1000).
 
-Endpointing is EOU-aware: when the semantic turn detector reports a probability
-at or above its threshold, the transcript commit delay shrinks from the
-continuation wait toward `min_endpointing_delay_ms` in proportion to the model's
-confidence. Low-probability (incomplete) turns keep the full continuation wait,
-bounded by `max_endpointing_delay_ms`.
+Endpointing is EOU-aware. Scores below the completion threshold wait between
+1000 and 1200 milliseconds according to incompletion confidence. Scores between
+the completion threshold and 0.85 interpolate down from that uncertain-turn
+allowance. Scores at or above 0.85 preserve the low-latency path, shrinking the
+650 millisecond continuation wait toward `min_endpointing_delay_ms`. Missing EOU
+scores use the 650 millisecond fallback. Every result remains bounded by
+`max_endpointing_delay_ms`, and observed continuation pauses can increase the
+allowance when `dynamic_endpointing` is enabled.
+
+The policy and its recorded-speech comparison with `v0.2.94` are documented in
+[`endpointing-benchmark.md`](endpointing-benchmark.md).
 
 `vad_backend` defaults to `silero`, which runs the Silero VAD model on
 onnxruntime — no PyTorch dependency and no runtime model download (the model

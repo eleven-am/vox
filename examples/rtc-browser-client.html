@@ -357,12 +357,13 @@
     let controlJoinRequested = false;
     let controlJoined = false;
     let dataChannel = null;
-    let eventSource = null;
-    let mediaToken = null;
     let sessionId = null;
     let micStream = null;
     let remoteStream = null;
     let pendingCandidates = [];
+    let negotiationGeneration = 0;
+    let controlMessageChain = Promise.resolve();
+    let answerWaiter = null;
     let interruptions = 0;
     let falsePositives = 0;
     let audioContext = null;
@@ -990,19 +991,149 @@
       return response.json();
     }
 
-    async function flushCandidates() {
-      if (!mediaToken) return;
+    function sendRtcCandidate(candidate) {
+      return sendControlMessage("rtc.ice_candidate", {
+        candidate,
+        generation: negotiationGeneration
+      });
+    }
+
+    function flushCandidates() {
+      if (!controlJoined) return;
       const candidates = pendingCandidates;
       pendingCandidates = [];
       for (const candidate of candidates) {
         const type = candidateType(candidate);
-        try {
-          await postJson(`/v1/rtc/sessions/${sessionId}/candidates`, { candidate }, mediaToken);
-        } catch (error) {
-          log("candidate.error", { message: error.message, type });
+        if (!sendRtcCandidate(candidate)) {
+          pendingCandidates.push(candidate);
           timeline("candidate.error", { candidateType: type });
         }
       }
+    }
+
+    function waitForAnswer(generation) {
+      return new Promise((resolve, reject) => {
+        answerWaiter = { generation, resolve, reject };
+      });
+    }
+
+    function rejectPendingAnswer(error) {
+      if (!answerWaiter) return;
+      answerWaiter.reject(error);
+      answerWaiter = null;
+    }
+
+    async function handleControlSocketMessage(payload, joined) {
+      log("socket", payload);
+
+      if (payload.action === "CONNECT" && payload.event === "CONNECTION") {
+        timeline("socket.connected");
+        sendControlJoin();
+        return;
+      }
+
+      if (payload.event === "ACKNOWLEDGE" && payload.channelName === controlChannelName) {
+        controlJoined = true;
+        timeline("socket.joined", { state: controlChannelName });
+        sendControlMessage("session.update", {
+          session: {
+            stt_model: sttModelInput.value,
+            tts_model: ttsModelInput.value,
+            voice: voiceInput.value,
+            turn_profile: turnProfileInput.value,
+            vad_backend: "silero",
+            turn_detector: "livekit"
+          }
+        });
+        flushCandidates();
+        disconnectBtn.disabled = false;
+        sendTextBtn.disabled = false;
+        cancelBtn.disabled = false;
+        sendControlEventBtn.disabled = false;
+        joined();
+        return;
+      }
+
+      if (payload.channelName !== controlChannelName || typeof payload.event !== "string") {
+        return;
+      }
+
+      const event = controlMessageToWire(payload);
+      const eventGeneration = Number.isInteger(event.generation) ? event.generation : null;
+      if (eventGeneration !== null && eventGeneration !== negotiationGeneration) {
+        log("socket.stale_generation", {
+          type: event.type,
+          generation: eventGeneration,
+          current: negotiationGeneration
+        });
+        return;
+      }
+      if (event.type === "rtc.answer") {
+        await pc.setRemoteDescription(event.answer);
+        log("answer", {
+          session_id: event.session_id,
+          type: event.answer && event.answer.type,
+          generation: eventGeneration
+        });
+        timeline("answer", { session_id: event.session_id });
+        if (answerWaiter && answerWaiter.generation === negotiationGeneration) {
+          answerWaiter.resolve(event);
+          answerWaiter = null;
+        }
+        return;
+      }
+      if (event.type === "rtc.ice_candidate") {
+        if (event.candidate !== null) {
+          await pc.addIceCandidate(event.candidate);
+        }
+        log("remote.ice_candidate", {
+          type: candidateType(event.candidate),
+          generation: eventGeneration
+        });
+        return;
+      }
+      if (event.type === "rtc.signaling_error") {
+        rejectPendingAnswer(new Error(event.message || "RTC signaling failed"));
+      }
+      handleWireEvent(event);
+    }
+
+    function openControlChannel() {
+      return new Promise((resolve, reject) => {
+        controlChannelName = `/rtc/${sessionId}`;
+        controlJoined = false;
+        controlJoinRequested = false;
+        const socketUrl = new URL(`${wsBase(httpBaseInput.value)}/v1/socket`);
+        if (apiKeyInput.value.trim()) socketUrl.searchParams.set("api_key", apiKeyInput.value.trim());
+        controlSocket = new WebSocket(socketUrl.toString());
+        controlSocket.onmessage = (event) => {
+          const payload = JSON.parse(event.data);
+          controlMessageChain = controlMessageChain
+            .then(() => handleControlSocketMessage(payload, resolve))
+            .catch((error) => {
+              log("socket.message_error", { message: error.message });
+              rejectPendingAnswer(error);
+              reject(error);
+            });
+        };
+        controlSocket.onopen = () => {
+          log("socket.open", { path: "/v1/socket" });
+        };
+        controlSocket.onerror = () => {
+          const error = new Error("PondSocket signaling connection failed");
+          log("socket.error", { path: "/v1/socket" });
+          timeline("socket.error");
+          rejectPendingAnswer(error);
+          reject(error);
+        };
+        controlSocket.onclose = (event) => {
+          const error = new Error(event.reason || `PondSocket closed with code ${event.code}`);
+          log("socket.close", { code: event.code, reason: event.reason });
+          timeline("socket.close", { code: event.code });
+          rejectPendingAnswer(error);
+          if (!controlJoined) reject(error);
+        };
+      });
     }
 
     async function connect() {
@@ -1031,14 +1162,12 @@
         const type = candidateType(candidate);
         log("local.ice_candidate", { type, candidate });
         timeline("local.ice_candidate", { candidateType: type });
-        if (!mediaToken) {
+        if (!controlJoined) {
           pendingCandidates.push(candidate);
           return;
         }
-        try {
-          await postJson(`/v1/rtc/sessions/${sessionId}/candidates`, { candidate }, mediaToken);
-        } catch (error) {
-          log("candidate.error", { message: error.message, type });
+        if (!sendRtcCandidate(candidate)) {
+          pendingCandidates.push(candidate);
           timeline("candidate.error", { candidateType: type });
         }
       };
@@ -1067,6 +1196,8 @@
         timeline("local.ice_candidate_error", { candidateType: event.errorCode || "error" });
       };
 
+      await openControlChannel();
+
       micStream = await openMicStream();
       for (const track of micStream.getAudioTracks()) {
         updateMicStatus(track);
@@ -1076,6 +1207,7 @@
       await refreshDevices();
       await applyOutputDevice().catch((error) => log("speaker.output_error", { message: error.message }));
 
+      negotiationGeneration += 1;
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
       const localDescription = pc.localDescription;
@@ -1088,86 +1220,20 @@
         trickle: true
       });
       timeline("offer.ready", { candidateType: String(countSdpCandidates(localDescription.sdp)) });
-      const answer = await postJson(
-        `/v1/rtc/sessions/${sessionId}/offer`,
-        { type: localDescription.type, sdp: localDescription.sdp },
-        session.client_token
-      );
-      mediaToken = answer.media_token;
-      log("answer", { session_id: answer.session_id, type: answer.type, events_url: answer.events_url });
-      timeline("answer", { session_id: answer.session_id });
-      await pc.setRemoteDescription({ type: answer.type, sdp: answer.sdp });
-      await flushCandidates();
-
-      eventSource = new EventSource(`${httpBaseInput.value.replace(/\/$/, "")}${answer.events_url}`);
-      eventSource.onmessage = (event) => {
-        const payload = JSON.parse(event.data);
-        log("sse.message", payload);
-        handleWireEvent(payload);
-      };
-      eventSource.addEventListener("rtc.ice_candidate", async (event) => {
-        const payload = JSON.parse(event.data);
-        log("sse.ice", payload);
-        await pc.addIceCandidate(payload.candidate);
+      const answer = waitForAnswer(negotiationGeneration);
+      const sent = sendControlMessage("rtc.offer", {
+        offer: {
+          type: localDescription.type,
+          sdp: localDescription.sdp
+        },
+        generation: negotiationGeneration
       });
-      eventSource.addEventListener("rtc.connection_state", (event) => log("sse.connection", JSON.parse(event.data)));
-      eventSource.addEventListener("rtc.ice_connection_state", (event) => log("sse.ice_connection", JSON.parse(event.data)));
-      eventSource.addEventListener("close", () => {
-        log("sse.close", {});
-        timeline("sse.close");
-      });
-
-      controlChannelName = `/rtc/${sessionId}`;
-      controlJoined = false;
-      controlJoinRequested = false;
-      const socketUrl = new URL(`${wsBase(httpBaseInput.value)}/v1/socket`);
-      if (apiKeyInput.value.trim()) socketUrl.searchParams.set("api_key", apiKeyInput.value.trim());
-      controlSocket = new WebSocket(socketUrl.toString());
-      controlSocket.onmessage = (event) => {
-        const payload = JSON.parse(event.data);
-        log("socket", payload);
-
-        if (payload.action === "CONNECT" && payload.event === "CONNECTION") {
-          timeline("socket.connected");
-          sendControlJoin();
-          return;
-        }
-
-        if (payload.event === "ACKNOWLEDGE" && payload.channelName === controlChannelName) {
-          controlJoined = true;
-          timeline("socket.joined", { state: controlChannelName });
-          sendControlMessage("session.update", {
-            session: {
-              stt_model: sttModelInput.value,
-              tts_model: ttsModelInput.value,
-              voice: voiceInput.value,
-              turn_profile: turnProfileInput.value,
-              vad_backend: "silero",
-              turn_detector: "livekit"
-            }
-          });
-          disconnectBtn.disabled = false;
-          sendTextBtn.disabled = false;
-          cancelBtn.disabled = false;
-          sendControlEventBtn.disabled = false;
-          return;
-        }
-
-        if (payload.channelName === controlChannelName && typeof payload.event === "string") {
-          handleWireEvent(controlMessageToWire(payload));
-        }
-      };
-      controlSocket.onopen = () => {
-        log("socket.open", { path: "/v1/socket" });
-      };
-      controlSocket.onerror = () => {
-        log("socket.error", { path: "/v1/socket" });
-        timeline("socket.error");
-      };
-      controlSocket.onclose = (event) => {
-        log("socket.close", { code: event.code, reason: event.reason });
-        timeline("socket.close", { code: event.code });
-      };
+      if (!sent) {
+        rejectPendingAnswer(new Error("PondSocket RTC channel is not joined"));
+        throw new Error("PondSocket RTC channel is not joined");
+      }
+      flushCandidates();
+      await answer;
 
       applyAudioBtn.disabled = false;
     }
@@ -1179,7 +1245,7 @@
       sendDataEventBtn.disabled = true;
       disconnectBtn.disabled = true;
       applyAudioBtn.disabled = true;
-      if (eventSource) eventSource.close();
+      if (controlJoined) sendControlMessage("rtc.close", { reason: "browser_disconnected" });
       if (controlSocket && controlSocket.readyState === WebSocket.OPEN) controlSocket.close();
       if (pc) await pc.close();
       if (micStream) micStream.getTracks().forEach((track) => track.stop());
@@ -1187,7 +1253,6 @@
       stopRtcStats();
       assistantSpeaking = false;
       restoreAssistantAudio();
-      eventSource = null;
       controlSocket = null;
       controlChannelName = null;
       controlJoinRequested = false;
@@ -1196,9 +1261,10 @@
       pc = null;
       micStream = null;
       remoteStream = null;
-      mediaToken = null;
       sessionId = null;
       pendingCandidates = [];
+      answerWaiter = null;
+      controlMessageChain = Promise.resolve();
       setStatus(peerStateEl, "idle");
       setStatus(iceStateEl, "idle");
       setStatus(dataChannelStateEl, "idle");

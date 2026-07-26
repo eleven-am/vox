@@ -52,6 +52,7 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
             speech_context_service=self._speech_context_service,
         )
         out_queue: asyncio.Queue[vox_pb2.StreamOutput | None] = asyncio.Queue(maxsize=GRPC_OUTPUT_QUEUE_MAX)
+        consumer_closed = asyncio.Event()
 
         async def drain_client() -> None:
             try:
@@ -68,6 +69,7 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
             out_queue,
             message=stream_output_message,
             terminal_types=(DoneEvent,),
+            consumer_closed=consumer_closed,
         )
         client_task = asyncio.create_task(drain_client())
         stream = iter_grpc_stream_lifecycle(
@@ -75,6 +77,7 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
             client_task,
             emit_task,
             cleanup=session.close,
+            on_consumer_close=consumer_closed.set,
         )
         try:
             async for item in stream:

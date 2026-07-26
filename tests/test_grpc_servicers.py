@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,6 +32,7 @@ from vox.operations.errors import InvalidConfigError
 from vox.operations.models import (
     ModelLayer,
     PullEvent,
+    PullTaskRegistry,
     ShowResult,
     delete_model_payload,
     list_models_payload,
@@ -158,6 +160,44 @@ class TestHealthServicer:
 
 class TestModelServicerMapping:
     @pytest.mark.asyncio
+    async def test_pull_stream_detaches_when_grpc_consumer_closes(self, tmp_path):
+        from vox.grpc.model_servicer import ModelServicer
+
+        class Events:
+            def __init__(self):
+                self.closed = False
+                self.sent = False
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if self.sent:
+                    await asyncio.Future()
+                self.sent = True
+                return PullEvent(status="pulling")
+
+            async def aclose(self):
+                self.closed = True
+
+        events = Events()
+        servicer = ModelServicer(
+            _make_store(tmp_path),
+            _make_registry_mock(),
+            MagicMock(),
+            PullTaskRegistry(),
+        )
+        with patch("vox.grpc.model_servicer.pull_model", return_value=events):
+            stream = servicer.Pull(
+                vox_pb2.PullRequest(name="foo:latest"),
+                FakeContext(),
+            )
+            await stream.__anext__()
+            await stream.aclose()
+
+        assert events.closed is True
+
+    @pytest.mark.asyncio
     async def test_list_returns_models(self, tmp_path):
         from vox.grpc.model_servicer import ModelServicer
 
@@ -174,7 +214,7 @@ class TestModelServicerMapping:
         model_info.description = "test model"
         store.list_models = MagicMock(return_value=[model_info])
 
-        servicer = ModelServicer(store, registry, scheduler)
+        servicer = ModelServicer(store, registry, scheduler, PullTaskRegistry())
         resp = await servicer.List(vox_pb2.ListModelsRequest(), FakeContext())
         assert len(resp.models) == 1
         assert resp.models[0].name == "whisper:large-v3"
@@ -184,7 +224,12 @@ class TestModelServicerMapping:
     async def test_show_not_found_aborts_with_not_found(self, tmp_path):
         from vox.grpc.model_servicer import ModelServicer
 
-        servicer = ModelServicer(_make_store(tmp_path), _make_registry_mock(), MagicMock())
+        servicer = ModelServicer(
+            _make_store(tmp_path),
+            _make_registry_mock(),
+            MagicMock(),
+            PullTaskRegistry(),
+        )
         with pytest.raises(Exception, match="gRPC abort"):
             await servicer.Show(vox_pb2.ShowRequest(name="nonexistent:v1"), FakeContext())
 
@@ -194,7 +239,12 @@ class TestModelServicerMapping:
 
         scheduler = MagicMock()
         scheduler.unload = AsyncMock(return_value=True)
-        servicer = ModelServicer(_make_store(tmp_path), _make_registry_mock(), scheduler)
+        servicer = ModelServicer(
+            _make_store(tmp_path),
+            _make_registry_mock(),
+            scheduler,
+            PullTaskRegistry(),
+        )
         with pytest.raises(Exception, match="gRPC abort"):
             await servicer.Delete(vox_pb2.DeleteRequest(name="nonexistent:v1"), FakeContext())
 
@@ -204,7 +254,12 @@ class TestModelServicerMapping:
 
         registry = _make_registry_mock()
         registry.lookup.return_value = None
-        servicer = ModelServicer(_make_store(tmp_path), registry, MagicMock())
+        servicer = ModelServicer(
+            _make_store(tmp_path),
+            registry,
+            MagicMock(),
+            PullTaskRegistry(),
+        )
 
         messages = []
         async for msg in servicer.Pull(vox_pb2.PullRequest(name="nonexistent:v1"), FakeContext()):
@@ -222,9 +277,16 @@ class TestModelServicerMapping:
             request = kwargs["request"]
             assert request.name == "kokoro-tts:v1.0"
             assert request.variant == "onnx"
+            assert kwargs["tasks"] is pull_tasks
             yield PullEvent(status="success")
 
-        servicer = ModelServicer(_make_store(tmp_path), _make_registry_mock(), MagicMock())
+        pull_tasks = PullTaskRegistry()
+        servicer = ModelServicer(
+            _make_store(tmp_path),
+            _make_registry_mock(),
+            MagicMock(),
+            pull_tasks,
+        )
         with patch("vox.grpc.model_servicer.pull_model", side_effect=fake_events):
             messages = []
             async for msg in servicer.Pull(
@@ -320,6 +382,10 @@ class TestGrpcModelMessages:
 
 
 class TestTranscriptionServicerMapping:
+    def test_grpc_audio_requests_do_not_advertise_ignored_response_formats(self):
+        assert "response_format" not in vox_pb2.TranscribeRequest.DESCRIPTOR.fields_by_name
+        assert "response_format" not in vox_pb2.SynthesizeRequest.DESCRIPTOR.fields_by_name
+
     @pytest.mark.asyncio
     async def test_transcribe_returns_text_and_segments(self, tmp_path):
         from vox.grpc.transcription_servicer import TranscriptionServicer

@@ -64,25 +64,25 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
         consumer_closed = asyncio.Event()
         runtime: RtcRuntime | None = None
 
-        async def emit(event: dict) -> None:
-            await put_grpc_output_queue(
+        async def emit(event: dict) -> bool:
+            delivered = await put_grpc_output_queue(
                 out_queue,
                 rtc_runtime_event_pb(event),
                 consumer_closed=consumer_closed,
             )
             if event.get("type") == "rtc.session.closed" and not consumer_closed.is_set():
                 await close_grpc_output_queue(out_queue)
+            return delivered
 
-        async def emit_conversation(event: ConvEvent, wire: dict) -> None:
+        async def emit_conversation(event: ConvEvent, wire: dict) -> bool:
             conversation = conversation_event_to_pb(event)
             if conversation is None:
-                await put_grpc_output_queue(
+                return await put_grpc_output_queue(
                     out_queue,
                     rtc_runtime_event_pb(wire),
                     consumer_closed=consumer_closed,
                 )
-                return
-            await put_grpc_output_queue(
+            return await put_grpc_output_queue(
                 out_queue,
                 vox_pb2.RtcControlServerMessage(conversation=conversation),
                 consumer_closed=consumer_closed,
@@ -125,12 +125,17 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                         await runtime.start()
                         continue
 
+                    command = None
                     try:
-                        await runtime.dispatch(rtc_control_message_to_command(client_msg))
+                        command = rtc_control_message_to_command(client_msg)
+                        await runtime.dispatch(command)
                     except OperationError as exc:
                         await put_grpc_output_queue(
                             out_queue,
-                            rtc_error_pb_from_exception(exc),
+                            rtc_error_pb_from_exception(
+                                exc,
+                                generation=getattr(command, "generation", None),
+                            ),
                             consumer_closed=consumer_closed,
                         )
             finally:

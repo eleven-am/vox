@@ -18,6 +18,7 @@ ensure_huggingface_hub_compat()
 from transformers import SpeechT5ForSpeechToText, SpeechT5Processor
 
 from vox.core.adapter import STTAdapter
+from vox.core.transcription_logging import log_transcription_result
 from vox.core.types import (
     AdapterInfo,
     ModelFormat,
@@ -31,9 +32,7 @@ logger = logging.getLogger(__name__)
 SPEECHT5_SAMPLE_RATE = 16_000
 
 
-
 class SpeechT5STTAdapter(STTAdapter):
-
     def __init__(self) -> None:
         self._model: SpeechT5ForSpeechToText | None = None
         self._processor: SpeechT5Processor | None = None
@@ -126,10 +125,11 @@ class SpeechT5STTAdapter(STTAdapter):
                 ),
             )
 
-        if not text:
-            logger.warning("Empty transcription for %dms audio", audio_duration_ms)
-        else:
-            logger.info("Transcribed %dms audio: %s", audio_duration_ms, text[:80])
+        log_transcription_result(
+            logger,
+            audio_duration_ms=audio_duration_ms,
+            text=text,
+        )
 
         return TranscribeResult(
             text=text,

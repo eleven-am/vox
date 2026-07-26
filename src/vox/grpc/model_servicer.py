@@ -16,6 +16,7 @@ from vox.grpc.model_messages import (
 from vox.grpc.operation_errors import map_operation_errors_to_grpc
 from vox.operations.errors import CatalogEntryNotFoundError
 from vox.operations.models import (
+    PullTaskRegistry,
     delete_model,
     list_models,
     model_reference_request_from_fields,
@@ -27,29 +28,38 @@ logger = logging.getLogger(__name__)
 
 
 class ModelServicer(vox_pb2_grpc.ModelServiceServicer):
-
-    def __init__(self, store: BlobStore, registry: ModelRegistry, scheduler: Scheduler) -> None:
+    def __init__(
+        self,
+        store: BlobStore,
+        registry: ModelRegistry,
+        scheduler: Scheduler,
+        pull_tasks: PullTaskRegistry,
+    ) -> None:
         self._store = store
         self._registry = registry
         self._scheduler = scheduler
+        self._pull_tasks = pull_tasks
 
     async def Pull(self, request, context):
         try:
             events = pull_model(
                 store=self._store,
-                scheduler=self._scheduler,
                 registry=self._registry,
                 request=model_reference_request_from_fields(
                     name=request.name,
                     variant=request.variant or None,
                 ),
+                tasks=self._pull_tasks,
             )
         except CatalogEntryNotFoundError as exc:
             yield pull_error_message(exc)
             return
 
-        async for event in events:
-            yield pull_progress_message(event)
+        try:
+            async for event in events:
+                yield pull_progress_message(event)
+        finally:
+            await events.aclose()
 
     async def List(self, request, context):
         models = list_models(store=self._store)

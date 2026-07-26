@@ -18,6 +18,7 @@ from vox.core.types import (
     TranscribeResult,
     TranscriptSegment,
 )
+from vox.operations.models import PullTaskRegistry
 from vox.server.routes import bidi
 
 
@@ -96,6 +97,7 @@ def _build_app(*, scheduler: FakeScheduler, registry: Any, store: Any) -> FastAP
     app.state.scheduler = scheduler
     app.state.registry = registry
     app.state.store = store
+    app.state.pull_tasks = PullTaskRegistry()
     app.include_router(bidi.router)
     return app
 
@@ -112,12 +114,14 @@ def _make_store_with_voice(tmp_path: Path, *, full_name: str, voice_id: str = "c
     voice_dir = tmp_path / voice_id
     voice_dir.mkdir(parents=True)
     (voice_dir / "metadata.json").write_text(
-        json.dumps({
-            "id": voice_id,
-            "name": "Clone",
-            "language": "en",
-            "created_at": 1,
-        }),
+        json.dumps(
+            {
+                "id": voice_id,
+                "name": "Clone",
+                "language": "en",
+                "created_at": 1,
+            }
+        ),
         encoding="utf-8",
     )
     return store
@@ -134,12 +138,16 @@ def test_longform_stt_wire_round_trip_emits_ready_progress_done():
         TestClient(_build_app(scheduler=scheduler, registry=registry, store=store)) as client,
         client.websocket_connect("/v1/audio/transcriptions/stream") as websocket,
     ):
-        websocket.send_text(json.dumps({
-            "type": "config",
-            "sample_rate": 16000,
-            "chunk_ms": 1000,
-            "overlap_ms": 200,
-        }))
+        websocket.send_text(
+            json.dumps(
+                {
+                    "type": "config",
+                    "sample_rate": 16000,
+                    "chunk_ms": 1000,
+                    "overlap_ms": 200,
+                }
+            )
+        )
         ready = websocket.receive_json()
         assert ready["type"] == "ready"
         assert ready["input_format"] == "pcm16"
@@ -170,10 +178,14 @@ def test_longform_tts_wire_round_trip_emits_ready_audio_done():
         TestClient(_build_app(scheduler=scheduler, registry=registry, store=store)) as client,
         client.websocket_connect("/v1/audio/speech/stream") as websocket,
     ):
-        websocket.send_text(json.dumps({
-            "type": "config",
-            "response_format": "pcm16",
-        }))
+        websocket.send_text(
+            json.dumps(
+                {
+                    "type": "config",
+                    "response_format": "pcm16",
+                }
+            )
+        )
         ready = websocket.receive_json()
         assert ready["type"] == "ready"
 
@@ -215,10 +227,14 @@ def test_longform_tts_wire_rejects_unsupported_response_format():
         TestClient(_build_app(scheduler=scheduler, registry=registry, store=store)) as client,
         client.websocket_connect("/v1/audio/speech/stream") as websocket,
     ):
-        websocket.send_text(json.dumps({
-            "type": "config",
-            "response_format": "wav",
-        }))
+        websocket.send_text(
+            json.dumps(
+                {
+                    "type": "config",
+                    "response_format": "wav",
+                }
+            )
+        )
         response = websocket.receive_json()
 
     assert response["type"] == "error"
@@ -235,11 +251,15 @@ def test_longform_tts_configure_reports_operation_error_for_unsupported_cloned_v
         TestClient(_build_app(scheduler=scheduler, registry=registry, store=store)) as client,
         client.websocket_connect("/v1/audio/speech/stream") as websocket,
     ):
-        websocket.send_text(json.dumps({
-            "type": "config",
-            "response_format": "pcm16",
-            "voice": "clone",
-        }))
+        websocket.send_text(
+            json.dumps(
+                {
+                    "type": "config",
+                    "response_format": "pcm16",
+                    "voice": "clone",
+                }
+            )
+        )
         response = websocket.receive_json()
 
     assert response["type"] == "error"
@@ -256,10 +276,14 @@ def test_longform_tts_malformed_json_after_config_reports_error_and_keeps_stream
         TestClient(_build_app(scheduler=scheduler, registry=registry, store=store)) as client,
         client.websocket_connect("/v1/audio/speech/stream") as websocket,
     ):
-        websocket.send_text(json.dumps({
-            "type": "config",
-            "response_format": "pcm16",
-        }))
+        websocket.send_text(
+            json.dumps(
+                {
+                    "type": "config",
+                    "response_format": "pcm16",
+                }
+            )
+        )
         ready = websocket.receive_json()
         assert ready["type"] == "ready"
 
@@ -288,10 +312,14 @@ def test_longform_stt_wire_rejects_unsupported_input_format():
         TestClient(_build_app(scheduler=scheduler, registry=registry, store=store)) as client,
         client.websocket_connect("/v1/audio/transcriptions/stream") as websocket,
     ):
-        websocket.send_text(json.dumps({
-            "type": "config",
-            "input_format": "m4a",
-        }))
+        websocket.send_text(
+            json.dumps(
+                {
+                    "type": "config",
+                    "input_format": "m4a",
+                }
+            )
+        )
         response = websocket.receive_json()
 
     assert response["type"] == "error"

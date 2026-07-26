@@ -407,7 +407,10 @@ def test_indextts_bootstraps_runtime_when_missing(tmp_path):
     assert calls
     assert calls[0][:2] == ["uv", "pip"]
     assert "--target" in calls[0]
-    assert str(tmp_path / "vox-home" / "runtime" / "indextts") in calls[0]
+    runtime_dir = tmp_path / "vox-home" / "runtime" / "indextts"
+    install_target = Path(calls[0][calls[0].index("--target") + 1])
+    assert install_target.parent == runtime_dir.parent
+    assert install_target.name.startswith(".indextts.installing-")
     assert "git+https://github.com/index-tts/index-tts.git" in calls[0]
     assert "--no-deps" in calls[0]
     assert "--upgrade" not in calls[0]

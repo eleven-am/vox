@@ -3,14 +3,26 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from collections.abc import AsyncIterator
+import time
+from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from vox.core.adapter_runtime import run_with_adapter_runtime_lock
+from vox.core.adapter_resolution import (
+    AdapterMutation,
+    bind_adapter_mutation,
+)
+from vox.core.adapter_runtime import (
+    RuntimeMutation,
+    bind_runtime_mutation,
+    stage_adapter_runtime_mutation,
+)
+from vox.core.atomic_install import bind_install_transaction
 from vox.core.capabilities import incompatible_pull_allowed
 from vox.core.hf_runtime import configure_hf_runtime
 from vox.core.model_resolution import parse_model_variant_ref, resolve_catalog_entry
+from vox.core.pull_transaction import PullTransaction, recover_pull_transactions
 from vox.core.store import Manifest, ManifestLayer
 from vox.core.types import ModelInfo
 from vox.operations.errors import (
@@ -46,6 +58,100 @@ class PullEvent:
     error: str = ""
 
 
+_PULL_EVENT_LIMIT = 64
+_PULL_EVENT_END = object()
+
+
+class PullEventStream:
+    def __init__(self) -> None:
+        self._queue: asyncio.Queue[PullEvent | object] = asyncio.Queue(maxsize=_PULL_EVENT_LIMIT)
+        self._detached = False
+
+    def emit(self, event: PullEvent) -> None:
+        if self._detached:
+            return
+        while self._queue.full():
+            self._queue.get_nowait()
+        self._queue.put_nowait(event)
+
+    def finish(self) -> None:
+        if self._detached:
+            return
+        while self._queue.full():
+            self._queue.get_nowait()
+        self._queue.put_nowait(_PULL_EVENT_END)
+
+    def __aiter__(self) -> PullEventStream:
+        return self
+
+    async def __anext__(self) -> PullEvent:
+        item = await self._queue.get()
+        if item is _PULL_EVENT_END:
+            raise StopAsyncIteration
+        if not isinstance(item, PullEvent):
+            raise RuntimeError("invalid pull progress event")
+        return item
+
+    async def aclose(self) -> None:
+        self._detached = True
+        while not self._queue.empty():
+            self._queue.get_nowait()
+
+
+class PullTaskRegistry:
+    def __init__(self) -> None:
+        self._tasks: set[asyncio.Task[None]] = set()
+        self._closed = False
+
+    @property
+    def active_count(self) -> int:
+        return len(self._tasks)
+
+    def start(
+        self,
+        operation: Callable[[Callable[[PullEvent], None]], Awaitable[None]],
+    ) -> PullEventStream:
+        if self._closed:
+            raise RuntimeError("model pull service is closed")
+        stream = PullEventStream()
+
+        async def run() -> None:
+            try:
+                await operation(stream.emit)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("unhandled model pull failure")
+                stream.emit(PullEvent(status="error", error=str(exc)))
+            finally:
+                stream.finish()
+
+        task = asyncio.create_task(run())
+        self._tasks.add(task)
+
+        def completed(done: asyncio.Task[None]) -> None:
+            self._tasks.discard(done)
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(completed)
+        return stream
+
+    async def close(self, *, deadline: float) -> None:
+        self._closed = True
+        tasks = tuple(self._tasks)
+        for task in tasks:
+            task.cancel()
+        if not tasks:
+            return
+        _done, pending = await asyncio.wait(
+            tasks,
+            timeout=max(0.0, deadline - time.monotonic()),
+        )
+        if pending:
+            raise TimeoutError(f"model pull shutdown timed out with {len(pending)} active operation(s)")
+
+
 @dataclass(frozen=True)
 class ModelReferenceRequest:
     name: str
@@ -61,6 +167,40 @@ class ResolvedModelReference:
     resolved_name: str
     resolved_tag: str
     explicit_tag: bool
+
+
+@dataclass
+class _PullPublication:
+    adapter_mutation: AdapterMutation | None
+    runtime_mutation: RuntimeMutation | None
+    blob_lease: Any
+    transaction: PullTransaction
+    committed: bool = False
+
+    def commit(self) -> None:
+        self.committed = True
+        operations: list[tuple[str, Callable[[], Any]]] = [
+            ("transaction state", self.transaction.mark_committed),
+            *[
+                (label, mutation.commit)
+                for label, mutation in (
+                    ("runtime mutation", self.runtime_mutation),
+                    ("adapter mutation", self.adapter_mutation),
+                )
+                if mutation is not None
+            ],
+            ("blob lease", self.blob_lease.close),
+            ("transaction cleanup", self.transaction.finish),
+        ]
+        for label, operation in operations:
+            try:
+                operation()
+            except BaseException as exc:
+                logger.warning(
+                    "pull publication cleanup deferred owner=%s error=%s",
+                    label,
+                    exc,
+                )
 
 
 def model_reference_request_from_fields(
@@ -149,27 +289,39 @@ async def delete_model(
     request: ModelReferenceRequest,
 ) -> None:
     resolved = resolve_model_reference(registry=registry, request=request)
+    writer = await _acquire_writer_owned(store)
+    try:
+        with store.bind_writer_lease(writer):
+            recover_pull_transactions(store)
+            manifest = store.resolve_model(
+                resolved.resolved_name,
+                resolved.resolved_tag,
+            )
+            if not manifest:
+                raise StoredModelNotFoundError(request.name)
 
-    unloaded = await scheduler.unload(f"{resolved.resolved_name}:{resolved.resolved_tag}")
-    if not unloaded:
-        raise ModelInUseError(request.name)
+            unloaded = await scheduler.unload(f"{resolved.resolved_name}:{resolved.resolved_tag}")
+            if not unloaded:
+                raise ModelInUseError(request.name)
 
-    manifest = store.resolve_model(resolved.resolved_name, resolved.resolved_tag)
-    if not manifest:
-        raise StoredModelNotFoundError(request.name)
-
-    store.delete_model(resolved.resolved_name, resolved.resolved_tag)
-    store.gc_blobs()
-    logger.info("model deleted: %s:%s", resolved.resolved_name, resolved.resolved_tag)
+            store.delete_model(resolved.resolved_name, resolved.resolved_tag)
+            store.gc_blobs()
+            logger.info(
+                "model deleted: %s:%s",
+                resolved.resolved_name,
+                resolved.resolved_tag,
+            )
+    finally:
+        await _run_blocking_owned(writer.close)
 
 
 def pull_model(
     *,
     store: Any,
-    scheduler: Any,
     registry: Any,
     request: ModelReferenceRequest,
-) -> AsyncIterator[PullEvent]:
+    tasks: PullTaskRegistry,
+) -> PullEventStream:
     resolved = resolve_model_reference(registry=registry, request=request)
     catalog_entry = registry.lookup(
         resolved.parsed_name,
@@ -197,130 +349,253 @@ def pull_model(
         resolved.resolved_name,
         resolved.resolved_tag,
         variant_resolution.variant_id or "-",
-        catalog_entry.get("adapter", "?"), catalog_entry.get("source", "?"),
+        catalog_entry.get("adapter", "?"),
+        catalog_entry.get("source", "?"),
     )
 
-    async def _gen() -> AsyncIterator[PullEvent]:
-        yield PullEvent(status=f"pulling {request.name}")
+    async def execute(emit: Callable[[PullEvent], None]) -> None:
+        emit(PullEvent(status=f"pulling {request.name}"))
         if missing:
-            yield PullEvent(
-                status="warning",
-                error=(
-                    "pull compatibility bypassed by VOX_ALLOW_INCOMPATIBLE=1: "
-                    + "; ".join(missing)
-                ),
+            emit(
+                PullEvent(
+                    status="warning",
+                    error=("pull compatibility bypassed by VOX_ALLOW_INCOMPATIBLE=1: " + "; ".join(missing)),
+                )
             )
         for warning in variant_resolution.warnings:
-            yield PullEvent(status="warning", error=warning)
+            emit(PullEvent(status="warning", error=warning))
 
-        adapter_name = catalog_entry.get("adapter", "")
-        adapter_package = catalog_entry.get("adapter_package", "")
-        if adapter_package:
-            yield PullEvent(status=f"checking adapter {adapter_name}")
-            if not registry.ensure_adapter(adapter_name, adapter_package):
-                yield PullEvent(status="error", error=f"Failed to install adapter package: {adapter_package}")
-                return
-            yield PullEvent(status=f"adapter {adapter_name} ready")
-
-        source = catalog_entry["source"]
-        specific_files = catalog_entry.get("files")
-
+        writer = await _acquire_writer_owned(store)
         try:
-            configure_hf_runtime()
-            from huggingface_hub import HfApi, hf_hub_download
-            api = HfApi()
-
-            if specific_files:
-                files_to_download = list(specific_files)
-            else:
-                repo_info = await asyncio.to_thread(api.repo_info, source)
-                files_to_download = [
-                    s.rfilename for s in repo_info.siblings
-                    if not s.rfilename.startswith(".")
-                ]
-
-            layers: list[ManifestLayer] = []
-            total_files = len(files_to_download)
-
-            for i, filename in enumerate(files_to_download):
-                yield PullEvent(status=f"downloading {filename}", completed=i, total=total_files)
-
-                local_path = await asyncio.to_thread(
-                    hf_hub_download,
-                    repo_id=source,
-                    filename=filename,
-                    cache_dir=None,
+            with store.bind_writer_lease(writer):
+                recover_pull_transactions(store)
+                await _execute_pull(
+                    store=store,
+                    registry=registry,
+                    request=request,
+                    resolved=resolved,
+                    catalog_entry=catalog_entry,
+                    variant_resolution=variant_resolution,
+                    emit=emit,
                 )
+        finally:
+            await _run_blocking_owned(writer.close)
 
-                file_size = os.path.getsize(local_path)
-                with open(local_path, "rb") as f:
-                    digest = store.write_blob(f)
+    return tasks.start(execute)
 
-                ext = filename.rsplit(".", 1)[-1] if "." in filename else "bin"
-                media_type = f"application/vox.model.{ext}"
 
-                layers.append(ManifestLayer(
+async def _execute_pull(
+    *,
+    store: Any,
+    registry: Any,
+    request: ModelReferenceRequest,
+    resolved: ResolvedModelReference,
+    catalog_entry: dict[str, Any],
+    variant_resolution: Any,
+    emit: Callable[[PullEvent], None],
+) -> None:
+    adapter_name = catalog_entry.get("adapter", "")
+    adapter_package = catalog_entry.get("adapter_package", "")
+    source = catalog_entry["source"]
+    specific_files = catalog_entry.get("files")
+    blob_lease = store.acquire_blob_lease()
+    previous_manifest = store.resolve_model(
+        resolved.resolved_name,
+        resolved.resolved_tag,
+    )
+    adapter_mutation: AdapterMutation | None = None
+    runtime_mutation: RuntimeMutation | None = None
+    transaction: PullTransaction | None = None
+    publication: _PullPublication | None = None
+
+    try:
+        configure_hf_runtime()
+        from huggingface_hub import HfApi, hf_hub_download
+
+        api = HfApi()
+
+        if specific_files:
+            files_to_download = list(specific_files)
+        else:
+            repo_info = await asyncio.to_thread(api.repo_info, source)
+            files_to_download = [
+                sibling.rfilename for sibling in repo_info.siblings or () if not sibling.rfilename.startswith(".")
+            ]
+
+        layers: list[ManifestLayer] = []
+        total_files = len(files_to_download)
+
+        for i, filename in enumerate(files_to_download):
+            emit(
+                PullEvent(
+                    status=f"downloading {filename}",
+                    completed=i,
+                    total=total_files,
+                )
+            )
+
+            local_path = await asyncio.to_thread(
+                hf_hub_download,
+                repo_id=source,
+                filename=filename,
+                cache_dir=None,
+            )
+
+            file_size = os.path.getsize(local_path)
+            digest = await _run_blocking_owned(
+                _write_blob_from_path,
+                blob_lease,
+                local_path,
+            )
+
+            ext = filename.rsplit(".", 1)[-1] if "." in filename else "bin"
+            media_type = f"application/vox.model.{ext}"
+
+            layers.append(
+                ManifestLayer(
                     media_type=media_type,
                     digest=digest,
                     size=file_size,
                     filename=filename,
-                ))
+                )
+            )
 
-            if adapter_name:
-                yield PullEvent(status=f"preparing adapter runtime {adapter_name}")
-                await asyncio.to_thread(
-                    run_with_adapter_runtime_lock,
+        transaction = PullTransaction.begin(
+            store=store,
+            name=resolved.resolved_name,
+            tag=resolved.resolved_tag,
+            previous_manifest=previous_manifest,
+            candidate_digests=tuple(layer.digest for layer in layers),
+        )
+
+        if adapter_package:
+            emit(PullEvent(status=f"checking adapter {adapter_name}"))
+            with bind_install_transaction(transaction):
+                adapter_mutation = await _stage_adapter_mutation_owned(
+                    registry.stage_adapter,
+                    adapter_name,
+                    adapter_package,
+                )
+            if not adapter_mutation.ready:
+                raise RuntimeError(f"Failed to install adapter package: {adapter_package}")
+            emit(PullEvent(status=f"adapter {adapter_name} ready"))
+
+        if adapter_name:
+            emit(PullEvent(status=f"preparing adapter runtime {adapter_name}"))
+            with (
+                bind_install_transaction(transaction),
+                bind_adapter_mutation(adapter_mutation),
+            ):
+                runtime_mutation = await _stage_runtime_mutation_owned(
                     _prepare_adapter_runtime,
                     registry,
                     adapter_name,
                 )
-                yield PullEvent(status=f"adapter runtime {adapter_name} ready")
+            emit(PullEvent(status=f"adapter runtime {adapter_name} ready"))
 
-            manifest = Manifest(
-                layers=layers,
-                config={
-                    "architecture": catalog_entry["architecture"],
-                    "type": catalog_entry["type"],
-                    "adapter": catalog_entry["adapter"],
-                    "format": catalog_entry["format"],
-                    "source": source,
-                    "runtime_source": catalog_entry.get("runtime_source", ""),
-                    "parameters": catalog_entry.get("parameters", {}),
-                    "description": catalog_entry.get("description", ""),
-                    "license": catalog_entry.get("license", ""),
-                    "adapter_package": catalog_entry.get("adapter_package", ""),
-                    "runtime": _runtime_diagnostic_payload(
-                        variant_id=variant_resolution.variant_id,
-                        preferred_backend=variant_resolution.preferred_backend,
-                        warnings=variant_resolution.warnings,
-                        snapshot=variant_resolution.snapshot,
-                    ),
-                },
+        manifest = Manifest(
+            layers=layers,
+            config={
+                "architecture": catalog_entry["architecture"],
+                "type": catalog_entry["type"],
+                "adapter": catalog_entry["adapter"],
+                "format": catalog_entry["format"],
+                "source": source,
+                "runtime_source": catalog_entry.get("runtime_source", ""),
+                "parameters": catalog_entry.get("parameters", {}),
+                "description": catalog_entry.get("description", ""),
+                "license": catalog_entry.get("license", ""),
+                "adapter_package": catalog_entry.get("adapter_package", ""),
+                "runtime": _runtime_diagnostic_payload(
+                    variant_id=variant_resolution.variant_id,
+                    preferred_backend=variant_resolution.preferred_backend,
+                    warnings=variant_resolution.warnings,
+                    snapshot=variant_resolution.snapshot,
+                ),
+            },
+            transaction_id=transaction.id,
+        )
+        transaction.record_candidate_manifest(manifest)
+        publication = _PullPublication(
+            adapter_mutation=adapter_mutation,
+            runtime_mutation=runtime_mutation,
+            blob_lease=blob_lease,
+            transaction=transaction,
+        )
+        manifest_publication_error: BaseException | None = None
+        try:
+            with (
+                bind_install_transaction(transaction),
+                bind_adapter_mutation(adapter_mutation),
+                bind_runtime_mutation(runtime_mutation),
+            ):
+                store.save_manifest(
+                    resolved.resolved_name,
+                    resolved.resolved_tag,
+                    manifest,
+                )
+        except BaseException as exc:
+            if not transaction.owns_canonical_manifest():
+                raise
+            manifest_publication_error = exc
+
+        await _run_blocking_owned(publication.commit)
+        adapter_mutation = None
+        runtime_mutation = None
+        transaction = None
+        if manifest_publication_error is not None:
+            if not isinstance(manifest_publication_error, Exception):
+                raise manifest_publication_error
+            logger.warning(
+                "pull manifest durability confirmation failed after publication: %s",
+                manifest_publication_error,
             )
-            store.save_manifest(resolved.resolved_name, resolved.resolved_tag, manifest)
-
-            if adapter_name == "voxtral-tts-vllm":
-                model_ref = f"{resolved.resolved_name}:{resolved.resolved_tag}"
-                yield PullEvent(status=f"preloading {model_ref}")
-                await scheduler.preload(model_ref)
-                yield PullEvent(status=f"{model_ref} ready")
-
-            total_bytes = sum(layer.size for layer in layers)
-            logger.info(
-                "pull complete: %s:%s (%d layers, %.1f MiB)",
-                resolved.resolved_name,
-                resolved.resolved_tag,
-                len(layers),
-                total_bytes / (1024 * 1024),
+            emit(
+                PullEvent(
+                    status="warning",
+                    error=str(manifest_publication_error),
+                )
             )
-            yield PullEvent(status="success")
 
-        except Exception as e:
-            logger.exception("pull failed: %s", request.name)
-            store.gc_blobs()
-            yield PullEvent(status="error", error=str(e))
+        total_bytes = sum(layer.size for layer in layers)
+        logger.info(
+            "pull complete: %s:%s (%d layers, %.1f MiB)",
+            resolved.resolved_name,
+            resolved.resolved_tag,
+            len(layers),
+            total_bytes / (1024 * 1024),
+        )
+        emit(PullEvent(status="success"))
 
-    return _gen()
+    except BaseException as e:
+        if publication is not None and publication.committed:
+            adapter_mutation = None
+            runtime_mutation = None
+            transaction = None
+            raise
+        cleanup_errors = await _rollback_pull_owners(
+            runtime_mutation=runtime_mutation,
+            adapter_mutation=adapter_mutation,
+            transaction=transaction,
+            blob_lease=blob_lease,
+        )
+        if not isinstance(e, Exception):
+            for error in cleanup_errors:
+                e.add_note(f"pull rollback failed: {error}")
+            raise
+        logger.exception("pull failed: %s", request.name)
+        error_message = str(e)
+        if cleanup_errors:
+            failures = "; ".join(str(error) for error in cleanup_errors)
+            error_message = f"{error_message}; rollback failures: {failures}"
+        emit(PullEvent(status="error", error=error_message))
+    finally:
+        blob_lease.close()
+
+
+def _write_blob_from_path(blob_lease: Any, path: str) -> str:
+    with open(path, "rb") as stream:
+        return blob_lease.write_blob(stream)
 
 
 def resolve_model_reference(
@@ -367,3 +642,93 @@ def _prepare_adapter_runtime(registry: Any, adapter_name: str) -> None:
     adapter_cls = registry.get_adapter_class(adapter_name)
     adapter = adapter_cls()
     adapter.prepare_runtime()
+
+
+async def _run_blocking_owned(
+    operation: Callable[..., Any],
+    /,
+    *args: Any,
+) -> Any:
+    task = asyncio.create_task(asyncio.to_thread(operation, *args))
+    result, cancellation = await _complete_owned_task(task)
+    if cancellation is not None:
+        raise cancellation
+    return result
+
+
+async def _acquire_writer_owned(store: Any) -> Any:
+    task = asyncio.create_task(asyncio.to_thread(store.acquire_writer_lease))
+    writer, cancellation = await _complete_owned_task(task)
+    if cancellation is None:
+        return writer
+    await _run_blocking_owned(writer.close)
+    raise cancellation
+
+
+async def _complete_owned_task(
+    task: asyncio.Task[Any],
+) -> tuple[Any, asyncio.CancelledError | None]:
+    cancellation: asyncio.CancelledError | None = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            if cancellation is None:
+                cancellation = exc
+    if cancellation is not None:
+        with suppress(BaseException):
+            return task.result(), cancellation
+        raise cancellation
+    return task.result(), None
+
+
+async def _rollback_pull_owners(
+    *,
+    runtime_mutation: RuntimeMutation | None,
+    adapter_mutation: AdapterMutation | None,
+    transaction: PullTransaction | None,
+    blob_lease: Any,
+) -> tuple[BaseException, ...]:
+    errors: list[BaseException] = []
+    operations = [mutation.rollback for mutation in (runtime_mutation, adapter_mutation) if mutation is not None]
+    if transaction is not None:
+        operations.append(transaction.rollback)
+    operations.append(blob_lease.abort)
+    for operation in operations:
+        try:
+            await _run_blocking_owned(operation)
+        except BaseException as exc:
+            errors.append(exc)
+    return tuple(errors)
+
+
+async def _stage_runtime_mutation_owned(
+    operation: Callable[..., Any],
+    /,
+    *args: Any,
+) -> RuntimeMutation:
+    task = asyncio.create_task(
+        asyncio.to_thread(
+            stage_adapter_runtime_mutation,
+            operation,
+            *args,
+        )
+    )
+    mutation, cancellation = await _complete_owned_task(task)
+    if cancellation is None:
+        return mutation
+    await _run_blocking_owned(mutation.rollback)
+    raise cancellation
+
+
+async def _stage_adapter_mutation_owned(
+    operation: Callable[..., Any],
+    /,
+    *args: Any,
+) -> AdapterMutation:
+    task = asyncio.create_task(asyncio.to_thread(operation, *args))
+    mutation, cancellation = await _complete_owned_task(task)
+    if cancellation is None:
+        return mutation
+    await _run_blocking_owned(mutation.rollback)
+    raise cancellation

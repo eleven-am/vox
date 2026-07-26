@@ -37,6 +37,7 @@ class ResponseStream:
     closed: bool = False
     text_parts: list[str] = field(default_factory=list)
     heard_parts: list[str] = field(default_factory=list)
+    _closed_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
     @classmethod
     def create(
@@ -56,13 +57,14 @@ class ResponseStream:
         )
 
     def close(self) -> None:
+        if self.closed:
+            return
         self.closed = True
+        self._closed_event.set()
+        self._discard_queued_items()
 
     async def append_text(self, text: str) -> AppendResult:
-        if self.closed:
-            return AppendResult.STREAM_ENDED
-        await self.queue.put(text)
-        return AppendResult.ACCEPTED
+        return await self._enqueue(text)
 
     def mark_committed(self) -> bool:
         if self.committed:
@@ -71,18 +73,56 @@ class ResponseStream:
         return True
 
     async def enqueue_end(self) -> AppendResult:
-        if self.closed:
-            return AppendResult.STREAM_ENDED
-        await self.queue.put(RESPONSE_STREAM_END)
-        return AppendResult.ACCEPTED
+        return await self._enqueue(RESPONSE_STREAM_END)
 
     async def next_text(self) -> str | None:
-        item = await self.queue.get()
+        if self.closed:
+            return None
+        get_task = asyncio.create_task(self.queue.get())
+        close_task = asyncio.create_task(self._closed_event.wait())
+        try:
+            await asyncio.wait({get_task, close_task}, return_when=asyncio.FIRST_COMPLETED)
+            if self.closed or close_task.done():
+                return None
+            item = get_task.result()
+        finally:
+            for task in (get_task, close_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(get_task, close_task, return_exceptions=True)
         if item is RESPONSE_STREAM_END:
             return None
         item_text = str(item)
         self.text_parts.append(item_text)
         return item_text
+
+    async def _enqueue(self, item: str | object) -> AppendResult:
+        if self.closed:
+            return AppendResult.STREAM_ENDED
+        put_task = asyncio.create_task(self.queue.put(item))
+        close_task = asyncio.create_task(self._closed_event.wait())
+        try:
+            await asyncio.wait({put_task, close_task}, return_when=asyncio.FIRST_COMPLETED)
+            if self.closed or close_task.done():
+                self._discard_queued_items()
+                return AppendResult.STREAM_ENDED
+            await put_task
+            if self.closed:
+                self._discard_queued_items()
+                return AppendResult.STREAM_ENDED
+            return AppendResult.ACCEPTED
+        finally:
+            for task in (put_task, close_task):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(put_task, close_task, return_exceptions=True)
+
+    def _discard_queued_items(self) -> None:
+        while True:
+            try:
+                self.queue.get_nowait()
+            except asyncio.QueueEmpty:
+                return
 
     def add_heard_text(self, text: str) -> None:
         self.heard_parts.append(text)

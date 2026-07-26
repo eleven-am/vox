@@ -7,7 +7,7 @@ from dataclasses import replace
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
-from vox.core.adapter_resolution import AdapterResolver
+from vox.core.adapter_resolution import AdapterMutation, AdapterResolver
 from vox.core.alias_resolution import resolve_family_alias
 from vox.core.errors import ModelLoadError, ModelNotFoundError
 from vox.core.store import BlobStore
@@ -114,15 +114,18 @@ class ModelRegistry:
                     result.setdefault(name, {})[tag] = entry
         return result
 
-
-
     def ensure_adapter(self, adapter_name: str, package_name: str) -> bool:
         return self._resolver.ensure(adapter_name, package_name)
 
+    def stage_adapter(
+        self,
+        adapter_name: str,
+        package_name: str,
+    ) -> AdapterMutation:
+        return self._resolver.stage(adapter_name, package_name)
+
     def get_adapter_class(self, adapter_name: str) -> type:
         return self._resolver.resolve(adapter_name)
-
-
 
     def resolve(self, name: str, tag: str = "latest", *, explicit_tag: bool = False) -> tuple[ModelInfo, Path]:
         """Resolve a model to its :class:`ModelInfo` and a model directory path.
@@ -147,10 +150,6 @@ class ModelRegistry:
         if adapter_package and not self.ensure_adapter(info.adapter, adapter_package):
             raise ModelLoadError(f"Failed to install adapter package: {adapter_package}")
 
-
-
-
-
         source = cfg.get("runtime_source") or cfg.get("source")
         if source:
             updated_params = {**info.parameters, "_source": source}
@@ -159,15 +158,12 @@ class ModelRegistry:
         if not manifest.layers:
             raise ModelNotFoundError(f"{name}:{tag} (manifest has no layers)")
 
-
         model_dir = self._store.root / "models" / "links" / name / tag
         model_dir.mkdir(parents=True, exist_ok=True)
 
         for layer in manifest.layers:
             if not _is_safe_layer_filename(layer.filename):
-                raise ModelLoadError(
-                    f"Manifest layer filename escapes model directory: {layer.filename!r}"
-                )
+                raise ModelLoadError(f"Manifest layer filename escapes model directory: {layer.filename!r}")
             link_path = model_dir / layer.filename
             blob_path = self._store.get_blob_path(layer.digest)
             link_path.parent.mkdir(parents=True, exist_ok=True)
@@ -178,8 +174,6 @@ class ModelRegistry:
                 try:
                     link_path.symlink_to(blob_path)
                 except OSError as e:
-                    raise ModelLoadError(
-                        f"Failed to create symlink {link_path} -> {blob_path}: {e}"
-                    ) from e
+                    raise ModelLoadError(f"Failed to create symlink {link_path} -> {blob_path}: {e}") from e
 
         return info, model_dir

@@ -18,7 +18,10 @@ WIRE_TRANSCRIPT_DONE = "conversation.item.input_audio_transcription.completed"
 WIRE_TURN_EOU_PREDICTED = "turn.eou.predicted"
 TRANSCRIPT_REVISION_SIMILARITY = 0.78
 TRANSCRIPT_CONTINUATION_COMMIT_MS = 650
-TRANSCRIPT_LOW_EOU_MAX_EXTENSION_MS = 150
+TRANSCRIPT_UNCERTAIN_COMMIT_MS = 1000
+TRANSCRIPT_INCOMPLETE_FLOOR_MS = 1100
+TRANSCRIPT_INCOMPLETE_COMMIT_MS = 1200
+TRANSCRIPT_HIGH_EOU_CONFIDENCE = 0.85
 
 
 def normalise_transcript_text(text: str) -> str:
@@ -201,10 +204,11 @@ class PendingTranscriptFinalizer:
         )
 
     def log(self, payload: dict[str, Any]) -> None:
+        transcript = str(payload.get("transcript") or "")
         self.logger.info(
-            "conversation final transcript emitted text=%r start_ms=%s end_ms=%s "
+            "conversation final transcript emitted chars=%d start_ms=%s end_ms=%s "
             "eou_probability=%s topics=%d entities=%d words=%d",
-            str(payload.get("transcript") or ""),
+            len(transcript),
             payload.get("start_ms"),
             payload.get("end_ms"),
             payload.get("eou_probability"),
@@ -244,7 +248,12 @@ class EndpointCommitDelayPolicy:
             min_delay_ms,
             max(0, int(self.continuation_delay_ms)),
         )
-        if self.dynamic_endpointing and recent_pause_ms:
+        use_pause_history = (
+            self.dynamic_endpointing
+            and recent_pause_ms
+            and (eou_probability is None or eou_threshold is None or eou_probability < eou_threshold)
+        )
+        if use_pause_history:
             avg_pause = sum(recent_pause_ms) / len(recent_pause_ms)
             dynamic_ms = int(avg_pause * 1.25)
             base_ms = min(
@@ -259,24 +268,67 @@ class EndpointCommitDelayPolicy:
 
         if eou_probability is None or eou_threshold is None:
             return base_ms
+        floor_ms = min(min_delay_ms, base_ms)
+        if eou_threshold <= 0.0:
+            return self._confident_delay_ms(
+                eou_probability=eou_probability,
+                eou_threshold=eou_threshold,
+                base_ms=base_ms,
+                floor_ms=floor_ms,
+            )
+        uncertain_ms = max(
+            base_ms,
+            min(max_delay_ms, TRANSCRIPT_UNCERTAIN_COMMIT_MS),
+        )
         if eou_probability < eou_threshold:
-            if eou_threshold <= 0.0:
-                return base_ms
             incompletion = min(
                 1.0,
                 max(0.0, (eou_threshold - eou_probability) / eou_threshold),
             )
-            available_extension_ms = max(0, max_delay_ms - base_ms)
-            extension_ms = min(
-                TRANSCRIPT_LOW_EOU_MAX_EXTENSION_MS,
-                available_extension_ms,
+            incomplete_floor_ms = max(
+                uncertain_ms,
+                min(max_delay_ms, TRANSCRIPT_INCOMPLETE_FLOOR_MS),
             )
-            return round(base_ms + incompletion * extension_ms)
+            incomplete_ms = max(
+                incomplete_floor_ms,
+                min(max_delay_ms, TRANSCRIPT_INCOMPLETE_COMMIT_MS),
+            )
+            return round(incomplete_floor_ms + incompletion * (incomplete_ms - incomplete_floor_ms))
 
-        floor_ms = min(min_delay_ms, base_ms)
+        high_confidence = min(
+            1.0,
+            max(eou_threshold, TRANSCRIPT_HIGH_EOU_CONFIDENCE),
+        )
+        if eou_probability < high_confidence and high_confidence > eou_threshold:
+            high_confidence_ms = self._confident_delay_ms(
+                eou_probability=high_confidence,
+                eou_threshold=eou_threshold,
+                base_ms=base_ms,
+                floor_ms=floor_ms,
+            )
+            progress = (eou_probability - eou_threshold) / (high_confidence - eou_threshold)
+            return round(uncertain_ms + progress * (high_confidence_ms - uncertain_ms))
+        return self._confident_delay_ms(
+            eou_probability=eou_probability,
+            eou_threshold=eou_threshold,
+            base_ms=base_ms,
+            floor_ms=floor_ms,
+        )
+
+    @staticmethod
+    def _confident_delay_ms(
+        *,
+        eou_probability: float,
+        eou_threshold: float,
+        base_ms: int,
+        floor_ms: int,
+    ) -> int:
         if eou_threshold >= 1.0:
             return floor_ms
-        confidence = min(1.0, max(0.0, (eou_probability - eou_threshold) / (1.0 - eou_threshold)))
+        confidence = min(
+            1.0,
+            max(0.0, (eou_probability - eou_threshold) / (1.0 - eou_threshold)),
+        )
         return int(base_ms - confidence * (base_ms - floor_ms))
 
 

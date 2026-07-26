@@ -140,6 +140,59 @@ async def test_iter_grpc_stream_lifecycle_runs_cleanup_when_consumer_stops_early
 
 
 @pytest.mark.asyncio
+async def test_iter_grpc_stream_lifecycle_propagates_background_failure_after_cleanup():
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    await close_grpc_output_queue(queue)
+    cleaned = False
+
+    async def background() -> None:
+        raise RuntimeError("producer failed")
+
+    async def cleanup() -> None:
+        nonlocal cleaned
+        cleaned = True
+
+    task = asyncio.create_task(background())
+    await asyncio.sleep(0)
+
+    with pytest.raises(RuntimeError, match="producer failed"):
+        _ = [
+            item
+            async for item in iter_grpc_stream_lifecycle(
+                queue,
+                task,
+                cleanup=cleanup,
+            )
+        ]
+
+    assert cleaned is True
+
+
+@pytest.mark.asyncio
+async def test_iter_grpc_stream_lifecycle_propagates_failure_raised_while_reaping():
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    await close_grpc_output_queue(queue)
+
+    async def background() -> None:
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError as exc:
+            raise RuntimeError("producer cleanup failed") from exc
+
+    task = asyncio.create_task(background())
+    await asyncio.sleep(0)
+
+    with pytest.raises(RuntimeError, match="producer cleanup failed"):
+        _ = [
+            item
+            async for item in iter_grpc_stream_lifecycle(
+                queue,
+                task,
+            )
+        ]
+
+
+@pytest.mark.asyncio
 async def test_grpc_producer_unblocks_when_bounded_queue_consumer_closes():
     queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=2)
     consumer_closed = asyncio.Event()
@@ -160,3 +213,20 @@ async def test_grpc_producer_unblocks_when_bounded_queue_consumer_closes():
     assert await asyncio.wait_for(producer, timeout=1.0) is False
     assert queue.get_nowait() == "a"
     assert queue.get_nowait() == "b"
+
+
+@pytest.mark.asyncio
+async def test_event_pump_cancellation_cannot_block_on_full_output_queue():
+    queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=1)
+    queue.put_nowait("occupied")
+    task = start_grpc_event_pump(
+        _events(_Event("blocked")),
+        queue,
+        message=_message,
+    )
+    await asyncio.sleep(0)
+
+    task.cancel()
+    await asyncio.wait({task}, timeout=0.05)
+
+    assert task.done()

@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib
 import logging
 import math
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,6 +20,7 @@ from vox.core.adapter_runtime import (
     activate_runtime_path,
     install_target_runtime_requirements,
     purge_runtime_modules,
+    staged_target_runtime,
 )
 from vox.core.adapter_runtime import (
     runtime_root as vox_runtime_root,
@@ -72,7 +72,7 @@ COSYVOICE_RUNTIME_REQUIREMENTS = (
 )
 
 WHISPER_COMPAT_FILES = {
-    "__init__.py": '''
+    "__init__.py": """
 from __future__ import annotations
 
 from pathlib import Path
@@ -112,8 +112,8 @@ def log_mel_spectrogram(audio, n_mels=128, padding=0, device=None):
     log_spec = torch.clamp(mel, min=1e-10).log10()
     log_spec = torch.maximum(log_spec, log_spec.max() - 8.0)
     return (log_spec + 4.0) / 4.0
-'''.lstrip(),
-    "tokenizer.py": '''
+""".lstrip(),
+    "tokenizer.py": """
 from __future__ import annotations
 
 
@@ -130,11 +130,11 @@ class Tokenizer:
 
     def decode(self, tokens):
         return self.encoding.decode(tokens)
-'''.lstrip(),
+""".lstrip(),
 }
 
 MATPLOTLIB_COMPAT_FILES = {
-    "__init__.py": '''
+    "__init__.py": """
 from __future__ import annotations
 
 from . import axes, colors
@@ -144,15 +144,15 @@ __version__ = "0.0.vox-compat"
 
 def use(*args, **kwargs):
     return None
-'''.lstrip(),
-    "axes.py": '''
+""".lstrip(),
+    "axes.py": """
 from __future__ import annotations
 
 
 class Axes:
     pass
-'''.lstrip(),
-    "colors.py": '''
+""".lstrip(),
+    "colors.py": """
 from __future__ import annotations
 
 
@@ -162,8 +162,8 @@ class Colormap:
 
 def is_color_like(value):
     return True
-'''.lstrip(),
-    "pyplot.py": '''
+""".lstrip(),
+    "pyplot.py": """
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -184,12 +184,12 @@ style = _Style()
 
 def subplots(*args, **kwargs):
     raise ModuleNotFoundError("CosyVoice inference runtime does not include matplotlib plotting support.")
-'''.lstrip(),
-    "pylab.py": '''
+""".lstrip(),
+    "pylab.py": """
 from __future__ import annotations
 
 from .pyplot import *  # noqa: F403
-'''.lstrip(),
+""".lstrip(),
 }
 
 
@@ -267,38 +267,35 @@ def _clone_cosyvoice_source() -> None:
     if _source_checkout_matches_ref(source_dir):
         return
 
-    source_dir.parent.mkdir(parents=True, exist_ok=True)
-    if source_dir.exists():
-        shutil.rmtree(source_dir)
-
-    result = _run_install_command(
-        [
-            "git",
-            "clone",
-            "--depth",
-            "1",
-            "--branch",
-            COSYVOICE_SOURCE_REF,
-            "--recurse-submodules",
-            "--shallow-submodules",
-            COSYVOICE_REPO,
-            str(source_dir),
-        ],
-        1800,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to clone CosyVoice runtime source: {result.stderr.strip()}")
-
-    if not _source_checkout_complete(source_dir):
+    with staged_target_runtime(source_dir) as stage:
         result = _run_install_command(
-            ["git", "-C", str(source_dir), "submodule", "update", "--init", "--recursive"],
-            900,
+            [
+                "git",
+                "clone",
+                "--depth",
+                "1",
+                "--branch",
+                COSYVOICE_SOURCE_REF,
+                "--recurse-submodules",
+                "--shallow-submodules",
+                COSYVOICE_REPO,
+                str(stage),
+            ],
+            1800,
         )
         if result.returncode != 0:
-            raise RuntimeError(f"Failed to initialize CosyVoice submodules: {result.stderr.strip()}")
+            raise RuntimeError(f"Failed to clone CosyVoice runtime source: {result.stderr.strip()}")
 
-    if not _source_checkout_complete(source_dir):
-        raise RuntimeError("CosyVoice runtime source checkout is incomplete.")
+        if not _source_checkout_complete(stage):
+            result = _run_install_command(
+                ["git", "-C", str(stage), "submodule", "update", "--init", "--recursive"],
+                900,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"Failed to initialize CosyVoice submodules: {result.stderr.strip()}")
+
+        if not _source_checkout_complete(stage):
+            raise RuntimeError("CosyVoice runtime source checkout is incomplete.")
 
 
 def _install_cosyvoice_runtime() -> None:

@@ -21,8 +21,30 @@ async def iter_grpc_output_queue(
         yield item
 
 
-async def close_grpc_output_queue(queue: asyncio.Queue[MessageT | None]) -> None:
-    await queue.put(None)
+async def close_grpc_output_queue(
+    queue: asyncio.Queue[MessageT | None],
+    *,
+    consumer_closed: asyncio.Event | None = None,
+) -> None:
+    if consumer_closed is None:
+        await queue.put(None)
+        return
+    if consumer_closed.is_set():
+        return
+    put_task = asyncio.create_task(queue.put(None))
+    close_task = asyncio.create_task(consumer_closed.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            (put_task, close_task),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if put_task in done:
+            await put_task
+    finally:
+        if not put_task.done():
+            await reap_task(put_task)
+        if not close_task.done():
+            await reap_task(close_task)
 
 
 async def put_grpc_output_queue(
@@ -58,16 +80,29 @@ async def pump_events_to_grpc_queue(
     *,
     message: Callable[[EventT], MessageT | None],
     terminal_types: tuple[type, ...] = (),
+    consumer_closed: asyncio.Event | None = None,
 ) -> None:
     try:
         async for event in events:
             item = message(event)
             if item is not None:
-                await queue.put(item)
+                if consumer_closed is None:
+                    await queue.put(item)
+                elif not await put_grpc_output_queue(
+                    queue,
+                    item,
+                    consumer_closed=consumer_closed,
+                ):
+                    return
             if terminal_types and isinstance(event, terminal_types):
                 break
     finally:
-        await close_grpc_output_queue(queue)
+        task = asyncio.current_task()
+        if task is None or not task.cancelling():
+            await close_grpc_output_queue(
+                queue,
+                consumer_closed=consumer_closed,
+            )
 
 
 def start_grpc_event_pump(
@@ -76,6 +111,7 @@ def start_grpc_event_pump(
     *,
     message: Callable[[EventT], MessageT | None],
     terminal_types: tuple[type, ...] = (),
+    consumer_closed: asyncio.Event | None = None,
 ) -> asyncio.Task[None]:
     return asyncio.create_task(
         pump_events_to_grpc_queue(
@@ -83,6 +119,7 @@ def start_grpc_event_pump(
             queue,
             message=message,
             terminal_types=terminal_types,
+            consumer_closed=consumer_closed,
         )
     )
 
@@ -93,13 +130,36 @@ async def iter_grpc_stream_lifecycle(
     cleanup: Callable[[], Awaitable[None]] | None = None,
     on_consumer_close: Callable[[], None] | None = None,
 ) -> AsyncIterator[MessageT]:
+    reached_stream_end = False
     try:
         async for item in iter_grpc_output_queue(queue):
             yield item
+        reached_stream_end = True
     finally:
         if on_consumer_close is not None:
             on_consumer_close()
         for task in tasks:
             await reap_task(task)
-        if cleanup is not None:
-            await cleanup()
+        task_errors: list[BaseException] = []
+        if reached_stream_end:
+            for task in tasks:
+                if task.cancelled() or not task.done():
+                    continue
+                error = task.exception()
+                if error is not None:
+                    task_errors.append(error)
+        cleanup_error: Exception | None = None
+        try:
+            if cleanup is not None:
+                await cleanup()
+        except Exception as exc:
+            cleanup_error = exc
+        if task_errors and cleanup_error is not None:
+            raise BaseExceptionGroup(
+                "gRPC stream and cleanup failed",
+                [*task_errors, cleanup_error],
+            )
+        if task_errors:
+            raise task_errors[0]
+        if cleanup_error is not None:
+            raise cleanup_error

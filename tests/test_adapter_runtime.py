@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import asyncio
 import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from importlib.machinery import ModuleSpec
+from pathlib import Path
 from types import ModuleType
 
 import pytest
 
-from vox.core import adapter_runtime
+from vox.core import adapter_runtime, atomic_install
 
 
 def test_adapter_runtime_lock_serializes_dependency_graph_mutations():
@@ -34,6 +36,254 @@ def test_adapter_runtime_lock_serializes_dependency_graph_mutations():
         second.result(timeout=2)
 
     assert second_entered.is_set()
+
+
+def test_staged_runtime_mutation_blocks_competing_mutation_until_commit(tmp_path):
+    runtime = tmp_path / "runtime" / "stable"
+    runtime.mkdir(parents=True)
+    (runtime / "stable.txt").write_text("stable")
+    competing_entered = threading.Event()
+
+    def staged_operation() -> None:
+        with adapter_runtime.staged_target_runtime(runtime) as stage:
+            (stage / "staged.txt").write_text("staged")
+
+    def competing_operation() -> None:
+        competing_entered.set()
+        with adapter_runtime.staged_target_runtime(runtime) as stage:
+            (stage / "competing.txt").write_text("competing")
+
+    mutation = adapter_runtime.stage_adapter_runtime_mutation(staged_operation)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        competing = executor.submit(
+            adapter_runtime.run_with_adapter_runtime_lock,
+            competing_operation,
+        )
+        assert not competing_entered.wait(timeout=0.05)
+        mutation.commit()
+        competing.result(timeout=2)
+
+    assert competing_entered.is_set()
+    assert {path.name for path in runtime.iterdir()} == {"competing.txt"}
+
+
+def test_adapter_runtime_lock_rolls_back_published_runtime_when_operation_fails(tmp_path):
+    runtime = tmp_path / "runtime" / "stable"
+    runtime.mkdir(parents=True)
+    (runtime / "stable.txt").write_bytes(b"stable")
+
+    def runner(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        target = Path(cmd[cmd.index("--target") + 1])
+        (target / "replacement.txt").write_bytes(b"replacement")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    def operation() -> None:
+        assert adapter_runtime.install_target_runtime_requirements(
+            runtime,
+            ["replacement==2.0"],
+            expected_paths=[runtime / "replacement.txt"],
+            install_runner=runner,
+        )
+        raise RuntimeError("later runtime preparation failed")
+
+    with pytest.raises(RuntimeError, match="later runtime preparation failed"):
+        adapter_runtime.run_with_adapter_runtime_lock(operation)
+
+    assert {path.relative_to(runtime): path.read_bytes() for path in runtime.rglob("*") if path.is_file()} == {
+        Path("stable.txt"): b"stable"
+    }
+
+
+def test_runtime_rollback_restores_previous_directory_when_replacement_cleanup_is_busy(
+    tmp_path,
+    monkeypatch,
+):
+    runtime = tmp_path / "runtime" / "stable"
+    runtime.mkdir(parents=True)
+    (runtime / "stable.txt").write_text("stable")
+
+    def operation() -> None:
+        with adapter_runtime.staged_target_runtime(runtime) as stage:
+            (stage / "replacement.txt").write_text("replacement")
+        raise RuntimeError("later preparation failed")
+
+    original_rmtree = atomic_install.shutil.rmtree
+
+    def busy_replacement(path, *args, **kwargs):
+        if Path(path) == runtime:
+            raise OSError(16, "Device or resource busy")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(atomic_install.shutil, "rmtree", busy_replacement)
+
+    with pytest.raises(RuntimeError, match="later preparation failed"):
+        adapter_runtime.run_with_adapter_runtime_lock(operation)
+
+    assert (runtime / "stable.txt").read_text() == "stable"
+    assert not (runtime / "replacement.txt").exists()
+
+
+def test_prune_stale_install_directories_removes_only_owned_artifacts(tmp_path):
+    root = tmp_path / "runtime"
+    root.mkdir()
+    stale = [
+        root / ".parakeet.installing-abc",
+        root / ".parakeet.previous-def",
+        root / ".parakeet.failed-ghi",
+    ]
+    for path in stale:
+        path.mkdir()
+        (path / "artifact.txt").write_text("stale")
+    active = root / "parakeet"
+    active.mkdir()
+    unrelated = root / ".cache"
+    unrelated.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    symlink = root / ".parakeet.previous-link"
+    symlink.symlink_to(outside, target_is_directory=True)
+
+    assert atomic_install.prune_stale_install_directories(root) == 3
+
+    assert all(not path.exists() for path in stale)
+    assert active.is_dir()
+    assert unrelated.is_dir()
+    assert symlink.is_symlink()
+    assert outside.is_dir()
+
+
+def test_prune_restores_uncommitted_previous_over_replacement(tmp_path):
+    root = tmp_path / "runtime"
+    target = root / "parakeet"
+    previous = root / ".parakeet.previous-transaction"
+    target.mkdir(parents=True)
+    previous.mkdir()
+    (target / "replacement.txt").write_text("replacement")
+    (previous / "stable.txt").write_text("stable")
+
+    assert atomic_install.prune_stale_install_directories(root) == 1
+
+    assert (target / "stable.txt").read_text() == "stable"
+    assert not (target / "replacement.txt").exists()
+    assert not previous.exists()
+
+
+def test_prune_restores_uncommitted_previous_when_target_is_missing(tmp_path):
+    root = tmp_path / "runtime"
+    root.mkdir()
+    target = root / "parakeet"
+    previous = root / ".parakeet.previous-transaction"
+    previous.mkdir()
+    (previous / "stable.txt").write_text("stable")
+
+    assert atomic_install.prune_stale_install_directories(root) == 1
+
+    assert (target / "stable.txt").read_text() == "stable"
+    assert not previous.exists()
+
+
+def test_prune_removes_committed_backup_without_replacing_target(tmp_path):
+    root = tmp_path / "runtime"
+    target = root / "parakeet"
+    committed = root / ".parakeet.committed-transaction"
+    target.mkdir(parents=True)
+    committed.mkdir()
+    (target / "replacement.txt").write_text("replacement")
+    (committed / "stable.txt").write_text("stable")
+
+    assert atomic_install.prune_stale_install_directories(root) == 1
+
+    assert (target / "replacement.txt").read_text() == "replacement"
+    assert not (target / "stable.txt").exists()
+    assert not committed.exists()
+
+
+def test_adapter_runtime_lock_rolls_back_removals_and_multiple_publications(tmp_path):
+    runtime = tmp_path / "runtime" / "stable"
+    runtime.mkdir(parents=True)
+    (runtime / "keep.txt").write_bytes(b"keep")
+    (runtime / "remove.txt").write_bytes(b"remove")
+
+    install_count = 0
+
+    def runner(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        nonlocal install_count
+        install_count += 1
+        target = Path(cmd[cmd.index("--target") + 1])
+        (target / f"installed-{install_count}.txt").write_bytes(str(install_count).encode())
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    def operation() -> None:
+        adapter_runtime.remove_target_runtime_paths(
+            runtime,
+            [runtime / "remove.txt"],
+        )
+        assert adapter_runtime.install_target_runtime_requirements(
+            runtime,
+            ["first==1.0"],
+            expected_paths=[runtime / "installed-1.txt"],
+            install_runner=runner,
+        )
+        assert adapter_runtime.install_target_runtime_requirements(
+            runtime,
+            ["second==1.0"],
+            expected_paths=[runtime / "installed-2.txt"],
+            install_runner=runner,
+        )
+        raise RuntimeError("later runtime preparation failed")
+
+    with pytest.raises(RuntimeError, match="later runtime preparation failed"):
+        adapter_runtime.run_with_adapter_runtime_lock(operation)
+
+    assert {path.relative_to(runtime): path.read_bytes() for path in runtime.rglob("*") if path.is_file()} == {
+        Path("keep.txt"): b"keep",
+        Path("remove.txt"): b"remove",
+    }
+
+
+@pytest.mark.asyncio
+async def test_bound_runtime_mutation_allows_same_transaction_reentry():
+    mutation = adapter_runtime.stage_adapter_runtime_mutation(lambda: None)
+    try:
+        with adapter_runtime.bind_runtime_mutation(mutation):
+            result = await asyncio.wait_for(
+                asyncio.to_thread(
+                    adapter_runtime.run_with_adapter_runtime_lock,
+                    lambda: "ready",
+                ),
+                timeout=0.2,
+            )
+    finally:
+        mutation.rollback()
+
+    assert result == "ready"
+
+
+def test_staged_target_runtime_failure_preserves_previous_runtime(tmp_path):
+    runtime = tmp_path / "runtime" / "stable"
+    runtime.mkdir(parents=True)
+    (runtime / "stable.txt").write_bytes(b"stable")
+
+    with pytest.raises(RuntimeError, match="build failed"), adapter_runtime.staged_target_runtime(runtime) as stage:
+        (stage / "partial.txt").write_bytes(b"partial")
+        raise RuntimeError("build failed")
+
+    assert {path.relative_to(runtime): path.read_bytes() for path in runtime.rglob("*") if path.is_file()} == {
+        Path("stable.txt"): b"stable"
+    }
+
+
+def test_staged_target_runtime_publishes_complete_replacement(tmp_path):
+    runtime = tmp_path / "runtime" / "stable"
+    runtime.mkdir(parents=True)
+    (runtime / "stable.txt").write_bytes(b"stable")
+
+    with adapter_runtime.staged_target_runtime(runtime) as stage:
+        (stage / "replacement.txt").write_bytes(b"replacement")
+
+    assert {path.relative_to(runtime): path.read_bytes() for path in runtime.rglob("*") if path.is_file()} == {
+        Path("replacement.txt"): b"replacement"
+    }
 
 
 def test_target_runtime_uses_vox_home(monkeypatch, tmp_path):
@@ -206,6 +456,9 @@ def test_ensure_target_runtime_prefers_uv_and_writes_app_fallback(tmp_path):
     )
 
     assert runtime_path == tmp_path / "runtime" / "qwen-tts"
+    install_target = calls[0][calls[0].index("--target") + 1]
+    assert Path(install_target).parent == runtime_path.parent
+    assert Path(install_target).name.startswith(".qwen-tts.installing-")
     assert calls == [
         [
             "uv",
@@ -214,7 +467,7 @@ def test_ensure_target_runtime_prefers_uv_and_writes_app_fallback(tmp_path):
             "--python",
             sys.executable,
             "--target",
-            str(runtime_path),
+            install_target,
             "--upgrade",
             "--no-deps",
             "qwen-tts==1.0.0",
@@ -296,6 +549,33 @@ def test_ensure_target_runtime_raises_when_installers_cannot_load_module(tmp_pat
         )
 
 
+def test_failed_ensure_target_runtime_preserves_previous_runtime(tmp_path):
+    runtime_root = tmp_path / "runtime"
+    runtime = runtime_root / "stable"
+    runtime.mkdir(parents=True)
+    (runtime / "stable.txt").write_bytes(b"stable")
+
+    with pytest.raises(RuntimeError, match="could not be bootstrapped"):
+        adapter_runtime.ensure_target_runtime(
+            "stable",
+            "broken-runtime==2.0",
+            "broken_runtime",
+            include_app_fallback=True,
+            root=runtime_root,
+            install_runner=lambda cmd, _timeout: subprocess.CompletedProcess(
+                cmd,
+                1,
+                "",
+                "failed",
+            ),
+            module_probe=lambda _import_name: False,
+        )
+
+    assert {path.relative_to(runtime): path.read_bytes() for path in runtime.rglob("*") if path.is_file()} == {
+        Path("stable.txt"): b"stable"
+    }
+
+
 def test_install_target_runtime_requirements_can_disable_upgrade(tmp_path):
     calls: list[list[str]] = []
 
@@ -339,7 +619,8 @@ def test_install_target_runtime_requirements_accepts_success_with_expected_paths
 
     def runner(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
         calls.append(cmd)
-        installed_package.mkdir(parents=True)
+        install_target = Path(cmd[cmd.index("--target") + 1])
+        (install_target / "transformers").mkdir(parents=True)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     assert adapter_runtime.install_target_runtime_requirements(
@@ -372,3 +653,83 @@ def test_install_target_runtime_requirements_includes_extra_install_args(tmp_pat
     assert "--no-build-isolation" in calls[0]
     assert "--no-deps" in calls[0]
     assert "--upgrade" not in calls[0]
+
+
+def test_failed_runtime_install_preserves_previous_runtime_byte_for_byte(tmp_path):
+    runtime = tmp_path / "runtime" / "stable"
+    runtime.mkdir(parents=True)
+    (runtime / "stable.txt").write_bytes(b"stable")
+
+    def runner(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        target = Path(cmd[cmd.index("--target") + 1])
+        (target / "partial.txt").write_bytes(b"partial")
+        return subprocess.CompletedProcess(cmd, 1, "", "failed")
+
+    assert not adapter_runtime.install_target_runtime_requirements(
+        runtime,
+        ["broken-runtime==2.0"],
+        install_runner=runner,
+    )
+
+    assert {path.relative_to(runtime): path.read_bytes() for path in runtime.rglob("*") if path.is_file()} == {
+        Path("stable.txt"): b"stable"
+    }
+    assert not any(path.name.startswith(".stable.installing-") for path in runtime.parent.iterdir())
+
+
+def test_successful_runtime_install_swaps_verified_stage_and_preserves_unrelated_files(tmp_path):
+    runtime = tmp_path / "runtime" / "stable"
+    runtime.mkdir(parents=True)
+    (runtime / "stable.txt").write_bytes(b"stable")
+    install_targets = []
+
+    def runner(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        target = Path(cmd[cmd.index("--target") + 1])
+        install_targets.append(target)
+        (target / "new_runtime").mkdir(parents=True)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    assert adapter_runtime.install_target_runtime_requirements(
+        runtime,
+        ["new-runtime==2.0"],
+        expected_paths=[runtime / "new_runtime"],
+        install_runner=runner,
+    )
+
+    assert all(target != runtime for target in install_targets)
+    assert (runtime / "stable.txt").read_bytes() == b"stable"
+    assert (runtime / "new_runtime").is_dir()
+    assert not any(path.name.startswith(".stable.installing-") for path in runtime.parent.iterdir())
+
+
+def test_committed_runtime_remains_successful_when_backup_cleanup_is_busy(tmp_path, monkeypatch):
+    runtime = tmp_path / "runtime" / "stable"
+    runtime.mkdir(parents=True)
+    (runtime / "stable.txt").write_bytes(b"stable")
+
+    def runner(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        target = Path(cmd[cmd.index("--target") + 1])
+        (target / "new_runtime").mkdir(parents=True)
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    original_rmtree = atomic_install.shutil.rmtree
+
+    def busy_backup(path, *args, **kwargs):
+        if Path(path).name.startswith(".stable.committed-"):
+            raise OSError(16, "Device or resource busy")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(atomic_install.shutil, "rmtree", busy_backup)
+
+    assert adapter_runtime.install_target_runtime_requirements(
+        runtime,
+        ["new-runtime==2.0"],
+        expected_paths=[runtime / "new_runtime"],
+        install_runner=runner,
+    )
+
+    backups = tuple(runtime.parent.glob(".stable.committed-*"))
+    assert (runtime / "new_runtime").is_dir()
+    assert (runtime / "stable.txt").read_bytes() == b"stable"
+    assert len(backups) == 1
+    assert (backups[0] / "stable.txt").read_bytes() == b"stable"

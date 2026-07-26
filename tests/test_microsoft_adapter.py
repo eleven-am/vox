@@ -115,18 +115,24 @@ class TestSpeechT5STTAdapterInfo:
             sys.modules.pop("vox_microsoft.speecht5_stt_adapter", None)
             importlib.import_module("vox_microsoft.speecht5_stt_adapter")
 
-            assert huggingface_hub.hf_hub_download(
-                "repo",
-                "weights.bin",
-                cache_dir="/tmp/cache",
-                tqdm_class=object,
-            ) == "ok"
-            assert huggingface_hub_file_download.hf_hub_download(
-                "repo",
-                "weights.bin",
-                cache_dir="/tmp/cache",
-                tqdm_class=object,
-            ) == "ok"
+            assert (
+                huggingface_hub.hf_hub_download(
+                    "repo",
+                    "weights.bin",
+                    cache_dir="/tmp/cache",
+                    tqdm_class=object,
+                )
+                == "ok"
+            )
+            assert (
+                huggingface_hub_file_download.hf_hub_download(
+                    "repo",
+                    "weights.bin",
+                    cache_dir="/tmp/cache",
+                    tqdm_class=object,
+                )
+                == "ok"
+            )
             assert calls == [
                 ("repo", "weights.bin", "/tmp/cache"),
                 ("repo", "weights.bin", "/tmp/cache"),
@@ -435,18 +441,21 @@ class TestVibeVoiceTTSAdapterInfo:
         with patch.dict("sys.modules", {"transformers": transformers, "torch": torch}):
             from vox_microsoft.vibevoice_tts_adapter import VibeVoiceTTSAdapter
 
-            with patch(
-                "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
-                return_value=MagicMock(),
-            ), patch(
-                "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
-                side_effect=lambda name: {
-                    "vibevoice": "1.0.0",
-                    "transformers": "4.50.0",
-                    "accelerate": "1.6.0",
-                    "huggingface_hub": "0.35.3",
-                    "tokenizers": "0.21.4",
-                }.get(name, "1.0.0"),
+            with (
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
+                    return_value=MagicMock(),
+                ),
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
+                    side_effect=lambda name: {
+                        "vibevoice": "1.0.0",
+                        "transformers": "4.50.0",
+                        "accelerate": "1.6.0",
+                        "huggingface_hub": "0.35.3",
+                        "tokenizers": "0.21.4",
+                    }.get(name, "1.0.0"),
+                ),
             ):
                 adapter = VibeVoiceTTSAdapter()
 
@@ -459,18 +468,21 @@ class TestVibeVoiceTTSAdapterInfo:
         with patch.dict("sys.modules", {"transformers": transformers, "torch": torch}):
             from vox_microsoft.vibevoice_tts_adapter import VibeVoiceTTSAdapter
 
-            with patch(
-                "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
-                return_value=MagicMock(),
-            ), patch(
-                "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
-                side_effect=lambda name: {
-                    "vibevoice": "1.0.0",
-                    "transformers": "4.51.3",
-                    "accelerate": "1.6.0",
-                    "huggingface_hub": "0.35.3",
-                    "tokenizers": "0.21.4",
-                }.get(name, "1.0.0"),
+            with (
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
+                    return_value=MagicMock(),
+                ),
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
+                    side_effect=lambda name: {
+                        "vibevoice": "1.0.0",
+                        "transformers": "4.51.3",
+                        "accelerate": "1.6.0",
+                        "huggingface_hub": "0.35.3",
+                        "tokenizers": "0.21.4",
+                    }.get(name, "1.0.0"),
+                ),
             ):
                 tokenizer = MagicMock()
                 model = MagicMock()
@@ -495,9 +507,7 @@ class TestVibeVoiceTTSAdapterInfo:
                     ]
                     adapter.load("microsoft/VibeVoice-Realtime-0.5B", "cpu")
                     import_module.assert_any_call("vibevoice.modular.configuration_vibevoice_streaming")
-                    import_module.assert_any_call(
-                        "vibevoice.modular.modeling_vibevoice_streaming_inference"
-                    )
+                    import_module.assert_any_call("vibevoice.modular.modeling_vibevoice_streaming_inference")
                     import_module.assert_any_call("vibevoice.processor.vibevoice_streaming_processor")
 
                 runtime_model_module.VibeVoiceStreamingForConditionalGenerationInference.from_pretrained.assert_called_once()
@@ -509,18 +519,21 @@ class TestVibeVoiceTTSAdapterInfo:
         with patch.dict("sys.modules", {"transformers": transformers, "torch": torch}):
             from vox_microsoft.vibevoice_tts_adapter import VibeVoiceTTSAdapter
 
-            with patch(
-                "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
-                return_value=MagicMock(),
-            ), patch(
-                "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
-                side_effect=lambda name: {
-                    "vibevoice": "1.0.0",
-                    "transformers": "4.51.3",
-                    "accelerate": "1.6.0",
-                    "huggingface_hub": "0.35.3",
-                    "tokenizers": "0.21.4",
-                }.get(name, "1.0.0"),
+            with (
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
+                    return_value=MagicMock(),
+                ),
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
+                    side_effect=lambda name: {
+                        "vibevoice": "1.0.0",
+                        "transformers": "4.51.3",
+                        "accelerate": "1.6.0",
+                        "huggingface_hub": "0.35.3",
+                        "tokenizers": "0.21.4",
+                    }.get(name, "1.0.0"),
+                ),
             ):
                 tokenizer = MagicMock()
                 model = MagicMock()
@@ -559,18 +572,21 @@ class TestVibeVoiceTTSAdapterInfo:
                 "<class 'vibevoice.modular.configuration_vibevoice."
                 "VibeVoiceAcousticTokenizerConfig'> is already used by a Transformers model."
             )
-            with patch(
-                "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
-                return_value=MagicMock(),
-            ), patch(
-                "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
-                side_effect=lambda name: {
-                    "vibevoice": "1.0.0",
-                    "transformers": "4.51.3",
-                    "accelerate": "1.6.0",
-                    "huggingface_hub": "0.35.3",
-                    "tokenizers": "0.21.4",
-                }.get(name, "1.0.0"),
+            with (
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
+                    return_value=MagicMock(),
+                ),
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
+                    side_effect=lambda name: {
+                        "vibevoice": "1.0.0",
+                        "transformers": "4.51.3",
+                        "accelerate": "1.6.0",
+                        "huggingface_hub": "0.35.3",
+                        "tokenizers": "0.21.4",
+                    }.get(name, "1.0.0"),
+                ),
             ):
                 processor = MagicMock()
                 model = MagicMock()
@@ -617,139 +633,57 @@ class TestVibeVoiceTTSAdapterInfo:
             model = MagicMock()
             model_module = MagicMock()
             model_module.VibeVoiceStreamingForConditionalGenerationInference.from_pretrained.return_value = model
-            with patch(
-                "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
-                side_effect=lambda name: installed.get(name, False),
-            ), patch(
-                "vox_microsoft.vibevoice_tts_adapter.Path.home",
-                return_value=Path("/tmp/home"),
-            ), patch(
-                "vox_microsoft.vibevoice_tts_adapter.subprocess.run",
-                side_effect=lambda *args, **kwargs: installed.update({key: True for key in installed}) or completed,
-            ) as run, patch(
-                "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
-                side_effect=lambda name: {
-                    "vibevoice": "1.0.0",
-                    "transformers": "4.51.3",
-                    "accelerate": "1.6.0",
-                    "huggingface_hub": "0.35.3",
-                    "tokenizers": "0.21.4",
-                }.get(name, "1.0.0"),
-            ), patch(
-                "vox_microsoft.vibevoice_tts_adapter._prime_runtime"
-            ), patch(
-                "vox_microsoft.vibevoice_tts_adapter.importlib.import_module",
-                side_effect=[processor_module, model_module],
+            with (
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
+                    side_effect=lambda name: installed.get(name, False),
+                ),
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter.Path.home",
+                    return_value=Path("/tmp/home"),
+                ),
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter.subprocess.run",
+                    side_effect=lambda *args, **kwargs: installed.update({key: True for key in installed}) or completed,
+                ) as run,
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
+                    side_effect=lambda name: {
+                        "vibevoice": "1.0.0",
+                        "transformers": "4.51.3",
+                        "accelerate": "1.6.0",
+                        "huggingface_hub": "0.35.3",
+                        "tokenizers": "0.21.4",
+                    }.get(name, "1.0.0"),
+                ),
+                patch("vox_microsoft.vibevoice_tts_adapter._prime_runtime"),
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter.importlib.import_module",
+                    side_effect=[processor_module, model_module],
+                ),
             ):
                 adapter = VibeVoiceTTSAdapter()
                 adapter.load("microsoft/VibeVoice-Realtime-0.5B", "cpu")
 
                 assert run.call_count == 7
-                assert any(
-                    call.args[0]
-                    == [
-                        "uv",
-                        "pip",
-                        "install",
-                        "--python",
-                        sys.executable,
-                        "--target",
-                        "/tmp/home/.vox/runtime/vibevoice",
-                        "--no-deps",
-                        "vibevoice[streamingtts] @ git+https://github.com/microsoft/VibeVoice.git@main",
-                    ]
-                    for call in run.call_args_list
-                )
-                assert any(
-                    call.args[0]
-                    == [
-                        "uv",
-                        "pip",
-                        "install",
-                        "--python",
-                        sys.executable,
-                        "--target",
-                        "/tmp/home/.vox/runtime/vibevoice",
-                        "--no-deps",
-                        "diffusers",
-                    ]
-                    for call in run.call_args_list
-                )
-                assert any(
-                    call.args[0]
-                    == [
-                        "uv",
-                        "pip",
-                        "install",
-                        "--python",
-                        sys.executable,
-                        "--target",
-                        "/tmp/home/.vox/runtime/vibevoice",
-                        "--no-deps",
-                        "pillow",
-                    ]
-                    for call in run.call_args_list
-                )
-                assert any(
-                    call.args[0]
-                    == [
-                        "uv",
-                        "pip",
-                        "install",
-                        "--python",
-                        sys.executable,
-                        "--target",
-                        "/tmp/home/.vox/runtime/vibevoice",
-                        "--no-deps",
-                        "transformers==4.51.3",
-                    ]
-                    for call in run.call_args_list
-                )
-                assert any(
-                    call.args[0]
-                    == [
-                        "uv",
-                        "pip",
-                        "install",
-                        "--python",
-                        sys.executable,
-                        "--target",
-                        "/tmp/home/.vox/runtime/vibevoice",
-                        "--no-deps",
-                        "accelerate==1.6.0",
-                    ]
-                    for call in run.call_args_list
-                )
-                assert any(
-                    call.args[0]
-                    == [
-                        "uv",
-                        "pip",
-                        "install",
-                        "--python",
-                        sys.executable,
-                        "--target",
-                        "/tmp/home/.vox/runtime/vibevoice",
-                        "--no-deps",
-                        "huggingface-hub==0.35.3",
-                    ]
-                    for call in run.call_args_list
-                )
-                assert any(
-                    call.args[0]
-                    == [
-                        "uv",
-                        "pip",
-                        "install",
-                        "--python",
-                        sys.executable,
-                        "--target",
-                        "/tmp/home/.vox/runtime/vibevoice",
-                        "--no-deps",
-                        "tokenizers==0.21.4",
-                    ]
-                    for call in run.call_args_list
-                )
+                commands = [call.args[0] for call in run.call_args_list]
+                runtime_dir = Path("/tmp/home/.vox/runtime/vibevoice")
+                for command in commands:
+                    assert command[:5] == ["uv", "pip", "install", "--python", sys.executable]
+                    assert "--target" in command
+                    install_target = Path(command[command.index("--target") + 1])
+                    assert install_target.parent == runtime_dir.parent
+                    assert install_target.name.startswith(".vibevoice.installing-")
+                    assert "--no-deps" in command
+                assert {command[-1] for command in commands} == {
+                    "vibevoice[streamingtts] @ git+https://github.com/microsoft/VibeVoice.git@main",
+                    "diffusers",
+                    "pillow",
+                    "transformers==4.51.3",
+                    "accelerate==1.6.0",
+                    "huggingface-hub==0.35.3",
+                    "tokenizers==0.21.4",
+                }
 
     def test_bootstrap_runtime_reinstalls_transformers_when_global_version_is_too_new(self):
         transformers = MagicMock()
@@ -784,35 +718,37 @@ class TestVibeVoiceTTSAdapterInfo:
                 }
                 return versions.get(name, "1.0.0")
 
-            with patch(
-                "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
-                side_effect=lambda name: installed.get(name, False),
-            ), patch(
-                "vox_microsoft.vibevoice_tts_adapter.Path.home",
-                return_value=Path("/tmp/home"),
-            ), patch(
-                "vox_microsoft.vibevoice_tts_adapter.subprocess.run",
-                side_effect=lambda *args, **kwargs: (
-                    state.__setitem__("transformers", "4.51.3"),
-                    installed.update({"diffusers": True}),
-                    completed,
-                )[-1],
-            ) as run, patch(
-                "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
-                side_effect=version_side_effect,
-            ), patch(
-                "vox_microsoft.vibevoice_tts_adapter._prime_runtime"
-            ), patch(
-                "vox_microsoft.vibevoice_tts_adapter.importlib.import_module",
-                side_effect=[processor_module, model_module],
+            with (
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
+                    side_effect=lambda name: installed.get(name, False),
+                ),
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter.Path.home",
+                    return_value=Path("/tmp/home"),
+                ),
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter.subprocess.run",
+                    side_effect=lambda *args, **kwargs: (
+                        state.__setitem__("transformers", "4.51.3"),
+                        installed.update({"diffusers": True}),
+                        completed,
+                    )[-1],
+                ) as run,
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
+                    side_effect=version_side_effect,
+                ),
+                patch("vox_microsoft.vibevoice_tts_adapter._prime_runtime"),
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter.importlib.import_module",
+                    side_effect=[processor_module, model_module],
+                ),
             ):
                 adapter = VibeVoiceTTSAdapter()
                 adapter.load("microsoft/VibeVoice-Realtime-0.5B", "cpu")
 
-                assert any(
-                    call.args[0][-1] == "transformers==4.51.3"
-                    for call in run.call_args_list
-                )
+                assert any(call.args[0][-1] == "transformers==4.51.3" for call in run.call_args_list)
 
     def test_vibevoice_accepts_newer_runtime_package_version(self):
         transformers = MagicMock()
@@ -820,20 +756,22 @@ class TestVibeVoiceTTSAdapterInfo:
         with patch.dict("sys.modules", {"transformers": transformers, "torch": torch}):
             from vox_microsoft.vibevoice_tts_adapter import VibeVoiceTTSAdapter
 
-            with patch(
-                "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
-                return_value=MagicMock(),
-            ), patch(
-                "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
-                side_effect=lambda name: {
-                    "vibevoice": "1.0.0",
-                    "transformers": "4.51.3",
-                    "accelerate": "1.6.0",
-                    "huggingface_hub": "0.35.3",
-                    "tokenizers": "0.21.4",
-                }.get(name, "1.0.0"),
-            ), patch(
-                "vox_microsoft.vibevoice_tts_adapter.importlib.import_module"
+            with (
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
+                    return_value=MagicMock(),
+                ),
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
+                    side_effect=lambda name: {
+                        "vibevoice": "1.0.0",
+                        "transformers": "4.51.3",
+                        "accelerate": "1.6.0",
+                        "huggingface_hub": "0.35.3",
+                        "tokenizers": "0.21.4",
+                    }.get(name, "1.0.0"),
+                ),
+                patch("vox_microsoft.vibevoice_tts_adapter.importlib.import_module"),
             ):
                 adapter = VibeVoiceTTSAdapter()
                 adapter.load("microsoft/VibeVoice-Realtime-0.5B", "cpu")
@@ -846,31 +784,30 @@ class TestVibeVoiceTTSAdapterInfo:
         with patch.dict("sys.modules", {"transformers": transformers, "torch": torch}):
             from vox_microsoft.vibevoice_tts_adapter import VibeVoiceTTSAdapter
 
-            with patch(
-                "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
-                return_value=MagicMock(),
-            ), patch(
-                "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
-                side_effect=lambda name: {
-                    "vibevoice": "1.0.0",
-                    "transformers": "4.51.3",
-                    "accelerate": "1.6.0",
-                    "huggingface_hub": "0.35.3",
-                    "tokenizers": "0.21.4",
-                }.get(name, "1.0.0"),
-            ), patch(
-                "vox_microsoft.vibevoice_tts_adapter.importlib.import_module"
-            ) as import_module:
+            with (
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter._runtime_has_package_path",
+                    return_value=MagicMock(),
+                ),
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter._runtime_dist_version",
+                    side_effect=lambda name: {
+                        "vibevoice": "1.0.0",
+                        "transformers": "4.51.3",
+                        "accelerate": "1.6.0",
+                        "huggingface_hub": "0.35.3",
+                        "tokenizers": "0.21.4",
+                    }.get(name, "1.0.0"),
+                ),
+                patch("vox_microsoft.vibevoice_tts_adapter.importlib.import_module") as import_module,
+            ):
                 processor = MagicMock()
                 model = MagicMock()
                 config_module = MagicMock()
                 config_module.VibeVoiceStreamingConfig = MagicMock(model_type="vibevoice_streaming")
                 runtime_model_module = MagicMock()
                 (
-                    runtime_model_module
-                    .VibeVoiceStreamingForConditionalGenerationInference
-                    .from_pretrained
-                    .return_value
+                    runtime_model_module.VibeVoiceStreamingForConditionalGenerationInference.from_pretrained.return_value
                 ) = model
                 processor_module = MagicMock()
                 processor_class = MagicMock()
@@ -992,16 +929,18 @@ class TestVibeVoiceTTSAdapterInfo:
             adapter._device = "cpu"
             prompt_path = tmp_path / "en-Carter_man.pt"
 
-            with patch.object(
-                VibeVoiceTTSAdapter,
-                "_streaming_prompt_dir",
-                return_value=tmp_path,
-            ), patch(
-                "vox_microsoft.vibevoice_tts_adapter._download_streaming_prompt"
-            ) as download, patch(
-                "vox_microsoft.vibevoice_tts_adapter.torch.load",
-                return_value={"cached": "prompt"},
-            ) as torch_load:
+            with (
+                patch.object(
+                    VibeVoiceTTSAdapter,
+                    "_streaming_prompt_dir",
+                    return_value=tmp_path,
+                ),
+                patch("vox_microsoft.vibevoice_tts_adapter._download_streaming_prompt") as download,
+                patch(
+                    "vox_microsoft.vibevoice_tts_adapter.torch.load",
+                    return_value={"cached": "prompt"},
+                ) as torch_load,
+            ):
                 prompt = adapter._load_streaming_prompt(None)
                 cached = adapter._load_streaming_prompt(None)
 
@@ -1024,15 +963,17 @@ class TestVibeVoiceTTSAdapterInfo:
             prompt_path = tmp_path / "en-Carter_man.pt"
 
             for alias in ("default", "alloy"):
-                with patch.object(
-                    VibeVoiceTTSAdapter,
-                    "_streaming_prompt_dir",
-                    return_value=tmp_path,
-                ), patch(
-                    "vox_microsoft.vibevoice_tts_adapter._download_streaming_prompt"
-                ) as download, patch(
-                    "vox_microsoft.vibevoice_tts_adapter.torch.load",
-                    return_value={"cached": "prompt"},
+                with (
+                    patch.object(
+                        VibeVoiceTTSAdapter,
+                        "_streaming_prompt_dir",
+                        return_value=tmp_path,
+                    ),
+                    patch("vox_microsoft.vibevoice_tts_adapter._download_streaming_prompt") as download,
+                    patch(
+                        "vox_microsoft.vibevoice_tts_adapter.torch.load",
+                        return_value={"cached": "prompt"},
+                    ),
                 ):
                     adapter._streaming_prompt_cache.clear()
                     adapter._load_streaming_prompt(alias)

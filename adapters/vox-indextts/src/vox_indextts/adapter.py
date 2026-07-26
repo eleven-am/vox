@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib
 import inspect
 import logging
-import shutil
 import subprocess
 import tempfile
 from collections.abc import AsyncIterator, Callable
@@ -19,6 +18,7 @@ from vox.core.adapter_runtime import (
     activate_runtime_path,
     install_target_runtime_requirements,
     purge_runtime_modules,
+    remove_target_runtime_paths,
     write_app_fallback_path,
 )
 from vox.core.adapter_runtime import (
@@ -131,33 +131,14 @@ def _apply_numpy_compatibility() -> None:
 
 def _remove_forbidden_runtime_packages() -> None:
     runtime_dir = _runtime_root()
-    for pattern in _FORBIDDEN_RUNTIME_PACKAGE_GLOBS:
-        for path in runtime_dir.glob(pattern):
-            try:
-                if path.is_dir() and not path.is_symlink():
-                    shutil.rmtree(path)
-                else:
-                    path.unlink()
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                logger.warning("Failed to remove stale IndexTTS runtime path %s: %s", path, exc)
+    paths = {path for pattern in _FORBIDDEN_RUNTIME_PACKAGE_GLOBS for path in runtime_dir.glob(pattern)}
+    remove_target_runtime_paths(runtime_dir, paths)
 
 
 def _remove_stale_runtime_repair_targets() -> None:
     runtime_dir = _runtime_root()
-    for pattern in _STALE_RUNTIME_REPAIR_GLOBS:
-        for path in runtime_dir.glob(pattern):
-            try:
-                if path.is_dir() and not path.is_symlink():
-                    shutil.rmtree(path)
-                else:
-                    path.unlink()
-                logger.info("Removed stale IndexTTS runtime path before repair: %s", path.name)
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                logger.warning("Failed to remove stale IndexTTS runtime path %s: %s", path, exc)
+    paths = {path for pattern in _STALE_RUNTIME_REPAIR_GLOBS for path in runtime_dir.glob(pattern)}
+    remove_target_runtime_paths(runtime_dir, paths)
 
 
 def _run_install_command(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
@@ -190,17 +171,19 @@ def _install_indextts_runtime() -> None:
 
 
 def _clear_indextts_modules() -> None:
-    purge_runtime_modules((
-        "indextts",
-        "audiotools",
-        "transformers",
-        "tokenizers",
-        "accelerate",
-        "modelscope",
-        "tensorboard",
-        "torch.utils.tensorboard",
-        "google",
-    ))
+    purge_runtime_modules(
+        (
+            "indextts",
+            "audiotools",
+            "transformers",
+            "tokenizers",
+            "accelerate",
+            "modelscope",
+            "tensorboard",
+            "torch.utils.tensorboard",
+            "google",
+        )
+    )
 
 
 def _indextts_class_from_runtime() -> type[Any] | None:
@@ -378,29 +361,35 @@ def _construct_model(cls: type[Any], model_path: Path, device: str) -> Any:
     cfg_candidates = _candidate_model_configs(model_path)
     attempts: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     for cfg_path in cfg_candidates:
-        attempts.append((
-            (),
-            {
-                "cfg_path": str(cfg_path),
-                "model_dir": str(model_path),
-                "device": device,
-                "use_fp16": device == "cuda",
-                "use_cuda_kernel": False,
-                "use_deepspeed": False,
-            },
-        ))
-        attempts.append((
-            (),
-            {
-                "cfg_path": str(cfg_path),
-                "model_dir": str(model_path),
-                "device": device,
-            },
-        ))
-        attempts.append((
-            (str(cfg_path), str(model_path)),
-            {"device": device},
-        ))
+        attempts.append(
+            (
+                (),
+                {
+                    "cfg_path": str(cfg_path),
+                    "model_dir": str(model_path),
+                    "device": device,
+                    "use_fp16": device == "cuda",
+                    "use_cuda_kernel": False,
+                    "use_deepspeed": False,
+                },
+            )
+        )
+        attempts.append(
+            (
+                (),
+                {
+                    "cfg_path": str(cfg_path),
+                    "model_dir": str(model_path),
+                    "device": device,
+                },
+            )
+        )
+        attempts.append(
+            (
+                (str(cfg_path), str(model_path)),
+                {"device": device},
+            )
+        )
     attempts.extend(
         (
             ((), {"model_dir": str(model_path), "device": device}),
@@ -428,8 +417,7 @@ def _emotion_vector_from_params(params: dict[str, Any] | None) -> list[float] | 
     total = sum(vector)
     if total > _EMOTION_VECTOR_MAX_SUM:
         raise InvalidConfigError(
-            "IndexTTS emotion_* parameters must sum to "
-            f"{_EMOTION_VECTOR_MAX_SUM} or less; got {total:.3f}"
+            f"IndexTTS emotion_* parameters must sum to {_EMOTION_VECTOR_MAX_SUM} or less; got {total:.3f}"
         )
     return vector
 
@@ -744,7 +732,7 @@ class IndexTTSAdapter(TTSAdapter):
         chunk_size = sample_rate * 2
         for i in range(0, len(audio), chunk_size):
             yield SynthesizeChunk(
-                audio=audio[i:i + chunk_size].tobytes(),
+                audio=audio[i : i + chunk_size].tobytes(),
                 sample_rate=sample_rate,
                 is_final=False,
             )

@@ -7,6 +7,9 @@ router = APIRouter()
 
 
 @router.get("/v1/health")
+@router.get("/health")
+@router.get("/healthz")
+@router.get("/readyz")
 async def health():
     result = system_operations.get_health_status(
         request=system_operations.health_status_request_from_fields(),

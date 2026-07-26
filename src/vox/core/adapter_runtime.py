@@ -15,11 +15,20 @@ import subprocess
 import sys
 import sysconfig
 import threading
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from importlib.machinery import EXTENSION_SUFFIXES
 from importlib.util import find_spec
 from pathlib import Path
+
+from vox.core.atomic_install import (
+    DirectorySwap,
+    merge_missing_tree,
+    publish_staged_directory,
+    staged_directory,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +37,68 @@ ModuleProbe = Callable[[str], bool]
 InstallerName = str
 
 _ADAPTER_RUNTIME_LOCK = threading.RLock()
+_ADAPTER_RUNTIME_STAGED_LOCK = threading.Lock()
+
+
+class RuntimeMutation:
+    def __init__(self, *, release: Callable[[], None] | None = None) -> None:
+        self._swaps: list[DirectorySwap] = []
+        self._finished = False
+        self._release = release
+
+    def add(self, swap: DirectorySwap) -> None:
+        if self._finished:
+            raise RuntimeError("runtime mutation is already finished")
+        self._swaps.append(swap)
+
+    def commit(self) -> None:
+        with _ADAPTER_RUNTIME_LOCK:
+            if self._finished:
+                return
+            try:
+                for swap in self._swaps:
+                    swap.commit()
+            finally:
+                self._finish()
+
+    def rollback(self) -> None:
+        with _ADAPTER_RUNTIME_LOCK:
+            if self._finished:
+                return
+            errors: list[Exception] = []
+            for swap in reversed(self._swaps):
+                try:
+                    swap.rollback()
+                except Exception as exc:
+                    errors.append(exc)
+            self._finish()
+            if errors:
+                raise ExceptionGroup("runtime mutation rollback failed", errors)
+
+    def _finish(self) -> None:
+        self._swaps.clear()
+        self._finished = True
+        release = self._release
+        self._release = None
+        if release is not None:
+            release()
+
+
+_ADAPTER_RUNTIME_TRANSACTION: ContextVar[RuntimeMutation | None] = ContextVar(
+    "vox_adapter_runtime_transaction",
+    default=None,
+)
+
+
+@contextmanager
+def bind_runtime_mutation(
+    mutation: RuntimeMutation | None,
+) -> Iterator[None]:
+    token = _ADAPTER_RUNTIME_TRANSACTION.set(mutation)
+    try:
+        yield
+    finally:
+        _ADAPTER_RUNTIME_TRANSACTION.reset(token)
 
 
 @dataclass(frozen=True)
@@ -39,8 +110,46 @@ class TargetRuntime:
 def run_with_adapter_runtime_lock(operation: Callable[..., object], /, *args: object, **kwargs: object) -> object:
     """Run one dependency-graph mutation without racing another adapter lifecycle."""
 
-    with _ADAPTER_RUNTIME_LOCK:
+    current = _ADAPTER_RUNTIME_TRANSACTION.get()
+    if current is not None:
         return operation(*args, **kwargs)
+
+    with _ADAPTER_RUNTIME_STAGED_LOCK, _ADAPTER_RUNTIME_LOCK:
+        transaction = RuntimeMutation()
+        token = _ADAPTER_RUNTIME_TRANSACTION.set(transaction)
+        try:
+            result = operation(*args, **kwargs)
+        except BaseException:
+            transaction.rollback()
+            raise
+        else:
+            transaction.commit()
+            return result
+        finally:
+            _ADAPTER_RUNTIME_TRANSACTION.reset(token)
+
+
+def stage_adapter_runtime_mutation(
+    operation: Callable[..., object],
+    /,
+    *args: object,
+    **kwargs: object,
+) -> RuntimeMutation:
+    if _ADAPTER_RUNTIME_TRANSACTION.get() is not None:
+        raise RuntimeError("cannot stage a nested runtime mutation")
+    _ADAPTER_RUNTIME_STAGED_LOCK.acquire()
+    transaction = RuntimeMutation(release=_ADAPTER_RUNTIME_STAGED_LOCK.release)
+    try:
+        with _ADAPTER_RUNTIME_LOCK:
+            token = _ADAPTER_RUNTIME_TRANSACTION.set(transaction)
+            try:
+                operation(*args, **kwargs)
+            finally:
+                _ADAPTER_RUNTIME_TRANSACTION.reset(token)
+    except BaseException:
+        transaction.rollback()
+        raise
+    return transaction
 
 
 def vox_home() -> Path:
@@ -166,10 +275,7 @@ def ensure_pip_available(*, context: str = "adapter runtime") -> None:
         timeout=300,
     )
     if result.returncode != 0:
-        raise RuntimeError(
-            f"Failed to bootstrap pip for {context}. "
-            f"stderr: {result.stderr.strip()}"
-        )
+        raise RuntimeError(f"Failed to bootstrap pip for {context}. stderr: {result.stderr.strip()}")
 
 
 def write_app_fallback_path(runtime_dir: Path) -> None:
@@ -205,11 +311,6 @@ def ensure_target_runtime(
 
     runtime_root_path = root or runtime_root(home=home)
     runtime = target_runtime(runtime_name, home=home, root=runtime_root_path)
-    runtime.path.mkdir(parents=True, exist_ok=True)
-    activate_runtime_path(runtime.path, root=runtime_root_path)
-
-    if include_app_fallback:
-        write_app_fallback_path(runtime.path)
 
     probe = module_probe or (
         lambda name: module_available_in_runtime(
@@ -218,7 +319,11 @@ def ensure_target_runtime(
             include_app_fallback=include_app_fallback,
         )
     )
+    if runtime.path.is_dir():
+        activate_runtime_path(runtime.path, root=runtime_root_path)
     if probe(import_name):
+        if include_app_fallback:
+            write_app_fallback_path(runtime.path)
         return runtime.path
 
     if purge_modules:
@@ -236,12 +341,12 @@ def ensure_target_runtime(
         context=install_context,
     ):
         activate_runtime_path(runtime.path, root=runtime_root_path)
+        if include_app_fallback:
+            write_app_fallback_path(runtime.path)
         if probe(import_name):
             return runtime.path
 
-    raise RuntimeError(
-        f"{runtime_name} runtime package is missing and could not be bootstrapped: {package_spec}"
-    )
+    raise RuntimeError(f"{runtime_name} runtime package is missing and could not be bootstrapped: {package_spec}")
 
 
 def install_target_runtime_requirements(
@@ -259,51 +364,129 @@ def install_target_runtime_requirements(
 ) -> bool:
     """Install requirement specs into an adapter ``--target`` runtime path."""
 
-    path = str(Path(runtime_path))
+    target = Path(runtime_path)
     packages = list(requirements)
     runner = install_runner or _default_install_runner
 
-    for installer in _install_commands(
-        runtime_path=path,
-        packages=packages,
-        no_deps=no_deps,
-        upgrade=upgrade,
-        installer_order=installer_order,
-        extra_install_args=list(extra_install_args),
-    ):
-        try:
-            if _is_python_pip_command(installer):
-                ensure_pip_available(context=context)
-            result = runner(installer, timeout)
-        except (FileNotFoundError, subprocess.TimeoutExpired, RuntimeError) as exc:
-            logger.warning("Installer %s unavailable for %s: %s", installer[0], context, exc)
-            continue
-
-        if result.returncode == 0:
-            if _install_result_has_expected_paths(
-                runtime_path=runtime_path,
+    for installer_name in installer_order:
+        with staged_directory(target) as stage:
+            installer = _install_commands(
+                runtime_path=str(stage),
                 packages=packages,
-                expected_paths=expected_paths,
-            ):
-                return True
-            continue
+                no_deps=no_deps,
+                upgrade=upgrade,
+                installer_order=(installer_name,),
+                extra_install_args=list(extra_install_args),
+            )[0]
+            try:
+                if _is_python_pip_command(installer):
+                    ensure_pip_available(context=context)
+                result = runner(installer, timeout)
+            except (FileNotFoundError, subprocess.TimeoutExpired, RuntimeError) as exc:
+                logger.warning("Installer %s unavailable for %s: %s", installer[0], context, exc)
+                continue
 
-        if _is_python_pip_command(installer):
-            retry = runner(installer, timeout)
-            if retry.returncode == 0:
+            if result.returncode != 0 and _is_python_pip_command(installer):
+                result = runner(installer, timeout)
+
+            if result.returncode == 0:
+                staged_expected = _map_expected_paths_to_stage(
+                    target,
+                    stage,
+                    expected_paths,
+                )
                 if _install_result_has_expected_paths(
-                    runtime_path=runtime_path,
+                    runtime_path=stage,
                     packages=packages,
-                    expected_paths=expected_paths,
+                    expected_paths=staged_expected,
                 ):
+                    _publish_runtime_stage(
+                        stage,
+                        target,
+                        preserve_existing=True,
+                    )
                     return True
                 continue
-            logger.warning("%s failed: %s", " ".join(installer), retry.stderr)
-            continue
 
-        logger.warning("%s failed: %s", " ".join(installer), result.stderr)
+            logger.warning("%s failed: %s", " ".join(installer), result.stderr)
 
     return False
+
+
+def remove_target_runtime_paths(
+    runtime_path: Path | str,
+    paths: Iterable[Path | str],
+) -> bool:
+    target = Path(runtime_path)
+    if not target.is_dir():
+        return False
+
+    excluded: list[Path] = []
+    for item in paths:
+        path = Path(item)
+        try:
+            relative = path.relative_to(target)
+        except ValueError as exc:
+            raise ValueError(f"Runtime removal path is outside {target}: {path}") from exc
+        if relative == Path("."):
+            raise ValueError(f"Runtime removal path cannot be the runtime root: {target}")
+        if path.exists() or path.is_symlink():
+            excluded.append(relative)
+    if not excluded:
+        return False
+
+    with staged_directory(target) as stage:
+        merge_missing_tree(target, stage, excluded=excluded)
+        _publish_runtime_stage(stage, target, preserve_existing=False)
+    return True
+
+
+@contextmanager
+def staged_target_runtime(
+    runtime_path: Path | str,
+    *,
+    preserve_existing: bool = False,
+) -> Iterator[Path]:
+    target = Path(runtime_path)
+    with staged_directory(target) as stage:
+        if preserve_existing and target.is_dir():
+            merge_missing_tree(target, stage)
+        yield stage
+        _publish_runtime_stage(stage, target, preserve_existing=False)
+
+
+def _publish_runtime_stage(
+    stage: Path,
+    target: Path,
+    *,
+    preserve_existing: bool,
+) -> None:
+    transaction = _ADAPTER_RUNTIME_TRANSACTION.get()
+    swap = publish_staged_directory(
+        stage,
+        target,
+        preserve_existing=preserve_existing,
+        retain_backup=transaction is not None,
+    )
+    if transaction is not None:
+        transaction.add(swap)
+
+
+def _map_expected_paths_to_stage(
+    target: Path,
+    stage: Path,
+    expected_paths: Iterable[Path],
+) -> tuple[Path, ...]:
+    mapped: list[Path] = []
+    for expected in expected_paths:
+        path = Path(expected)
+        try:
+            relative = path.relative_to(target)
+        except ValueError:
+            mapped.append(path)
+        else:
+            mapped.append(stage / relative)
+    return tuple(mapped)
 
 
 def _install_result_has_expected_paths(

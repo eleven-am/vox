@@ -14,6 +14,7 @@ from vox.operations.transcription import (
 )
 from vox.server.app_services import app_services
 from vox.server.operation_errors import map_route_errors_to_http
+from vox.server.uploads import read_upload_limited
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -32,7 +33,10 @@ async def _run_transcribe(
 ):
     services = app_services(request)
 
-    data = await file.read()
+    data = await read_upload_limited(
+        file,
+        max_bytes=getattr(request.app.state, "max_upload_bytes", None),
+    )
     with map_route_errors_to_http(
         logger=logger,
         unexpected_detail="Internal transcription error",
@@ -86,8 +90,13 @@ async def openai_transcribe(
     verbose = response_format == "verbose_json"
     granularities = await _timestamp_granularities(request) if verbose else set()
     bundle = await _run_transcribe(
-        request=request, file=file, model=model, language=language,
-        word_timestamps="word" in granularities, temperature=temperature, annotate_text=verbose,
+        request=request,
+        file=file,
+        model=model,
+        language=language,
+        word_timestamps="word" in granularities,
+        temperature=temperature,
+        annotate_text=verbose,
         speech_context=speech_context,
     )
     response = openai_transcription_response(

@@ -22,12 +22,12 @@ evidence.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
+from enum import Enum, auto
 from functools import partial
 from typing import Any
 
@@ -213,10 +213,29 @@ _TTS_STREAM_EVENT_TYPES = frozenset(
 )
 
 
+class _SessionCommandState(Enum):
+    QUEUED = auto()
+    RUNNING = auto()
+    ABANDONED = auto()
+
+
 @dataclass
 class _SessionCommand:
     operation: Callable[[], Awaitable[Any]]
     done: asyncio.Future
+    state: _SessionCommandState = _SessionCommandState.QUEUED
+
+    def claim(self) -> bool:
+        if self.state is not _SessionCommandState.QUEUED:
+            return False
+        self.state = _SessionCommandState.RUNNING
+        return True
+
+    def abandon(self) -> bool:
+        if self.state is not _SessionCommandState.QUEUED:
+            return False
+        self.state = _SessionCommandState.ABANDONED
+        return True
 
 
 class ConversationSession:
@@ -279,11 +298,14 @@ class ConversationSession:
         self._timer_registry = ConversationTimerRegistry(self._on_timer_expired)
         self._interrupt_timer_candidate_id: int | None = None
         self._tts_task: asyncio.Task | None = None
+        self._owned_tts_tasks: set[asyncio.Task] = set()
         self._tts_reaper_tasks: set[asyncio.Task] = set()
         self._runner: asyncio.Task | None = None
         self._audio_output = ResponseAudioOutput(pace_to_playout=config.pace_response_done_to_audio)
         self._response_lifecycle = ConversationResponseLifecycle()
         self._closed: bool = False
+        self._closing: bool = False
+        self._close_task: asyncio.Task[None] | None = None
         self._client_sample_rate: int = config.sample_rate
         self._input_resampler = StreamResampler(TARGET_SAMPLE_RATE)
 
@@ -307,22 +329,42 @@ class ConversationSession:
             self._runner = asyncio.create_task(self._run_loop())
 
     async def close(self) -> None:
-        if self._closed:
-            return
+        if self._close_task is None:
+            self._closing = True
+            self._close_task = asyncio.create_task(self._close_once())
+        task = self._close_task
+        await asyncio.shield(task)
+
+    async def _close_once(self) -> None:
+        await self._submit_command(self._terminalize_active_response_for_close)
         self._closed = True
 
         self._timer_registry.cancel_all()
 
-        await reap_task(self._tts_task)
+        tts_task = self._tts_task
+        if tts_task is not None:
+            self._own_tts_task(tts_task)
+        await reap_task(tts_task)
         if self._tts_reaper_tasks:
             await asyncio.gather(*tuple(self._tts_reaper_tasks), return_exceptions=True)
         await reap_task(self._runner)
+        tts_task = self._tts_task
+        if tts_task is not None and not tts_task.done():
+            self._own_tts_task(tts_task)
+            tts_task.cancel()
+        while self._owned_tts_tasks:
+            await asyncio.gather(*tuple(self._owned_tts_tasks), return_exceptions=True)
 
         self._awaiting_final_transcript = False
         self._awaiting_final_transcript_started_at = 0.0
         self._transcript_finalizer.clear()
-        self._pipeline.shutdown()
+        await self._pipeline.shutdown()
         self._interrupt_detector.reset()
+
+    async def _terminalize_active_response_for_close(self) -> None:
+        stream = self._response_lifecycle.stream
+        if stream is not None:
+            self._response_lifecycle.terminalize(stream, "cancelled")
 
     async def wait_until_settled(self, *, poll_interval_s: float = 0.01) -> None:
         """Drain timers, queued actions, and any in-flight TTS after client EOF.
@@ -345,7 +387,7 @@ class ConversationSession:
 
     async def ingest_audio(self, pcm16: bytes, sample_rate: int | None = None) -> None:
         """Feed a raw PCM16 audio chunk from the client."""
-        if self._closed or not pcm16:
+        if self._closed or self._closing or not pcm16:
             return
 
         source_rate = sample_rate or self._config.sample_rate
@@ -406,7 +448,7 @@ class ConversationSession:
 
     async def submit_response_text(self, text: str, *, allow_interruptions: bool = True) -> None:
         """Agent delivers the reply text; session kicks off TTS."""
-        if self._closed:
+        if self._closed or self._closing:
             return
         await self.append_response_text(text, allow_interruptions=allow_interruptions)
         await self.commit_response_stream()
@@ -430,7 +472,7 @@ class ConversationSession:
         generation_id: str | None = None,
         output: ResponseOutputConfig | None = None,
     ) -> ResponseStartResult:
-        if self._closed:
+        if self._closed or self._closing:
             return ResponseStartResult(
                 context=self._response_start_context(),
                 rejection=ResponseStartRejection(
@@ -455,7 +497,7 @@ class ConversationSession:
         allow_interruptions: bool = True,
         expected_response_id: str | None = None,
     ) -> AppendResult:
-        if self._closed:
+        if self._closed or self._closing:
             return AppendResult.SESSION_CLOSED
         if expected_response_id is None and not text.strip():
             return AppendResult.NO_ACTIVE_RESPONSE
@@ -480,7 +522,7 @@ class ConversationSession:
         allow_interruptions: bool,
         expected_response_id: str | None,
     ) -> ResponseStream | AppendResult:
-        if self._closed:
+        if self._closed or self._closing:
             return AppendResult.SESSION_CLOSED
         if expected_response_id is None:
             result = await self._attempt_response_start(allow_interruptions=allow_interruptions)
@@ -497,7 +539,7 @@ class ConversationSession:
         return self._response_lifecycle.appendable_stream(expected_response_id)
 
     async def commit_response_stream(self, *, expected_response_id: str | None = None) -> AppendResult:
-        if self._closed:
+        if self._closed or self._closing:
             return AppendResult.SESSION_CLOSED
         admitted = await self._submit_command(
             partial(self._admit_response_commit, expected_response_id=expected_response_id)
@@ -509,7 +551,7 @@ class ConversationSession:
         return await admitted.enqueue_end()
 
     async def _admit_response_commit(self, *, expected_response_id: str | None) -> ResponseStream | AppendResult:
-        if self._closed:
+        if self._closed or self._closing:
             return AppendResult.SESSION_CLOSED
         stream = self._response_lifecycle.stream
         if stream is None:
@@ -529,9 +571,16 @@ class ConversationSession:
             return await operation()
         loop = asyncio.get_running_loop()
         done: asyncio.Future = loop.create_future()
-        await self._event_queue.put(_SessionCommand(operation=operation, done=done))
-        completed, _ = await asyncio.wait({done, runner}, return_when=asyncio.FIRST_COMPLETED)
+        command = _SessionCommand(operation=operation, done=done)
+        try:
+            await self._event_queue.put(command)
+            completed, _ = await asyncio.wait({done, runner}, return_when=asyncio.FIRST_COMPLETED)
+        except asyncio.CancelledError:
+            command.abandon()
+            done.cancel()
+            raise
         if done not in completed:
+            command.abandon()
             done.cancel()
             return default
         return done.result()
@@ -539,7 +588,7 @@ class ConversationSession:
     async def cancel_response(self) -> None:
         """Explicit client cancel — orthogonal to barge-in."""
         runner = self._runner
-        if self._closed or runner is None or runner.done():
+        if self._closed or self._closing or runner is None or runner.done():
             return
         if asyncio.current_task() is runner:
             await self._process_turn_event(TurnEvent(type=TurnEventType.CLIENT_CANCEL, payload={}))
@@ -665,6 +714,8 @@ class ConversationSession:
         self._resolve_event_future(done, result=accepted)
 
     async def _run_session_command(self, command: _SessionCommand) -> None:
+        if not command.claim():
+            return
         try:
             result = await command.operation()
         except Exception as exc:
@@ -703,10 +754,23 @@ class ConversationSession:
     def _release_tts_task(self, task: asyncio.Task | None) -> None:
         if task is None:
             return
+        self._own_tts_task(task)
         task.cancel()
         reaper = asyncio.create_task(reap_task(task))
         self._tts_reaper_tasks.add(reaper)
         reaper.add_done_callback(self._tts_reaper_tasks.discard)
+
+    def _own_tts_task(self, task: asyncio.Task) -> None:
+        if task in self._owned_tts_tasks:
+            return
+        self._owned_tts_tasks.add(task)
+        task.add_done_callback(self._release_owned_tts_task)
+
+    def _release_owned_tts_task(self, task: asyncio.Task) -> None:
+        self._owned_tts_tasks.discard(task)
+        if not task.cancelled():
+            with suppress(Exception):
+                task.exception()
 
     async def _recover_from_action_failure(self, failed_action: TurnAction) -> None:
         stream = self._response_lifecycle.stream
@@ -743,6 +807,9 @@ class ConversationSession:
         if self._is_response_uninterruptible():
             return
         if isinstance(stream_event, SpeechStarted):
+            if self._sm.state is TurnState.LISTENING:
+                self._endpoint_pause_history.record_since(self._last_speech_stopped_at)
+            self._last_speech_stopped_at = None
             self._input_speech_active = True
             if self._speech_session is not None:
                 self._speech_session.start_speech(stream_event.utterance_id)
@@ -902,7 +969,6 @@ class ConversationSession:
             self._last_eou_probability = (
                 float(stream_event.eou_probability) if stream_event.eou_probability is not None else None
             )
-            self._endpoint_pause_history.record_since(self._last_speech_stopped_at)
             eou_threshold = EOUConfig().threshold
             finalization_decision = transcript_finalization.final_transcript_decision(
                 stream_event,
@@ -944,7 +1010,14 @@ class ConversationSession:
         context = self._response_start_context()
         existing = self._response_lifecycle.open_uncommitted_stream()
         if existing is not None:
-            return ResponseStartResult(context=context, response_id=existing.response_id)
+            if existing.generation_id == generation_id:
+                return ResponseStartResult(context=context, response_id=existing.response_id)
+            rejection = ResponseStartRejection(
+                message="response already in flight",
+                code=ERROR_CODE_RESPONSE_ALREADY_ACTIVE,
+                generation_id=generation_id,
+            )
+            return ResponseStartResult(context=context, rejection=rejection)
         if self._tts_task and not self._tts_task.done():
             rejection = ResponseStartRejection(
                 message="response already in flight",
@@ -975,6 +1048,7 @@ class ConversationSession:
         await self._event_queue.put(TurnEvent(type=TurnEventType.RESPONSE_STARTED))
         await self._emit_response_created(stream)
         self._tts_task = asyncio.create_task(self._run_response_stream(stream))
+        self._own_tts_task(self._tts_task)
         return ResponseStartResult(context=context, response_id=stream.response_id)
 
     def _response_start_context(self) -> ResponseStartContext:
@@ -1174,7 +1248,7 @@ class ConversationSession:
 
     def observe_output_playout(self, pcm16_audio: bytes, sample_rate: int) -> None:
         """Record audio after the transport has paced it for actual playout."""
-        if self._closed or not pcm16_audio:
+        if self._closed or self._closing or not pcm16_audio:
             return
         self._mark_output_playout_started()
         self._audio_history.remember_output_pcm16(pcm16_audio, sample_rate)
@@ -1368,10 +1442,15 @@ class ConversationSession:
             context_payload = payload.get("speech_context")
             if isinstance(context_payload, dict):
                 logger.info(
-                    "conversation speech context emitted chunks=%d audio_ms=%d payload=%s",
+                    "conversation speech context emitted chunks=%d audio_ms=%d status=%s "
+                    "emotions=%d vocal=%d sounds=%d unavailable=%d",
                     len(audio),
                     sum(chunk.duration_ms for chunk in audio),
-                    json.dumps(context_payload, separators=(",", ":"), sort_keys=True),
+                    context_payload.get("status"),
+                    len(context_payload.get("emotions") or ()),
+                    len(context_payload.get("vocal") or ()),
+                    len(context_payload.get("sounds") or ()),
+                    len(context_payload.get("unavailable") or ()),
                 )
         self._transcript_finalizer.log(payload)
         await self._emit(payload)
@@ -1437,10 +1516,10 @@ class ConversationSession:
         reason: str,
     ) -> None:
         logger.info(
-            "interruption confirmed reason=%s vad_active_ms=%d transcript=%r",
+            "interruption confirmed reason=%s vad_active_ms=%d transcript_chars=%d",
             reason,
             vad_active_ms,
-            partial_transcript,
+            len(partial_transcript or ""),
         )
         await self._emit(
             self._interruption_event_payload(
@@ -1459,10 +1538,10 @@ class ConversationSession:
         reason: str,
     ) -> None:
         logger.info(
-            "interruption rejected reason=%s vad_active_ms=%d transcript=%r",
+            "interruption rejected reason=%s vad_active_ms=%d transcript_chars=%d",
             reason,
             vad_active_ms,
-            partial_transcript,
+            len(partial_transcript or ""),
         )
         await self._emit(
             self._interruption_event_payload(
@@ -1503,6 +1582,15 @@ class ConversationSession:
         resume_on_reject: bool,
     ) -> None:
         if decision.action is InterruptionDecisionAction.DEFER:
+            return
+        if decision.action is InterruptionDecisionAction.PROVISIONAL_REJECT:
+            if resume_on_reject:
+                await self._event_queue.put(
+                    TurnEvent(
+                        type=TurnEventType.SPEECH_STOPPED,
+                        payload={"reason": decision.reason},
+                    )
+                )
             return
 
         await self._cancel_timer(TimerKey.CONFIRM_INTERRUPT.value)

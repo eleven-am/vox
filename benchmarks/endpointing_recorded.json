@@ -1,0 +1,141 @@
+{
+  "sources": [
+    {
+      "file": "speech-context-20260722T070950Z.wav",
+      "sha256": "9e0e5b1c11f852058a2fd9c26c5d22e084415e028472283741b4fdf9be1b2e83",
+      "audio": {
+        "channels": 1,
+        "sample_rate_hz": 16000,
+        "sample_width_bytes": 2,
+        "frame_count": 214101,
+        "duration_ms": 13381
+      },
+      "processing_ms": 181
+    },
+    {
+      "file": "speech-context-20260722T071015Z.wav",
+      "sha256": "bbf6846a64d41cf342ae0b050ae8b71de589d5fcf97d244ceefd1e8802d2650d",
+      "audio": {
+        "channels": 1,
+        "sample_rate_hz": 16000,
+        "sample_width_bytes": 2,
+        "frame_count": 105045,
+        "duration_ms": 6565
+      },
+      "processing_ms": 120
+    },
+    {
+      "file": "speech-context-20260722T071034Z.wav",
+      "sha256": "8010d3334393ac3e7717c26744b92d132d7b0f141e21466c231968753470102e",
+      "audio": {
+        "channels": 1,
+        "sample_rate_hz": 16000,
+        "sample_width_bytes": 2,
+        "frame_count": 221568,
+        "duration_ms": 13848
+      },
+      "processing_ms": 168
+    },
+    {
+      "file": "speech-context-20260723T123046Z.wav",
+      "sha256": "d0dcf15e5a4cf273c62412934cf75831e5e6538662d0d1bbbe9563fe1e4ccde3",
+      "audio": {
+        "channels": 1,
+        "sample_rate_hz": 16000,
+        "sample_width_bytes": 2,
+        "frame_count": 184661,
+        "duration_ms": 11541
+      },
+      "processing_ms": 155
+    },
+    {
+      "file": "speech-context-20260723T124127Z.wav",
+      "sha256": "50ffd628c464851713f82ceaaad2d5d088b61c5279560e1c45469c576948578b",
+      "audio": {
+        "channels": 1,
+        "sample_rate_hz": 16000,
+        "sample_width_bytes": 2,
+        "frame_count": 84949,
+        "duration_ms": 5309
+      },
+      "processing_ms": 121
+    }
+  ],
+  "continuations": [
+    {
+      "source": "speech-context-20260722T070950Z.wav",
+      "transcript": "What?",
+      "eou_probability": 0.751510,
+      "pause_ms": 1280
+    },
+    {
+      "source": "speech-context-20260722T070950Z.wav",
+      "transcript": "What? Okay.",
+      "eou_probability": 0.465595,
+      "pause_ms": 2240
+    },
+    {
+      "source": "speech-context-20260722T070950Z.wav",
+      "transcript": "What? Okay. I'm tired.",
+      "eou_probability": 0.246819,
+      "pause_ms": 960
+    },
+    {
+      "source": "speech-context-20260722T071015Z.wav",
+      "transcript": "Yay, this is actually fun.",
+      "eou_probability": 0.223081,
+      "pause_ms": 1040
+    },
+    {
+      "source": "speech-context-20260722T071034Z.wav",
+      "transcript": "What? You gotta be kidding me. Are you telling me that now?",
+      "eou_probability": 0.722905,
+      "pause_ms": 560
+    },
+    {
+      "source": "speech-context-20260722T071034Z.wav",
+      "transcript": "What? You gotta be kidding me. Are you telling me that now? The fuck is wrong with you?",
+      "eou_probability": 0.744735,
+      "pause_ms": 2400
+    },
+    {
+      "source": "speech-context-20260722T071034Z.wav",
+      "transcript": "What? You gotta be kidding me. Are you telling me that now? The fuck is wrong with you? Man.",
+      "eou_probability": 0.386789,
+      "pause_ms": 1120
+    },
+    {
+      "source": "speech-context-20260723T124127Z.wav",
+      "transcript": "Whoa, the hell? Are you serious?",
+      "eou_probability": 0.614594,
+      "pause_ms": 800
+    }
+  ],
+  "terminals": [
+    {
+      "source": "speech-context-20260722T070950Z.wav",
+      "transcript": "What? Okay. I'm tired. Just do what you want again. I I I don't know.",
+      "eou_probability": 0.242757
+    },
+    {
+      "source": "speech-context-20260722T071015Z.wav",
+      "transcript": "Yay, this is actually fun. Wow, thank you.",
+      "eou_probability": 0.688599
+    },
+    {
+      "source": "speech-context-20260722T071034Z.wav",
+      "transcript": "What? You gotta be kidding me. Are you telling me that now? The fuck is wrong with you? Man. What do I tell you now?",
+      "eou_probability": 0.663940
+    },
+    {
+      "source": "speech-context-20260723T123046Z.wav",
+      "transcript": "Oh my God, I don't know what you want from me.",
+      "eou_probability": 0.184959
+    },
+    {
+      "source": "speech-context-20260723T124127Z.wav",
+      "transcript": "Whoa, the hell? Are you serious? The fuck?",
+      "eou_probability": 0.584554
+    }
+  ]
+}

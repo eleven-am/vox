@@ -195,7 +195,10 @@ class StreamPipeline:
         self._eou_failure_streak = 0
         self._eou_disabled = False
         self._session_config: StreamSessionConfig | None = None
-        self._executor = ThreadPoolExecutor(max_workers=self._config.stt_workers, thread_name_prefix="stt")
+        self._executor: ThreadPoolExecutor | None = ThreadPoolExecutor(
+            max_workers=self._config.stt_workers,
+            thread_name_prefix="stt",
+        )
 
     def configure(self, config: StreamSessionConfig) -> None:
         self._session_config = config
@@ -225,7 +228,10 @@ class StreamPipeline:
 
     async def process_audio(self, audio: NDArray[np.float32]) -> AsyncIterator[StreamEvent]:
         loop = asyncio.get_running_loop()
-        event, segment = await loop.run_in_executor(self._executor, self._vad.append, audio)
+        executor = self._executor
+        if executor is None:
+            raise RuntimeError("stream pipeline is shut down")
+        event, segment = await loop.run_in_executor(executor, self._vad.append, audio)
 
         if isinstance(event, SpeechStarted):
             yield event
@@ -597,5 +603,9 @@ class StreamPipeline:
         self._pending_user_audio = np.array([], dtype=np.float32)
         self._low_eou_streak = 0
 
-    def shutdown(self) -> None:
-        self._executor.shutdown(wait=True)
+    async def shutdown(self) -> None:
+        executor = self._executor
+        if executor is None:
+            return
+        self._executor = None
+        await asyncio.to_thread(executor.shutdown, wait=True, cancel_futures=True)

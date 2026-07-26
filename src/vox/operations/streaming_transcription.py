@@ -333,7 +333,7 @@ class StreamingTranscriptionSession(StreamingOperationErrorReporter):
             with suppress(Exception):
                 self._pipeline.reset()
             with suppress(Exception):
-                self._pipeline.shutdown()
+                await self._pipeline.shutdown()
 
     async def events(self) -> AsyncIterator[SessionEvent]:
         while True:

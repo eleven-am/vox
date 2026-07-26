@@ -5,7 +5,6 @@ import importlib.util
 import inspect
 import logging
 import random
-import shutil
 import subprocess
 import tempfile
 from collections.abc import AsyncIterator, Iterator
@@ -22,6 +21,7 @@ from vox.core.adapter_runtime import (
     activate_runtime_path,
     install_target_runtime_requirements,
     purge_runtime_modules,
+    remove_target_runtime_paths,
 )
 from vox.core.adapter_runtime import (
     runtime_root as vox_runtime_root,
@@ -96,8 +96,7 @@ def _call_accepts_keyword(call: Any, name: str) -> bool:
     except (TypeError, ValueError):
         return False
     return name in signature.parameters or any(
-        parameter.kind is inspect.Parameter.VAR_KEYWORD
-        for parameter in signature.parameters.values()
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in signature.parameters.values()
     )
 
 
@@ -106,20 +105,14 @@ def _purge_chatterbox_app_runtime_packages(runtime_path: str | Path) -> None:
     if not runtime_dir.exists():
         return
 
-    normalized_names = {
-        name.replace("-", "_").lower()
-        for name in CHATTERBOX_APP_RUNTIME_PACKAGES
-    }
-    for child in runtime_dir.iterdir():
-        child_name = child.name.replace("-", "_").lower()
-        if child_name in normalized_names or any(
-            child_name.startswith(f"{name}_") or child_name.startswith(f"{name}.")
-            for name in normalized_names
-        ):
-            if child.is_dir():
-                shutil.rmtree(child, ignore_errors=True)
-            else:
-                child.unlink(missing_ok=True)
+    normalized_names = {name.replace("-", "_").lower() for name in CHATTERBOX_APP_RUNTIME_PACKAGES}
+    paths = [
+        child
+        for child in runtime_dir.iterdir()
+        if (child_name := child.name.replace("-", "_").lower()) in normalized_names
+        or any(child_name.startswith(f"{name}_") or child_name.startswith(f"{name}.") for name in normalized_names)
+    ]
+    remove_target_runtime_paths(runtime_dir, paths)
 
 
 def _install_chatterbox_runtime() -> None:
@@ -160,14 +153,16 @@ def _install_chatterbox_onnx_runtime() -> None:
 
 
 def _clear_chatterbox_modules() -> None:
-    purge_runtime_modules((
-        "chatterbox",
-        "diffusers",
-        "huggingface_hub",
-        "s3tokenizer",
-        "tokenizers",
-        "transformers",
-    ))
+    purge_runtime_modules(
+        (
+            "chatterbox",
+            "diffusers",
+            "huggingface_hub",
+            "s3tokenizer",
+            "tokenizers",
+            "transformers",
+        )
+    )
 
 
 def _load_chatterbox_class(module_name: str, class_name: str) -> type[Any]:
@@ -181,9 +176,7 @@ def _load_chatterbox_class(module_name: str, class_name: str) -> type[Any]:
 
     cls = getattr(module, class_name, None)
     if cls is None:
-        raise RuntimeError(
-            f"Chatterbox runtime is installed, but {module_name}.{class_name} was not found."
-        )
+        raise RuntimeError(f"Chatterbox runtime is installed, but {module_name}.{class_name} was not found.")
     return cls
 
 
@@ -356,10 +349,7 @@ def _model_file(model_dir: Path, name: str, dtype: str) -> Path:
         "q4f16": "_q4f16",
     }.get(dtype)
     if suffix is None:
-        raise ValueError(
-            "Unsupported Chatterbox ONNX dtype "
-            f"{dtype!r}; expected fp32, fp16, q8, q4, or q4f16"
-        )
+        raise ValueError(f"Unsupported Chatterbox ONNX dtype {dtype!r}; expected fp32, fp16, q8, q4, or q4f16")
     path = model_dir / "onnx" / f"{name}{suffix}.onnx"
     if not path.is_file():
         raise RuntimeError(f"Chatterbox ONNX model file is missing: {path}")
@@ -521,7 +511,7 @@ class _BaseChatterboxAdapter(TTSAdapter):
         chunk_size = self._sample_rate * 2
         for i in range(0, len(audio), chunk_size):
             yield SynthesizeChunk(
-                audio=audio[i:i + chunk_size].tobytes(),
+                audio=audio[i : i + chunk_size].tobytes(),
                 sample_rate=self._sample_rate,
                 is_final=False,
             )
@@ -668,9 +658,7 @@ class ChatterboxTurboOnnxAdapter(TTSAdapter):
             return
         if _voice_path(voice) is not None:
             return
-        raise InvalidConfigError(
-            "Chatterbox Turbo ONNX requires reference_audio or a stored voice/reference WAV"
-        )
+        raise InvalidConfigError("Chatterbox Turbo ONNX requires reference_audio or a stored voice/reference WAV")
 
     async def synthesize(
         self,
@@ -699,7 +687,7 @@ class ChatterboxTurboOnnxAdapter(TTSAdapter):
         chunk_size = self._sample_rate * 2
         for i in range(0, len(audio), chunk_size):
             yield SynthesizeChunk(
-                audio=audio[i:i + chunk_size].astype(np.float32).tobytes(),
+                audio=audio[i : i + chunk_size].astype(np.float32).tobytes(),
                 sample_rate=self._sample_rate,
                 is_final=False,
             )
@@ -737,8 +725,8 @@ class ChatterboxTurboOnnxAdapter(TTSAdapter):
         for i in range(max_new_tokens):
             inputs_embeds = self._embed_tokens_session.run(None, {"input_ids": input_ids})[0]
             if i == 0:
-                cond_emb, prompt_token, speaker_embeddings, speaker_features = (
-                    self._speech_encoder_session.run(None, {"audio_values": audio_values})
+                cond_emb, prompt_token, speaker_embeddings, speaker_features = self._speech_encoder_session.run(
+                    None, {"audio_values": audio_values}
                 )
                 inputs_embeds = np.concatenate((cond_emb, inputs_embeds), axis=1)
                 batch_size, seq_len, _ = inputs_embeds.shape

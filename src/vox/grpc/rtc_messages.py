@@ -59,22 +59,31 @@ def rtc_runtime_event_pb(event: dict[str, Any]) -> vox_pb2.RtcControlServerMessa
         )
     if event_type == "rtc.answer":
         answer = event.get("answer") if isinstance(event.get("answer"), dict) else {}
-        return vox_pb2.RtcControlServerMessage(
-            answer=vox_pb2.RtcControlAnswer(
-                session_id=str(event.get("session_id") or ""),
-                answer=vox_pb2.RtcSessionDescription(
-                    type=str(answer.get("type") or "answer"),
-                    sdp=str(answer.get("sdp") or ""),
-                ),
-            )
+        result = vox_pb2.RtcControlAnswer(
+            session_id=str(event.get("session_id") or ""),
+            answer=vox_pb2.RtcSessionDescription(
+                type=str(answer.get("type") or "answer"),
+                sdp=str(answer.get("sdp") or ""),
+            ),
         )
+        if event.get("generation") is not None:
+            result.generation = int(event["generation"])
+        return vox_pb2.RtcControlServerMessage(answer=result)
     if event_type == "rtc.ice_candidate":
         candidate = event.get("candidate")
         if candidate is None:
-            return vox_pb2.RtcControlServerMessage(candidates_complete=vox_pb2.RtcIceCandidatesComplete())
-        return vox_pb2.RtcControlServerMessage(candidate=_rtc_candidate_pb(candidate))
+            complete = vox_pb2.RtcIceCandidatesComplete()
+            if event.get("generation") is not None:
+                complete.generation = int(event["generation"])
+            return vox_pb2.RtcControlServerMessage(candidates_complete=complete)
+        return vox_pb2.RtcControlServerMessage(
+            candidate=_rtc_candidate_pb(candidate, generation=event.get("generation"))
+        )
     if event_type == "rtc.signaling_error":
-        return rtc_error_pb(str(event.get("message") or "RTC signaling failed"))
+        result = rtc_error_pb(str(event.get("message") or "RTC signaling failed"))
+        if event.get("generation") is not None:
+            result.error.generation = int(event["generation"])
+        return result
     if event_type == "rtc.session.closed":
         return vox_pb2.RtcControlServerMessage(
             closed=vox_pb2.RtcControlClosed(
@@ -106,28 +115,35 @@ def rtc_error_pb(
     code: str = "",
     recoverable: bool = True,
     generation_id: str | None = None,
+    generation: int | None = None,
 ) -> vox_pb2.RtcControlServerMessage:
-    return vox_pb2.RtcControlServerMessage(
-        error=vox_pb2.RtcSignalingError(
-            message=message,
-            code=code,
-            recoverable=recoverable,
-            generation_id=generation_id or "",
-        )
+    error = vox_pb2.RtcSignalingError(
+        message=message,
+        code=code,
+        recoverable=recoverable,
+        generation_id=generation_id or "",
     )
+    if generation is not None:
+        error.generation = generation
+    return vox_pb2.RtcControlServerMessage(error=error)
 
 
-def rtc_error_pb_from_exception(exc: BaseException) -> vox_pb2.RtcControlServerMessage:
+def rtc_error_pb_from_exception(
+    exc: BaseException,
+    *,
+    generation: int | None = None,
+) -> vox_pb2.RtcControlServerMessage:
     code, recoverable, generation_id = conversation_error_fields(exc)
     return rtc_error_pb(
         str(exc),
         code=code,
         recoverable=recoverable,
         generation_id=generation_id,
+        generation=generation,
     )
 
 
-def _rtc_candidate_pb(candidate: Any) -> vox_pb2.RtcIceCandidate:
+def _rtc_candidate_pb(candidate: Any, *, generation: Any = None) -> vox_pb2.RtcIceCandidate:
     if not isinstance(candidate, dict):
         candidate = {"candidate": str(candidate)}
     result = vox_pb2.RtcIceCandidate(candidate=str(candidate.get("candidate") or ""))
@@ -140,4 +156,6 @@ def _rtc_candidate_pb(candidate: Any) -> vox_pb2.RtcIceCandidate:
     username_fragment = candidate.get("usernameFragment", candidate.get("username_fragment"))
     if username_fragment is not None:
         result.username_fragment = str(username_fragment)
+    if generation is not None:
+        result.generation = int(generation)
     return result

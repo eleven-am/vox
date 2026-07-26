@@ -258,7 +258,7 @@ async def test_runtime_cleans_tasks_and_orchestrator_when_end_input_fails():
 
 
 @pytest.mark.asyncio
-async def test_runtime_close_finishes_owned_cleanup_when_caller_is_cancelled():
+async def test_runtime_close_caller_cancellation_does_not_cancel_owned_cleanup():
     close_started = asyncio.Event()
     release_close = asyncio.Event()
 
@@ -275,15 +275,15 @@ async def test_runtime_close_finishes_owned_cleanup_when_caller_is_cancelled():
 
     await close_started.wait()
     close_task.cancel()
-    await asyncio.sleep(0)
-    assert close_task.done() is False
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(close_task, timeout=0.05)
+    assert runtime._close_task is not None
+    assert runtime._close_task.done() is False
 
     release_close.set()
-    with pytest.raises(asyncio.CancelledError):
-        await close_task
+    await asyncio.wait_for(runtime._close_task, timeout=1)
 
     assert orchestrator.close_count == 1
-    assert runtime._close_task is not None
     assert runtime._close_task.done()
 
 
@@ -295,6 +295,43 @@ async def test_runtime_releases_completed_background_task_references():
     await asyncio.gather(*tasks)
     await asyncio.sleep(0)
 
+    assert runtime._background_tasks == set()
+
+
+@pytest.mark.asyncio
+async def test_runtime_close_waits_for_cancellation_resistant_background_tasks(monkeypatch):
+    import vox.operations.conversation_runtime as runtime_module
+
+    original_reap = runtime_module.reap_task
+    cancellation_seen = asyncio.Event()
+    release = asyncio.Event()
+
+    async def quick_reap(task):
+        await original_reap(task, timeout=0.01)
+
+    async def resistant() -> None:
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancellation_seen.set()
+            await release.wait()
+
+    monkeypatch.setattr(runtime_module, "reap_task", quick_reap)
+    runtime = ConversationRuntime(RuntimeOrchestratorSpy())
+    runtime.start_event_pump(lambda event: _append_event([], event))
+    task = runtime.start_background_task(resistant())
+    close_task = asyncio.create_task(runtime.close())
+
+    await asyncio.wait_for(cancellation_seen.wait(), timeout=1)
+    await asyncio.sleep(0.02)
+
+    assert close_task.done() is False
+    assert task in runtime._background_tasks
+
+    release.set()
+    await asyncio.wait_for(close_task, timeout=1)
+
+    assert task.done()
     assert runtime._background_tasks == set()
 
 

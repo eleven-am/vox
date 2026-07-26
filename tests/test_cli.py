@@ -24,10 +24,6 @@ def runner():
     return CliRunner()
 
 
-
-
-
-
 class TestFormatSize:
     def test_zero(self):
         assert _format_size(0) == "-"
@@ -42,14 +38,10 @@ class TestFormatSize:
         assert _format_size(5 * 1024 * 1024) == "5.0 MB"
 
     def test_gigabytes(self):
-        assert _format_size(3 * 1024 ** 3) == "3.0 GB"
+        assert _format_size(3 * 1024**3) == "3.0 GB"
 
     def test_terabytes(self):
-        assert _format_size(2 * 1024 ** 4) == "2.0 TB"
-
-
-
-
+        assert _format_size(2 * 1024**4) == "2.0 TB"
 
 
 class TestHandleRequestError:
@@ -77,7 +69,9 @@ class TestHandleRequestError:
         response.status_code = 500
         request = Mock()
         exc = httpx.HTTPStatusError(
-            "server error", request=request, response=response,
+            "server error",
+            request=request,
+            response=response,
         )
         with pytest.raises(SystemExit, match="1"):
             _handle_request_error(exc, "http://localhost:11435")
@@ -89,10 +83,6 @@ class TestHandleRequestError:
             _handle_request_error(RuntimeError("boom"), "http://localhost:11435")
         err = capsys.readouterr().err
         assert "boom" in err
-
-
-
-
 
 
 class TestCheckResponse:
@@ -128,10 +118,6 @@ class TestCheckResponse:
         assert "bad gateway" in capsys.readouterr().err
 
 
-
-
-
-
 class TestServe:
     @patch("vox.cli.uvicorn", create=True)
     @patch("vox.server.app.create_app")
@@ -140,12 +126,12 @@ class TestServe:
         mock_app = MagicMock()
         mock_create_app.return_value = mock_app
 
-
         with patch.dict("sys.modules", {"uvicorn": mock_uvicorn}):
             mock_uvicorn.run = MagicMock()
             runner.invoke(cli, ["serve", "--port", "9999", "--host", "127.0.0.1"])
 
         mock_create_app.assert_called_once()
+        assert mock_create_app.call_args.kwargs["bind_host"] == "127.0.0.1"
         mock_uvicorn.run.assert_called_once()
         call_kwargs = mock_uvicorn.run.call_args
         assert call_kwargs[1]["port"] == 9999 or call_kwargs[0][0] is mock_app
@@ -164,10 +150,6 @@ class TestServe:
         assert result.exit_code == 0
         mock_create_app.assert_called_once()
         assert mock_create_app.call_args.kwargs["default_device"] == "cuda"
-
-
-
-
 
 
 class TestPull:
@@ -274,10 +256,6 @@ class TestSpeechContext:
         }
 
 
-
-
-
-
 class TestList:
     @patch("httpx.get")
     def test_list_empty(self, mock_get, runner):
@@ -319,10 +297,6 @@ class TestList:
         assert result.exit_code != 0
 
 
-
-
-
-
 class TestShow:
     @patch("httpx.get")
     def test_show_success(self, mock_get, runner):
@@ -346,10 +320,6 @@ class TestShow:
         assert result.exit_code != 0
 
 
-
-
-
-
 class TestRm:
     @patch("httpx.delete")
     def test_rm_success(self, mock_delete, runner):
@@ -371,10 +341,6 @@ class TestRm:
 
         result = runner.invoke(cli, ["rm", "nonexistent"])
         assert result.exit_code != 0
-
-
-
-
 
 
 class TestPs:
@@ -418,10 +384,6 @@ class TestPs:
         assert result.exit_code != 0
 
 
-
-
-
-
 class TestRunSTT:
     @patch("httpx.post")
     def test_run_stt_transcription(self, mock_post, runner, tmp_path):
@@ -451,10 +413,6 @@ class TestRunSTT:
         assert result.exit_code != 0
 
 
-
-
-
-
 class TestRunTTS:
     @patch("httpx.post")
     def test_run_tts_default_output(self, mock_post, runner, tmp_path, monkeypatch):
@@ -479,9 +437,7 @@ class TestRunTTS:
         resp.content = b"audio-data"
         mock_post.return_value = resp
 
-        result = runner.invoke(
-            cli, ["run", "kokoro:v1.0", "Hello world", "-o", str(out_file)]
-        )
+        result = runner.invoke(cli, ["run", "kokoro:v1.0", "Hello world", "-o", str(out_file)])
         assert result.exit_code == 0
         assert f"Audio saved to {out_file}" in result.output
         assert out_file.read_bytes() == b"audio-data"
@@ -495,9 +451,7 @@ class TestRunTTS:
         resp.content = b"audio"
         mock_post.return_value = resp
 
-        result = runner.invoke(
-            cli, ["run", "kokoro:v1.0", "Hi", "--voice", "af_heart"]
-        )
+        result = runner.invoke(cli, ["run", "kokoro:v1.0", "Hi", "--voice", "af_heart"])
         assert result.exit_code == 0
 
         call_kwargs = mock_post.call_args
@@ -509,10 +463,6 @@ class TestRunTTS:
         mock_post.side_effect = httpx.ConnectError("refused")
         result = runner.invoke(cli, ["run", "kokoro:v1.0", "Hello"])
         assert result.exit_code != 0
-
-
-
-
 
 
 class TestVoices:
@@ -567,10 +517,6 @@ class TestVoices:
         assert result.exit_code != 0
 
 
-
-
-
-
 class TestHostOption:
     @patch("httpx.get")
     def test_custom_host_flag(self, mock_get, runner):
@@ -597,10 +543,6 @@ class TestHostOption:
         assert not url.startswith("http://myserver:8080//")
 
 
-
-
-
-
 class TestTimeoutPath:
     @patch("httpx.get")
     def test_list_timeout(self, mock_get, runner):
@@ -613,11 +555,6 @@ class TestTimeoutPath:
         mock_post.side_effect = httpx.TimeoutException("timed out")
         result = runner.invoke(cli, ["show", "model"])
         assert result.exit_code != 0
-
-
-
-
-
 
 
 class FakeWebSocket:
@@ -662,19 +599,23 @@ class TestStreamTranscribe:
         audio_file = tmp_path / "meeting.wav"
         audio_file.write_bytes(b"RIFF" + b"\x00" * 64)
         mock_chunks.return_value = iter([b"chunk-one", b"chunk-two"])
-        ws = FakeWebSocket([
-            json.dumps({"type": "ready", "model": "parakeet:tdt-0.6b-v3"}),
-            json.dumps({"type": "progress", "uploaded_ms": 5000, "processed_ms": 0, "chunks_completed": 0}),
-            TimeoutError(),
-            TimeoutError(),
-            json.dumps({
-                "type": "done",
-                "text": "hello world",
-                "duration_ms": 10000,
-                "processing_ms": 2500,
-                "segments": [],
-            }),
-        ])
+        ws = FakeWebSocket(
+            [
+                json.dumps({"type": "ready", "model": "parakeet:tdt-0.6b-v3"}),
+                json.dumps({"type": "progress", "uploaded_ms": 5000, "processed_ms": 0, "chunks_completed": 0}),
+                TimeoutError(),
+                TimeoutError(),
+                json.dumps(
+                    {
+                        "type": "done",
+                        "text": "hello world",
+                        "duration_ms": 10000,
+                        "processing_ms": 2500,
+                        "segments": [],
+                    }
+                ),
+            ]
+        )
         mock_connect.return_value = ws
 
         result = runner.invoke(cli, ["stream-transcribe", "parakeet:tdt-0.6b-v3", str(audio_file)])
@@ -693,25 +634,31 @@ class TestStreamSynthesize:
     @patch("vox.cli.connect")
     def test_stream_synthesize_writes_wav_output(self, mock_connect, runner, tmp_path):
         out_file = tmp_path / "speech.wav"
-        ws = FakeWebSocket([
-            json.dumps({"type": "ready", "model": "kokoro:v1.0"}),
-            json.dumps({"type": "audio_start", "sample_rate": 24000, "response_format": "pcm16"}),
-            b"\x01\x02\x03\x04",
-            json.dumps({
-                "type": "progress",
-                "completed_chars": 11,
-                "total_chars": 11,
-                "chunks_completed": 1,
-                "chunks_total": 1,
-            }),
-            TimeoutError(),
-            json.dumps({
-                "type": "done",
-                "response_format": "pcm16",
-                "audio_duration_ms": 42,
-                "processing_ms": 12,
-            }),
-        ])
+        ws = FakeWebSocket(
+            [
+                json.dumps({"type": "ready", "model": "kokoro:v1.0"}),
+                json.dumps({"type": "audio_start", "sample_rate": 24000, "response_format": "pcm16"}),
+                b"\x01\x02\x03\x04",
+                json.dumps(
+                    {
+                        "type": "progress",
+                        "completed_chars": 11,
+                        "total_chars": 11,
+                        "chunks_completed": 1,
+                        "chunks_total": 1,
+                    }
+                ),
+                TimeoutError(),
+                json.dumps(
+                    {
+                        "type": "done",
+                        "response_format": "pcm16",
+                        "audio_duration_ms": 42,
+                        "processing_ms": 12,
+                    }
+                ),
+            ]
+        )
         mock_connect.return_value = ws
 
         result = runner.invoke(

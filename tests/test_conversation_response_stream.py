@@ -58,6 +58,25 @@ async def test_response_stream_bounded_queue_blocks_when_full():
 
 
 @pytest.mark.asyncio
+async def test_closing_full_response_stream_wakes_blocked_append_and_commit():
+    stream = ResponseStream.create(response_id="resp_1", output=OUTPUT)
+    stream.queue = asyncio.Queue(maxsize=1)
+    await stream.append_text("first")
+
+    append = asyncio.create_task(stream.append_text("second"))
+    commit = asyncio.create_task(stream.enqueue_end())
+    await asyncio.sleep(0)
+    assert not append.done()
+    assert not commit.done()
+
+    stream.close()
+
+    results = await asyncio.wait_for(asyncio.gather(append, commit), timeout=0.1)
+    assert results == [AppendResult.STREAM_ENDED, AppendResult.STREAM_ENDED]
+    assert stream.queue.empty()
+
+
+@pytest.mark.asyncio
 async def test_closed_response_stream_rejects_append_and_end():
     stream = ResponseStream.create(response_id="resp_1", output=OUTPUT)
 

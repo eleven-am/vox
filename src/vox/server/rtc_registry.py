@@ -1,16 +1,97 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import logging
 import secrets
 import time
+from collections import deque
 from collections.abc import Coroutine
-from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from vox.server.rtc_media import create_rtc_audio_queue
 
 RtcControlTransport = Literal["pondsocket", "grpc"]
+RTC_CONTROL_EVENT_MAX_COUNT = 128
+RTC_CONTROL_EVENT_MAX_BYTES = 262_144
+RTC_MEDIA_EVENT_MAX_COUNT = 256
+RTC_MEDIA_EVENT_MAX_BYTES = 524_288
+RTC_TEARDOWN_RETRY_DELAY_S = 0.05
+RTC_TEARDOWN_MAX_RETRY_DELAY_S = 5.0
+
+logger = logging.getLogger(__name__)
+
+
+class RtcEventQueue:
+    def __init__(self, *, max_count: int, max_bytes: int) -> None:
+        self._queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=max_count)
+        self._sizes: deque[int] = deque()
+        self._max_bytes = max_bytes
+        self._bytes = 0
+        self._closed = False
+
+    @property
+    def maxsize(self) -> int:
+        return self._queue.maxsize
+
+    @property
+    def buffered_bytes(self) -> int:
+        return self._bytes
+
+    async def put(self, item: Any) -> None:
+        self.put_nowait(item)
+
+    def put_nowait(self, item: Any) -> None:
+        if self._closed:
+            raise asyncio.QueueFull
+        size = self._item_size(item)
+        if self._queue.full() or self._bytes + size > self._max_bytes:
+            raise asyncio.QueueFull
+        self._queue.put_nowait(item)
+        self._sizes.append(size)
+        self._bytes += size
+
+    def put_terminal_nowait(self, item: Any) -> None:
+        size = self._item_size(item)
+        while self._queue.full() or self._bytes + size > self._max_bytes:
+            self.get_nowait()
+        self._queue.put_nowait(item)
+        self._sizes.append(size)
+        self._bytes += size
+
+    async def get(self) -> Any:
+        item = await self._queue.get()
+        size = self._sizes.popleft()
+        self._bytes -= size
+        return item
+
+    def get_nowait(self) -> Any:
+        item = self._queue.get_nowait()
+        size = self._sizes.popleft()
+        self._bytes -= size
+        return item
+
+    def empty(self) -> bool:
+        return self._queue.empty()
+
+    def qsize(self) -> int:
+        return self._queue.qsize()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        while not self.empty():
+            self.get_nowait()
+        self._queue.put_nowait(None)
+        self._sizes.append(0)
+
+    @staticmethod
+    def _item_size(item: Any) -> int:
+        if item is None:
+            return 0
+        return len(json.dumps(item, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
 
 
 def track_task(tasks: set[asyncio.Task], coro: Coroutine[Any, Any, Any]) -> asyncio.Task:
@@ -28,8 +109,8 @@ def track_media_task(record: Any, coro: Coroutine[Any, Any, Any]) -> asyncio.Tas
     return task
 
 
-def cancel_media_tasks(record: Any) -> list[asyncio.Task]:
-    tasks = list(getattr(record, "media_tasks", ()))
+def cancel_media_tasks(record: Any) -> list[asyncio.Task[Any]]:
+    tasks: list[asyncio.Task[Any]] = list(getattr(record, "media_tasks", ()))
     for task in tasks:
         task.cancel()
     media_tasks = getattr(record, "media_tasks", None)
@@ -41,7 +122,10 @@ def cancel_media_tasks(record: Any) -> list[asyncio.Task]:
 async def cancel_and_drain_media_tasks(record: Any) -> None:
     tasks = cancel_media_tasks(record)
     if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException) and not isinstance(result, asyncio.CancelledError):
+                raise result
 
 
 @dataclass
@@ -56,11 +140,15 @@ class RtcSessionRecord:
     browser_disconnect_emitted: bool = False
     closed: bool = False
     rtc_peer: Any | None = None
+    pending_rtc_attachment: Any | None = None
+    retired_rtc_attachments: list[Any] = field(default_factory=list)
     audio_output_track: Any | None = None
+    audio_sender_track: Any | None = None
+    input_audio_track: Any | None = None
     data_channel: Any | None = None
     orchestrator: Any | None = None
-    media_events: asyncio.Queue[dict | None] | None = None
-    control_events: asyncio.Queue[dict | None] | None = None
+    media_events: RtcEventQueue | None = None
+    control_events: RtcEventQueue | None = None
     audio_output: asyncio.Queue[Any] | None = None
     pending_client_events: list[str] = field(default_factory=list)
     media_tasks: set[asyncio.Task] = field(default_factory=set)
@@ -68,7 +156,6 @@ class RtcSessionRecord:
     pending_remote_candidates: list[Any] = field(default_factory=list)
     remote_description_set: bool = False
     remote_candidates_complete: bool = False
-    ice_restart_in_progress: bool = False
     negotiation_generation: int | None = None
 
 
@@ -84,6 +171,10 @@ class RtcSessionRegistry:
         self._attach_ttl_s = attach_ttl_s
         self._sessions: dict[str, RtcSessionRecord] = {}
         self._teardown_tasks: set[asyncio.Task] = set()
+        self._teardown_records: dict[asyncio.Task, RtcSessionRecord] = {}
+        self._closing_sessions: dict[str, RtcSessionRecord] = {}
+        self._teardown_retry_handles: dict[str, asyncio.TimerHandle] = {}
+        self._teardown_retry_attempts: dict[str, int] = {}
 
     @property
     def attach_ttl_s(self) -> int:
@@ -103,8 +194,14 @@ class RtcSessionRegistry:
             created_at=now,
             expires_at=now + self._attach_ttl_s,
             expected_control_transport=control_transport,
-            control_events=asyncio.Queue(),
-            media_events=asyncio.Queue(),
+            control_events=RtcEventQueue(
+                max_count=RTC_CONTROL_EVENT_MAX_COUNT,
+                max_bytes=RTC_CONTROL_EVENT_MAX_BYTES,
+            ),
+            media_events=RtcEventQueue(
+                max_count=RTC_MEDIA_EVENT_MAX_COUNT,
+                max_bytes=RTC_MEDIA_EVENT_MAX_BYTES,
+            ),
             audio_output=create_rtc_audio_queue(),
         )
         self._sessions[session_id] = record
@@ -132,7 +229,10 @@ class RtcSessionRegistry:
             return None
         record.browser_attached = True
         if record.media_events is None:
-            record.media_events = asyncio.Queue()
+            record.media_events = RtcEventQueue(
+                max_count=RTC_MEDIA_EVENT_MAX_COUNT,
+                max_bytes=RTC_MEDIA_EVENT_MAX_BYTES,
+            )
         if record.audio_output is None:
             record.audio_output = create_rtc_audio_queue()
         return record
@@ -161,15 +261,44 @@ class RtcSessionRegistry:
         record = self._sessions.pop(session_id, None)
         if record is None:
             return
+        self.close_record(record)
+
+    def close_record(self, record: RtcSessionRecord) -> None:
+        if self._sessions.get(record.session_id) is record:
+            self._sessions.pop(record.session_id, None)
         record.closed = True
-        self._release_resources(record)
+        self._closing_sessions[record.session_id] = record
+        self._start_teardown(record)
 
     async def close_attached(self, record: RtcSessionRecord, *, orchestrator: Any | None) -> None:
         if orchestrator is not None:
-            with suppress(Exception):
-                await orchestrator.close()
-        record.orchestrator = None
-        record.data_channel = None
+            record.orchestrator = orchestrator
+        else:
+            record.orchestrator = None
+        self.close_record(record)
+        task = next(
+            (task for task, owned_record in self._teardown_records.items() if owned_record is record),
+            None,
+        )
+        if task is not None:
+            await asyncio.shield(task)
+
+    def _start_teardown(self, record: RtcSessionRecord) -> None:
+        if any(owned_record is record for owned_record in self._teardown_records.values()):
+            return
+        retry_handle = self._teardown_retry_handles.pop(record.session_id, None)
+        if retry_handle is not None:
+            retry_handle.cancel()
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(self._drain_record_resources(record))
+        self._teardown_tasks.add(task)
+        self._teardown_records[task] = record
+        task.add_done_callback(self._teardown_finished)
+
+    async def _drain_record_resources(self, record: RtcSessionRecord) -> None:
         if record.audio_output is not None:
             if record.audio_output_track is not None:
                 record.audio_output_track.clear()
@@ -180,50 +309,119 @@ class RtcSessionRegistry:
                     break
             await record.audio_output.put(None)
         if record.media_events is not None:
-            await record.media_events.put(None)
-        await cancel_and_drain_media_tasks(record)
-        if record.rtc_peer is not None:
-            peer = record.rtc_peer
-            record.rtc_peer = None
-            with suppress(Exception):
-                await peer.close()
-        self.detach_control(record.session_id)
-        self.close(record.session_id)
-
-    def _release_resources(self, record: RtcSessionRecord) -> None:
-        media_tasks = cancel_media_tasks(record)
-        peer = record.rtc_peer
-        record.rtc_peer = None
-        orchestrator = record.orchestrator
-        record.orchestrator = None
+            record.media_events.close()
+        if record.control_events is not None:
+            record.control_events.close()
+        errors: list[BaseException] = []
         try:
-            asyncio.get_running_loop()
-        except RuntimeError:
+            await cancel_and_drain_media_tasks(record)
+        except BaseException as exc:
+            errors.append(exc)
+        orchestrator = record.orchestrator
+        if orchestrator is not None:
+            try:
+                await orchestrator.close()
+            except BaseException as exc:
+                errors.append(exc)
+            else:
+                if record.orchestrator is orchestrator:
+                    record.orchestrator = None
+        for owner in self._owned_peers(record):
+            try:
+                await owner.close()
+            except BaseException as exc:
+                errors.append(exc)
+            else:
+                self._release_peer_reference(record, owner)
+        if errors:
+            raise errors[0]
+        record.input_audio_track = None
+        record.data_channel = None
+        record.audio_sender_track = None
+        self.detach_control(record.session_id)
+
+    def _teardown_finished(self, task: asyncio.Task) -> None:
+        try:
+            error = task.exception()
+        except asyncio.CancelledError:
+            error = asyncio.CancelledError()
+        record = self._teardown_records.pop(task, None)
+        self._teardown_tasks.discard(task)
+        if error is not None:
+            if record is not None and self._closing_sessions.get(record.session_id) is record:
+                self._schedule_teardown_retry(record, error)
             return
-        if media_tasks or peer is not None or orchestrator is not None:
-            track_task(
-                self._teardown_tasks,
-                self._drain_resources(media_tasks, orchestrator, peer),
-            )
+        if record is not None:
+            retry_handle = self._teardown_retry_handles.pop(record.session_id, None)
+            if retry_handle is not None:
+                retry_handle.cancel()
+            self._teardown_retry_attempts.pop(record.session_id, None)
+            self._closing_sessions.pop(record.session_id, None)
+
+    def _schedule_teardown_retry(
+        self,
+        record: RtcSessionRecord,
+        error: BaseException,
+    ) -> None:
+        attempts = self._teardown_retry_attempts.get(record.session_id, 0) + 1
+        self._teardown_retry_attempts[record.session_id] = attempts
+        delay = min(
+            RTC_TEARDOWN_RETRY_DELAY_S * (2 ** min(attempts - 1, 8)),
+            RTC_TEARDOWN_MAX_RETRY_DELAY_S,
+        )
+        logger.warning(
+            "RTC session %s teardown attempt %d failed; retrying in %.2fs: %s",
+            record.session_id,
+            attempts,
+            delay,
+            error,
+        )
+        loop = asyncio.get_running_loop()
+        retry_handle = self._teardown_retry_handles.pop(record.session_id, None)
+        if retry_handle is not None:
+            retry_handle.cancel()
+        self._teardown_retry_handles[record.session_id] = loop.call_later(
+            delay,
+            self._retry_teardown,
+            record,
+        )
+
+    def _retry_teardown(self, record: RtcSessionRecord) -> None:
+        self._teardown_retry_handles.pop(record.session_id, None)
+        if self._closing_sessions.get(record.session_id) is record:
+            self._start_teardown(record)
 
     @staticmethod
-    async def _drain_resources(
-        media_tasks: list[asyncio.Task],
-        orchestrator: Any | None,
-        peer: Any | None,
-    ) -> None:
-        if media_tasks:
-            await asyncio.gather(*media_tasks, return_exceptions=True)
-        if orchestrator is not None:
-            with suppress(Exception):
-                await orchestrator.close()
-        if peer is not None:
-            with suppress(Exception):
-                await peer.close()
+    def _owned_peers(record: RtcSessionRecord) -> tuple[Any, ...]:
+        peers: list[Any] = []
+        active = record.rtc_peer
+        pending = record.pending_rtc_attachment
+        for owner in (active, pending, *record.retired_rtc_attachments):
+            peer = getattr(owner, "peer", owner)
+            if owner is not None and all(peer is not getattr(owned, "peer", owned) for owned in peers):
+                peers.append(owner)
+        return tuple(peers)
+
+    @staticmethod
+    def _release_peer_reference(record: RtcSessionRecord, owner: Any) -> None:
+        if record.rtc_peer is getattr(owner, "peer", owner):
+            record.rtc_peer = None
+        if record.pending_rtc_attachment is owner:
+            record.pending_rtc_attachment = None
+        record.retired_rtc_attachments[:] = [
+            retired for retired in record.retired_rtc_attachments if retired is not owner
+        ]
 
     async def drain_teardowns(self) -> None:
-        while self._teardown_tasks:
-            await asyncio.gather(*tuple(self._teardown_tasks), return_exceptions=True)
+        for record in tuple(self._closing_sessions.values()):
+            self._start_teardown(record)
+        tasks = tuple(self._teardown_tasks)
+        if not tasks:
+            return
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
 
     async def close_all(self) -> None:
         for session_id in tuple(self._sessions):

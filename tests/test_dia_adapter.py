@@ -130,7 +130,7 @@ class TestDiaAdapterInfo:
         def fake_run(cmd: list[str], timeout: int):
             calls.append(cmd)
             if "transformers==4.57.6" in cmd:
-                runtime = tmp_path / "vox-home" / "runtime" / "dia"
+                runtime = Path(cmd[cmd.index("--target") + 1])
                 (runtime / "transformers" / "models" / "dia").mkdir(parents=True)
                 (runtime / "transformers" / "__init__.py").write_text(
                     "class AutoProcessor:\n"
@@ -161,7 +161,10 @@ class TestDiaAdapterInfo:
         install_call = next(call for call in calls if "transformers==4.57.6" in call)
 
         assert "--target" in install_call
-        assert str(tmp_path / "vox-home" / "runtime" / "dia") in install_call
+        runtime_dir = tmp_path / "vox-home" / "runtime" / "dia"
+        install_target = Path(install_call[install_call.index("--target") + 1])
+        assert install_target.parent == runtime_dir.parent
+        assert install_target.name.startswith(".dia.installing-")
         assert "--no-deps" not in install_call
         assert "--upgrade" in install_call
         assert "sentencepiece>=0.2.0,<0.3" in install_call
@@ -576,10 +579,7 @@ class TestDiaAdapterInfo:
             adapter._device = "cuda"
 
             reference_audio = np.ones(44100 * 20, dtype=np.float32)
-            reference_text = (
-                "Tonight after you were gone I thought a lot about you "
-                "and how you have been treating me"
-            )
+            reference_text = "Tonight after you were gone I thought a lot about you and how you have been treating me"
 
             async def _run() -> list:
                 chunks = []
@@ -594,9 +594,7 @@ class TestDiaAdapterInfo:
             chunks = asyncio.run(_run())
 
             call_kwargs = processor.call_args.kwargs
-            assert call_kwargs["text"] == [
-                "[S1] Tonight after you were gone [S1] target speech"
-            ]
+            assert call_kwargs["text"] == ["[S1] Tonight after you were gone [S1] target speech"]
             assert call_kwargs["audio"].shape == (44100 * 5,)
             assert chunks[-1].is_final is True
 

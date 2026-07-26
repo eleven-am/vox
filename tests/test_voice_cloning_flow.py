@@ -24,6 +24,7 @@ from vox.core.errors import (
 )
 from vox.core.store import BlobStore
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesizeChunk, VoiceInfo
+from vox.operations.models import PullTaskRegistry
 from vox.server.routes.bidi import router as bidi_router
 from vox.server.routes.voices import router as voices_router
 
@@ -223,10 +224,9 @@ def _build_app(store: BlobStore, adapter=None):
     app = FastAPI()
     app.state.store = store
     app.state.registry = MagicMock()
-    app.state.registry.available_models.return_value = {
-        "fake-clone-tts": {"latest": {"type": "tts"}}
-    }
+    app.state.registry.available_models.return_value = {"fake-clone-tts": {"latest": {"type": "tts"}}}
     app.state.scheduler = _DummyScheduler(adapter or _FakeCloneTTSAdapter())
+    app.state.pull_tasks = PullTaskRegistry()
     app.include_router(voices_router)
     app.include_router(bidi_router)
     return app
@@ -295,6 +295,7 @@ def _drain_until_done(ws, max_events: int = 100) -> list[dict]:
             break
         if "text" in msg and msg["text"] is not None:
             import json as _json
+
             payload = _json.loads(msg["text"])
             json_msgs.append(payload)
             if payload.get("type") == "done":
@@ -320,13 +321,15 @@ class TestBidiTtsClonedVoice:
         client = TestClient(app)
 
         with client.websocket_connect("/v1/audio/speech/stream") as ws:
-            ws.send_json({
-                "type": "config",
-                "model": "fake-clone-tts:latest",
-                "voice": "roy12345",
-                "response_format": "pcm16",
-                "language": None,
-            })
+            ws.send_json(
+                {
+                    "type": "config",
+                    "model": "fake-clone-tts:latest",
+                    "voice": "roy12345",
+                    "response_format": "pcm16",
+                    "language": None,
+                }
+            )
             ready = ws.receive_json()
             assert ready["type"] == "ready"
 
@@ -334,7 +337,6 @@ class TestBidiTtsClonedVoice:
             ws.send_json({"type": "end"})
 
             events = _drain_until_done(ws)
-
 
         assert adapter.last_synth_kwargs is not None
         assert adapter.last_synth_kwargs["voice"] is None
@@ -349,13 +351,15 @@ class TestBidiTtsClonedVoice:
         client = TestClient(app)
 
         with client.websocket_connect("/v1/audio/speech/stream") as ws:
-            ws.send_json({
-                "type": "config",
-                "model": "fake-clone-tts:latest",
-                "voice": "af_heart",
-                "response_format": "pcm16",
-                "language": None,
-            })
+            ws.send_json(
+                {
+                    "type": "config",
+                    "model": "fake-clone-tts:latest",
+                    "voice": "af_heart",
+                    "response_format": "pcm16",
+                    "language": None,
+                }
+            )
             assert ws.receive_json()["type"] == "ready"
             ws.send_json({"type": "text", "text": "hi"})
             ws.send_json({"type": "end"})
@@ -379,13 +383,15 @@ class TestBidiTtsClonedVoice:
         client = TestClient(app)
 
         with client.websocket_connect("/v1/audio/speech/stream") as ws:
-            ws.send_json({
-                "type": "config",
-                "model": "fake-clone-tts:latest",
-                "voice": "roy12345",
-                "response_format": "pcm16",
-                "language": None,
-            })
+            ws.send_json(
+                {
+                    "type": "config",
+                    "model": "fake-clone-tts:latest",
+                    "voice": "roy12345",
+                    "response_format": "pcm16",
+                    "language": None,
+                }
+            )
             msg = ws.receive_json()
             assert msg["type"] == "error"
             assert "does not support cloned voices" in msg["message"]

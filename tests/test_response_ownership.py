@@ -42,6 +42,7 @@ from vox.conversation.session import (
     ConversationConfig,
     ConversationSession,
 )
+from vox.core import tasks as task_helpers
 from vox.core.types import SynthesizeChunk
 from vox.operations.conversation import (
     ConversationOrchestrator,
@@ -88,12 +89,39 @@ async def _wait_for(predicate, *, timeout_s: float = 2.0, interval_s: float = 0.
 
 
 def _session_config():
-    return parse_session_update(
-        {"session": {"stt_model": "x:1", "tts_model": "y:1", "voice": "default"}}
-    )
+    return parse_session_update({"session": {"stt_model": "x:1", "tts_model": "y:1", "voice": "default"}})
 
 
 class TestControlPlaneVsInterruption:
+    @pytest.mark.asyncio
+    async def test_cancelled_queued_response_start_never_executes(self):
+        session, collector, _ = _build_session()
+        await session.start()
+        runner_blocked = asyncio.Event()
+        runner_release = asyncio.Event()
+        original = session._process_turn_event
+
+        async def block_runner(event):
+            runner_blocked.set()
+            await runner_release.wait()
+            await original(event)
+
+        session._process_turn_event = block_runner
+        await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STOPPED))
+        await runner_blocked.wait()
+
+        start = asyncio.create_task(session.start_response_stream())
+        await asyncio.sleep(0)
+        start.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await start
+        runner_release.set()
+        await _drain_events(session)
+
+        assert session.response_active is False
+        assert collector.by_type("response.created") == []
+        await session.close()
+
     @pytest.mark.asyncio
     async def test_append_and_commit_after_confirmed_interrupt_are_rejected(self):
         tts = ScriptedTTSAdapter(chunks=60, inter_chunk_delay=0.01)
@@ -165,10 +193,7 @@ class TestControlPlaneVsInterruption:
             is AppendResult.NO_ACTIVE_RESPONSE
         )
         assert session.terminal_record is record
-        assert (
-            await session.commit_response_stream(expected_response_id=response_id)
-            is AppendResult.NO_ACTIVE_RESPONSE
-        )
+        assert await session.commit_response_stream(expected_response_id=response_id) is AppendResult.NO_ACTIVE_RESPONSE
         assert not collector.by_type(WIRE_RESPONSE_DONE)
 
         await session.close()
@@ -217,8 +242,7 @@ class TestCompletionVsCancelRace:
         cancelled_events = collector.by_type(WIRE_RESPONSE_CANCELLED)
         terminal_count = len(done_events) + len(cancelled_events)
         assert terminal_count == 1, (
-            f"delay={delay_s}: expected one terminal event, got done={done_events} "
-            f"cancelled={cancelled_events}"
+            f"delay={delay_s}: expected one terminal event, got done={done_events} cancelled={cancelled_events}"
         )
         assert session.state == TurnState.IDLE
         assert not session.response_active
@@ -496,9 +520,7 @@ class TestCloseRacesQueuedCommit:
 
         session._admit_response_commit = recording_admit
 
-        commit_task = asyncio.create_task(
-            session.commit_response_stream(expected_response_id=response_id)
-        )
+        commit_task = asyncio.create_task(session.commit_response_stream(expected_response_id=response_id))
         await asyncio.sleep(0)
         assert not session._event_queue.empty()
         assert not session._closed
@@ -508,6 +530,31 @@ class TestCloseRacesQueuedCommit:
         assert await commit_task is AppendResult.SESSION_CLOSED
         assert admissions == [AppendResult.SESSION_CLOSED]
         assert collector.by_type(WIRE_RESPONSE_COMMITTED) == []
+
+
+class TestCloseTerminalizesResponse:
+    @pytest.mark.asyncio
+    async def test_close_terminalizes_active_response_once(self):
+        session, _, _ = _build_session()
+        await session.start()
+        result = await session.start_response_stream(generation_id="close-generation")
+        stream = session._response_stream
+        assert result.response_id is not None
+        assert stream is not None
+
+        await session.close()
+
+        assert session.response_active is False
+        assert stream.closed is True
+        record = session.terminal_record
+        assert record is not None
+        assert record.response_id == stream.response_id
+        assert record.generation_id == "close-generation"
+        assert record.reason == "cancelled"
+
+        await session.close()
+
+        assert session.terminal_record is record
 
 
 class TestSlowTeardownDoesNotStallLoop:
@@ -540,6 +587,7 @@ class TestSlowTeardownDoesNotStallLoop:
         await asyncio.wait_for(session.cancel_response(), timeout=1.0)
         assert session._tts_task is None
         assert not old_task.done()
+        assert old_task in session._owned_tts_tasks
 
         new_response_id = (await asyncio.wait_for(session.start_response_stream(), timeout=1.0)).response_id
         elapsed = time.monotonic() - started
@@ -549,9 +597,7 @@ class TestSlowTeardownDoesNotStallLoop:
         assert not old_task.done()
 
         await asyncio.sleep(0.05)
-        clear_indices = [
-            index for index, event in enumerate(collector.events) if event.get("type") == WIRE_AUDIO_CLEAR
-        ]
+        clear_indices = [index for index, event in enumerate(collector.events) if event.get("type") == WIRE_AUDIO_CLEAR]
         assert clear_indices
         stale_deltas = [
             event
@@ -562,8 +608,98 @@ class TestSlowTeardownDoesNotStallLoop:
 
         scheduler.release_gate.set()
         assert await _wait_for(old_task.done)
+        assert await _wait_for(lambda: old_task not in session._owned_tts_tasks)
 
         await session.close()
+
+    @pytest.mark.asyncio
+    async def test_close_waits_for_physically_owned_tts_work(self, monkeypatch):
+        tts = ScriptedTTSAdapter(chunks=50, inter_chunk_delay=0.01)
+        scheduler = HangingReleaseScheduler(tts)
+        session = ConversationSession(
+            scheduler=scheduler,
+            config=ConversationConfig(
+                stt_model="fake-stt:latest",
+                tts_model="fake-tts:latest",
+                voice="default",
+                language="en",
+                policy=TurnPolicy(min_interrupt_duration_ms=50, max_endpointing_delay_ms=200),
+                interrupt_classifier=_AcceptAllClassifier(),
+            ),
+            on_event=EventCollector(),
+        )
+        await session.start()
+
+        await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
+        await _drain_events(session)
+        await session.submit_response_text("long reply")
+        assert await _wait_for(lambda: session.state == TurnState.SPEAKING)
+        old_task = session._tts_task
+        assert old_task is not None
+
+        async def fast_reap(task, *, timeout=5.0):
+            await task_helpers.reap_task(task, timeout=0.01)
+
+        monkeypatch.setattr(session_module, "reap_task", fast_reap)
+        await session.cancel_response()
+        assert old_task in session._owned_tts_tasks
+
+        close_task = asyncio.create_task(session.close())
+        await asyncio.sleep(0.05)
+
+        try:
+            assert not close_task.done()
+        finally:
+            scheduler.release_gate.set()
+            await asyncio.wait_for(close_task, timeout=1.0)
+
+        assert old_task.done()
+        assert session._owned_tts_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_close_returns_without_abandoning_physically_owned_tts(self, monkeypatch):
+        tts = ScriptedTTSAdapter(chunks=50, inter_chunk_delay=0.01)
+        scheduler = HangingReleaseScheduler(tts)
+        session = ConversationSession(
+            scheduler=scheduler,
+            config=ConversationConfig(
+                stt_model="fake-stt:latest",
+                tts_model="fake-tts:latest",
+                voice="default",
+                language="en",
+                policy=TurnPolicy(min_interrupt_duration_ms=50, max_endpointing_delay_ms=200),
+                interrupt_classifier=_AcceptAllClassifier(),
+            ),
+            on_event=EventCollector(),
+        )
+        await session.start()
+        await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
+        await _drain_events(session)
+        await session.submit_response_text("long reply")
+        assert await _wait_for(lambda: session.state == TurnState.SPEAKING)
+        old_task = session._tts_task
+        assert old_task is not None
+
+        async def fast_reap(task, *, timeout=5.0):
+            await task_helpers.reap_task(task, timeout=0.01)
+
+        monkeypatch.setattr(session_module, "reap_task", fast_reap)
+        await session.cancel_response()
+        close_task = asyncio.create_task(session.close())
+        await asyncio.sleep(0.02)
+        close_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(close_task, timeout=0.05)
+
+        assert session._close_task is not None
+        assert session._close_task.done() is False
+        assert old_task in session._owned_tts_tasks
+
+        scheduler.release_gate.set()
+        await asyncio.wait_for(session._close_task, timeout=1)
+        assert old_task.done()
+        assert session._owned_tts_tasks == set()
 
 
 class TestRecoveryIdempotence:
@@ -610,6 +746,30 @@ class TestRecoveryIdempotence:
 
 
 class TestOrchestratorSessionAgreement:
+    @pytest.mark.asyncio
+    async def test_concurrent_response_starts_cannot_alias_generations(self):
+        orchestrator = ConversationOrchestrator(scheduler=FakeScheduler(GatedTTS()))
+        await orchestrator.start_session(_session_config())
+        session = orchestrator._session
+        assert session is not None
+
+        results = await asyncio.gather(
+            orchestrator.start_response(generation_id="gen-a"),
+            orchestrator.start_response(generation_id="gen-b"),
+            return_exceptions=True,
+        )
+
+        failures = [result for result in results if isinstance(result, BaseException)]
+        accepted = [result for result in results if not isinstance(result, BaseException)]
+        assert len(accepted) == 1
+        assert len(failures) == 1
+        assert isinstance(failures[0], ConversationCommandError)
+        assert failures[0].code == session_module.ERROR_CODE_RESPONSE_ALREADY_ACTIVE
+        assert session.active_generation_id in {"gen-a", "gen-b"}
+        assert session._response_lifecycle.counter == 1
+
+        await orchestrator.close()
+
     @pytest.mark.asyncio
     async def test_orchestrator_aliveness_matches_session_after_tts_failure(self):
         orchestrator = ConversationOrchestrator(scheduler=FakeScheduler(BrokenTTS()))
@@ -829,9 +989,7 @@ class TestOwnershipInvariantI2:
                     generation_id = f"gen-{generation}"
                     await orchestrator.start_response(generation_id=generation_id)
                 elif op == "append":
-                    await orchestrator.append_response_text(
-                        "A reply sentence.", generation_id=generation_id
-                    )
+                    await orchestrator.append_response_text("A reply sentence.", generation_id=generation_id)
                 elif op == "commit":
                     await orchestrator.commit_response(generation_id=generation_id)
                 elif op == "cancel":

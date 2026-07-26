@@ -246,7 +246,10 @@ def test_orpheus_bootstraps_runtime_when_missing(tmp_path):
     assert calls
     assert calls[0][:2] == ["uv", "pip"]
     assert "--target" in calls[0]
-    assert str(tmp_path / "vox-home" / "runtime" / "orpheus") in calls[0]
+    runtime_dir = tmp_path / "vox-home" / "runtime" / "orpheus"
+    install_target = Path(calls[0][calls[0].index("--target") + 1])
+    assert install_target.parent == runtime_dir.parent
+    assert install_target.name.startswith(".orpheus.installing-")
     assert "orpheus-speech==0.1.0" in calls[0]
 
 
@@ -275,7 +278,10 @@ def test_orpheus_prepare_runtime_bootstraps_without_loading_model(tmp_path):
     assert calls
     assert _FakeOrpheusModel.instances == []
     assert "--target" in calls[0]
-    assert str(tmp_path / "vox-home" / "runtime" / "orpheus") in calls[0]
+    runtime_dir = tmp_path / "vox-home" / "runtime" / "orpheus"
+    install_target = Path(calls[0][calls[0].index("--target") + 1])
+    assert install_target.parent == runtime_dir.parent
+    assert install_target.name.startswith(".orpheus.installing-")
     assert "orpheus-speech==0.1.0" in calls[0]
 
 
@@ -304,7 +310,10 @@ def test_orpheus_repairs_runtime_when_symbol_is_missing(tmp_path):
     assert calls
     assert _FakeOrpheusModel.instances == []
     assert "--target" in calls[0]
-    assert str(tmp_path / "vox-home" / "runtime" / "orpheus") in calls[0]
+    runtime_dir = tmp_path / "vox-home" / "runtime" / "orpheus"
+    install_target = Path(calls[0][calls[0].index("--target") + 1])
+    assert install_target.parent == runtime_dir.parent
+    assert install_target.name.startswith(".orpheus.installing-")
 
 
 def test_orpheus_repairs_runtime_when_import_probe_is_broken(tmp_path):
@@ -339,7 +348,10 @@ def test_orpheus_repairs_runtime_when_import_probe_is_broken(tmp_path):
     assert calls
     assert _FakeOrpheusModel.instances == []
     assert "--target" in calls[0]
-    assert str(tmp_path / "vox-home" / "runtime" / "orpheus") in calls[0]
+    runtime_dir = tmp_path / "vox-home" / "runtime" / "orpheus"
+    install_target = Path(calls[0][calls[0].index("--target") + 1])
+    assert install_target.parent == runtime_dir.parent
+    assert install_target.name.startswith(".orpheus.installing-")
 
 
 def test_orpheus_runtime_probe_rejects_app_env_orpheus_module(tmp_path):

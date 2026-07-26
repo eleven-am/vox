@@ -22,6 +22,7 @@ from vox.operations.conversation_commands import (
 )
 from vox.operations.conversation_runtime import ConversationRuntime
 from vox.operations.errors import InvalidConfigError
+from vox.operations.rtc_runtime import RtcCandidateCommand, RtcOfferCommand
 
 
 def test_grpc_session_update_decodes_to_shared_command_shape():
@@ -145,12 +146,8 @@ def test_grpc_response_start_preserves_typed_output_override_for_both_transports
         ),
     )
 
-    converse = converse_client_message_to_command(
-        vox_pb2.ConverseClientMessage(response_start=start)
-    )
-    rtc = rtc_control_message_to_command(
-        vox_pb2.RtcControlClientMessage(response_start=start)
-    )
+    converse = converse_client_message_to_command(vox_pb2.ConverseClientMessage(response_start=start))
+    rtc = rtc_control_message_to_command(vox_pb2.RtcControlClientMessage(response_start=start))
 
     expected = ResponseStartCommand(
         generation_id="gen-1",
@@ -246,6 +243,38 @@ def test_rtc_attach_is_not_a_conversation_command_after_attach_phase():
                 attach=vox_pb2.RtcControlAttach(session_id="rtc_123"),
             )
         )
+
+
+def test_rtc_signaling_commands_preserve_negotiation_generation():
+    offer = rtc_control_message_to_command(
+        vox_pb2.RtcControlClientMessage(
+            offer=vox_pb2.RtcControlOffer(
+                offer=vox_pb2.RtcSessionDescription(type="offer", sdp="sdp"),
+                restart=True,
+                generation=9,
+            )
+        )
+    )
+    candidate = rtc_control_message_to_command(
+        vox_pb2.RtcControlClientMessage(
+            candidate=vox_pb2.RtcIceCandidate(
+                candidate="candidate:1",
+                generation=9,
+            )
+        )
+    )
+    complete = rtc_control_message_to_command(
+        vox_pb2.RtcControlClientMessage(candidates_complete=vox_pb2.RtcIceCandidatesComplete(generation=9))
+    )
+
+    assert offer == RtcOfferCommand(
+        offer_type="offer",
+        sdp="sdp",
+        restart=True,
+        generation=9,
+    )
+    assert candidate == RtcCandidateCommand(candidate="candidate:1", generation=9)
+    assert complete == RtcCandidateCommand(candidate=None, generation=9)
 
 
 @pytest.mark.asyncio

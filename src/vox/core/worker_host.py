@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 WORKER_FD_ENV = "VOX_WORKER_PROTOCOL_FD"
 WORKER_PARENT_PID_ENV = "VOX_WORKER_PARENT_PID"
 _PR_SET_PDEATHSIG = 1
+DEFAULT_WORKER_KILL_TIMEOUT_SECONDS = 5.0
 
 
 class WorkerError(VoxError):
@@ -45,6 +46,7 @@ class WorkerHost:
         self._alive = False
         self._buffer = bytearray()
         self._request_lock = threading.Lock()
+        self._kill_timeout = DEFAULT_WORKER_KILL_TIMEOUT_SECONDS
         parent_sock, child_sock = socket.socketpair()
         stderr_read, stderr_write = os.pipe()
         try:
@@ -113,13 +115,19 @@ class WorkerHost:
             with contextlib.suppress(subprocess.TimeoutExpired):
                 self._proc.wait(timeout=grace)
         self._kill_group(signal.SIGKILL)
-        self._proc.wait()
+        try:
+            self._proc.wait(timeout=grace)
+        except subprocess.TimeoutExpired as error:
+            raise WorkerError(f"{self._name} worker did not exit after SIGKILL") from error
 
     def _anomaly(self, reason: str) -> NoReturn:
         self._alive = False
         self._close_pipes()
         self._kill_group(signal.SIGKILL)
-        self._proc.wait()
+        try:
+            self._proc.wait(timeout=self._kill_timeout)
+        except subprocess.TimeoutExpired as error:
+            raise WorkerError(f"{self._name} worker did not exit after SIGKILL: {reason}") from error
         raise WorkerError(f"{self._name} worker killed: {reason} (exit code {self._proc.returncode})")
 
     def _read_frame(self, timeout: float) -> dict[str, Any]:
@@ -127,7 +135,7 @@ class WorkerHost:
         while True:
             newline = self._buffer.find(b"\n")
             if newline >= 0:
-                line = bytes(self._buffer[: newline])
+                line = bytes(self._buffer[:newline])
                 del self._buffer[: newline + 1]
                 try:
                     frame = json.loads(line)
@@ -180,6 +188,8 @@ def worker_parent_lost() -> bool:
 
 def worker_main(handler: Callable[[dict[str, Any]], dict[str, Any]]) -> int:
     install_parent_death_signal()
+    if worker_parent_lost():
+        return 1
     sock = socket.socket(fileno=os.dup(int(os.environ[WORKER_FD_ENV])))
     os.dup2(2, 1)
     stream = sock.makefile("rwb")

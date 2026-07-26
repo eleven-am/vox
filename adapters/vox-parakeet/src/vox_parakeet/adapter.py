@@ -14,6 +14,7 @@ import soundfile as sf
 from numpy.typing import NDArray
 
 from vox.core.adapter import STTAdapter
+from vox.core.transcription_logging import log_transcription_result
 from vox.core.types import (
     AdapterInfo,
     ModelFormat,
@@ -32,18 +33,20 @@ VOICED_EMPTY_MIN_DURATION_MS = 1_000
 VOICED_EMPTY_MIN_PEAK = 0.02
 VOICED_EMPTY_MIN_RMS = 0.003
 
-_ENGLISH_LANGUAGE_CODES = frozenset({
-    "en",
-    "english",
-    "en-us",
-    "en-gb",
-    "en-au",
-    "en-ca",
-    "en-nz",
-    "en-ie",
-    "en-za",
-    "en-in",
-})
+_ENGLISH_LANGUAGE_CODES = frozenset(
+    {
+        "en",
+        "english",
+        "en-us",
+        "en-gb",
+        "en-au",
+        "en-ca",
+        "en-nz",
+        "en-ie",
+        "en-za",
+        "en-in",
+    }
+)
 
 
 _VRAM_ESTIMATES: dict[str, int] = {
@@ -61,7 +64,6 @@ def _normalize_model_id(model_id: str) -> str:
     returned unchanged.
     """
     if "/" in model_id:
-
         _, repo_name = model_id.split("/", 1)
         return f"nemo-{repo_name}"
     return model_id
@@ -100,10 +102,7 @@ def _get_providers(device: str) -> tuple[list[str], str]:
         if device == "auto":
             return ["CPUExecutionProvider"], "cpu"
 
-        raise RuntimeError(
-            "Parakeet requires CUDAExecutionProvider for non-CPU devices; "
-            "CPU fallback is disabled"
-        )
+        raise RuntimeError("Parakeet requires CUDAExecutionProvider for non-CPU devices; CPU fallback is disabled")
 
     return ["CPUExecutionProvider"], "cpu"
 
@@ -300,10 +299,11 @@ class ParakeetAdapter(STTAdapter):
 
         text = text.strip() if text else ""
 
-        if not text:
-            logger.warning("Empty transcription for %dms audio", audio_duration_ms)
-        else:
-            logger.info("Transcribed %dms audio: %s", audio_duration_ms, text[:80])
+        log_transcription_result(
+            logger,
+            audio_duration_ms=audio_duration_ms,
+            text=text,
+        )
 
         return TranscribeResult(
             text=text,
@@ -338,13 +338,15 @@ class ParakeetAdapter(STTAdapter):
                 for w in words
             )
             segments = (
-                (TranscriptSegment(
-                    text=text,
-                    start_ms=0,
-                    end_ms=audio_duration_ms,
-                    words=word_ts,
-                    language="en",
-                ),)
+                (
+                    TranscriptSegment(
+                        text=text,
+                        start_ms=0,
+                        end_ms=audio_duration_ms,
+                        words=word_ts,
+                        language="en",
+                    ),
+                )
                 if text
                 else ()
             )
@@ -352,12 +354,14 @@ class ParakeetAdapter(STTAdapter):
 
         text = (self._model.recognize(str(temp_path)) or "").strip()
         segments = (
-            (TranscriptSegment(
-                text=text,
-                start_ms=0,
-                end_ms=audio_duration_ms,
-                language="en",
-            ),)
+            (
+                TranscriptSegment(
+                    text=text,
+                    start_ms=0,
+                    end_ms=audio_duration_ms,
+                    language="en",
+                ),
+            )
             if text
             else ()
         )

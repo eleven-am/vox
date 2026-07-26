@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import os
 import sys
+from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
@@ -201,5 +202,8 @@ def test_neutts_bootstraps_runtime_when_missing(tmp_path):
     assert calls
     assert calls[0][:2] == ["uv", "pip"]
     assert "--target" in calls[0]
-    assert str(tmp_path / "vox-home" / "runtime" / "neutts") in calls[0]
+    runtime_dir = tmp_path / "vox-home" / "runtime" / "neutts"
+    install_target = Path(calls[0][calls[0].index("--target") + 1])
+    assert install_target.parent == runtime_dir.parent
+    assert install_target.name.startswith(".neutts.installing-")
     assert "neutts==1.2.1" in calls[0]

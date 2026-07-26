@@ -118,26 +118,25 @@ def _env_timeout_seconds(name: str, default: float) -> float:
 
 
 class OmniBackend(ABC):
+    @property
+    @abstractmethod
+    def alive(self) -> bool: ...
 
     @abstractmethod
     async def generate(
         self,
         text: str,
         voice: str,
-    ) -> AsyncIterator[SynthesizeChunk]:
-        ...
+    ) -> AsyncIterator[SynthesizeChunk]: ...
 
     @abstractmethod
-    def trim(self) -> None:
-        ...
+    def trim(self) -> None: ...
 
     @abstractmethod
-    async def close(self) -> None:
-        ...
+    async def close(self) -> None: ...
 
 
 class InProcessOmniBackend(OmniBackend):
-
     def __init__(
         self,
         runtime: Any,
@@ -150,15 +149,17 @@ class InProcessOmniBackend(OmniBackend):
         self._speech_request_cls = speech_request_cls
         self._sampling_params = sampling_params
 
+    @property
+    def alive(self) -> bool:
+        return True
+
     async def generate(
         self,
         text: str,
         voice: str,
     ) -> AsyncIterator[SynthesizeChunk]:
         instruct_tokenizer = self._tokenizer.instruct_tokenizer
-        tokenized = instruct_tokenizer.encode_speech_request(
-            self._speech_request_cls(input=text, voice=voice)
-        )
+        tokenized = instruct_tokenizer.encode_speech_request(self._speech_request_cls(input=text, voice=voice))
         inputs: dict[str, Any] = {
             "prompt_token_ids": tokenized.tokens,
             "additional_information": {"voice": [voice]},
@@ -210,9 +211,12 @@ class InProcessOmniBackend(OmniBackend):
 
 
 class WorkerOmniBackend(OmniBackend):
-
     def __init__(self, host: WorkerHost) -> None:
         self._host = host
+
+    @property
+    def alive(self) -> bool:
+        return self._host.alive
 
     @classmethod
     def spawn(

@@ -44,9 +44,11 @@ def _build_voxtral_tts_runtime(
     runtime.get_supported_voices = MagicMock(return_value=supported_voices or [])
 
     if generate_side_effect is None:
+
         async def generate_side_effect(*args, **kwargs):
             if False:
                 yield None
+
     runtime.generate = MagicMock(side_effect=generate_side_effect)
 
     modules = {
@@ -92,7 +94,6 @@ class TestVoxtralSTTAdapterInfo:
             assert "voxtral" in info.architectures
             assert info.default_sample_rate == 16000
             assert ModelFormat.PYTORCH in info.supported_formats
-
 
             assert info.supports_language_detection is False
 
@@ -302,10 +303,13 @@ class TestVoxtralTTSAdapterInfo:
             from vox_voxtral.tts_adapter import VoxtralTTSAdapter
 
             adapter = VoxtralTTSAdapter()
-            with patch(
-                "vox_voxtral.tts_adapter.ensure_voxtral_tts_runtime",
-                side_effect=RuntimeError("vllm-omni unavailable"),
-            ), pytest.raises(RuntimeError, match="vllm-omni"):
+            with (
+                patch(
+                    "vox_voxtral.tts_adapter.ensure_voxtral_tts_runtime",
+                    side_effect=RuntimeError("vllm-omni unavailable"),
+                ),
+                pytest.raises(RuntimeError, match="vllm-omni"),
+            ):
                 adapter.load("mistralai/Voxtral-4B-TTS-2603", "auto")
 
     def test_load_uses_vllm_omni_runtime(self, tmp_path):
@@ -454,12 +458,53 @@ class TestVoxtralTTSAdapterInfo:
             assert host.closed is True
             assert adapter.is_loaded is False
 
+    def test_worker_fallback_closes_partially_initialized_runtime(self):
+        modules, _, runtime, _, _, _ = _build_voxtral_tts_runtime()
+        worker_backend = MagicMock()
+        worker_backend.alive = True
+
+        with patch.dict("sys.modules", modules):
+            from vox_voxtral.tts_adapter import VoxtralTTSAdapter
+
+            adapter = VoxtralTTSAdapter()
+            with (
+                patch(
+                    "vox_voxtral.tts_adapter.InProcessOmniBackend",
+                    side_effect=RuntimeError("backend initialization failed"),
+                ),
+                patch.object(adapter, "_make_worker_backend", return_value=worker_backend),
+            ):
+                adapter.load(
+                    "mistralai/Voxtral-4B-TTS-2603",
+                    "cuda",
+                    _stage_configs_path="/tmp/voxtral_tts.yaml",
+                )
+
+        runtime.shutdown.assert_called_once_with()
+        assert adapter._runtime is None
+        assert adapter._tokenizer is None
+        assert adapter._backend is worker_backend
+        assert adapter.is_loaded is True
+
+    def test_worker_death_marks_adapter_unloaded(self):
+        with patch.dict("sys.modules", {"transformers": MagicMock(), "torch": MagicMock()}):
+            from vox_voxtral.tts_adapter import VoxtralTTSAdapter
+
+            backend = MagicMock()
+            backend.alive = False
+            adapter = VoxtralTTSAdapter()
+            adapter._backend = backend
+            adapter._loaded = True
+
+            assert adapter.is_loaded is False
+
     def test_synthesize_uses_worker_backend(self):
 
         audio_bytes = b"\x00\x00\x80?\x00\x00\x00@"
 
         async def fake_generate(text: str, voice: str):
             from vox.core.types import SynthesizeChunk
+
             yield SynthesizeChunk(audio=audio_bytes, sample_rate=24000, is_final=False)
             yield SynthesizeChunk(audio=b"", sample_rate=24000, is_final=True)
 

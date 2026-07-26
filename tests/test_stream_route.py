@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from vox.operations.models import PullTaskRegistry
 from vox.server.routes import stream
 
 
@@ -14,6 +15,7 @@ def _build_stream_app(*, store=None, registry=None, scheduler=None) -> FastAPI:
     app.state.store = store or MagicMock()
     app.state.registry = registry or MagicMock()
     app.state.scheduler = scheduler or MagicMock()
+    app.state.pull_tasks = PullTaskRegistry()
     app.include_router(stream.router)
     return app
 

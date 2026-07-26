@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -16,7 +15,10 @@ import soundfile as sf
 from numpy.typing import NDArray
 
 from vox.core.adapter import STTAdapter
-from vox.core.adapter_runtime import install_target_runtime_requirements
+from vox.core.adapter_runtime import (
+    install_target_runtime_requirements,
+    remove_target_runtime_paths,
+)
 from vox.core.adapter_runtime import (
     runtime_root as vox_runtime_root,
 )
@@ -116,12 +118,8 @@ def _uv_supports_excludes() -> bool:
 
 
 def _remove_worker_local_gpu_stack(runtime_dir: Path) -> None:
-    for pattern in _SHARED_APP_RUNTIME_GLOBS:
-        for path in runtime_dir.glob(pattern):
-            if path.is_symlink() or path.is_file():
-                path.unlink()
-            elif path.is_dir():
-                shutil.rmtree(path)
+    paths = {path for pattern in _SHARED_APP_RUNTIME_GLOBS for path in runtime_dir.glob(pattern)}
+    remove_target_runtime_paths(runtime_dir, paths)
 
 
 def _install_nemo_runtime() -> Path:

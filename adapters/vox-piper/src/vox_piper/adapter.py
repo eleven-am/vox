@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import shutil
 import subprocess
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -18,6 +17,7 @@ from vox.core.adapter_runtime import (
     install_target_runtime_requirements,
     module_available,
     purge_runtime_modules,
+    remove_target_runtime_paths,
 )
 from vox.core.adapter_runtime import (
     runtime_root as vox_runtime_root,
@@ -58,19 +58,16 @@ def _ensure_runtime_path() -> str:
 
 
 def _purge_stale_runtime_packages(runtime_dir: Path) -> None:
-    for child in runtime_dir.iterdir():
-        name = child.name.lower()
-        if (
-            name in _STALE_RUNTIME_MODULES
-            or name.startswith("onnxruntime")
-            or name.startswith("torch")
-            or name.startswith("torchaudio")
-            or name.startswith("nvidia")
-        ):
-            if child.is_dir():
-                shutil.rmtree(child, ignore_errors=True)
-            else:
-                child.unlink(missing_ok=True)
+    paths = [
+        child
+        for child in runtime_dir.iterdir()
+        if (name := child.name.lower()) in _STALE_RUNTIME_MODULES
+        or name.startswith("onnxruntime")
+        or name.startswith("torch")
+        or name.startswith("torchaudio")
+        or name.startswith("nvidia")
+    ]
+    remove_target_runtime_paths(runtime_dir, paths)
     purge_runtime_modules(_STALE_RUNTIME_MODULES)
 
 
@@ -164,11 +161,13 @@ def _load_piper_voice_class() -> Any:
     _ensure_runtime_path()
     try:
         from piper import PiperVoice
+
         return PiperVoice
     except ImportError:
         _install_piper_runtime()
         try:
             from piper import PiperVoice
+
             return PiperVoice
         except ImportError as exc:  # pragma: no cover - depends on runtime image
             raise RuntimeError("Piper requires the piper-tts runtime package") from exc
@@ -210,9 +209,7 @@ def _install_piper_runtime() -> None:
         install_runner=_run_install_command,
         context="Piper runtime install",
     ) or not module_available("piper"):
-        raise RuntimeError(
-            "Failed to install Piper runtime package."
-        )
+        raise RuntimeError("Failed to install Piper runtime package.")
 
 
 def _run_install_command(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
@@ -304,9 +301,7 @@ class PiperAdapter(TTSAdapter):
             return
 
         syn_config = _build_synthesis_config(self._config, voice, speed)
-        audio_chunks = await asyncio.to_thread(
-            lambda: list(self._voice.synthesize(text, syn_config=syn_config))
-        )
+        audio_chunks = await asyncio.to_thread(lambda: list(self._voice.synthesize(text, syn_config=syn_config)))
         if not audio_chunks:
             raise RuntimeError("Piper produced no audio")
 
@@ -339,7 +334,7 @@ class PiperAdapter(TTSAdapter):
 
         chunk_size = sample_rate * 2
         for i in range(0, len(audio), chunk_size):
-            chunk = audio[i:i + chunk_size]
+            chunk = audio[i : i + chunk_size]
             yield SynthesizeChunk(
                 audio=chunk.tobytes(),
                 sample_rate=sample_rate,

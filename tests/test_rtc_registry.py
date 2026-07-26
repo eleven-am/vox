@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
 from vox.operations.conversation import WIRE_BROWSER_EVENT, WIRE_RTC_CLIENT_DISCONNECTED
+from vox.operations.errors import InvalidConfigError
 from vox.server.rtc_registry import (
+    RTC_MEDIA_EVENT_MAX_BYTES,
+    RTC_MEDIA_EVENT_MAX_COUNT,
+    RtcEventQueue,
     RtcSessionRegistry,
     cancel_and_drain_media_tasks,
     cancel_media_tasks,
@@ -119,6 +124,86 @@ async def test_close_awaits_cancelled_media_task_cleanup():
 
 
 @pytest.mark.asyncio
+async def test_teardown_failure_remains_visible_and_owned():
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket", now=1000.0)
+
+    class FailingOrchestrator:
+        async def close(self) -> None:
+            raise RuntimeError("orchestrator still live")
+
+    orchestrator = FailingOrchestrator()
+    record.orchestrator = orchestrator
+
+    registry.close(record.session_id)
+
+    with pytest.raises(RuntimeError, match="orchestrator still live"):
+        await registry.drain_teardowns()
+
+    assert record.orchestrator is orchestrator
+
+
+@pytest.mark.asyncio
+async def test_transient_teardown_failure_retries_owned_resource():
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket", now=1000.0)
+
+    class Peer:
+        def __init__(self) -> None:
+            self.close_count = 0
+
+        async def close(self) -> None:
+            self.close_count += 1
+            if self.close_count == 1:
+                raise RuntimeError("peer close failed once")
+
+    peer = Peer()
+    record.rtc_peer = peer
+    registry.close(record.session_id)
+
+    with pytest.raises(RuntimeError, match="peer close failed once"):
+        await registry.drain_teardowns()
+
+    await registry.drain_teardowns()
+
+    assert peer.close_count == 2
+    assert record.rtc_peer is None
+    assert record.session_id not in registry._closing_sessions
+    assert registry._teardown_tasks == set()
+    assert registry._teardown_records == {}
+
+
+@pytest.mark.asyncio
+async def test_transient_teardown_failure_retries_without_manual_drain():
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket", now=1000.0)
+    retry_completed = asyncio.Event()
+
+    class Peer:
+        def __init__(self) -> None:
+            self.close_count = 0
+
+        async def close(self) -> None:
+            self.close_count += 1
+            if self.close_count == 1:
+                raise RuntimeError("peer close failed once")
+            retry_completed.set()
+
+    peer = Peer()
+    record.rtc_peer = peer
+    registry.close(record.session_id)
+
+    await asyncio.wait_for(retry_completed.wait(), timeout=1)
+    await asyncio.sleep(0)
+
+    assert peer.close_count == 2
+    assert record.rtc_peer is None
+    assert record.session_id not in registry._closing_sessions
+    assert registry._teardown_tasks == set()
+    assert registry._teardown_records == {}
+
+
+@pytest.mark.asyncio
 async def test_client_disconnect_control_event_is_deduped():
     registry = RtcSessionRegistry()
     record = registry.create_session(control_transport="pondsocket", now=1000.0)
@@ -175,6 +260,79 @@ async def test_data_channel_message_emits_browser_event_to_control():
     }
 
 
+@pytest.mark.asyncio
+async def test_browser_event_queue_has_count_and_byte_limits():
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket", now=1000.0)
+
+    for index in range(128):
+        await handle_browser_data_channel_message(
+            record,
+            record.session_id,
+            json.dumps(
+                {
+                    "event": "ui.select",
+                    "payload": {"id": str(index)},
+                }
+            ),
+        )
+
+    with pytest.raises(InvalidConfigError, match="RTC browser event queue"):
+        await handle_browser_data_channel_message(
+            record,
+            record.session_id,
+            '{"event":"ui.select","payload":{"id":"overflow"}}',
+        )
+
+    while not record.control_events.empty():
+        await record.control_events.get()
+
+    with pytest.raises(InvalidConfigError, match="RTC browser event queue"):
+        await handle_browser_data_channel_message(
+            record,
+            record.session_id,
+            json.dumps(
+                {
+                    "event": "ui.select",
+                    "payload": {"id": "x" * 262_144},
+                }
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_media_event_queue_has_count_and_byte_limits():
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket", now=1000.0)
+
+    for index in range(256):
+        await record.media_events.put(
+            {
+                "type": "rtc.connection_state",
+                "state": f"state-{index}",
+            }
+        )
+
+    with pytest.raises(asyncio.QueueFull):
+        await record.media_events.put(
+            {
+                "type": "rtc.connection_state",
+                "state": "overflow",
+            }
+        )
+
+    while not record.media_events.empty():
+        await record.media_events.get()
+
+    with pytest.raises(asyncio.QueueFull):
+        await record.media_events.put(
+            {
+                "type": "rtc.signaling_error",
+                "message": "x" * 524_288,
+            }
+        )
+
+
 def test_parse_browser_data_channel_message_accepts_text_and_bytes():
     assert parse_browser_data_channel_message(
         '{"event":"ui.select","payload":{"id":"choice-a"}}',
@@ -229,6 +387,21 @@ def test_client_events_queue_until_data_channel_opens():
 
     assert record.pending_client_events == []
     assert channel.sent == ['{"event": "ui.toast", "payload": {"message": "hi"}}']
+
+
+def test_client_event_queue_has_count_and_byte_limits():
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="pondsocket", now=1000.0)
+
+    for index in range(128):
+        send_client_event_to_browser(record, "ui.toast", {"message": str(index)})
+
+    with pytest.raises(InvalidConfigError, match="pending RTC client event queue"):
+        send_client_event_to_browser(record, "ui.toast", {"message": "overflow"})
+
+    record.pending_client_events.clear()
+    with pytest.raises(InvalidConfigError, match="pending RTC client event queue"):
+        send_client_event_to_browser(record, "ui.toast", {"message": "x" * 262_144})
 
 
 def test_flush_pending_client_events_suppresses_send_errors():
@@ -358,7 +531,10 @@ async def test_close_attached_owns_shared_media_teardown():
     record.orchestrator = object()
     record.data_channel = object()
     record.audio_output = asyncio.Queue()
-    record.media_events = asyncio.Queue()
+    record.media_events = RtcEventQueue(
+        max_count=RTC_MEDIA_EVENT_MAX_COUNT,
+        max_bytes=RTC_MEDIA_EVENT_MAX_BYTES,
+    )
     peer = FakePeer()
     record.rtc_peer = peer
     orchestrator = FakeOrchestrator()

@@ -9,6 +9,12 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 DEFAULT_STALE_TEMP_AGE_SECONDS = 24 * 60 * 60
+DEFAULT_VOX_TEMP_ROOT = Path("/tmp/vox")
+
+
+def vox_temp_root() -> Path:
+    configured = os.environ.get("VOX_TEMP_ROOT", "").strip()
+    return Path(configured) if configured else DEFAULT_VOX_TEMP_ROOT
 
 
 def stale_temp_age_seconds() -> int:
@@ -41,15 +47,20 @@ def prune_stale_temp_dirs(
     removed: list[Path] = []
     for candidate in temp_root.iterdir():
         try:
-            if candidate.is_symlink() or not candidate.is_dir() or candidate.stat().st_mtime > cutoff:
+            if candidate.lstat().st_mtime > cutoff:
                 continue
-            shutil.rmtree(candidate)
+            if candidate.is_symlink() or candidate.is_file():
+                candidate.unlink()
+            elif candidate.is_dir():
+                shutil.rmtree(candidate)
+            else:
+                continue
             removed.append(candidate)
         except FileNotFoundError:
             continue
         except OSError as exc:
-            logger.warning("Unable to remove stale Vox temporary directory %s: %s", candidate, exc)
+            logger.warning("Unable to remove stale Vox temporary entry %s: %s", candidate, exc)
 
     if removed:
-        logger.info("Removed %d stale Vox temporary directories from %s", len(removed), temp_root)
+        logger.info("Removed %d stale Vox temporary entries from %s", len(removed), temp_root)
     return removed

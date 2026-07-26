@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -51,6 +53,17 @@ def test_direct_http_signaling_routes_do_not_exist():
     assert client.post(f"/v1/rtc/sessions/{session_id}/offer", json={}).status_code == 404
     assert client.post(f"/v1/rtc/sessions/{session_id}/candidates", json={}).status_code == 404
     assert client.get(f"/v1/rtc/sessions/{session_id}/events").status_code == 404
+
+
+def test_browser_example_uses_only_pondsocket_for_rtc_signaling():
+    html = (Path(__file__).parents[1] / "examples" / "rtc-browser-client.html").read_text()
+
+    assert "new EventSource" not in html
+    assert "/offer" not in html
+    assert "/candidates" not in html
+    assert 'sendControlMessage("rtc.offer"' in html
+    assert 'sendControlMessage("rtc.ice_candidate"' in html
+    assert 'event.type === "rtc.answer"' in html
 
 
 def test_parse_rtc_session_bootstrap_request_defaults_to_browser_events_unchanged():

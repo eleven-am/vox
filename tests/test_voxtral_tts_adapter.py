@@ -17,6 +17,10 @@ class FakeOmniBackend:
         self.close_called = False
         self.trim_called = False
 
+    @property
+    def alive(self) -> bool:
+        return not self.close_called
+
     async def generate(self, text: str, voice: str) -> AsyncIterator[SynthesizeChunk]:
         if self._raise_on_generate is not None:
             raise self._raise_on_generate
@@ -121,9 +125,7 @@ class TestFakeOmniBackendErrorPropagation:
         adapter = _make_adapter_with_backend(backend)
 
         with pytest.raises(NotImplementedError, match="reference-audio cloning"):
-            asyncio.run(
-                _collect(adapter, reference_audio=np.zeros(24000, dtype=np.float32))
-            )
+            asyncio.run(_collect(adapter, reference_audio=np.zeros(24000, dtype=np.float32)))
 
     def test_synthesize_empty_text_yields_nothing(self):
         backend = FakeOmniBackend(_make_chunks())

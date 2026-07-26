@@ -18,6 +18,7 @@ from vox.operations.voices import (
 )
 from vox.server.app_services import app_services, app_store
 from vox.server.operation_errors import map_operation_errors_to_http
+from vox.server.uploads import read_upload_limited
 
 router = APIRouter()
 AUDIO_SAMPLE_FILE = File(...)
@@ -46,7 +47,10 @@ async def create_voice_route(
     reference_text: str | None = Form(None),
 ):
     store = app_store(request)
-    data = await audio_sample.read()
+    data = await read_upload_limited(
+        audio_sample,
+        max_bytes=getattr(request.app.state, "max_upload_bytes", None),
+    )
     with map_operation_errors_to_http():
         op_req = create_voice_request_from_fields(
             name=name,

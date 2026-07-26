@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import numpy as np
 import pytest
 
@@ -13,6 +15,24 @@ from vox.conversation.types import TurnPolicy
 from vox.streaming.types import StreamTranscript
 
 SAMPLE_RATE = 16_000
+
+
+class _GatedClassifier:
+    def __init__(self, *, result: bool) -> None:
+        self.result = result
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    def confirm_window_ms(self, base_ms: int, _last_eou_probability: float | None) -> int:
+        return base_ms
+
+    def should_short_circuit(self, _transcript: str) -> bool:
+        return False
+
+    async def is_real_interrupt(self, *_args) -> bool:
+        self.started.set()
+        await self.release.wait()
+        return self.result
 
 
 def _voice(duration_ms: int, *, amplitude: float = 0.1) -> np.ndarray:
@@ -285,7 +305,7 @@ async def test_self_echo_and_output_echo_reject_without_cancelling() -> None:
         output_echo=False,
         now=10.8,
     )
-    assert self_echo.action is InterruptionDecisionAction.REJECT
+    assert self_echo.action is InterruptionDecisionAction.PROVISIONAL_REJECT
 
     output_detector = _detector()
     _begin(output_detector)
@@ -338,6 +358,130 @@ async def test_stale_final_cannot_confirm_a_new_candidate() -> None:
     assert decision.action is InterruptionDecisionAction.DEFER
     assert decision.reason == "stale_final"
     assert detector.current().utterance_id == 2
+
+
+@pytest.mark.asyncio
+async def test_final_classifier_result_cannot_decide_replacement_candidate() -> None:
+    classifier = _GatedClassifier(result=True)
+    detector = EvidenceBasedInterruptDetector(
+        policy=TurnPolicy(
+            speaking_interrupt_min_duration_ms=420,
+            speaking_interrupt_min_words=2,
+        ),
+        classifier=classifier,
+    )
+    _begin(detector, utterance_id=1)
+
+    pending = asyncio.create_task(
+        detector.observe_final(
+            StreamTranscript(
+                text="Please let me finish",
+                audio_duration_ms=900,
+                eou_probability=0.9,
+                utterance_id=1,
+            ),
+            assistant_text="The assistant is still speaking.",
+            output_echo=False,
+            audio=_voice(900),
+            sample_rate=SAMPLE_RATE,
+            now=10.9,
+        )
+    )
+    await classifier.started.wait()
+    replacement = detector.begin(
+        utterance_id=2,
+        started_at=11.0,
+        assistant_text="The assistant is still speaking.",
+    )
+    classifier.release.set()
+
+    decision = await pending
+
+    assert decision.action is InterruptionDecisionAction.DEFER
+    assert detector.current() == replacement
+
+
+@pytest.mark.asyncio
+async def test_timeout_classifier_result_cannot_override_final_rejection() -> None:
+    classifier = _GatedClassifier(result=True)
+    detector = EvidenceBasedInterruptDetector(
+        policy=TurnPolicy(
+            speaking_interrupt_min_duration_ms=420,
+            speaking_interrupt_min_words=2,
+        ),
+        classifier=classifier,
+    )
+    _begin(detector)
+
+    pending = asyncio.create_task(
+        detector.evaluate_timeout(
+            assistant_text="The assistant is still speaking.",
+            output_echo=False,
+            audio=_voice(600),
+            sample_rate=SAMPLE_RATE,
+            last_eou_probability=None,
+            now=10.6,
+        )
+    )
+    await classifier.started.wait()
+    final = await detector.observe_final(
+        StreamTranscript(
+            text="",
+            audio_duration_ms=600,
+            utterance_id=1,
+        ),
+        assistant_text="The assistant is still speaking.",
+        output_echo=False,
+        audio=_voice(600),
+        sample_rate=SAMPLE_RATE,
+        now=10.7,
+    )
+    classifier.release.set()
+
+    timeout = await pending
+    candidate = detector.current()
+
+    assert final.action is InterruptionDecisionAction.REJECT
+    assert final.reason == "empty_final"
+    assert timeout.action is InterruptionDecisionAction.DEFER
+    assert candidate is not None
+    assert candidate.decision_reason == "empty_final"
+
+
+@pytest.mark.asyncio
+async def test_genuine_final_supersedes_partial_self_echo_for_same_utterance() -> None:
+    detector = _detector()
+    _begin(detector)
+
+    partial = await detector.observe_partial(
+        StreamTranscript(
+            text="assistant is still speaking",
+            is_partial=True,
+            audio_duration_ms=450,
+            utterance_id=1,
+        ),
+        cumulative_transcript="assistant is still speaking",
+        assistant_text="The assistant is still speaking.",
+        output_echo=False,
+        now=10.45,
+    )
+    final = await detector.observe_final(
+        StreamTranscript(
+            text="No wait I need to change that.",
+            audio_duration_ms=900,
+            eou_probability=0.9,
+            utterance_id=1,
+        ),
+        assistant_text="The assistant is still speaking.",
+        output_echo=False,
+        audio=_voice(900),
+        sample_rate=SAMPLE_RATE,
+        now=10.9,
+    )
+
+    assert partial.action is not InterruptionDecisionAction.CONFIRM
+    assert final.action is InterruptionDecisionAction.CONFIRM
+    assert detector.current().decision_reason == "supported_final_transcript"
 
 
 @pytest.mark.asyncio

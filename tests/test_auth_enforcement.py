@@ -6,6 +6,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from vox.operations.models import PullTaskRegistry
 from vox.server.auth import (
     is_metadata_authorized,
     require_ws_api_key,
@@ -25,6 +26,7 @@ def _build_app() -> FastAPI:
     app.state.scheduler.list_loaded.return_value = []
     app.state.store = MagicMock()
     app.state.store.list_models.return_value = []
+    app.state.pull_tasks = PullTaskRegistry()
     app.include_router(health_router)
     app.include_router(models_router)
     return app

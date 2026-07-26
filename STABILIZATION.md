@@ -87,3 +87,137 @@ Scenarios required across BOTH PondSocket and gRPC transports: stubborn TTS
 cancellation (slow adapter vs immediate clear), failed event delivery, VAD vs
 first-audio orderings, recoverable-error handling, full generation correlation,
 interruption confirm/reject under echo.
+
+## Lifecycle hardening evidence — 2026-07-26
+
+The stabilization audit against `5268e0f5b5e32dd0f44cdb8ac41f16829c7bf1a3`
+closed the remaining ownership gaps:
+
+- RTC negotiations bind every peer callback, local-description task,
+  candidate, and completion marker to a negotiation generation. Replacement is
+  transactional and established sessions no longer inherit the bootstrap
+  attachment deadline.
+- Answer publication uses an attempt-scoped barrier. A detached flush from an
+  earlier attempt cannot consume or clear candidates for a replacement
+  attempt, and future-generation remote candidates remain bound to the pending
+  peer until that generation commits.
+- RTC peer ownership is explicit across active, pending, and retired
+  attachments. Closure failure never removes the last owner, failed cleanup
+  closes the session, teardown retries retained resources, and another restart
+  is rejected while its predecessor is still retiring.
+- The shared RTC output track serializes reads across peer handoff. PCM is
+  consumed only after pacing and epoch validation, so sender cancellation
+  cannot drop a reserved frame and `audio.clear` invalidates audio already
+  waiting for playout.
+- Interruption classifier results revalidate candidate identity after awaits.
+  Partial self-echo rejection remains provisional until final evidence, and
+  response starts serialize on the session runner.
+- Response text and RTC audio queues have close/epoch semantics that wake
+  blocked producers and prevent pre-clear audio from appearing after
+  `response.audio.clear`.
+- TTS, VAD, speech-context, scheduler maintenance, and RTC teardown retain
+  physical task ownership through cancellation and share a bounded shutdown
+  deadline. A model load that physically finishes after that deadline unloads
+  its adapter instead of publishing into the stopped scheduler, and new
+  acquire/preload calls are rejected after shutdown starts.
+- Adapter/runtime installation stages outside active directories and publishes
+  with an atomic swap. Blob deduplication remains leased through manifest
+  publication. Failure or cancellation aborts the lease and immediately
+  collects only its unpublished candidate blobs.
+- Pull publication has a durable transaction journal written before each
+  directory swap. Startup resolves journals before constructing the registry:
+  preparing pulls reverse their ordered swaps and restore the previous
+  manifest, committed pulls finish cleanup, and superseded journals cannot
+  replace a newer successful pull. Repeated swaps of one target are reversed
+  in order. Commit and rollback attempt every runtime, adapter, journal, and
+  blob owner even when an earlier owner fails.
+- Pull and delete operations retain writer ownership through repeated
+  cancellation. A writer acquired after cancellation is closed before the
+  operation exits, and adapter/runtime mutations that finish staging after
+  cancellation are rolled back before the writer lease is released.
+- The canonical manifest is the pull commit point. If its atomic replacement
+  succeeds but the following directory sync reports failure, the transaction
+  rolls runtime and adapter state forward, emits a durability warning, and
+  remains a successful publication rather than restoring mixed state.
+- Manifest temporary files live outside the canonical manifest tree, cannot
+  appear as models or retain blobs, and are pruned before model readers are
+  constructed.
+- Pull journals durably retain the complete candidate manifest before
+  publication. Committed recovery re-publishes and syncs that manifest before
+  removing the journal, while startup garbage collection preserves manifest
+  layer roots independently of model metadata construction and fails closed
+  on unreadable or symlinked manifest storage.
+- An atomic swap that has already published remains successful if NFS prevents
+  immediate backup cleanup. The retained backup is left for scoped startup
+  cleanup rather than turning a committed publication into a false failure.
+- Pre-offer RTC candidates are capped at 256. Pending browser application
+  events are capped at 128 events and 262144 bytes. Speech-context admission is
+  capped at two analyses and 256 MiB of source audio.
+- Startup stale-directory cleanup targets `VOX_TEMP_ROOT`, default
+  `/tmp/vox`; ambient operating-system `TMPDIR` contents are never treated as
+  Vox-owned.
+
+The deterministic local soak in `tests/test_stabilization_soak.py` uses
+`RtcRuntime`, `ConversationOrchestrator`, and `RtcAudioOutputTrack` for the RTC
+path. Each RTC cycle proves a completed response waits for playout drain, an
+interrupted response clears the real output track, an ICE restart rejects the
+old peer callback, and teardown releases runtime/media ownership. It reported:
+
+| Soak | Cycles | RSS start | RSS end | Python bytes start/end | FDs | Child processes | Vox-owned threads | Async tasks |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| RTC connect/respond/interrupt/restart/disconnect | 100 | 110854144 | 104153088 | 62588 / 89732 | 12 / 12 | 0 / 0 | 0 / 0 | 1 / 1 |
+| Worker-backed model load/request/cancel/trim/unload | 50 | 117817344 | 117620736 | 597893 / 606659 | 12 / 12 | 0 / 0 | 0 / 0 | 1 / 1 |
+
+The local Mac has no CUDA runtime, so accelerator allocation is reported as
+unavailable rather than inferred from simulated counters. Adapter allocation
+accounting, worker death, and GPU-cache ownership remain covered by focused
+tests; hardware VRAM measurement requires a later authorized image deployment
+and is not represented as local proof.
+
+Endpointing evidence and the selected confidence-shaped continuation policy are
+recorded in `docs/endpointing-benchmark.md`.
+
+The final audit correction pass also pinned:
+
+- TTS task ownership through cancellation-resistant physical teardown.
+- Peer activation before synchronous `setRemoteDescription` track/data-channel
+  events and transactional restoration after failed negotiation.
+- Offer-generation correlation on PondSocket and gRPC signaling errors.
+- Attempt-scoped local-candidate flushing and generation-aware buffering for
+  candidates received before their offer.
+- Cancellation-safe answer publication and restart commit, including
+  simultaneous sender deactivation and RTP-owner cancellation.
+- Identity-safe peer retirement, bounded restart admission while closure is in
+  flight, and retained cleanup ownership across offer, local-description,
+  commit, rollback, and registry-teardown failures.
+- Failed RTC teardown remains registry-owned under bounded-backoff supervision
+  until physical cleanup succeeds; a later attached close restarts the same
+  retained record rather than losing it after session removal.
+- RTC media accepts attempt-scoped callbacks only from the committed
+  negotiation or the pending answer barrier. Discarded attempts cannot become
+  valid again through bounded-history eviction.
+- Scheduler-retired adapters remain explicitly owned after worker death until
+  their final logical and physical work completes, then unload and close their
+  execution lane. Shutdown drains teardown tasks created by the final release.
+- Qwen fallback synthesis sends private text and reference transcripts through
+  stdin JSON rather than process arguments.
+- Direct stale-file cleanup under the explicit Vox scratch root without
+  following symlinks.
+- Bounded final waits after worker `SIGKILL`; cancellation-resistant application,
+  conversation-runtime, and session shutdown tasks retain a strong owner until
+  physical completion.
+- Test-owned NER loader threads are joined before fixture teardown, preventing
+  background runtime installation from leaking into subsequent tests.
+- Query credential redaction recognizes percent-encoded credential names
+  without rewriting unrelated query keys.
+- Endpointing unit tests use generated PCM fixtures and pass with an empty
+  home directory. Authoritative recordings remain an explicit hash-verified
+  evidence gate rather than an undeclared dependency of the default suite.
+
+The final local verification run reported `2675 passed, 3 skipped`. The
+race-sensitive RTC, interruption, response-ownership, shutdown, and pull
+transaction subset passed five consecutive runs of 418 tests. Ruff and all
+124 changed Python files pass formatting. Targeted Pyright across the changed
+RTC, worker, pull transaction, store, model operation, logging, benchmark, and
+application startup boundaries reports zero errors and zero warnings. The
+source distribution and wheel build successfully.

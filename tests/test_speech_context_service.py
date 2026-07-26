@@ -54,6 +54,34 @@ class _Host:
         self.alive = False
 
 
+class _BlockingHost(_Host):
+    def __init__(self, spec: RuntimeSpec) -> None:
+        super().__init__(spec)
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.closed = threading.Event()
+        self.audio_paths: list[Path] = []
+
+    def request(self, payload: dict, *, timeout: float) -> dict:
+        self.audio_paths.append(Path(payload["audio_path"]))
+        self.started.set()
+        self.release.wait(timeout)
+        if self.closed.is_set():
+            raise RuntimeError("closed")
+        return super().request(payload, timeout=timeout)
+
+    def close(self) -> None:
+        self.closed.set()
+        self.release.set()
+        super().close()
+
+
+async def _wait_for_hosts(hosts: dict[str, _BlockingHost], count: int) -> None:
+    async with asyncio.timeout(1):
+        while len(hosts) < count or not all(host.started.is_set() for host in hosts.values()):
+            await asyncio.sleep(0.001)
+
+
 @pytest.mark.asyncio
 async def test_service_runs_tracks_concurrently_reuses_workers_and_preserves_timeline():
     barrier = threading.Barrier(2)
@@ -291,3 +319,86 @@ async def test_context_task_cancellation_is_drained():
 
     assert task.cancelled()
     assert stopped.is_set()
+
+
+@pytest.mark.asyncio
+async def test_service_rejects_analysis_beyond_count_admission_limit():
+    hosts: dict[str, _BlockingHost] = {}
+
+    def factory(spec: RuntimeSpec) -> _BlockingHost:
+        host = _BlockingHost(spec)
+        hosts[spec.key] = host
+        return host
+
+    service = SpeechContextService(host_factory=factory)
+    chunk = AudioChunk(
+        data=np.full(1_600, 0.1, dtype=np.float32),
+        sample_rate=16_000,
+        duration_ms=100,
+        offset_ms=0,
+    )
+    first = asyncio.create_task(service.analyze_chunks((chunk,)))
+    await _wait_for_hosts(hosts, 2)
+    second = asyncio.create_task(service.analyze_chunks((chunk,)))
+    await asyncio.sleep(0)
+    third = asyncio.create_task(service.analyze_chunks((chunk,)))
+
+    try:
+        async with asyncio.timeout(0.1):
+            with pytest.raises(RuntimeError, match="capacity"):
+                await third
+    finally:
+        for host in hosts.values():
+            host.release.set()
+        await asyncio.gather(first, second, return_exceptions=True)
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_service_rejects_analysis_beyond_audio_admission_limit():
+    service = SpeechContextService(
+        host_factory=lambda spec: _Host(spec),
+        max_admitted_audio_bytes=6_399,
+    )
+    chunk = AudioChunk(
+        data=np.full(1_600, 0.1, dtype=np.float32),
+        sample_rate=16_000,
+        duration_ms=100,
+        offset_ms=0,
+    )
+
+    with pytest.raises(RuntimeError, match="capacity"):
+        await service.analyze_chunks((chunk,))
+
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_context_task_cancellation_stops_workers_and_releases_temporary_audio():
+    hosts: dict[str, _BlockingHost] = {}
+
+    def factory(spec: RuntimeSpec) -> _BlockingHost:
+        host = _BlockingHost(spec)
+        hosts[spec.key] = host
+        return host
+
+    service = SpeechContextService(host_factory=factory)
+    chunk = AudioChunk(
+        data=np.full(1_600, 0.1, dtype=np.float32),
+        sample_rate=16_000,
+        duration_ms=100,
+        offset_ms=0,
+    )
+    task = asyncio.create_task(service.analyze_chunks((chunk,)))
+    await _wait_for_hosts(hosts, 2)
+    paths = [path for host in hosts.values() for path in host.audio_paths]
+
+    await cancel_speech_context_task(task)
+
+    try:
+        assert all(host.closed.is_set() for host in hosts.values())
+        assert all(not path.exists() for path in paths)
+    finally:
+        for host in hosts.values():
+            host.release.set()
+        await service.close()

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -38,6 +39,8 @@ class RtcOfferRequest:
     session_id: str
     offer_type: str
     sdp: str
+    restart: bool = False
+    generation: int | None = None
 
 
 @dataclass(frozen=True)
@@ -45,6 +48,25 @@ class RtcOfferAnswer:
     session_id: str
     answer_type: str
     sdp: str
+    attempt_id: str | None = None
+    commit_callback: Callable[[], Awaitable[None]] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    rollback_callback: Callable[[], Awaitable[None]] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+    async def commit(self) -> None:
+        if self.commit_callback is not None:
+            await self.commit_callback()
+
+    async def rollback(self) -> None:
+        if self.rollback_callback is not None:
+            await self.rollback_callback()
 
 
 @dataclass(frozen=True)
@@ -54,6 +76,7 @@ class RtcCandidateRequest:
     sdp_mid: str | None = None
     sdp_m_line_index: int | None = None
     username_fragment: str | None = None
+    generation: int | None = None
 
 
 @dataclass(frozen=True)
@@ -82,14 +105,15 @@ async def exchange_server_rtc_offer(
     registry: RtcSessionRegistry,
     request: RtcOfferRequest,
 ) -> RtcOfferAnswer:
-    record = registry.attach_browser_session(request.session_id)
-    if record is None:
+    record = registry.get(request.session_id)
+    if record is None or (record.browser_attached and not request.restart):
         raise RtcSessionNotFoundError(request.session_id)
-    return await _exchange_rtc_offer(
+    result = await _exchange_rtc_offer(
         registry=registry,
         record=record,
         request=request,
     )
+    return result
 
 
 async def _exchange_rtc_offer(
@@ -102,11 +126,16 @@ async def _exchange_rtc_offer(
         registry=registry,
         record=record,
         offer={"type": request.offer_type, "sdp": request.sdp},
+        restart=request.restart,
+        generation=request.generation,
     )
     return RtcOfferAnswer(
-        session_id=str(result["session_id"]),
-        answer_type=str(result["type"]),
-        sdp=str(result["sdp"]),
+        session_id=result.session_id,
+        answer_type=result.answer_type,
+        sdp=result.sdp,
+        attempt_id=result.attachment.attempt_id,
+        commit_callback=result.commit,
+        rollback_callback=result.rollback,
     )
 
 
@@ -116,15 +145,23 @@ async def add_server_rtc_candidate(
     request: RtcCandidateRequest,
 ) -> RtcCandidateResult:
     record = registry.get(request.session_id)
-    if record is None or record.rtc_peer is None:
+    if record is None:
         raise RtcSessionNotFoundError(request.session_id)
-    return await _add_rtc_candidate(record=record, request=request)
+    pending = record.pending_rtc_attachment
+    if pending is not None and getattr(pending, "generation", None) == request.generation:
+        peer = pending.peer
+    else:
+        peer = record.rtc_peer
+    if peer is None:
+        raise RtcSessionNotFoundError(request.session_id)
+    return await _add_rtc_candidate(record=record, request=request, peer=peer)
 
 
 async def _add_rtc_candidate(
     *,
     record: RtcSessionRecord,
     request: RtcCandidateRequest,
+    peer: Any,
 ) -> RtcCandidateResult:
     candidate = {
         "candidate": request.candidate,
@@ -133,7 +170,11 @@ async def _add_rtc_candidate(
         "usernameFragment": request.username_fragment,
     }
     try:
-        result = await add_browser_rtc_candidate(record=record, candidate=candidate)
+        result = await add_browser_rtc_candidate(
+            record=record,
+            candidate=candidate,
+            peer=peer,
+        )
     except InvalidIceCandidateError as exc:
         raise InvalidRtcCandidateError() from exc
     return RtcCandidateResult(ok=bool(result["ok"]))

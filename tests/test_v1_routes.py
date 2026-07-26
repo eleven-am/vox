@@ -23,6 +23,7 @@ from vox.core.types import (
     VoiceInfo,
     WordTimestamp,
 )
+from vox.operations.models import PullTaskRegistry
 from vox.server.routes.health import router as health_router
 from vox.server.routes.models import router as models_router
 from vox.server.routes.synthesize import router as synth_router
@@ -39,15 +40,19 @@ def _wav_bytes(dur_s: float = 1.2, sr: int = 16_000) -> bytes:
 class _FakeSTT(STTAdapter):
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="fake-stt", type=ModelType.STT,
-            architectures=("fake",), default_sample_rate=16_000,
+            name="fake-stt",
+            type=ModelType.STT,
+            architectures=("fake",),
+            default_sample_rate=16_000,
             supported_formats=(ModelFormat.ONNX,),
             supports_word_timestamps=True,
         )
+
     def load(self, *a, **k): ...
     def unload(self): ...
     @property
-    def is_loaded(self): return True
+    def is_loaded(self):
+        return True
 
     def transcribe(self, audio, **kwargs):
         sample_rate = 16_000
@@ -61,10 +66,15 @@ class _FakeSTT(STTAdapter):
             WordTimestamp(word="Paris", start_ms=offset_ms + 900, end_ms=offset_ms + 1200),
         )
         seg = TranscriptSegment(
-            text="Alice visited Paris", start_ms=offset_ms, end_ms=offset_ms + 1200, words=words,
+            text="Alice visited Paris",
+            start_ms=offset_ms,
+            end_ms=offset_ms + 1200,
+            words=words,
         )
         return TranscribeResult(
-            text="Alice visited Paris", segments=(seg,), language="en",
+            text="Alice visited Paris",
+            segments=(seg,),
+            language="en",
             duration_ms=offset_ms + 1200,
         )
 
@@ -75,15 +85,20 @@ class _FakeTTS(TTSAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="fake-tts", type=ModelType.TTS,
-            architectures=("fake",), default_sample_rate=24_000,
+            name="fake-tts",
+            type=ModelType.TTS,
+            architectures=("fake",),
+            default_sample_rate=24_000,
             supported_formats=(ModelFormat.ONNX,),
             supports_voice_cloning=True,
         )
+
     def load(self, *a, **k): ...
     def unload(self): ...
     @property
-    def is_loaded(self): return True
+    def is_loaded(self):
+        return True
+
     def list_voices(self):
         return [VoiceInfo(id="default", name="Default")]
 
@@ -91,7 +106,8 @@ class _FakeTTS(TTSAdapter):
         self.last_kwargs = kwargs
         yield SynthesizeChunk(
             audio=np.full(2048, 0.0, dtype=np.float32).tobytes(),
-            sample_rate=24_000, is_final=False,
+            sample_rate=24_000,
+            is_final=False,
         )
         yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
 
@@ -126,6 +142,7 @@ def _build_app(*, store: BlobStore, stt=None, tts=None, loaded=None):
     sched = _DummyScheduler(stt or _FakeSTT())
     app.state.scheduler = sched
     app.state.scheduler._loaded = loaded or []
+    app.state.pull_tasks = PullTaskRegistry()
     app.include_router(health_router)
     app.include_router(models_router)
     app.include_router(transcribe_router)
@@ -241,8 +258,12 @@ class TestV1SpeechTransport:
         tts = _FakeTTS()
         store = BlobStore(root=tmp_path)
         create_stored_voice(
-            store, voice_id="voice1234", name="Roy",
-            audio_bytes=_wav_bytes(), content_type="audio/wav", language="en",
+            store,
+            voice_id="voice1234",
+            name="Roy",
+            audio_bytes=_wav_bytes(),
+            content_type="audio/wav",
+            language="en",
         )
         app = FastAPI()
         app.state.store = store
@@ -251,14 +272,18 @@ class TestV1SpeechTransport:
         reg.resolve_model_ref.side_effect = lambda n, t, explicit_tag=False: (n, t or "latest")
         app.state.registry = reg
         app.state.scheduler = _DummyScheduler(tts)
+        app.state.pull_tasks = PullTaskRegistry()
         app.include_router(synth_router)
         client = TestClient(app)
 
         resp = client.post(
             "/v1/audio/speech",
             json={
-                "model": "fake-tts:latest", "input": "hello",
-                "voice": "voice1234", "language": "fr", "response_format": "wav",
+                "model": "fake-tts:latest",
+                "input": "hello",
+                "voice": "voice1234",
+                "language": "fr",
+                "response_format": "wav",
             },
         )
         assert resp.status_code == 200

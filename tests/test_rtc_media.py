@@ -8,11 +8,98 @@ from aiortc.mediastreams import MediaStreamError
 
 from vox.server.rtc_media import (
     RtcAudioOutputTrack,
+    RtcAudioSenderTrack,
     audio_frame_to_pcm16,
     create_rtc_audio_queue,
     emit_media_event,
     pump_input_audio,
 )
+
+
+@pytest.mark.asyncio
+async def test_rtc_audio_sender_deactivation_preserves_owner_cancellation():
+    class Source:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def recv(self):
+            self.started.set()
+            await self.release.wait()
+
+    source = Source()
+    track = RtcAudioSenderTrack(source, active=True)
+    recv_task = asyncio.create_task(track.recv())
+    await source.started.wait()
+
+    track.deactivate()
+    recv_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(recv_task, timeout=0.1)
+
+
+@pytest.mark.asyncio
+async def test_rtc_audio_sender_handoff_preserves_inflight_frame():
+    queue = asyncio.Queue()
+    source = RtcAudioOutputTrack(queue)
+    await source.enqueue(np.arange(960, dtype=np.int16).tobytes(), 16_000)
+    pace_started = asyncio.Event()
+    pace_calls = 0
+
+    async def pace(_samples: int) -> None:
+        nonlocal pace_calls
+        pace_calls += 1
+        if pace_calls == 2:
+            pace_started.set()
+            await asyncio.Event().wait()
+
+    source._pace = pace
+    current = RtcAudioSenderTrack(source, active=True)
+    replacement = RtcAudioSenderTrack(source, active=False)
+
+    first = await current.recv()
+    current_recv = asyncio.create_task(current.recv())
+    await pace_started.wait()
+    current.deactivate()
+    replacement.activate()
+    second = await asyncio.wait_for(replacement.recv(), timeout=0.1)
+
+    assert np.array_equal(first.to_ndarray().reshape(-1), np.arange(320, dtype=np.int16))
+    assert np.array_equal(
+        second.to_ndarray().reshape(-1),
+        np.arange(320, 640, dtype=np.int16),
+    )
+
+    current_recv.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await current_recv
+
+
+@pytest.mark.asyncio
+async def test_rtc_audio_clear_invalidates_frame_waiting_for_pacing():
+    queue = asyncio.Queue()
+    track = RtcAudioOutputTrack(queue)
+    await track.enqueue(np.full(640, 1000, dtype=np.int16).tobytes(), 16_000)
+    pace_started = asyncio.Event()
+    release_pace = asyncio.Event()
+    pace_calls = 0
+
+    async def pace(_samples: int) -> None:
+        nonlocal pace_calls
+        pace_calls += 1
+        if pace_calls == 1:
+            pace_started.set()
+            await release_pace.wait()
+
+    track._pace = pace
+    recv_task = asyncio.create_task(track.recv())
+    await pace_started.wait()
+    track.clear()
+    release_pace.set()
+    frame = await asyncio.wait_for(recv_task, timeout=0.1)
+
+    assert np.all(frame.to_ndarray() == 0)
 
 
 @pytest.mark.asyncio
@@ -100,6 +187,24 @@ async def test_rtc_audio_output_clear_drains_queue_and_resets_pacing():
     resumed = await track.recv()
     assert resumed.pts > silence.pts
     assert np.all(resumed.to_ndarray() == 2000)
+
+
+@pytest.mark.asyncio
+async def test_rtc_audio_enqueue_started_before_clear_cannot_play_after_clear():
+    queue = create_rtc_audio_queue(max_buffered_audio_ms=100, chunk_ms=50)
+    track = RtcAudioOutputTrack(queue, enqueue_chunk_ms=50)
+    stale_audio = np.full(2_400, 1000, dtype=np.int16).tobytes()
+    producer = asyncio.create_task(track.enqueue(stale_audio, 16_000))
+    await asyncio.sleep(0)
+    assert not producer.done()
+
+    track.clear()
+    cleared = await track.recv()
+    await asyncio.wait_for(producer, timeout=0.1)
+    after_clear = await track.recv()
+
+    assert np.all(cleared.to_ndarray() == 0)
+    assert np.all(after_clear.to_ndarray() == 0)
 
 
 @pytest.mark.asyncio

@@ -199,6 +199,17 @@ def test_generate_after_worker_death_fails_loudly(fake_host_cls):
         asyncio.run(_collect(backend, "hello", "neutral_female"))
 
 
+def test_worker_backend_health_tracks_host_liveness(fake_host_cls):
+    backend = _spawn()
+    host = fake_host_cls.instances[-1]
+
+    assert backend.alive is True
+
+    host._alive = False
+
+    assert backend.alive is False
+
+
 def test_worker_backend_trim_forwards_trim_op_with_short_timeout(fake_host_cls):
     backend = _spawn()
     host = fake_host_cls.instances[-1]
@@ -206,9 +217,7 @@ def test_worker_backend_trim_forwards_trim_op_with_short_timeout(fake_host_cls):
 
     backend.trim()
 
-    assert host.requests == [
-        {"payload": {"op": "trim"}, "timeout": module.DEFAULT_TRIM_TIMEOUT_SECONDS}
-    ]
+    assert host.requests == [{"payload": {"op": "trim"}, "timeout": module.DEFAULT_TRIM_TIMEOUT_SECONDS}]
     assert module.DEFAULT_TRIM_TIMEOUT_SECONDS < module.DEFAULT_REQUEST_TIMEOUT_SECONDS
 
 

@@ -26,31 +26,41 @@ def test_app_services_reads_canonical_server_state_fields():
     scheduler = object()
     registry = object()
     store = object()
+    pull_tasks = object()
 
     services = app_services(
         _request_with_state(
             scheduler=scheduler,
             registry=registry,
             store=store,
+            pull_tasks=pull_tasks,
         )
     )
 
     assert services.scheduler is scheduler
     assert services.registry is registry
     assert services.store is store
+    assert services.pull_tasks is pull_tasks
 
 
 def test_app_services_accepts_app_object_for_installer_paths():
     scheduler = object()
     registry = object()
     store = object()
-    app = _app_with_state(scheduler=scheduler, registry=registry, store=store)
+    pull_tasks = object()
+    app = _app_with_state(
+        scheduler=scheduler,
+        registry=registry,
+        store=store,
+        pull_tasks=pull_tasks,
+    )
 
     services = app_services(app)
 
     assert services.scheduler is scheduler
     assert services.registry is registry
     assert services.store is store
+    assert services.pull_tasks is pull_tasks
     assert app_state(app) is app.state
 
 

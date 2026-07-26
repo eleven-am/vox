@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from contextlib import suppress
@@ -32,11 +33,13 @@ from vox.operations.conversation import (
     parse_client_event_command,
     serialize_conversation_event,
 )
-from vox.operations.errors import OperationError
+from vox.operations.errors import InvalidConfigError, OperationError
 from vox.server.rtc_registry import RtcSessionRecord
 from vox.speech_context.service import SpeechContextService
 
 logger = logging.getLogger(__name__)
+MAX_PENDING_CLIENT_EVENTS = 128
+MAX_PENDING_CLIENT_EVENT_BYTES = 262_144
 
 BROWSER_FORWARDED_EVENT_TYPES = frozenset(
     {
@@ -75,7 +78,7 @@ async def emit_client_disconnected_to_control(
     record.browser_disconnect_emitted = True
     if record.control_events is None:
         return
-    await record.control_events.put(
+    record.control_events.put_terminal_nowait(
         client_disconnected_wire(
             session_id,
             reason=reason,
@@ -92,8 +95,9 @@ def _data_channel_is_open(record: RtcSessionRecord) -> bool:
 
 
 def _send_raw_client_event_to_browser(record: RtcSessionRecord, raw: str) -> bool:
-    if _data_channel_is_open(record):
-        record.data_channel.send(raw)
+    channel = record.data_channel
+    if channel is not None and getattr(channel, "readyState", None) == "open":
+        channel.send(raw)
         return True
     return False
 
@@ -102,6 +106,13 @@ def send_client_event_to_browser(record: RtcSessionRecord, event_name: str, payl
     raw = client_event_payload_json(event_name, payload)
     if _send_raw_client_event_to_browser(record, raw):
         return
+    pending = record.pending_client_events
+    pending_bytes = sum(len(item.encode("utf-8")) for item in pending)
+    if (
+        len(pending) >= MAX_PENDING_CLIENT_EVENTS
+        or pending_bytes + len(raw.encode("utf-8")) > MAX_PENDING_CLIENT_EVENT_BYTES
+    ):
+        raise InvalidConfigError("pending RTC client event queue capacity exceeded")
     record.pending_client_events.append(raw)
 
 
@@ -121,17 +132,37 @@ async def emit_browser_event_to_control(
     event_name: str,
     payload: Any,
 ) -> None:
+    emit_browser_event_to_control_nowait(record, session_id, event_name, payload)
+
+
+def emit_browser_event_to_control_nowait(
+    record: RtcSessionRecord,
+    session_id: str,
+    event_name: str,
+    payload: Any,
+) -> None:
     if record.control_events is None:
         return
-    await record.control_events.put(browser_event_wire(session_id, event_name, payload))
+    try:
+        record.control_events.put_nowait(browser_event_wire(session_id, event_name, payload))
+    except asyncio.QueueFull as exc:
+        raise InvalidConfigError("RTC browser event queue capacity exceeded") from exc
 
 
 async def handle_browser_data_channel_message(record: RtcSessionRecord, session_id: str, message: Any) -> None:
+    handle_browser_data_channel_message_nowait(record, session_id, message)
+
+
+def handle_browser_data_channel_message_nowait(
+    record: RtcSessionRecord,
+    session_id: str,
+    message: Any,
+) -> None:
     event = parse_browser_data_channel_message(message, session_id=session_id)
     if event is None:
         return
 
-    await emit_browser_event_to_control(record, session_id, event.name, event.payload)
+    emit_browser_event_to_control_nowait(record, session_id, event.name, event.payload)
 
 
 def parse_browser_data_channel_message(

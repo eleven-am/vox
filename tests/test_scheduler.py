@@ -232,6 +232,58 @@ async def test_dead_adapter_orphaned_and_reloaded_while_held(scheduler: Schedule
 
 
 @pytest.mark.asyncio
+async def test_dead_adapter_orphan_is_unloaded_and_execution_lane_closed(scheduler: Scheduler):
+    async with scheduler.acquire("whisper:large-v3") as held_adapter:
+        await held_adapter.execute_sync(lambda: None)
+        held_adapter._loaded = False
+
+        async with scheduler.acquire("whisper:large-v3") as replacement:
+            assert replacement is not held_adapter
+
+    await scheduler.stop()
+
+    assert held_adapter.unload_calls == 1
+    with pytest.raises(RuntimeError, match="adapter execution lane is closed"):
+        await held_adapter.execute_sync(lambda: None)
+
+
+@pytest.mark.asyncio
+async def test_shutdown_waits_for_orphan_teardown_scheduled_by_final_release(scheduler: Scheduler):
+    idle_wait_started = asyncio.Event()
+    continue_idle_wait = asyncio.Event()
+    original_wait_for_idle = scheduler._wait_for_idle_models
+
+    async def gated_wait_for_idle(deadline: float) -> None:
+        idle_wait_started.set()
+        await continue_idle_wait.wait()
+        await original_wait_for_idle(deadline)
+
+    scheduler._wait_for_idle_models = gated_wait_for_idle
+    holder = scheduler.acquire("whisper:large-v3")
+    held_adapter = await holder.__aenter__()
+    try:
+        await held_adapter.execute_sync(lambda: None)
+        held_adapter._loaded = False
+
+        async with scheduler.acquire("whisper:large-v3") as replacement:
+            assert replacement is not held_adapter
+
+        stop_task = asyncio.create_task(scheduler.stop())
+        await idle_wait_started.wait()
+    finally:
+        await holder.__aexit__(None, None, None)
+
+    continue_idle_wait.set()
+    await stop_task
+
+    assert held_adapter.unload_calls == 1
+    assert scheduler._orphaned_models == {}
+    assert scheduler._maintenance_tasks == set()
+    with pytest.raises(RuntimeError, match="adapter execution lane is closed"):
+        await held_adapter.execute_sync(lambda: None)
+
+
+@pytest.mark.asyncio
 async def test_release_after_supersede_decrements_original_only(scheduler: Scheduler):
     full_name = "whisper:large-v3"
     async with scheduler.acquire(full_name):
@@ -844,6 +896,114 @@ async def test_stop_waits_for_detached_physical_inference_before_unload(registry
 
     assert adapter.is_loaded is False
     assert sched.list_loaded() == []
+
+
+@pytest.mark.asyncio
+async def test_stop_deadline_bounds_in_progress_model_load(registry: FakeRegistry):
+    release = asyncio.Event()
+
+    async def load() -> Any:
+        await release.wait()
+        return None
+
+    sched = Scheduler(
+        registry,
+        default_device="cpu",
+        shutdown_timeout_seconds=0.05,
+    )
+    load_task = asyncio.create_task(load())
+    sched._load_tasks["blocked:latest"] = load_task
+    stop_task = asyncio.create_task(sched.stop())
+
+    try:
+        with pytest.raises(RuntimeError, match="model loads"):
+            await asyncio.wait_for(asyncio.shield(stop_task), timeout=0.2)
+    finally:
+        release.set()
+        await load_task
+        sched._load_tasks.pop("blocked:latest", None)
+        if not stop_task.done():
+            await stop_task
+
+
+@pytest.mark.asyncio
+async def test_model_finishing_after_stop_deadline_is_unloaded(monkeypatch, registry: FakeRegistry):
+    load_started = threading.Event()
+    release_load = threading.Event()
+    original_load = FakeSTTAdapter.load
+    adapters: list[FakeSTTAdapter] = []
+
+    def blocking_load(
+        adapter: FakeSTTAdapter,
+        model_path: str,
+        device: str,
+        **kwargs: Any,
+    ) -> None:
+        adapters.append(adapter)
+        load_started.set()
+        release_load.wait(5.0)
+        original_load(adapter, model_path, device, **kwargs)
+
+    monkeypatch.setattr(FakeSTTAdapter, "load", blocking_load)
+    sched = Scheduler(
+        registry,
+        default_device="cpu",
+        shutdown_timeout_seconds=0.05,
+    )
+    preload_task = asyncio.create_task(sched.preload("whisper:large-v3"))
+    assert await asyncio.to_thread(load_started.wait, 5.0)
+
+    with pytest.raises(RuntimeError, match="model loads"):
+        await sched.stop()
+
+    release_load.set()
+    with pytest.raises(ModelLoadError, match="stopped while loading"):
+        await preload_task
+
+    assert len(adapters) == 1
+    assert adapters[0].unload_calls == 1
+    assert sched._load_tasks == {}
+    assert sched.list_loaded() == []
+
+
+@pytest.mark.asyncio
+async def test_scheduler_rejects_new_work_after_stop(registry: FakeRegistry):
+    sched = Scheduler(registry, default_device="cpu")
+
+    await sched.stop()
+
+    with pytest.raises(ModelLoadError, match="Scheduler is stopping"):
+        await sched.preload("whisper:large-v3")
+    with pytest.raises(ModelLoadError, match="Scheduler is stopping"):
+        async with sched.acquire("whisper:large-v3"):
+            raise AssertionError("stopped scheduler admitted work")
+
+
+@pytest.mark.asyncio
+async def test_stop_deadline_bounds_in_progress_maintenance(registry: FakeRegistry):
+    release = asyncio.Event()
+
+    async def maintenance() -> None:
+        await release.wait()
+
+    sched = Scheduler(
+        registry,
+        default_device="cpu",
+        shutdown_timeout_seconds=0.05,
+    )
+    maintenance_task = sched._start_maintenance_task(maintenance())
+    stop_task = asyncio.create_task(sched.stop())
+
+    try:
+        with pytest.raises(RuntimeError, match="model maintenance"):
+            await asyncio.wait_for(asyncio.shield(stop_task), timeout=0.2)
+    finally:
+        release.set()
+        await maintenance_task
+        await asyncio.sleep(0)
+        assert sched._maintenance_tasks == set()
+        if not stop_task.done():
+            await stop_task
 
 
 def test_memory_snapshot_reports_device_and_loaded_models(scheduler: Scheduler):

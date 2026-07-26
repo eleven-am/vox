@@ -15,11 +15,14 @@ are clamped to WARNING so startup isn't drowned in their INFO spam.
 
 from __future__ import annotations
 
+import importlib
 import json
 import logging
 import os
+import re
 import sys
 from typing import Any
+from urllib.parse import unquote_plus
 
 from vox.logging_context import RequestIdFilter
 
@@ -36,10 +39,27 @@ _NOISY_LOGGERS: tuple[str, ...] = (
     "multipart",
 )
 
-_DEFAULT_FMT = (
-    "%(asctime)s %(levelname)-8s %(name)s [rid=%(request_id)s] %(message)s"
-)
+_DEFAULT_FMT = "%(asctime)s %(levelname)-8s %(name)s [rid=%(request_id)s] %(message)s"
 _DEFAULT_DATEFMT = "%Y-%m-%dT%H:%M:%S"
+_QUERY_PARAMETER_PATTERN = re.compile(r"([?&])([^=&#\s\"']+)=([^&#\s\"']*)")
+_QUERY_CREDENTIAL_NAMES = frozenset(
+    {
+        "api_key",
+        "access_token",
+        "client_token",
+        "media_token",
+        "token",
+    }
+)
+
+
+def _redact_query_credentials(message: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        if unquote_plus(match.group(2)).lower() not in _QUERY_CREDENTIAL_NAMES:
+            return match.group(0)
+        return f"{match.group(1)}{match.group(2)}=[REDACTED]"
+
+    return _QUERY_PARAMETER_PATTERN.sub(replace, message)
 
 
 def _resolve_level(raw: str | None) -> int:
@@ -77,21 +97,31 @@ class _JsonFormatter(logging.Formatter):
         return json.dumps(payload, ensure_ascii=False)
 
 
+class _CredentialRedactingFormatter(logging.Formatter):
+    def __init__(self, formatter: logging.Formatter) -> None:
+        self._formatter = formatter
+
+    def format(self, record: logging.LogRecord) -> str:
+        return _redact_query_credentials(self._formatter.format(record))
+
+
 def _build_formatter(kind: str) -> logging.Formatter:
+    formatter: logging.Formatter
     if kind == "color":
         try:
-            import colorlog
-
-            return colorlog.ColoredFormatter(
+            colorlog = importlib.import_module("colorlog")
+            formatter = colorlog.ColoredFormatter(
                 "%(log_color)s%(asctime)s %(levelname)-8s%(reset)s "
                 "%(cyan)s%(name)s%(reset)s [rid=%(request_id)s] %(message)s",
                 datefmt=_DEFAULT_DATEFMT,
             )
         except ImportError:
-            pass
-    if kind == "json":
-        return _JsonFormatter()
-    return logging.Formatter(_DEFAULT_FMT, datefmt=_DEFAULT_DATEFMT)
+            formatter = logging.Formatter(_DEFAULT_FMT, datefmt=_DEFAULT_DATEFMT)
+    elif kind == "json":
+        formatter = _JsonFormatter()
+    else:
+        formatter = logging.Formatter(_DEFAULT_FMT, datefmt=_DEFAULT_DATEFMT)
+    return _CredentialRedactingFormatter(formatter)
 
 
 def _build_handler(kind: str) -> logging.Handler:

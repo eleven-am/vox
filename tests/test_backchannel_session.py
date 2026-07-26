@@ -263,7 +263,26 @@ class TestBackchannelRejection:
             )
         )
 
-        await asyncio.sleep(0.25)
+        await session._forward_stream_event(
+            SpeechStopped(
+                timestamp_ms=1600,
+                start_ms=1000,
+                audio=np.array([], dtype=np.float32),
+                expects_transcript=True,
+                utterance_id=1,
+            )
+        )
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="the appointment is tomorrow",
+                is_partial=False,
+                start_ms=1000,
+                end_ms=1600,
+                audio_duration_ms=600,
+                utterance_id=1,
+            )
+        )
+        await session.wait_until_settled()
 
         assert session.state != TurnState.INTERRUPTED
         assert not coll.by_type("response.cancelled")

@@ -254,7 +254,8 @@ def test_prepare_runtime_uses_uv_target_install_with_python312_compatible_pins(
         calls.append(cmd)
         excludes_index = cmd.index("--excludes")
         excluded_packages.extend(Path(cmd[excludes_index + 1]).read_text(encoding="utf-8").splitlines())
-        _land_expected_runtime_paths(runtime_dir)
+        install_target = Path(cmd[cmd.index("--target") + 1])
+        _land_expected_runtime_paths(install_target)
         mock = MagicMock()
         mock.returncode = 0
         mock.stdout = ""

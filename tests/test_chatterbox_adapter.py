@@ -55,6 +55,7 @@ def _install_fake_chatterbox_modules(
     model: _FakeChatterboxModel | _FakeStrictChatterboxModel | None = None,
 ) -> _FakeChatterboxModel | _FakeStrictChatterboxModel:
     if model is not None:
+
         class fake_tts:
             calls: list[dict] = []
 
@@ -387,17 +388,21 @@ def test_chatterbox_bootstraps_runtime_when_missing(tmp_path):
 
     assert len(calls) == 2
     package_install, dependency_install = calls
-    runtime_dir = str(tmp_path / "vox-home" / "runtime" / "chatterbox")
+    runtime_dir = tmp_path / "vox-home" / "runtime" / "chatterbox"
 
     assert package_install[:2] == ["uv", "pip"]
     assert "--target" in package_install
-    assert runtime_dir in package_install
+    package_target = Path(package_install[package_install.index("--target") + 1])
+    assert package_target.parent == runtime_dir.parent
+    assert package_target.name.startswith(".chatterbox.installing-")
     assert "--no-deps" in package_install
     assert "chatterbox-tts>=0.1.7,<0.2.0" in package_install
 
     assert dependency_install[:2] == ["uv", "pip"]
     assert "--target" in dependency_install
-    assert runtime_dir in dependency_install
+    dependency_target = Path(dependency_install[dependency_install.index("--target") + 1])
+    assert dependency_target.parent == runtime_dir.parent
+    assert dependency_target.name.startswith(".chatterbox.installing-")
     assert "--no-deps" not in dependency_install
     assert not any(req in dependency_install for req in {"torch", "torchaudio"})
     assert "transformers==5.2.0" in dependency_install
@@ -455,6 +460,7 @@ def test_chatterbox_turbo_onnx_uses_synthesis_params(tmp_path):
             "_generate",
             return_value=np.array([0.0, 0.1], dtype=np.float32),
         ) as generate:
+
             async def run():
                 async for _ in adapter.synthesize(
                     "Hello",

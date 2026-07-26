@@ -147,5 +147,8 @@ def test_spark_bootstraps_runtime_when_missing(tmp_path):
     assert git_calls[0][:4] == ["git", "clone", "--depth", "1"]
     assert install_calls
     assert "--target" in install_calls[0]
-    assert str(tmp_path / "vox-home" / "runtime" / "spark") in install_calls[0]
+    runtime_dir = tmp_path / "vox-home" / "runtime" / "spark"
+    install_target = Path(install_calls[0][install_calls[0].index("--target") + 1])
+    assert install_target.parent == runtime_dir.parent
+    assert install_target.name.startswith(".spark.installing-")
     assert "transformers==4.46.2" in install_calls[0]

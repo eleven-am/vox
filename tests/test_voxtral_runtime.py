@@ -7,6 +7,7 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
+import pytest
 import yaml
 from packaging.requirements import Requirement
 
@@ -75,10 +76,13 @@ def test_has_vllm_omni_runtime_requires_runtime_local_stage_config(tmp_path: Pat
 
     monkeypatch.setattr(runtime_module, "_purelib", lambda python_bin: runtime_purelib)
 
-    assert runtime_module._has_vllm_omni_runtime(
-        Path("/tmp/fake-python"),
-        extra_pythonpaths=[str(tmp_path / "app-purelib")],
-    ) is False
+    assert (
+        runtime_module._has_vllm_omni_runtime(
+            Path("/tmp/fake-python"),
+            extra_pythonpaths=[str(tmp_path / "app-purelib")],
+        )
+        is False
+    )
 
     runtime_stage_config = runtime_purelib / "vllm_omni" / "model_executor" / "stage_configs"
     runtime_stage_config.mkdir(parents=True, exist_ok=True)
@@ -154,22 +158,76 @@ def test_ensure_voxtral_stt_runtime_bootstraps_runtime_dependencies(tmp_path: Pa
     assert runtime_path == str(runtime_dir)
     assert str(runtime_dir) == sys.path[0]
     assert (runtime_dir / "_vox_runtime_fallback_paths.pth").read_text(encoding="utf-8") == f"{app_purelib}\n"
-    assert commands == [
-        [
-            "uv",
-            "pip",
-            "install",
-            "--python",
-            sys.executable,
-            "--target",
-            str(runtime_dir),
-            "--upgrade",
-            "transformers==4.57.6",
-            "tokenizers==0.22.2",
-            "huggingface-hub==0.36.2",
-            "mistral-common[audio]>=1.10.0",
-        ]
+    assert len(commands) == 1
+    install_target = Path(commands[0][commands[0].index("--target") + 1])
+    assert install_target.parent == runtime_dir.parent
+    assert install_target.name.startswith(".voxtral-stt.installing-")
+    assert commands[0] == [
+        "uv",
+        "pip",
+        "install",
+        "--python",
+        sys.executable,
+        "--target",
+        str(install_target),
+        "--upgrade",
+        "transformers==4.57.6",
+        "tokenizers==0.22.2",
+        "huggingface-hub==0.36.2",
+        "mistral-common[audio]>=1.10.0",
     ]
+
+
+def test_failed_voxtral_stt_runtime_install_preserves_previous_runtime(tmp_path: Path, monkeypatch):
+    from vox_voxtral import runtime as runtime_module
+
+    vox_home = tmp_path / "vox-home"
+    runtime_dir = vox_home / "runtime" / "voxtral-stt"
+    runtime_dir.mkdir(parents=True)
+    (runtime_dir / "stable.txt").write_bytes(b"stable")
+
+    def fake_run(cmd, **kwargs):
+        install_target = Path(cmd[cmd.index("--target") + 1])
+        (install_target / "partial.txt").write_bytes(b"partial")
+        return MagicMock(returncode=1, stderr="failed", stdout="")
+
+    monkeypatch.setenv("VOX_HOME", str(vox_home))
+    monkeypatch.setattr(runtime_module, "_module_available", lambda name: False)
+    monkeypatch.setattr(runtime_module, "_run", fake_run)
+
+    with pytest.raises(RuntimeError, match="Failed to install Voxtral STT runtime dependencies"):
+        runtime_module.ensure_voxtral_stt_runtime()
+
+    assert {path.relative_to(runtime_dir): path.read_bytes() for path in runtime_dir.rglob("*") if path.is_file()} == {
+        Path("stable.txt"): b"stable"
+    }
+
+
+def test_failed_voxtral_tts_runtime_install_preserves_previous_runtime(tmp_path: Path, monkeypatch):
+    from vox_voxtral import runtime as runtime_module
+
+    vox_home = tmp_path / "vox-home"
+    runtime_dir = vox_home / "runtime" / "voxtral-tts"
+    python_bin = runtime_dir / "bin" / "python"
+    python_bin.parent.mkdir(parents=True)
+    python_bin.write_bytes(b"stable-python")
+
+    def install_vllm(stage_python: Path) -> None:
+        (stage_python.parent.parent / "partial.txt").write_bytes(b"partial")
+        raise RuntimeError("vllm install failed")
+
+    monkeypatch.setenv("VOX_HOME", str(vox_home))
+    monkeypatch.setattr(runtime_module, "_ensure_venv", lambda path: path / "bin" / "python")
+    monkeypatch.setattr(runtime_module, "_has_gpu_torch", lambda path: True)
+    monkeypatch.setattr(runtime_module, "_has_vllm_omni_runtime", lambda path, **kwargs: False)
+    monkeypatch.setattr(runtime_module, "_install_vllm_runtime", install_vllm)
+
+    with pytest.raises(RuntimeError, match="vllm install failed"):
+        runtime_module.ensure_voxtral_tts_runtime()
+
+    assert {path.relative_to(runtime_dir): path.read_bytes() for path in runtime_dir.rglob("*") if path.is_file()} == {
+        Path("bin/python"): b"stable-python"
+    }
 
 
 def test_stt_adapter_shims_huggingface_hub_offline_mode_for_transformers_compat():
@@ -277,18 +335,24 @@ def test_stt_adapter_wraps_hf_hub_download_without_tqdm_class_support():
         sys.modules.pop("vox_voxtral.stt_adapter", None)
         importlib.import_module("vox_voxtral.stt_adapter")
 
-        assert huggingface_hub.hf_hub_download(
-            "repo",
-            "weights.bin",
-            cache_dir="/tmp/cache",
-            tqdm_class=object,
-        ) == "ok"
-        assert huggingface_hub_file_download.hf_hub_download(
-            "repo",
-            "weights.bin",
-            cache_dir="/tmp/cache",
-            tqdm_class=object,
-        ) == "ok"
+        assert (
+            huggingface_hub.hf_hub_download(
+                "repo",
+                "weights.bin",
+                cache_dir="/tmp/cache",
+                tqdm_class=object,
+            )
+            == "ok"
+        )
+        assert (
+            huggingface_hub_file_download.hf_hub_download(
+                "repo",
+                "weights.bin",
+                cache_dir="/tmp/cache",
+                tqdm_class=object,
+            )
+            == "ok"
+        )
         assert calls == [
             ("repo", "weights.bin", "/tmp/cache"),
             ("repo", "weights.bin", "/tmp/cache"),

@@ -365,6 +365,7 @@ All HTTP endpoints live under `/v1/`. STT/TTS endpoints are OpenAI-compatible by
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
 | `/v1/health` | GET | Health check |
+| `/health`, `/healthz`, `/readyz` | GET | Unauthenticated health-probe aliases |
 | `/v1/models` | GET | List downloaded models |
 | `/v1/models/{name}` | GET | Model details |
 | `/v1/models/{name}` | DELETE | Remove a model |
@@ -390,7 +391,9 @@ conversation stream remains available on PondSocket channel
 
 ## gRPC
 
-`vox serve` starts the gRPC server automatically unless you disable it with `--grpc-port 0`.
+`vox serve` starts the gRPC server automatically unless you disable it with
+`--grpc-port 0`. The `serve --host` value binds both HTTP and gRPC. IPv4,
+IPv6, and hostname bind values are supported.
 
 - default gRPC port: `9090`
 - health and model lifecycle:
@@ -412,6 +415,14 @@ conversation stream remains available on PondSocket channel
   - `RtcService.Control`
 
 The gRPC voice APIs use the same stored voice data as HTTP. Creating or deleting a cloned voice over one transport is immediately visible through the other.
+`SynthesisService.Synthesize` always streams raw float32 PCM in `AudioChunk.audio`
+at the accompanying `sample_rate`; encoded response formats belong to the HTTP
+speech endpoint.
+
+HTTP audio uploads and gRPC messages are limited to 536870912 bytes by default.
+Set `VOX_MAX_UPLOAD_BYTES` to a positive byte count to change both limits. An
+oversized HTTP upload returns `413`; an oversized gRPC message is rejected by
+the gRPC transport.
 
 ## Adding a model
 
