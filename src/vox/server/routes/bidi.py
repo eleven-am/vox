@@ -27,6 +27,7 @@ from vox.server.websocket import (
     emit_ws_session_events,
     receive_required_ws_config,
     receive_ws_frame,
+    run_websocket_session_operation,
     send_ws_error,
     send_ws_unknown_message_type,
     websocket_connection_scope,
@@ -84,7 +85,7 @@ async def transcriptions_stream(websocket: WebSocket):
             async with websocket_session_event_scope(
                 session,
                 lambda: _emit_longform_stt_events(websocket, session),
-            ):
+            ) as emit_task:
                 if not await session.configure_or_report(config):
                     return
 
@@ -104,7 +105,10 @@ async def transcriptions_stream(websocket: WebSocket):
                     if isinstance(frame, WsBytesFrame) and not await session.submit_chunk_or_report(frame.data):
                         return
 
-                await session.end_of_stream_or_report()
+                await run_websocket_session_operation(
+                    session.end_of_stream_or_report(),
+                    emit_task,
+                )
 
 
 @router.websocket("/v1/audio/speech/stream")
@@ -149,7 +153,7 @@ async def speech_stream(websocket: WebSocket):
                 session,
                 lambda: _emit_longform_tts_events(websocket, session),
                 drain_timeout=10.0,
-            ):
+            ) as emit_task:
                 if not await session.configure_or_report(config):
                     return
 
@@ -173,7 +177,10 @@ async def speech_stream(websocket: WebSocket):
                         break
                     await send_ws_unknown_message_type(websocket, msg_type)
 
-                await session.end_of_stream_or_report()
+                await run_websocket_session_operation(
+                    session.end_of_stream_or_report(),
+                    emit_task,
+                )
 
 
 async def _emit_longform_stt_events(websocket: WebSocket, session: LongformTranscriptionSession) -> None:

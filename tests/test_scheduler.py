@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -13,7 +14,7 @@ import pytest
 
 from tests.fakes import FakeTTSAdapter
 from vox.core.adapter import STTAdapter
-from vox.core.errors import ModelLoadError
+from vox.core.errors import ModelLoadError, ModelTrimUnsupportedError
 from vox.core.runtime import RuntimeCapabilities
 from vox.core.scheduler import Scheduler, _detect_device, _is_oom_error
 from vox.core.types import (
@@ -88,9 +89,6 @@ class FakeSTTAdapter(STTAdapter):
         return int(kwargs.get("vram_bytes", 0))
 
 
-
-
-
 class FakeRegistry:
     """Implements RegistryProtocol for testing."""
 
@@ -131,9 +129,7 @@ class FakeRegistry:
             raise KeyError(f"Model {key} not registered in fake registry")
         return self._models[key]
 
-    def resolve_model_ref(
-        self, name: str, tag: str = "latest", *, explicit_tag: bool = False
-    ) -> tuple[str, str]:
+    def resolve_model_ref(self, name: str, tag: str = "latest", *, explicit_tag: bool = False) -> tuple[str, str]:
         if not explicit_tag and name in self._aliases:
             return self._aliases[name]
         return name, tag
@@ -142,10 +138,6 @@ class FakeRegistry:
         if adapter_name not in self._adapter_classes:
             raise KeyError(f"Adapter {adapter_name} not registered in fake registry")
         return self._adapter_classes[adapter_name]
-
-
-
-
 
 
 def _make_registry_with_model(
@@ -170,16 +162,10 @@ def scheduler(registry: FakeRegistry) -> Scheduler:
     return Scheduler(registry, default_device="cpu", max_loaded=3)
 
 
-
 @pytest.fixture(autouse=True)
 def _patch_gpu_cache():
     with patch("vox.core.scheduler._clear_gpu_cache"):
         yield
-
-
-
-
-
 
 
 @pytest.mark.asyncio
@@ -297,16 +283,13 @@ async def test_evict_lru_removes_least_recently_used():
 
     sched = Scheduler(registry, default_device="cpu", max_loaded=2)
 
-
     async with sched.acquire("m1:latest"):
         pass
     async with sched.acquire("m2:latest"):
         pass
 
-
     async with sched.acquire("m1:latest"):
         pass
-
 
     async with sched.acquire("m3:latest"):
         loaded_names = {f"{m.name}:{m.tag}" for m in sched.list_loaded()}
@@ -329,7 +312,6 @@ async def test_evict_lru_skips_models_with_active_refs():
         pass
     async with sched.acquire("m2:latest"):
         pass
-
 
     async with sched.acquire("m1:latest"), sched.acquire("m3:latest"):
         loaded_names = {f"{m.name}:{m.tag}" for m in sched.list_loaded()}
@@ -428,7 +410,6 @@ async def test_unload_returns_false_when_refs_active(scheduler: Scheduler):
         result = await scheduler.unload("whisper:large-v3")
         assert result is False
 
-
     result = await scheduler.unload("whisper:large-v3")
     assert result is True
 
@@ -487,8 +468,6 @@ async def test_unload_all_keeps_models_with_active_references(scheduler: Schedul
 
 @pytest.mark.asyncio
 async def test_unload_runs_adapter_unload_off_event_loop(scheduler: Scheduler):
-    import threading
-
     seen: dict[str, int] = {}
 
     class ThreadRecordingAdapter(FakeSTTAdapter):
@@ -503,6 +482,41 @@ async def test_unload_runs_adapter_unload_off_event_loop(scheduler: Scheduler):
 
     assert seen["unload_thread"] != threading.get_ident()
     assert len(scheduler.list_loaded()) == 0
+
+
+@pytest.mark.asyncio
+async def test_cancelled_preload_remains_owned_until_physical_load_finishes():
+    load_started = threading.Event()
+    release_load = threading.Event()
+    load_finished = threading.Event()
+
+    class BlockingLoadAdapter(FakeSTTAdapter):
+        def load(self, model_path: str, device: str, **kwargs: Any) -> None:
+            load_started.set()
+            release_load.wait(5.0)
+            super().load(model_path, device, **kwargs)
+            load_finished.set()
+
+    registry = _make_registry_with_model(adapter_cls=BlockingLoadAdapter)
+    sched = Scheduler(registry, default_device="cpu", max_loaded=3)
+    preload_task = asyncio.create_task(sched.preload("whisper:large-v3"))
+
+    assert await asyncio.to_thread(load_started.wait, 5.0)
+    preload_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await preload_task
+
+    assert "whisper:large-v3" in sched._load_tasks
+    assert sched.list_loaded() == []
+
+    release_load.set()
+    assert await asyncio.to_thread(load_finished.wait, 5.0)
+    async with asyncio.timeout(1.0):
+        while sched._load_tasks:
+            await asyncio.sleep(0)
+
+    assert [model.name for model in sched.list_loaded()] == ["whisper"]
+    assert await sched.unload("whisper:large-v3") is True
 
 
 @pytest.mark.asyncio
@@ -579,7 +593,7 @@ async def test_trim_idle_trims_once_per_idle_period(registry: FakeRegistry):
 
 
 @pytest.mark.asyncio
-async def test_trim_idle_does_not_stamp_flag_when_acquired_mid_trim(registry: FakeRegistry):
+async def test_acquire_waits_for_idle_trim_to_finish(registry: FakeRegistry):
     import threading
 
     trim_started = threading.Event()
@@ -612,12 +626,14 @@ async def test_trim_idle_does_not_stamp_flag_when_acquired_mid_trim(registry: Fa
             await released.wait()
 
     hold_task = asyncio.create_task(hold())
-    await holding.wait()
-    assert loaded.ref_count == 1
+    await asyncio.sleep(0)
+    assert holding.is_set() is False
+    assert loaded.ref_count == 0
     assert loaded.trimmed is False
 
     release_trim.set()
     assert await trim_task == ["block:latest"]
+    await holding.wait()
     assert loaded.trimmed is False
 
     released.set()
@@ -656,6 +672,23 @@ async def test_trim_refuses_active_model(scheduler: Scheduler):
 
 
 @pytest.mark.asyncio
+async def test_trim_reports_unsupported_adapter_truthfully(registry: FakeRegistry):
+    class NonTrimmableAdapter(FakeSTTAdapter):
+        trim = STTAdapter.trim
+
+    registry.add_model("fixed", "latest", adapter_cls=NonTrimmableAdapter)
+    sched = Scheduler(registry, default_device="cpu", max_loaded=3)
+
+    async with sched.acquire("fixed:latest"):
+        pass
+
+    assert await sched.trim_idle() == []
+    with pytest.raises(ModelTrimUnsupportedError, match="does not support"):
+        await sched.trim("fixed:latest")
+    assert sched.list_loaded()[0].is_trimmable is False
+
+
+@pytest.mark.asyncio
 async def test_idle_trim_runs_even_when_unload_ttl_disabled(registry: FakeRegistry):
     sched = Scheduler(
         registry,
@@ -682,8 +715,6 @@ async def test_idle_trim_runs_even_when_unload_ttl_disabled(registry: FakeRegist
 
 @pytest.mark.asyncio
 async def test_trim_runs_adapter_trim_off_event_loop(registry: FakeRegistry):
-    import threading
-
     seen: dict[str, int] = {}
 
     class ThreadRecordingAdapter(FakeSTTAdapter):
@@ -707,6 +738,112 @@ async def test_trim_runs_adapter_trim_off_event_loop(registry: FakeRegistry):
 
     assert "thr:latest" in trimmed
     assert seen["trim_thread"] != threading.get_ident()
+
+
+@pytest.mark.asyncio
+async def test_unload_waits_for_trim_without_overlapping_adapter_lifecycle(registry: FakeRegistry):
+    trim_started = threading.Event()
+    release_trim = threading.Event()
+    unload_started = threading.Event()
+    trim_active = threading.Event()
+
+    class OrderedLifecycleAdapter(FakeSTTAdapter):
+        def trim(self) -> None:
+            trim_active.set()
+            trim_started.set()
+            release_trim.wait(5.0)
+            super().trim()
+            trim_active.clear()
+
+        def unload(self) -> None:
+            assert trim_active.is_set() is False
+            unload_started.set()
+            super().unload()
+
+    registry.add_model("ordered", "latest", adapter_cls=OrderedLifecycleAdapter)
+    sched = Scheduler(registry, default_device="cpu", max_loaded=3)
+    await sched.preload("ordered:latest")
+
+    trim_task = asyncio.create_task(sched.trim("ordered:latest"))
+    assert await asyncio.to_thread(trim_started.wait, 5.0)
+    unload_task = asyncio.create_task(sched.unload("ordered:latest"))
+    await asyncio.sleep(0)
+
+    assert unload_started.is_set() is False
+
+    release_trim.set()
+    assert await trim_task is True
+    assert await unload_task is True
+    assert unload_started.is_set()
+    assert sched.list_loaded() == []
+
+
+@pytest.mark.asyncio
+async def test_cancelled_trim_caller_cannot_abandon_active_maintenance(registry: FakeRegistry):
+    trim_started = threading.Event()
+    release_trim = threading.Event()
+
+    class BlockingTrimAdapter(FakeSTTAdapter):
+        def trim(self) -> None:
+            trim_started.set()
+            release_trim.wait(5.0)
+            super().trim()
+
+    registry.add_model("cancel-trim", "latest", adapter_cls=BlockingTrimAdapter)
+    sched = Scheduler(registry, default_device="cpu", max_loaded=3)
+    await sched.preload("cancel-trim:latest")
+    trim_task = asyncio.create_task(sched.trim("cancel-trim:latest"))
+
+    assert await asyncio.to_thread(trim_started.wait, 5.0)
+    trim_task.cancel()
+    await asyncio.sleep(0)
+
+    assert trim_task.done() is False
+    assert sched._models["cancel-trim:latest"].maintenance == "trim"
+
+    release_trim.set()
+    with pytest.raises(asyncio.CancelledError):
+        await trim_task
+
+    loaded = sched._models["cancel-trim:latest"]
+    assert loaded.maintenance is None
+    assert loaded.trimmed is True
+
+
+@pytest.mark.asyncio
+async def test_stop_waits_for_detached_physical_inference_before_unload(registry: FakeRegistry):
+    work_started = threading.Event()
+    release_work = threading.Event()
+
+    registry.add_model("physical", "latest", adapter_cls=FakeSTTAdapter)
+    sched = Scheduler(
+        registry,
+        default_device="cpu",
+        max_loaded=3,
+        shutdown_timeout_seconds=5.0,
+    )
+
+    def blocking_work() -> str:
+        work_started.set()
+        release_work.wait(5.0)
+        return "finished"
+
+    async with sched.acquire("physical:latest") as adapter:
+        work_task = asyncio.create_task(adapter.execute_sync(blocking_work))
+        assert await asyncio.to_thread(work_started.wait, 5.0)
+
+    stop_task = asyncio.create_task(sched.stop())
+    await asyncio.sleep(0)
+
+    assert stop_task.done() is False
+    assert adapter.is_loaded is True
+
+    release_work.set()
+    assert await work_task == "finished"
+    await stop_task
+
+    assert adapter.is_loaded is False
+    assert sched.list_loaded() == []
 
 
 def test_memory_snapshot_reports_device_and_loaded_models(scheduler: Scheduler):
@@ -757,10 +894,6 @@ async def test_list_loaded(scheduler: Scheduler, registry: FakeRegistry):
         assert info.ref_count == 0
 
 
-
-
-
-
 def test_parse_model_name_with_tag():
     name, tag = parse_model_name("whisper:large-v3")
     assert name == "whisper"
@@ -771,11 +904,6 @@ def test_parse_model_name_without_tag():
     name, tag = parse_model_name("whisper")
     assert name == "whisper"
     assert tag == "latest"
-
-
-
-
-
 
 
 def test_detect_device_returns_cpu_when_no_torch():
@@ -808,11 +936,6 @@ def test_detect_device_returns_cuda_when_available():
         assert _detect_device() == "cuda"
 
 
-
-
-
-
-
 def test_is_oom_error_matches_keywords():
     """_is_oom_error should return True for known OOM messages."""
     assert _is_oom_error(RuntimeError("CUDA out of memory")) is True
@@ -824,11 +947,6 @@ def test_is_oom_error_no_match():
     """_is_oom_error should return False for unrelated errors."""
     assert _is_oom_error(RuntimeError("file not found")) is False
     assert _is_oom_error(ValueError("invalid shape")) is False
-
-
-
-
-
 
 
 @pytest.mark.asyncio
@@ -846,11 +964,6 @@ async def test_start_and_stop_lifecycle(scheduler: Scheduler):
     assert len(scheduler.list_loaded()) == 0
 
 
-
-
-
-
-
 @pytest.mark.asyncio
 async def test_ttl_cleanup_evicts_idle_models():
     """Models idle beyond TTL should be evicted by the cleanup loop."""
@@ -859,28 +972,24 @@ async def test_ttl_cleanup_evicts_idle_models():
         registry,
         default_device="cpu",
         max_loaded=3,
-        ttl_seconds=0,
-        cleanup_interval=0,
+        ttl_seconds=1,
+        cleanup_interval=0.01,
     )
 
     await sched.preload("whisper:large-v3")
     assert len(sched.list_loaded()) == 1
-
 
     for m in sched._models.values():
         m.last_used = time.time() - 10
 
     await sched.start()
 
-    await asyncio.sleep(0.05)
+    async with asyncio.timeout(1.0):
+        while sched.list_loaded():
+            await asyncio.sleep(0.01)
     await sched.stop()
 
     assert len(sched.list_loaded()) == 0
-
-
-
-
-
 
 
 @pytest.mark.asyncio
@@ -897,15 +1006,10 @@ async def test_unload_handles_adapter_unload_exception():
     await sched.preload("whisper:large-v3")
     assert len(sched.list_loaded()) == 1
 
-
     result = await sched.unload("whisper:large-v3")
-    assert result is True
-    assert len(sched.list_loaded()) == 0
-
-
-
-
-
+    assert result is False
+    assert len(sched.list_loaded()) == 1
+    assert "boom during unload" in (sched.list_loaded()[0].backend_memory["lifecycle_error"])
 
 
 @pytest.mark.asyncio

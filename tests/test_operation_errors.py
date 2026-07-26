@@ -6,6 +6,7 @@ import pytest
 from fastapi import HTTPException
 
 from vox.operations.errors import (
+    AdapterCapacityExceededError,
     CatalogEntryNotFoundError,
     EmptyAudioError,
     EmptyInputError,
@@ -61,6 +62,7 @@ from vox.server.operation_errors import map_operation_errors_to_http, map_route_
         ),
         (ModelInUseError("parakeet"), OperationErrorKind.CONFLICT),
         (MemoryBudgetExceededError("budget exceeded"), OperationErrorKind.RESOURCE_EXHAUSTED),
+        (AdapterCapacityExceededError("adapter busy"), OperationErrorKind.RESOURCE_EXHAUSTED),
         (NoAudioGeneratedError(), OperationErrorKind.INTERNAL),
     ],
 )

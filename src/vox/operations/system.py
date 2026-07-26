@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from vox.core.errors import ModelTrimUnsupportedError
 from vox.core.types import LoadedModelInfo, VramSnapshot
-from vox.operations.errors import ModelInUseError
+from vox.operations.errors import InvalidConfigError, ModelInUseError
 
 
 class SystemScheduler(Protocol):
@@ -206,7 +207,10 @@ async def trim_idle_memory(
 
 
 async def trim_model(*, scheduler: SystemScheduler, request: TrimModelRequest) -> TrimModelResult:
-    trimmed = await scheduler.trim(request.model_name)
+    try:
+        trimmed = await scheduler.trim(request.model_name)
+    except ModelTrimUnsupportedError as exc:
+        raise InvalidConfigError(str(exc)) from exc
     if not trimmed:
         raise ModelInUseError(request.model_name)
     return TrimModelResult()

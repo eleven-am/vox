@@ -12,8 +12,7 @@ import numpy as np
 from vox.audio.codecs import encode_pcm, encode_wav_stream_header
 from vox.audio.pipeline import get_content_type, prepare_for_output
 from vox.core.adapter import TTSAdapter
-from vox.core.async_iterators import iterate_off_event_loop
-from vox.core.errors import ModelLoadError, VoxError
+from vox.core.errors import AdapterExecutionBusyError, ModelLoadError, VoxError
 from vox.core.synthesis_validation import (
     call_accepts_keyword,
     validate_adapter_synthesis_params,
@@ -21,6 +20,7 @@ from vox.core.synthesis_validation import (
 from vox.core.types import SynthesizeChunk
 from vox.operations.defaults import resolve_requested_or_default_model
 from vox.operations.errors import (
+    AdapterCapacityExceededError,
     EmptyInputError,
     InvalidConfigError,
     MemoryBudgetExceededError,
@@ -183,7 +183,7 @@ async def _iter_tts_synthesis_chunks(
         if call_accepts_keyword(context.adapter.synthesize, "params"):
             kwargs["params"] = request.params
         chunks = context.adapter.synthesize(text_chunk, **kwargs)
-        async for chunk in iterate_off_event_loop(chunks):
+        async for chunk in context.adapter.iterate_synthesis(chunks):
             yield idx, chunk
 
 
@@ -220,6 +220,8 @@ async def synthesize_full(
                 raise NoAudioGeneratedError()
 
             encoded, content_type = prepare_for_output(audio, sample_rate, request.response_format)
+    except AdapterExecutionBusyError as exc:
+        raise AdapterCapacityExceededError(str(exc)) from exc
     except (WrongModelTypeError, NoAudioGeneratedError, VoxError):
         raise
     except Exception:
@@ -230,7 +232,11 @@ async def synthesize_full(
     audio_ms = int(1000 * audio.size / max(sample_rate, 1))
     logger.info(
         "synthesize %s chars=%d audio_ms=%d processing_ms=%d format=%s",
-        model, len(request.input or ""), audio_ms, processing_ms, request.response_format,
+        model,
+        len(request.input or ""),
+        audio_ms,
+        processing_ms,
+        request.response_format,
     )
     return SynthesisFullResult(
         audio=encoded,
@@ -419,6 +425,8 @@ async def synthesize_incremental(
 
                 if not yielded_audio:
                     raise NoAudioGeneratedError()
+        except AdapterExecutionBusyError as exc:
+            raise AdapterCapacityExceededError(str(exc)) from exc
         except (WrongModelTypeError, NoAudioGeneratedError, VoxError):
             raise
         except Exception:

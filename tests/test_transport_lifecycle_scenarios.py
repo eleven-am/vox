@@ -255,6 +255,7 @@ class PondSocketTransport:
         app.state.scheduler = scheduler
         app.state.rtc_registry = RtcSessionRegistry()
         assert install_pondsocket_gateway(app)
+        self._pond = app.state.pondsocket
         self._client = TestClient(app)
         self._ws_ctx = self._client.websocket_connect("/v1/socket")
         self._ws = self._ws_ctx.__enter__()
@@ -315,6 +316,8 @@ class PondSocketTransport:
         loop.call_soon_threadsafe(fn)
 
     def close(self) -> None:
+        with suppress(Exception):
+            self._ws.portal.call(self._pond.close)
         with suppress(Exception):
             self._ws_ctx.__exit__(None, None, None)
 
@@ -464,9 +467,7 @@ class TestConfirmedBargeInMidStream:
         assert late_delta_error["recoverable"] is True
 
         transport.send("response.commit", {"generation_id": "gen-1"})
-        late_commit_error = transport.expect(
-            _is("error", code="response_stale_generation", generation_id="gen-1")
-        )
+        late_commit_error = transport.expect(_is("error", code="response_stale_generation", generation_id="gen-1"))
         assert late_commit_error["recoverable"] is True
 
         transport.run_on_session_loop(
@@ -497,9 +498,7 @@ class TestConfirmedBargeInMidStream:
             "response.created",
             "response.done",
         ]
-        assert all(
-            wire.get("generation_id") == "gen-2" for wire in transport.events if wire["type"] == "response.done"
-        )
+        assert all(wire.get("generation_id") == "gen-2" for wire in transport.events if wire["type"] == "response.done")
 
 
 class TestStreamingResponseDeltas:
@@ -521,9 +520,7 @@ class TestStreamingResponseDeltas:
         transport.expect(_is("response.done", generation_id="gen-live"))
         assert not [wire for wire in transport.events if wire["type"] == "error"]
 
-    def test_whitespace_first_delta_after_confirmed_interruption_completes_second_response(
-        self, transport_factory
-    ):
+    def test_whitespace_first_delta_after_confirmed_interruption_completes_second_response(self, transport_factory):
         transport = transport_factory(FakeScheduler(ScriptedTTSAdapter(chunks=60, inter_chunk_delay=0.01)))
         transport.send("session.update", _session_payload())
         transport.expect(_is("session.created"))

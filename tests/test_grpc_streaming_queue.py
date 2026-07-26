@@ -9,6 +9,7 @@ from vox.grpc.streaming_queue import (
     iter_grpc_output_queue,
     iter_grpc_stream_lifecycle,
     pump_events_to_grpc_queue,
+    put_grpc_output_queue,
     start_grpc_event_pump,
 )
 
@@ -108,10 +109,7 @@ async def test_iter_grpc_stream_lifecycle_reaps_tasks_and_runs_cleanup_after_que
 
     task = asyncio.create_task(background())
 
-    assert [
-        item
-        async for item in iter_grpc_stream_lifecycle(queue, task, cleanup=cleanup)
-    ] == ["a"]
+    assert [item async for item in iter_grpc_stream_lifecycle(queue, task, cleanup=cleanup)] == ["a"]
 
     assert task.done()
     assert cleaned is True
@@ -139,3 +137,26 @@ async def test_iter_grpc_stream_lifecycle_runs_cleanup_when_consumer_stops_early
 
     assert task.done()
     assert cleaned is True
+
+
+@pytest.mark.asyncio
+async def test_grpc_producer_unblocks_when_bounded_queue_consumer_closes():
+    queue: asyncio.Queue[str | None] = asyncio.Queue(maxsize=2)
+    consumer_closed = asyncio.Event()
+    queue.put_nowait("a")
+    queue.put_nowait("b")
+    producer = asyncio.create_task(
+        put_grpc_output_queue(
+            queue,
+            "c",
+            consumer_closed=consumer_closed,
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert producer.done() is False
+
+    consumer_closed.set()
+    assert await asyncio.wait_for(producer, timeout=1.0) is False
+    assert queue.get_nowait() == "a"
+    assert queue.get_nowait() == "b"

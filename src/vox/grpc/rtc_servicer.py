@@ -19,8 +19,10 @@ from vox.grpc.rtc_messages import (
     rtc_session_bootstrap_pb,
 )
 from vox.grpc.streaming_queue import (
+    GRPC_OUTPUT_QUEUE_MAX,
     close_grpc_output_queue,
     iter_grpc_stream_lifecycle,
+    put_grpc_output_queue,
 )
 from vox.operations.conversation import ConvEvent
 from vox.operations.errors import OperationError
@@ -58,20 +60,33 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
         request_iterator: AsyncIterator[vox_pb2.RtcControlClientMessage],
         context,
     ) -> AsyncIterator[vox_pb2.RtcControlServerMessage]:
-        out_queue: asyncio.Queue[vox_pb2.RtcControlServerMessage | None] = asyncio.Queue()
+        out_queue: asyncio.Queue[vox_pb2.RtcControlServerMessage | None] = asyncio.Queue(maxsize=GRPC_OUTPUT_QUEUE_MAX)
+        consumer_closed = asyncio.Event()
         runtime: RtcRuntime | None = None
 
         async def emit(event: dict) -> None:
-            await out_queue.put(rtc_runtime_event_pb(event))
-            if event.get("type") == "rtc.session.closed":
+            await put_grpc_output_queue(
+                out_queue,
+                rtc_runtime_event_pb(event),
+                consumer_closed=consumer_closed,
+            )
+            if event.get("type") == "rtc.session.closed" and not consumer_closed.is_set():
                 await close_grpc_output_queue(out_queue)
 
         async def emit_conversation(event: ConvEvent, wire: dict) -> None:
             conversation = conversation_event_to_pb(event)
             if conversation is None:
-                await out_queue.put(rtc_runtime_event_pb(wire))
+                await put_grpc_output_queue(
+                    out_queue,
+                    rtc_runtime_event_pb(wire),
+                    consumer_closed=consumer_closed,
+                )
                 return
-            await out_queue.put(vox_pb2.RtcControlServerMessage(conversation=conversation))
+            await put_grpc_output_queue(
+                out_queue,
+                vox_pb2.RtcControlServerMessage(conversation=conversation),
+                consumer_closed=consumer_closed,
+            )
 
         async def drain_client() -> None:
             nonlocal runtime
@@ -83,7 +98,11 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                     kind = client_msg.WhichOneof("msg")
                     if runtime is None:
                         if kind != "attach":
-                            await out_queue.put(rtc_error_pb("send attach first"))
+                            await put_grpc_output_queue(
+                                out_queue,
+                                rtc_error_pb("send attach first"),
+                                consumer_closed=consumer_closed,
+                            )
                             break
                         try:
                             runtime = RtcRuntime(
@@ -97,7 +116,11 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                                 speech_context_service=self._speech_context_service,
                             )
                         except OperationError as exc:
-                            await out_queue.put(rtc_error_pb(str(exc)))
+                            await put_grpc_output_queue(
+                                out_queue,
+                                rtc_error_pb(str(exc)),
+                                consumer_closed=consumer_closed,
+                            )
                             break
                         await runtime.start()
                         continue
@@ -105,12 +128,25 @@ class RtcServicer(vox_pb2_grpc.RtcServiceServicer):
                     try:
                         await runtime.dispatch(rtc_control_message_to_command(client_msg))
                     except OperationError as exc:
-                        await out_queue.put(rtc_error_pb_from_exception(exc))
+                        await put_grpc_output_queue(
+                            out_queue,
+                            rtc_error_pb_from_exception(exc),
+                            consumer_closed=consumer_closed,
+                        )
             finally:
                 if runtime is not None:
                     await runtime.close(reason="transport_closed")
-                await close_grpc_output_queue(out_queue)
+                if not consumer_closed.is_set():
+                    await close_grpc_output_queue(out_queue)
 
         client_task = asyncio.create_task(drain_client())
-        async for item in iter_grpc_stream_lifecycle(out_queue, client_task):
-            yield item
+        stream = iter_grpc_stream_lifecycle(
+            out_queue,
+            client_task,
+            on_consumer_close=consumer_closed.set,
+        )
+        try:
+            async for item in stream:
+                yield item
+        finally:
+            await stream.aclose()

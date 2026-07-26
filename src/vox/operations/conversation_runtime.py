@@ -63,6 +63,13 @@ class ConversationRuntime:
     def start_background_task(self, coroutine: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
         task = asyncio.create_task(coroutine)
         self._background_tasks.add(task)
+
+        def completed(done: asyncio.Task[Any]) -> None:
+            self._background_tasks.discard(done)
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(completed)
         return task
 
     async def dispatch(self, command: ConversationCommand) -> None:
@@ -132,14 +139,22 @@ class ConversationRuntime:
                     )
                 )
             task = self._end_task
-        await asyncio.shield(task)
+        await self._await_owned_task(task)
 
     async def close(self) -> None:
         async with self._lifecycle_lock:
             if self._close_task is None:
                 self._close_task = asyncio.create_task(self._close_once())
             task = self._close_task
-        await asyncio.shield(task)
+        await self._await_owned_task(task)
+
+    @staticmethod
+    async def _await_owned_task(task: asyncio.Task[None]) -> None:
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await asyncio.shield(task)
+            raise
 
     async def _pump_events(self, handler: EventHandler) -> None:
         async for event in self.orchestrator.events():

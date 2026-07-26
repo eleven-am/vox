@@ -14,11 +14,12 @@ from vox.audio.merger import merge_transcripts
 from vox.audio.pipeline import prepare_for_stt_chunks
 from vox.audio.stt_runner import run_stt, run_stt_with_leading_context
 from vox.core.adapter import STTAdapter
-from vox.core.errors import VoxError
+from vox.core.errors import AdapterExecutionBusyError, VoxError
 from vox.core.ner import annotate
 from vox.core.types import TranscribeResult
 from vox.operations.defaults import resolve_requested_or_default_model
 from vox.operations.errors import (
+    AdapterCapacityExceededError,
     EmptyAudioError,
     OperationError,
     WrongModelTypeError,
@@ -111,11 +112,7 @@ def parse_timestamp_granularities(values: list[Any]) -> set[str]:
             except json.JSONDecodeError:
                 parsed = None
             if isinstance(parsed, list):
-                parsed_values.extend(
-                    str(item).strip().lower()
-                    for item in parsed
-                    if str(item).strip()
-                )
+                parsed_values.extend(str(item).strip().lower() for item in parsed if str(item).strip())
                 continue
         parsed_values.extend(part.strip().lower() for part in raw.split(",") if part.strip())
     if not parsed_values:
@@ -370,6 +367,9 @@ async def transcribe(
     except asyncio.CancelledError:
         await cancel_speech_context_task(context_task)
         raise
+    except AdapterExecutionBusyError as exc:
+        await cancel_speech_context_task(context_task)
+        raise AdapterCapacityExceededError(str(exc)) from exc
     except (WrongModelTypeError, OperationError, VoxError):
         await cancel_speech_context_task(context_task)
         raise
@@ -387,10 +387,7 @@ async def transcribe(
         annotate_start = time.perf_counter()
         lang = request.language or result.language or "en"
         ents, tops = annotate(result.text, lang)
-        entities = tuple(
-            Entity(type=e.type, text=e.text, start_char=e.start_char, end_char=e.end_char)
-            for e in ents
-        )
+        entities = tuple(Entity(type=e.type, text=e.text, start_char=e.start_char, end_char=e.end_char) for e in ents)
         topics = tuple(tops)
         timings.annotate_ms = int((time.perf_counter() - annotate_start) * 1000)
 
@@ -556,7 +553,6 @@ async def _run_padded_stt(
         language=language,
         word_timestamps=word_timestamps,
         temperature=temperature,
-        executor=None,
     )
     elapsed = int((time.perf_counter() - start) * 1000)
     if timings is not None:
@@ -678,9 +674,6 @@ def annotate_text(request: AnnotateRequest) -> AnnotateResult:
     language = request.language or "en"
     ents, tops = annotate(text, language)
     return AnnotateResult(
-        entities=tuple(
-            Entity(type=e.type, text=e.text, start_char=e.start_char, end_char=e.end_char)
-            for e in ents
-        ),
+        entities=tuple(Entity(type=e.type, text=e.text, start_char=e.start_char, end_char=e.end_char) for e in ents),
         topics=tuple(tops),
     )

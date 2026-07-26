@@ -86,6 +86,11 @@ class MemoryBudgetExceededError(OperationError):
         super().__init__(message)
 
 
+class AdapterCapacityExceededError(OperationError):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
 class CatalogEntryNotFoundError(OperationError):
     def __init__(self, model: str) -> None:
         self.model = model
@@ -240,6 +245,6 @@ def classify_operation_error(exc: OperationError) -> OperationErrorKind:
         ),
     ):
         return OperationErrorKind.CONFLICT
-    if isinstance(exc, MemoryBudgetExceededError):
+    if isinstance(exc, (MemoryBudgetExceededError, AdapterCapacityExceededError)):
         return OperationErrorKind.RESOURCE_EXHAUSTED
     return OperationErrorKind.INTERNAL

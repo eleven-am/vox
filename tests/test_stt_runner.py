@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import threading
-from concurrent.futures import ThreadPoolExecutor
+import time
 
 import numpy as np
 import pytest
@@ -22,26 +23,97 @@ class RecordingSTT(FakeSTTAdapter):
         return self._result
 
 
+class BlockingSTT(FakeSTTAdapter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.first_started = threading.Event()
+        self.first_release = threading.Event()
+        self.second_started = threading.Event()
+        self.active = 0
+        self.max_active = 0
+        self.thread_ids: set[int] = set()
+
+    def transcribe(self, audio, **kwargs) -> TranscribeResult:
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        self.thread_ids.add(threading.get_ident())
+        try:
+            if float(audio[0]) == 1.0:
+                self.first_started.set()
+                self.first_release.wait(5.0)
+                return TranscribeResult(text="late")
+            self.second_started.set()
+            return TranscribeResult(text="second")
+        finally:
+            self.active -= 1
+
+
 @pytest.mark.asyncio
-async def test_run_stt_preserves_adapter_kwargs_and_uses_executor_when_given():
+async def test_run_stt_preserves_adapter_kwargs_and_uses_adapter_lane():
     adapter = RecordingSTT(TranscribeResult(text="ok", duration_ms=1000))
     audio = np.ones(16_000, dtype=np.float32)
 
-    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="assert-stt") as executor:
-        result = await run_stt(
-            adapter,
-            audio,
-            language="fr",
-            word_timestamps=True,
-            temperature=0.7,
-            executor=executor,
-        )
+    result = await run_stt(
+        adapter,
+        audio,
+        language="fr",
+        word_timestamps=True,
+        temperature=0.7,
+    )
 
     assert result.text == "ok"
     assert len(adapter.calls) == 1
     _, kwargs, thread_name = adapter.calls[0]
     assert kwargs == {"language": "fr", "word_timestamps": True, "temperature": 0.7}
-    assert thread_name.startswith("assert-stt")
+    assert thread_name.startswith("vox-adapter")
+    adapter.close_execution_lane()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_stt_remains_owned_and_serializes_replacement():
+    adapter = BlockingSTT()
+    first = asyncio.create_task(
+        run_stt(
+            adapter,
+            np.ones(16_000, dtype=np.float32),
+            language=None,
+            word_timestamps=False,
+        )
+    )
+    assert await asyncio.to_thread(adapter.first_started.wait, 1.0)
+
+    started = time.perf_counter()
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert time.perf_counter() - started < 0.1
+    assert adapter.physical_work_count == 1
+
+    second = asyncio.create_task(
+        run_stt(
+            adapter,
+            np.full(16_000, 2.0, dtype=np.float32),
+            language=None,
+            word_timestamps=False,
+        )
+    )
+    await asyncio.sleep(0.05)
+
+    assert adapter.second_started.is_set() is False
+    assert adapter.max_active == 1
+
+    adapter.first_release.set()
+    result = await second
+    for _ in range(100):
+        if adapter.physical_work_count == 0:
+            break
+        await asyncio.sleep(0.01)
+
+    assert result.text == "second"
+    assert adapter.physical_work_count == 0
+    assert adapter.max_active == 1
+    assert len(adapter.thread_ids) == 1
+    adapter.close_execution_lane()
 
 
 @pytest.mark.asyncio

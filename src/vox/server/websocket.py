@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterable, AsyncIterator, Callable
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from contextvars import Token
 from dataclasses import dataclass
@@ -12,7 +12,7 @@ from typing import Any, TypeVar
 
 from starlette.websockets import WebSocketDisconnect
 
-from vox.core.tasks import drain_task
+from vox.core.tasks import drain_task, reap_task
 from vox.logging_context import bind_request_id, reset_request_id
 from vox.operations.errors import OperationError, UnknownMessageTypeError
 from vox.server.auth import require_ws_api_key
@@ -93,13 +93,31 @@ async def websocket_session_event_scope(
     emit_events: Callable[[], Any],
     *,
     drain_timeout: float | None = 5.0,
-) -> AsyncIterator[None]:
+) -> AsyncIterator[asyncio.Task[Any]]:
     emit_task = asyncio.create_task(emit_events())
     try:
-        yield
+        yield emit_task
     finally:
         await drain_task(emit_task, timeout=drain_timeout)
         await session.close()
+
+
+async def run_websocket_session_operation(
+    operation: Awaitable[T],
+    emit_task: asyncio.Task[Any],
+) -> T:
+    operation_task = asyncio.create_task(operation)
+    try:
+        done, _pending = await asyncio.wait(
+            (operation_task, emit_task),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if emit_task in done:
+            await emit_task
+        return await operation_task
+    finally:
+        if not operation_task.done():
+            await reap_task(operation_task)
 
 
 @asynccontextmanager

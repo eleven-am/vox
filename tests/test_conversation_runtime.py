@@ -257,5 +257,46 @@ async def test_runtime_cleans_tasks_and_orchestrator_when_end_input_fails():
     assert background_task.done()
 
 
+@pytest.mark.asyncio
+async def test_runtime_close_finishes_owned_cleanup_when_caller_is_cancelled():
+    close_started = asyncio.Event()
+    release_close = asyncio.Event()
+
+    class BlockingCloseOrchestrator(RuntimeOrchestratorSpy):
+        async def close(self) -> None:
+            close_started.set()
+            await release_close.wait()
+            await super().close()
+
+    orchestrator = BlockingCloseOrchestrator()
+    runtime = ConversationRuntime(orchestrator)
+    runtime.start_event_pump(lambda event: _append_event([], event))
+    close_task = asyncio.create_task(runtime.close())
+
+    await close_started.wait()
+    close_task.cancel()
+    await asyncio.sleep(0)
+    assert close_task.done() is False
+
+    release_close.set()
+    with pytest.raises(asyncio.CancelledError):
+        await close_task
+
+    assert orchestrator.close_count == 1
+    assert runtime._close_task is not None
+    assert runtime._close_task.done()
+
+
+@pytest.mark.asyncio
+async def test_runtime_releases_completed_background_task_references():
+    runtime = ConversationRuntime(RuntimeOrchestratorSpy())
+
+    tasks = [runtime.start_background_task(asyncio.sleep(0)) for _ in range(100)]
+    await asyncio.gather(*tasks)
+    await asyncio.sleep(0)
+
+    assert runtime._background_tasks == set()
+
+
 async def _append_event(received: list, event) -> None:
     received.append(event)

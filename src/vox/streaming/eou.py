@@ -6,6 +6,7 @@ import threading
 import time
 from collections.abc import Awaitable
 from dataclasses import dataclass
+from functools import partial
 from typing import Any, Protocol
 
 import numpy as np
@@ -196,9 +197,7 @@ class TenTurnDetector:
                 import torch
                 from transformers import AutoModelForCausalLM, AutoTokenizer
             except ImportError as exc:
-                raise RuntimeError(
-                    "TEN turn detector requires optional dependencies: torch and transformers"
-                ) from exc
+                raise RuntimeError("TEN turn detector requires optional dependencies: torch and transformers") from exc
 
             started = time.perf_counter()
             dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
@@ -311,10 +310,12 @@ class ModelTurnDetector:
             adapter_type=TurnDetectorAdapter,
             expected_type="turn detector",
         ) as adapter:
-            probability = await asyncio.to_thread(
-                adapter.predict,
-                audio,
-                sample_rate=sample_rate,
+            probability = await adapter.execute_sync(
+                partial(
+                    adapter.predict,
+                    audio,
+                    sample_rate=sample_rate,
+                )
             )
         return float(np.clip(probability, 0.0, 1.0))
 

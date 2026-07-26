@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator
-from typing import Any
+from collections.abc import AsyncIterator, Callable
+from typing import Any, TypeVar
 
 import numpy as np
 from numpy.typing import NDArray
 
+from vox.core.adapter_execution import AdapterExecutionLane
 from vox.core.device_placement import PlacementTier
 from vox.core.types import (
     AdapterInfo,
@@ -16,9 +17,16 @@ from vox.core.types import (
     VoiceInfo,
 )
 
+T = TypeVar("T")
+
 
 class BaseAdapter(ABC):
     """Shared interface for all model adapters (STT and TTS)."""
+
+    def __new__(cls, *args: Any, **kwargs: Any):
+        instance = super().__new__(cls)
+        instance._vox_execution_lane = AdapterExecutionLane()
+        return instance
 
     @abstractmethod
     def info(self) -> AdapterInfo: ...
@@ -47,6 +55,29 @@ class BaseAdapter(ABC):
     def trim(self) -> None:
         """Release non-essential request/cache memory while keeping model weights loaded."""
         return None
+
+    @property
+    def supports_trim(self) -> bool:
+        return type(self).trim is not BaseAdapter.trim
+
+    @property
+    def physical_work_count(self) -> int:
+        return self._vox_execution_lane.pending_count
+
+    def close_execution_lane(self) -> None:
+        self._vox_execution_lane.close()
+
+    async def wait_execution_idle(self, *, timeout: float | None = None) -> None:
+        await self._vox_execution_lane.wait_idle(timeout=timeout)
+
+    def run_exclusive(self, operation: Callable[[], None]) -> None:
+        self._get_execution_lane().run_sync(operation)
+
+    async def execute_sync(self, operation: Callable[[], T]) -> T:
+        return await self._get_execution_lane().run(operation)
+
+    def _get_execution_lane(self) -> AdapterExecutionLane:
+        return self._vox_execution_lane
 
     def memory_status(self) -> dict[str, Any]:
         """Return optional backend-specific memory details for diagnostics."""
@@ -95,6 +126,13 @@ class TTSAdapter(BaseAdapter):
     ) -> AsyncIterator[SynthesizeChunk]:
         """Stream audio chunks as they are synthesized."""
         ...
+
+    async def iterate_synthesis(
+        self,
+        iterator: AsyncIterator[SynthesizeChunk],
+    ) -> AsyncIterator[SynthesizeChunk]:
+        async for item in self._get_execution_lane().iterate(iterator):
+            yield item
 
     def list_voices(self) -> list[VoiceInfo]:
         """Return built-in voice options. Empty for voice-cloning-only models."""

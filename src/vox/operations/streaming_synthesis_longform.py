@@ -10,9 +10,11 @@ from typing import Any
 import numpy as np
 
 from vox.core.adapter import TTSAdapter
+from vox.core.errors import AdapterExecutionBusyError
 from vox.core.synthesis_validation import call_accepts_keyword
 from vox.operations.defaults import resolve_requested_or_default_model
 from vox.operations.errors import (
+    AdapterCapacityExceededError,
     EmptyInputError,
     InvalidConfigError,
     OperationError,
@@ -100,14 +102,7 @@ class _ResolvedTtsVoice:
     reference_text: str | None
 
 
-TtsEvent = (
-    TtsReadyEvent
-    | TtsAudioStartEvent
-    | TtsAudioChunkEvent
-    | TtsProgressEvent
-    | TtsDoneEvent
-    | TtsErrorEvent
-)
+TtsEvent = TtsReadyEvent | TtsAudioStartEvent | TtsAudioChunkEvent | TtsProgressEvent | TtsDoneEvent | TtsErrorEvent
 
 
 def longform_tts_event_payload(event: TtsEvent) -> dict[str, Any] | None:
@@ -196,7 +191,6 @@ def normalize_longform_tts_config(
 
 
 class LongformSynthesisSession(StreamingOperationErrorReporter):
-
     def __init__(self, *, scheduler: Any, registry: Any, store: Any | None) -> None:
         self._scheduler = scheduler
         self._registry = registry
@@ -208,7 +202,7 @@ class LongformSynthesisSession(StreamingOperationErrorReporter):
         self._resolved_voice: _ResolvedTtsVoice | None = None
         self._effective_cap: int = 0
         self._text_parts: list[str] = []
-        self._events: asyncio.Queue[TtsEvent] = asyncio.Queue()
+        self._events: asyncio.Queue[TtsEvent] = asyncio.Queue(maxsize=8)
         self._closed = False
 
     async def configure(self, config: LongformSynthesisConfig) -> None:
@@ -228,7 +222,10 @@ class LongformSynthesisSession(StreamingOperationErrorReporter):
 
         try:
             voice_arg, language_arg, reference_audio, reference_text = resolve_tts_voice_request(
-                adapter, self._store, config.voice, config.language,
+                adapter,
+                self._store,
+                config.voice,
+                config.language,
             )
         except OperationError:
             await release_entered_adapter(entered)
@@ -254,12 +251,14 @@ class LongformSynthesisSession(StreamingOperationErrorReporter):
 
         self._effective_cap = effective_tts_text_cap(adapter, config.chunk_chars)
 
-        await self._events.put(TtsReadyEvent(
-            model=config.model,
-            voice=config.voice,
-            response_format=config.response_format,
-            chunk_chars=self._effective_cap,
-        ))
+        await self._events.put(
+            TtsReadyEvent(
+                model=config.model,
+                voice=config.voice,
+                response_format=config.response_format,
+                chunk_chars=self._effective_cap,
+            )
+        )
 
     async def configure_or_report(self, config: LongformSynthesisConfig) -> bool:
         return await self.run_or_report_operation_error(lambda: self.configure(config))
@@ -276,7 +275,10 @@ class LongformSynthesisSession(StreamingOperationErrorReporter):
         if not full_text:
             await self.report_error(str(EmptyInputError()))
             return
-        await self._synthesize(full_text)
+        try:
+            await self._synthesize(full_text)
+        except AdapterExecutionBusyError as exc:
+            raise AdapterCapacityExceededError(str(exc)) from exc
 
     async def end_of_stream_or_report(self) -> bool:
         return await self.run_or_report_operation_error(self.end_of_stream)
@@ -332,7 +334,8 @@ class LongformSynthesisSession(StreamingOperationErrorReporter):
             }
             if call_accepts_keyword(adapter.synthesize, "params"):
                 synth_kwargs["params"] = config.params or {}
-            async for chunk in adapter.synthesize(text_chunk, **synth_kwargs):
+            chunks = adapter.synthesize(text_chunk, **synth_kwargs)
+            async for chunk in adapter.iterate_synthesis(chunks):
                 audio = np.frombuffer(chunk.audio, dtype=np.float32)
                 if audio.size == 0:
                     continue
@@ -340,10 +343,12 @@ class LongformSynthesisSession(StreamingOperationErrorReporter):
                 output_sample_rate = chunk.sample_rate
 
                 if not audio_meta_sent:
-                    await self._events.put(TtsAudioStartEvent(
-                        sample_rate=chunk.sample_rate,
-                        response_format=config.response_format,
-                    ))
+                    await self._events.put(
+                        TtsAudioStartEvent(
+                            sample_rate=chunk.sample_rate,
+                            response_format=config.response_format,
+                        )
+                    )
                     audio_meta_sent = True
 
                 fmt = config.response_format
@@ -365,12 +370,14 @@ class LongformSynthesisSession(StreamingOperationErrorReporter):
             total_processing_ms += int((time.perf_counter() - chunk_start) * 1000)
             completed_chunks += 1
             completed_chars += len(text_chunk)
-            await self._events.put(TtsProgressEvent(
-                completed_chars=completed_chars,
-                total_chars=total_chars,
-                chunks_completed=completed_chunks,
-                chunks_total=len(text_chunks),
-            ))
+            await self._events.put(
+                TtsProgressEvent(
+                    completed_chars=completed_chars,
+                    total_chars=total_chars,
+                    chunks_completed=completed_chunks,
+                    chunks_total=len(text_chunks),
+                )
+            )
 
         if opus_encoder is not None:
             for frame in opus_encoder.flush():
@@ -381,11 +388,14 @@ class LongformSynthesisSession(StreamingOperationErrorReporter):
                 await self._events.put(TtsAudioChunkEvent(data=tail))
 
         default_done_rate = 48_000 if config.response_format == "opus" else 24_000
-        await self._events.put(TtsDoneEvent(
-            response_format=config.response_format,
-            audio_duration_ms=samples_to_ms(
-                total_audio_samples, output_sample_rate or default_done_rate,
-            ),
-            processing_ms=total_processing_ms,
-            text_length=total_chars,
-        ))
+        await self._events.put(
+            TtsDoneEvent(
+                response_format=config.response_format,
+                audio_duration_ms=samples_to_ms(
+                    total_audio_samples,
+                    output_sample_rate or default_done_rate,
+                ),
+                processing_ms=total_processing_ms,
+                text_length=total_chars,
+            )
+        )

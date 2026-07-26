@@ -49,16 +49,19 @@ def _segments_and_words(result: TranscribeResult) -> tuple[list[dict] | None, li
             }
             for w in s.words
         ]
-        segments.append({
-            "text": s.text,
-            "start_ms": int(s.start_ms),
-            "end_ms": int(s.end_ms),
-            "words": seg_words,
-            "language": s.language,
-            "confidence": s.confidence,
-        })
+        segments.append(
+            {
+                "text": s.text,
+                "start_ms": int(s.start_ms),
+                "end_ms": int(s.end_ms),
+                "words": seg_words,
+                "language": s.language,
+                "confidence": s.confidence,
+            }
+        )
         all_words.extend(seg_words)
     return segments, (all_words or None)
+
 
 logger = logging.getLogger(__name__)
 
@@ -159,10 +162,7 @@ def _speech_spans_for_transcription(audio: NDArray[np.float32]) -> list[tuple[in
         return [(0, audio.size)]
 
     pad_samples = int(INTERNAL_SILENCE_PAD_MS * TARGET_SAMPLE_RATE / 1000)
-    return [
-        (max(0, start - pad_samples), min(audio.size, end + pad_samples))
-        for start, end in merged
-    ]
+    return [(max(0, start - pad_samples), min(audio.size, end + pad_samples)) for start, end in merged]
 
 
 @dataclass
@@ -173,7 +173,6 @@ class StreamPipelineConfig:
 
 
 class StreamPipeline:
-
     def __init__(
         self,
         scheduler: Scheduler,
@@ -522,7 +521,6 @@ class StreamPipeline:
             language=language,
             word_timestamps=word_timestamps,
             temperature=temperature,
-            executor=self._executor,
         )
 
     def _append_pending_user_audio(self, audio: NDArray[np.float32]) -> None:
@@ -530,17 +528,11 @@ class StreamPipeline:
             return
         pieces: list[NDArray[np.float32]] = []
         if self._pending_user_audio.size:
-            silence_samples = int(
-                max(0, self._config.vad_config.min_silence_duration_ms)
-                * TARGET_SAMPLE_RATE
-                / 1000
-            )
+            silence_samples = int(max(0, self._config.vad_config.min_silence_duration_ms) * TARGET_SAMPLE_RATE / 1000)
             if silence_samples:
                 pieces.append(np.zeros(silence_samples, dtype=np.float32))
         pieces.append(np.asarray(audio, dtype=np.float32))
-        self._pending_user_audio = np.concatenate(
-            [self._pending_user_audio, *pieces]
-        )[-_EOU_AUDIO_LIMIT_SAMPLES:]
+        self._pending_user_audio = np.concatenate([self._pending_user_audio, *pieces])[-_EOU_AUDIO_LIMIT_SAMPLES:]
 
     async def _add_eou_probability(self, transcript: StreamTranscript) -> StreamTranscript:
         self._pending_user_text = (self._pending_user_text + " " + transcript.text).strip()
@@ -571,10 +563,7 @@ class StreamPipeline:
                 self._low_eou_streak += 1
 
                 pending_tokens = self._eou_model.token_count(self._pending_user_text)
-                if (
-                    self._low_eou_streak >= 3
-                    or pending_tokens >= self._config.eou_config.max_pending_tokens
-                ):
+                if self._low_eou_streak >= 3 or pending_tokens >= self._config.eou_config.max_pending_tokens:
                     self._flush_pending_user_text()
         except Exception:
             self._eou_failure_streak += 1
@@ -599,9 +588,7 @@ class StreamPipeline:
             return
 
         with self._history_lock:
-            self._conversation_history.append(
-                ConversationTurn(role="user", content=self._pending_user_text)
-            )
+            self._conversation_history.append(ConversationTurn(role="user", content=self._pending_user_text))
             history_limit = self._history_limit() * 2
             if len(self._conversation_history) > history_limit:
                 self._conversation_history = self._conversation_history[-history_limit:]

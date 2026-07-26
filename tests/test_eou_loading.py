@@ -1,18 +1,25 @@
 from __future__ import annotations
 
+import asyncio
 import sys
+import threading
+from contextlib import asynccontextmanager
 from types import ModuleType
 from unittest.mock import MagicMock, call, patch
 
+import numpy as np
 import pytest
 from huggingface_hub.errors import LocalEntryNotFoundError
 
+from vox.core.adapter import TurnDetectorAdapter
+from vox.core.types import AdapterInfo, ModelFormat, ModelType
 from vox.streaming.eou import (
     EOU_MODEL_FILE,
     EOU_MODEL_ID,
     EOU_MODEL_REVISION,
     EOU_MODEL_SUBFOLDER,
     EOUModel,
+    ModelTurnDetector,
 )
 
 
@@ -117,3 +124,63 @@ def test_missing_tokenizer_cache_falls_back_to_download():
         ),
         call(EOU_MODEL_ID, revision=EOU_MODEL_REVISION),
     ]
+
+
+@pytest.mark.asyncio
+async def test_model_turn_detector_cancellation_keeps_physical_inference_owned():
+    predict_started = threading.Event()
+    release_predict = threading.Event()
+
+    class BlockingTurnAdapter(TurnDetectorAdapter):
+        def info(self) -> AdapterInfo:
+            return AdapterInfo(
+                name="blocking-turn",
+                type=ModelType.TURN,
+                architectures=("test",),
+                default_sample_rate=16_000,
+                supported_formats=(ModelFormat.ONNX,),
+            )
+
+        def load(self, model_path: str, device: str, **kwargs) -> None:
+            pass
+
+        def unload(self) -> None:
+            pass
+
+        @property
+        def is_loaded(self) -> bool:
+            return True
+
+        def predict(self, audio, *, sample_rate: int) -> float:
+            predict_started.set()
+            release_predict.wait(5.0)
+            return 0.75
+
+    class SchedulerStub:
+        def __init__(self, adapter: TurnDetectorAdapter) -> None:
+            self.adapter = adapter
+
+        @asynccontextmanager
+        async def acquire(self, model: str):
+            yield self.adapter
+
+    adapter = BlockingTurnAdapter()
+    detector = ModelTurnDetector(SchedulerStub(adapter), "smart-turn:test")
+    predict_task = asyncio.create_task(
+        detector.predict(
+            [],
+            audio=np.ones(1_600, dtype=np.float32),
+            sample_rate=16_000,
+        )
+    )
+
+    assert await asyncio.to_thread(predict_started.wait, 5.0)
+    predict_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await predict_task
+
+    assert adapter.physical_work_count == 1
+
+    release_predict.set()
+    await adapter.wait_execution_idle(timeout=5.0)
+    assert adapter.physical_work_count == 0

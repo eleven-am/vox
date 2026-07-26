@@ -9,7 +9,11 @@ from vox.core.scheduler import Scheduler
 from vox.core.store import BlobStore
 from vox.grpc import vox_pb2, vox_pb2_grpc
 from vox.grpc.streaming_messages import execute_stream_input_message, stream_output_message
-from vox.grpc.streaming_queue import iter_grpc_stream_lifecycle, start_grpc_event_pump
+from vox.grpc.streaming_queue import (
+    GRPC_OUTPUT_QUEUE_MAX,
+    iter_grpc_stream_lifecycle,
+    start_grpc_event_pump,
+)
 from vox.operations.streaming_transcription import (
     DoneEvent,
     StreamingTranscriptionSession,
@@ -21,7 +25,6 @@ logger = logging.getLogger(__name__)
 
 
 class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
-
     def __init__(
         self,
         store: BlobStore,
@@ -48,7 +51,7 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
             pipeline_config=self._pipeline_config,
             speech_context_service=self._speech_context_service,
         )
-        out_queue: asyncio.Queue[vox_pb2.StreamOutput | None] = asyncio.Queue()
+        out_queue: asyncio.Queue[vox_pb2.StreamOutput | None] = asyncio.Queue(maxsize=GRPC_OUTPUT_QUEUE_MAX)
 
         async def drain_client() -> None:
             try:
@@ -67,10 +70,14 @@ class StreamingServiceServicer(vox_pb2_grpc.StreamingServiceServicer):
             terminal_types=(DoneEvent,),
         )
         client_task = asyncio.create_task(drain_client())
-        async for item in iter_grpc_stream_lifecycle(
+        stream = iter_grpc_stream_lifecycle(
             out_queue,
             client_task,
             emit_task,
             cleanup=session.close,
-        ):
-            yield item
+        )
+        try:
+            async for item in stream:
+                yield item
+        finally:
+            await stream.aclose()

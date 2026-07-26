@@ -122,7 +122,7 @@ async def _drive_until(
                 if predicate(server_message):
                     break
         finally:
-            await client_queue.put(None)
+            await generator.aclose()
 
     await asyncio.wait_for(run(), timeout=timeout)
     return output

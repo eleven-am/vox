@@ -90,12 +90,7 @@ class LongformErrorEvent:
     message: str
 
 
-LongformEvent = (
-    LongformReadyEvent
-    | LongformProgressEvent
-    | LongformDoneEvent
-    | LongformErrorEvent
-)
+LongformEvent = LongformReadyEvent | LongformProgressEvent | LongformDoneEvent | LongformErrorEvent
 
 
 def longform_transcription_event_payload(event: LongformEvent) -> dict[str, Any] | None:
@@ -213,7 +208,6 @@ def normalize_longform_config(
 
 
 class LongformTranscriptionSession(StreamingOperationErrorReporter):
-
     def __init__(
         self,
         *,
@@ -231,7 +225,7 @@ class LongformTranscriptionSession(StreamingOperationErrorReporter):
         self._state: _LongformState | None = None
         self._adapter: STTAdapter | None = None
         self._adapter_lease: EnteredAdapter[STTAdapter] | None = None
-        self._events: asyncio.Queue[LongformEvent] = asyncio.Queue()
+        self._events: asyncio.Queue[LongformEvent] = asyncio.Queue(maxsize=64)
         self._closed = False
 
     async def configure(self, config: LongformTranscriptionConfig) -> None:
@@ -262,13 +256,15 @@ class LongformTranscriptionSession(StreamingOperationErrorReporter):
             self._state.context_path = context_path
             self._state.context_wave = context_wave
             self._state.context_resources = resources
-        await self._events.put(LongformReadyEvent(
-            model=config.model,
-            sample_rate=config.sample_rate,
-            input_format=config.input_format,
-            chunk_ms=config.chunk_ms,
-            overlap_ms=config.overlap_ms,
-        ))
+        await self._events.put(
+            LongformReadyEvent(
+                model=config.model,
+                sample_rate=config.sample_rate,
+                input_format=config.input_format,
+                chunk_ms=config.chunk_ms,
+                overlap_ms=config.overlap_ms,
+            )
+        )
 
     async def configure_or_report(self, config: LongformTranscriptionConfig) -> bool:
         return await self.run_or_report_operation_error(lambda: self.configure(config))
@@ -288,21 +284,21 @@ class LongformTranscriptionSession(StreamingOperationErrorReporter):
         if state.context_wave is not None:
             state.context_wave.writeframes(float32_to_pcm16(audio))
         state.uploaded_samples += audio.size
-        state.pending_audio = (
-            audio if state.pending_audio.size == 0 else np.concatenate([state.pending_audio, audio])
-        )
+        state.pending_audio = audio if state.pending_audio.size == 0 else np.concatenate([state.pending_audio, audio])
         step_samples = state.chunk_samples - state.overlap_samples
         while state.pending_audio.size >= state.chunk_samples:
-            chunk_audio = state.pending_audio[:state.chunk_samples]
+            chunk_audio = state.pending_audio[: state.chunk_samples]
             await self._run_chunk(chunk_audio, final_chunk=False)
             state.pending_audio = state.pending_audio[step_samples:]
             state.next_chunk_start_samples += step_samples
             state.committed_samples += step_samples
-            await self._events.put(LongformProgressEvent(
-                uploaded_ms=samples_to_ms(state.uploaded_samples),
-                processed_ms=samples_to_ms(state.committed_samples),
-                chunks_completed=state.chunks_completed,
-            ))
+            await self._events.put(
+                LongformProgressEvent(
+                    uploaded_ms=samples_to_ms(state.uploaded_samples),
+                    processed_ms=samples_to_ms(state.committed_samples),
+                    chunks_completed=state.chunks_completed,
+                )
+            )
 
     async def submit_chunk_or_report(self, data: bytes) -> bool:
         return await self.run_or_report_operation_error(lambda: self.submit_chunk(data))
@@ -331,15 +327,17 @@ class LongformTranscriptionSession(StreamingOperationErrorReporter):
             raise
 
         speech_context = await self._resolve_context(context_task, enabled=config.speech_context)
-        await self._events.put(LongformDoneEvent(
-            model=config.model,
-            text=" ".join(part for part in state.transcript_parts if part).strip(),
-            language=state.language,
-            duration_ms=samples_to_ms(state.uploaded_samples),
-            processing_ms=state.processing_ms,
-            segments=tuple(state.segments),
-            speech_context=speech_context,
-        ))
+        await self._events.put(
+            LongformDoneEvent(
+                model=config.model,
+                text=" ".join(part for part in state.transcript_parts if part).strip(),
+                language=state.language,
+                duration_ms=samples_to_ms(state.uploaded_samples),
+                processing_ms=state.processing_ms,
+                segments=tuple(state.segments),
+                speech_context=speech_context,
+            )
+        )
 
     async def end_of_stream_or_report(self) -> bool:
         return await self.run_or_report_operation_error(self.end_of_stream)
@@ -407,21 +405,25 @@ class LongformTranscriptionSession(StreamingOperationErrorReporter):
                 for word in segment.words:
                     if overlap_ms and word.start_ms + word.end_ms <= 2 * overlap_ms:
                         continue
-                    words.append({
-                        "word": word.word,
-                        "start_ms": chunk_start_ms + max(word.start_ms, overlap_ms),
-                        "end_ms": chunk_start_ms + word.end_ms,
-                        "confidence": word.confidence,
-                    })
+                    words.append(
+                        {
+                            "word": word.word,
+                            "start_ms": chunk_start_ms + max(word.start_ms, overlap_ms),
+                            "end_ms": chunk_start_ms + word.end_ms,
+                            "confidence": word.confidence,
+                        }
+                    )
                 text = segment.text.strip()
                 if text:
                     state.transcript_parts.append(text)
-                state.segments.append({
-                    "text": segment.text,
-                    "start_ms": start_ms,
-                    "end_ms": end_ms,
-                    "words": words,
-                })
+                state.segments.append(
+                    {
+                        "text": segment.text,
+                        "start_ms": start_ms,
+                        "end_ms": end_ms,
+                        "words": words,
+                    }
+                )
         else:
             text = result.text.strip()
             if text:

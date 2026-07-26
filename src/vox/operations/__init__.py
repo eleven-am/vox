@@ -1,4 +1,5 @@
 from vox.operations.errors import (
+    AdapterCapacityExceededError,
     AdapterInstallError,
     CatalogEntryNotFoundError,
     EmptyAudioError,
@@ -32,6 +33,7 @@ from vox.operations.errors import (
 )
 
 __all__ = [
+    "AdapterCapacityExceededError",
     "AdapterInstallError",
     "CatalogEntryNotFoundError",
     "EmptyAudioError",

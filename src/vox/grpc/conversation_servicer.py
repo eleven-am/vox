@@ -19,7 +19,12 @@ from vox.grpc.conversation_events import (
     conversation_error_pb_from_exception,
     conversation_event_to_pb,
 )
-from vox.grpc.streaming_queue import close_grpc_output_queue, iter_grpc_stream_lifecycle
+from vox.grpc.streaming_queue import (
+    GRPC_OUTPUT_QUEUE_MAX,
+    close_grpc_output_queue,
+    iter_grpc_stream_lifecycle,
+    put_grpc_output_queue,
+)
 from vox.operations.conversation import (
     ConvDoneEvent,
     ConversationOrchestrator,
@@ -59,13 +64,18 @@ class ConversationServicer(vox_pb2_grpc.ConversationServiceServicer):
             require_config_message="send session_update first",
             unknown_message_label="unknown message kind",
         )
-        out_queue: asyncio.Queue[vox_pb2.ConverseServerMessage | None] = asyncio.Queue()
+        out_queue: asyncio.Queue[vox_pb2.ConverseServerMessage | None] = asyncio.Queue(maxsize=GRPC_OUTPUT_QUEUE_MAX)
+        consumer_closed = asyncio.Event()
 
         async def emit_event(event) -> None:
             message = conversation_event_to_pb(event)
             if message is not None:
-                await out_queue.put(message)
-            if isinstance(event, ConvDoneEvent):
+                await put_grpc_output_queue(
+                    out_queue,
+                    message,
+                    consumer_closed=consumer_closed,
+                )
+            if isinstance(event, ConvDoneEvent) and not consumer_closed.is_set():
                 await close_grpc_output_queue(out_queue)
 
         async def drain_client() -> None:
@@ -77,15 +87,25 @@ class ConversationServicer(vox_pb2_grpc.ConversationServiceServicer):
                     try:
                         await runtime.dispatch(converse_client_message_to_command(client_msg))
                     except OperationError as exc:
-                        await out_queue.put(conversation_error_pb_from_exception(exc))
+                        await put_grpc_output_queue(
+                            out_queue,
+                            conversation_error_pb_from_exception(exc),
+                            consumer_closed=consumer_closed,
+                        )
             finally:
                 await runtime.end_input()
 
-        runtime.start_event_pump(emit_event)
+        emit_task = runtime.start_event_pump(emit_event)
         client_task = asyncio.create_task(drain_client())
-        async for item in iter_grpc_stream_lifecycle(
+        stream = iter_grpc_stream_lifecycle(
             out_queue,
             client_task,
+            emit_task,
             cleanup=runtime.close,
-        ):
-            yield item
+            on_consumer_close=consumer_closed.set,
+        )
+        try:
+            async for item in stream:
+                yield item
+        finally:
+            await stream.aclose()

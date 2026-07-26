@@ -611,9 +611,7 @@ def parse_response_output(message: dict) -> ResponseOutputOptions | None:
 
     unknown = sorted(set(raw_output) - RESPONSE_OUTPUT_FIELDS)
     if unknown:
-        raise InvalidConfigError(
-            f"response.start output contains unsupported field(s): {', '.join(unknown)}"
-        )
+        raise InvalidConfigError(f"response.start output contains unsupported field(s): {', '.join(unknown)}")
     params = raw_output.get("params")
     if params is not None and not isinstance(params, dict):
         raise InvalidConfigError("response.start output params must be an object")
@@ -745,11 +743,7 @@ def parse_conversation_wire_event(event: dict) -> ConvEvent | None:
             entities=tuple(event.get("entities") or ()),
             topics=tuple(event.get("topics") or ()),
             words=tuple(event.get("words") or ()),
-            speech_context=(
-                dict(event["speech_context"])
-                if isinstance(event.get("speech_context"), dict)
-                else None
-            ),
+            speech_context=(dict(event["speech_context"]) if isinstance(event.get("speech_context"), dict) else None),
         )
     if t == WIRE_RESPONSE_CREATED:
         output = None
@@ -876,7 +870,7 @@ class ConversationOrchestrator:
         self._speech_context_service = speech_context_service
         self._session: ConversationSession | None = None
         self._config: ConversationSessionConfig | None = None
-        self._events: asyncio.Queue[ConvEvent] = asyncio.Queue()
+        self._events: asyncio.Queue[ConvEvent] = asyncio.Queue(maxsize=64)
         self._closed = False
 
     @property

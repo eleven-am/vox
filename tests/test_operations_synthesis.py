@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -24,6 +25,7 @@ from vox.core.types import (
     VoiceInfo,
 )
 from vox.operations.errors import (
+    AdapterCapacityExceededError,
     EmptyInputError,
     InvalidConfigError,
     MemoryBudgetExceededError,
@@ -54,16 +56,21 @@ class FakeTTS(TTSAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="fake-tts", type=ModelType.TTS,
-            architectures=("fake",), default_sample_rate=24_000,
+            name="fake-tts",
+            type=ModelType.TTS,
+            architectures=("fake",),
+            default_sample_rate=24_000,
             supported_formats=(ModelFormat.ONNX,),
             supports_voice_cloning=self._cloning,
             max_input_chars=self._max,
         )
+
     def load(self, *a, **k): ...
     def unload(self): ...
     @property
-    def is_loaded(self): return True
+    def is_loaded(self):
+        return True
+
     def list_voices(self):
         return [VoiceInfo(id="default", name="Default")]
 
@@ -72,7 +79,8 @@ class FakeTTS(TTSAdapter):
         self.calls.append(text)
         yield SynthesizeChunk(
             audio=np.full(2048, 0.0, dtype=np.float32).tobytes(),
-            sample_rate=24_000, is_final=False,
+            sample_rate=24_000,
+            is_final=False,
         )
         yield SynthesizeChunk(audio=b"", sample_rate=24_000, is_final=True)
 
@@ -213,6 +221,59 @@ async def test_synthesize_validates_and_passes_supported_params(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_synthesize_reports_bounded_adapter_capacity_as_resource_exhaustion(tmp_path: Path):
+    started = threading.Event()
+    release = threading.Event()
+
+    class SaturatedTTS(FakeTTS):
+        async def synthesize(self, text, **kwargs):
+            started.set()
+            release.wait(5.0)
+            yield SynthesizeChunk(
+                audio=np.full(256, 0.1, dtype=np.float32).tobytes(),
+                sample_rate=24_000,
+                is_final=False,
+            )
+
+    adapter = SaturatedTTS()
+    scheduler = DummyScheduler(adapter)
+    store = BlobStore(root=tmp_path)
+    request = SynthesisRequest(input="hello", model="fake-tts:latest")
+    first = asyncio.create_task(
+        synthesize_full(
+            scheduler=scheduler,
+            registry=MagicMock(),
+            store=store,
+            request=request,
+        )
+    )
+    assert await asyncio.to_thread(started.wait, 1.0)
+    second = asyncio.create_task(
+        synthesize_full(
+            scheduler=scheduler,
+            registry=MagicMock(),
+            store=store,
+            request=request,
+        )
+    )
+    async with asyncio.timeout(1.0):
+        while adapter.physical_work_count < 2:
+            await asyncio.sleep(0)
+
+    with pytest.raises(AdapterCapacityExceededError, match="capacity"):
+        await synthesize_full(
+            scheduler=scheduler,
+            registry=MagicMock(),
+            store=store,
+            request=request,
+        )
+
+    release.set()
+    await asyncio.gather(first, second)
+    await adapter.wait_execution_idle(timeout=1.0)
+
+
+@pytest.mark.asyncio
 async def test_synthesize_rejects_invalid_param_type_and_range(tmp_path: Path):
     sched = DummyScheduler(ParamTTS())
     store = BlobStore(root=tmp_path)
@@ -249,7 +310,9 @@ async def test_synthesize_full_returns_wav_bytes(tmp_path: Path):
     store = BlobStore(root=tmp_path)
     registry = MagicMock()
     bundle = await synthesize_full(
-        scheduler=sched, registry=registry, store=store,
+        scheduler=sched,
+        registry=registry,
+        store=store,
         request=SynthesisRequest(input="hello", model="fake-tts:latest", response_format="wav"),
     )
     assert bundle.audio[:4] == b"RIFF"
@@ -265,7 +328,9 @@ async def test_synthesize_full_raises_on_empty_input(tmp_path: Path):
     registry = MagicMock()
     with pytest.raises(EmptyInputError):
         await synthesize_full(
-            scheduler=sched, registry=registry, store=store,
+            scheduler=sched,
+            registry=registry,
+            store=store,
             request=SynthesisRequest(input="", model="fake-tts:latest"),
         )
 
@@ -278,7 +343,9 @@ async def test_synthesize_full_raises_when_no_default_model(tmp_path: Path):
     registry.available_models.return_value = {}
     with pytest.raises(NoDefaultModelError):
         await synthesize_full(
-            scheduler=sched, registry=registry, store=store,
+            scheduler=sched,
+            registry=registry,
+            store=store,
             request=SynthesisRequest(input="hello"),
         )
 
@@ -290,7 +357,9 @@ async def test_synthesize_full_raises_on_wrong_adapter_type(tmp_path: Path):
     registry = MagicMock()
     with pytest.raises(WrongModelTypeError):
         await synthesize_full(
-            scheduler=sched, registry=registry, store=store,
+            scheduler=sched,
+            registry=registry,
+            store=store,
             request=SynthesisRequest(input="hello", model="fake-stt:latest"),
         )
 
@@ -306,7 +375,9 @@ async def test_synthesize_full_no_audio_generated_raises(tmp_path: Path):
     registry = MagicMock()
     with pytest.raises(NoAudioGeneratedError):
         await synthesize_full(
-            scheduler=sched, registry=registry, store=store,
+            scheduler=sched,
+            registry=registry,
+            store=store,
             request=SynthesisRequest(input="hello", model="fake-tts:latest"),
         )
 
@@ -317,7 +388,9 @@ async def test_synthesize_stream_yields_encoded_chunks(tmp_path: Path):
     store = BlobStore(root=tmp_path)
     registry = MagicMock()
     iterator = await synthesize_stream(
-        scheduler=sched, registry=registry, store=store,
+        scheduler=sched,
+        registry=registry,
+        store=store,
         request=SynthesisRequest(input="hello", model="fake-tts:latest", response_format="wav"),
     )
     chunks = [chunk async for chunk in iterator]
@@ -331,7 +404,9 @@ async def test_synthesize_stream_multichunk_wav_has_single_container_header(tmp_
     store = BlobStore(root=tmp_path)
     registry = MagicMock()
     iterator = await synthesize_stream(
-        scheduler=sched, registry=registry, store=store,
+        scheduler=sched,
+        registry=registry,
+        store=store,
         request=SynthesisRequest(input="hello", model="fake-tts:latest", response_format="wav"),
     )
     body = b"".join([chunk async for chunk in iterator])
@@ -538,7 +613,9 @@ async def test_synthesize_raw_yields_pcm_chunks_with_final_marker(tmp_path: Path
     store = BlobStore(root=tmp_path)
     registry = MagicMock()
     iterator = await synthesize_raw(
-        scheduler=sched, registry=registry, store=store,
+        scheduler=sched,
+        registry=registry,
+        store=store,
         request=SynthesisRequest(input="One. Two. Three.", model="fake-tts:latest"),
     )
     chunks = [chunk async for chunk in iterator]
@@ -552,15 +629,20 @@ async def test_synthesize_raw_yields_pcm_chunks_with_final_marker(tmp_path: Path
 async def test_synthesize_full_uses_stored_clone_reference(tmp_path: Path):
     store = BlobStore(root=tmp_path)
     create_stored_voice(
-        store, voice_id="voice1234", name="Roy",
+        store,
+        voice_id="voice1234",
+        name="Roy",
         audio_bytes=encode_wav(np.full(16_000, 0.1, dtype=np.float32), 16_000),
-        content_type="audio/wav", reference_text="hi there",
+        content_type="audio/wav",
+        reference_text="hi there",
     )
     adapter = FakeTTS(supports_voice_cloning=True)
     sched = DummyScheduler(adapter)
     registry = MagicMock()
     await synthesize_full(
-        scheduler=sched, registry=registry, store=store,
+        scheduler=sched,
+        registry=registry,
+        store=store,
         request=SynthesisRequest(input="hello", model="fake-tts:latest", voice="voice1234"),
     )
     assert adapter.last_kwargs["voice"] is None

@@ -102,7 +102,7 @@ async def _drive_until(servicer, messages, predicate, *, timeout: float = 2.0, m
                 if len(out) >= max_items:
                     break
         finally:
-            await client_queue.put(None)
+            await gen.aclose()
 
     await asyncio.wait_for(run(), timeout=timeout)
     return out

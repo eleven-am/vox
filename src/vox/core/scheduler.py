@@ -17,7 +17,7 @@ from vox.core.device_placement import (
     decide_placement,
     detect_capabilities,
 )
-from vox.core.errors import ModelLoadError
+from vox.core.errors import ModelLoadError, ModelTrimUnsupportedError
 from vox.core.runtime import detect_runtime_capabilities
 from vox.core.tasks import reap_task
 from vox.core.types import DeviceMemoryInfo, LoadedModelInfo, ModelInfo, VramSnapshot, parse_model_name
@@ -44,6 +44,7 @@ def _clear_gpu_cache() -> None:
     """Clear CUDA/MPS cache and run garbage collection."""
     try:
         import torch
+
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
@@ -54,14 +55,41 @@ def _clear_gpu_cache() -> None:
     gc.collect()
 
 
-def _teardown_adapters_blocking(items: list[tuple[str, Any, str]]) -> None:
+def _teardown_adapters_blocking(items: list[tuple[str, Any, str]]) -> dict[str, str | None]:
     """Unload adapters and clear the GPU cache. Blocking; run off the event loop."""
+    results: dict[str, str | None] = {}
     for full_name, adapter, reason in items:
-        try:
-            adapter.unload()
-        except Exception as error:
-            logger.error("Error unloading %s during %s: %s", full_name, reason, error)
+        results[full_name] = _unload_adapter_blocking(full_name, adapter, reason)
     _clear_gpu_cache()
+    return results
+
+
+def _unload_adapter_blocking(full_name: str, adapter: Any, reason: str) -> str | None:
+    try:
+        adapter.unload()
+    except Exception as error:
+        logger.error("Error unloading %s during %s: %s", full_name, reason, error)
+        return str(error)
+    try:
+        adapter.close_execution_lane()
+    except Exception as error:
+        logger.error("Error closing execution lane for %s during %s: %s", full_name, reason, error)
+        return str(error)
+    return None
+
+
+def _reset_adapter_after_failed_load(
+    full_name: str,
+    adapter: Any,
+    reason: str,
+) -> str | None:
+    try:
+        adapter.unload()
+    except Exception as error:
+        logger.error("Error resetting %s during %s: %s", full_name, reason, error)
+        return str(error)
+    _clear_gpu_cache()
+    return None
 
 
 def _device_memory_snapshot(device: str) -> DeviceMemoryInfo:
@@ -141,15 +169,14 @@ def _total_device_memory_bytes(device: str) -> int | None:
 
 class RegistryProtocol(Protocol):
     def resolve(self, name: str, tag: str) -> tuple[ModelInfo, Path]: ...
-    def resolve_model_ref(
-        self, name: str, tag: str = "latest", *, explicit_tag: bool = False
-    ) -> tuple[str, str]: ...
+    def resolve_model_ref(self, name: str, tag: str = "latest", *, explicit_tag: bool = False) -> tuple[str, str]: ...
     def get_adapter_class(self, adapter_name: str) -> type: ...
 
 
 @dataclass
 class _LoadedModel:
     """Internal state for a loaded model."""
+
     full_name: str
     info: ModelInfo
     adapter: Adapter
@@ -159,6 +186,28 @@ class _LoadedModel:
     ref_count: int = 0
     vram_bytes: int = 0
     trimmed: bool = False
+    maintenance: str | None = None
+    lifecycle_error: str | None = None
+    maintenance_done: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def __post_init__(self) -> None:
+        self.maintenance_done.set()
+
+    @property
+    def physical_work_count(self) -> int:
+        return self.adapter.physical_work_count
+
+    @property
+    def active_count(self) -> int:
+        return self.ref_count + self.physical_work_count + int(self.maintenance is not None)
+
+    @property
+    def is_busy(self) -> bool:
+        return self.active_count > 0
+
+    @property
+    def has_work(self) -> bool:
+        return self.ref_count > 0 or self.physical_work_count > 0
 
 
 class Scheduler:
@@ -171,6 +220,7 @@ class Scheduler:
         ttl_seconds: int = 300,
         cleanup_interval: int = 30,
         idle_trim_seconds: int = 0,
+        shutdown_timeout_seconds: float = 30.0,
     ) -> None:
         self._registry = registry
         self._requested_device = default_device
@@ -179,18 +229,19 @@ class Scheduler:
         self._ttl_seconds = ttl_seconds
         self._cleanup_interval = cleanup_interval
         self._idle_trim_seconds = max(0, int(idle_trim_seconds))
+        self._shutdown_timeout_seconds = max(0.1, float(shutdown_timeout_seconds))
         self._models: dict[str, _LoadedModel] = {}
         self._lock = asyncio.Lock()
-        self._load_lock = asyncio.Lock()
+        self._lifecycle_lock = asyncio.Lock()
+        self._load_tasks: dict[str, asyncio.Task[_LoadedModel]] = {}
+        self._maintenance_tasks: set[asyncio.Task[Any]] = set()
         self._cleanup_task: asyncio.Task | None = None
 
     def _normalize_model_ref(self, model_name: str) -> str:
         """Resolve aliases so all cache keys use the canonical registry ref."""
         explicit_tag = ":" in model_name
         name, tag = parse_model_name(model_name)
-        resolved_name, resolved_tag = self._registry.resolve_model_ref(
-            name, tag, explicit_tag=explicit_tag
-        )
+        resolved_name, resolved_tag = self._registry.resolve_model_ref(name, tag, explicit_tag=explicit_tag)
         return f"{resolved_name}:{resolved_tag}"
 
     def _infer_loaded_device(self, adapter: Adapter, info: ModelInfo, requested_device: str) -> str:
@@ -217,7 +268,38 @@ class Scheduler:
         if self._cleanup_task:
             await reap_task(self._cleanup_task)
             self._cleanup_task = None
+        async with self._lock:
+            load_tasks = tuple(self._load_tasks.values())
+        if load_tasks:
+            await asyncio.gather(*(asyncio.shield(task) for task in load_tasks), return_exceptions=True)
+        while self._maintenance_tasks:
+            tasks = tuple(self._maintenance_tasks)
+            await asyncio.gather(*(asyncio.shield(task) for task in tasks), return_exceptions=True)
+        await self._wait_for_idle_models()
         await self.unload_all()
+        if self._models:
+            names = ", ".join(sorted(self._models))
+            raise RuntimeError(f"scheduler shutdown left loaded models: {names}")
+
+    async def _wait_for_idle_models(self) -> None:
+        deadline = time.monotonic() + self._shutdown_timeout_seconds
+        while True:
+            async with self._lock:
+                busy = tuple(model for model in self._models.values() if model.has_work)
+            if not busy:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                names = ", ".join(sorted(model.full_name for model in busy))
+                raise RuntimeError(f"scheduler shutdown timed out waiting for active models: {names}")
+            physical = tuple(model.adapter for model in busy if model.physical_work_count > 0)
+            if physical:
+                await asyncio.gather(
+                    *(adapter.wait_execution_idle(timeout=min(remaining, 0.25)) for adapter in physical),
+                    return_exceptions=True,
+                )
+            else:
+                await asyncio.sleep(min(0.01, remaining))
 
     def _estimate_model_memory_bytes(self, adapter: Adapter, info: ModelInfo, model_path: Path) -> int:
         """Estimate accelerator memory required for *info* before loading."""
@@ -234,50 +316,122 @@ class Scheduler:
                 full_name=m.full_name,
                 device=m.device,
                 vram_bytes=m.vram_bytes,
-                ref_count=m.ref_count,
+                ref_count=1 if m.is_busy else 0,
                 last_used=m.last_used,
             )
             for m in self._models.values()
         ]
 
-    def _execute_evictions(self, names: list[str]) -> None:
+    @staticmethod
+    def _begin_maintenance(loaded: _LoadedModel, action: str) -> None:
+        loaded.maintenance = action
+        loaded.maintenance_done.clear()
+
+    @staticmethod
+    def _finish_maintenance(loaded: _LoadedModel) -> None:
+        loaded.maintenance = None
+        loaded.maintenance_done.set()
+
+    def _start_maintenance_task(self, coroutine) -> asyncio.Task[Any]:
+        task = asyncio.create_task(coroutine)
+        self._maintenance_tasks.add(task)
+
+        def completed(done: asyncio.Task[Any]) -> None:
+            self._maintenance_tasks.discard(done)
+            if not done.cancelled():
+                done.exception()
+
+        task.add_done_callback(completed)
+        return task
+
+    @staticmethod
+    async def _await_owned_task(task: asyncio.Task[Any]) -> Any:
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await asyncio.shield(task)
+            raise
+
+    async def _complete_unloads(
+        self,
+        items: list[tuple[str, _LoadedModel, str]],
+    ) -> dict[str, str | None]:
+        results = await self._teardown_off_loop(items)
+        async with self._lock:
+            for name, loaded, _reason in items:
+                if self._models.get(name) is not loaded:
+                    continue
+                error = results.get(name)
+                if error is None:
+                    self._finish_maintenance(loaded)
+                    del self._models[name]
+                else:
+                    loaded.lifecycle_error = error
+                    self._finish_maintenance(loaded)
+        return results
+
+    async def _complete_trims(
+        self,
+        items: list[tuple[str, _LoadedModel]],
+    ) -> list[str]:
+        trimmed: list[str] = []
+        try:
+            trimmed = await self._trim_off_loop(items)
+            return trimmed
+        finally:
+            async with self._lock:
+                for full_name, loaded in items:
+                    if self._models.get(full_name) is loaded:
+                        if full_name in trimmed:
+                            loaded.trimmed = True
+                        self._finish_maintenance(loaded)
+
+    async def _execute_evictions(self, names: list[str]) -> None:
         for full_name in names:
-            loaded = self._models.get(full_name)
-            if loaded is None:
-                continue
+            async with self._lock:
+                loaded = self._models.get(full_name)
+                if loaded is None:
+                    continue
+                if loaded.is_busy:
+                    raise ModelLoadError(f"Cannot evict {full_name}: model became active")
+                self._begin_maintenance(loaded, "memory eviction")
             logger.info(
                 "Evicting %s to free %s memory for a new load (idle for %.0fs)",
                 full_name,
                 loaded.device,
                 time.time() - loaded.last_used,
             )
-            self._unload_adapter(full_name, loaded, reason="memory eviction")
-            del self._models[full_name]
-            _clear_gpu_cache()
-
-    def _unload_adapter(self, full_name: str, loaded: _LoadedModel, *, reason: str) -> None:
-        try:
-            loaded.adapter.unload()
-        except Exception as error:
-            logger.error("Error unloading %s during %s: %s", full_name, reason, error)
+            task = self._start_maintenance_task(self._complete_unloads([(full_name, loaded, "memory eviction")]))
+            results = await self._await_owned_task(task)
+            error = results.get(full_name)
+            if error is not None:
+                raise ModelLoadError(f"Failed to evict {full_name}: {error}")
 
     def _trim_loaded_model(self, full_name: str, loaded: _LoadedModel) -> bool:
+        if not loaded.adapter.supports_trim:
+            return False
         logger.info("Trimming non-essential memory for %s", full_name)
-        try:
+
+        def trim_and_clear() -> None:
             loaded.adapter.trim()
+            _clear_gpu_cache()
+
+        try:
+            loaded.adapter.run_exclusive(trim_and_clear)
         except Exception as error:
             logger.error("Error trimming %s: %s", full_name, error)
             return False
-        _clear_gpu_cache()
         return True
 
     def _select_trimmable_locked(self, *, min_idle_seconds: int = 0) -> list[tuple[str, _LoadedModel]]:
         now = time.time()
         eligible: list[tuple[str, _LoadedModel]] = []
         for full_name, loaded in list(self._models.items()):
-            if loaded.ref_count > 0:
+            if loaded.is_busy:
                 continue
             if loaded.trimmed:
+                continue
+            if not loaded.adapter.supports_trim:
                 continue
             if min_idle_seconds > 0 and now - loaded.last_used < min_idle_seconds:
                 continue
@@ -294,7 +448,11 @@ class Scheduler:
 
     def _adapter_memory_status(self, loaded: _LoadedModel) -> dict:
         try:
-            return loaded.adapter.memory_status()
+            status = dict(loaded.adapter.memory_status())
+            status["physical_work_count"] = loaded.physical_work_count
+            status["maintenance"] = loaded.maintenance
+            status["lifecycle_error"] = loaded.lifecycle_error
+            return status
         except Exception as error:
             logger.warning("Failed to query memory status for %s: %s", loaded.full_name, error)
             return {"error": str(error)}
@@ -318,27 +476,23 @@ class Scheduler:
         full_name = self._normalize_model_ref(full_name)
         name, tag = parse_model_name(full_name)
 
-
         info, model_path = self._registry.resolve(name, tag)
         adapter_cls = self._registry.get_adapter_class(info.adapter)
-
 
         adapter = adapter_cls()
         estimated_vram_bytes = self._estimate_model_memory_bytes(adapter, info, model_path)
         placement = self._decide_placement(adapter, info, estimated_vram_bytes)
         if placement.evict:
-            self._execute_evictions(placement.evict)
+            await self._execute_evictions(placement.evict)
         device = placement.device
 
-
         if len(self._models) >= self._max_loaded:
-            self._evict_lru()
+            await self._evict_lru()
             if len(self._models) >= self._max_loaded:
                 raise ModelLoadError(
                     f"Cannot load {full_name}: all {self._max_loaded} model slots are in use. "
                     "Wait for an active request to finish or increase --max-loaded."
                 )
-
 
         load_kwargs = {**info.parameters}
         if placement.tier is not None:
@@ -360,7 +514,25 @@ class Scheduler:
         except Exception as e:
             if _is_oom_error(e) and device != "cpu":
                 logger.warning(f"OOM loading {full_name} on {device}, falling back to CPU")
-                _clear_gpu_cache()
+                reset_error = await asyncio.to_thread(
+                    run_with_adapter_runtime_lock,
+                    _reset_adapter_after_failed_load,
+                    full_name,
+                    adapter,
+                    "accelerator OOM fallback",
+                )
+                if reset_error is not None:
+                    cleanup_error = await asyncio.to_thread(
+                        run_with_adapter_runtime_lock,
+                        _unload_adapter_blocking,
+                        full_name,
+                        adapter,
+                        "failed load cleanup",
+                    )
+                    detail = f"; cleanup failed: {cleanup_error}" if cleanup_error else ""
+                    raise ModelLoadError(
+                        f"Failed to reset {full_name} after accelerator OOM: {reset_error}{detail}"
+                    ) from e
                 device = "cpu"
                 load_kwargs.pop("_placement_tier", None)
                 load_kwargs.pop("_placement_extras", None)
@@ -373,9 +545,25 @@ class Scheduler:
                         **load_kwargs,
                     )
                 except Exception as e2:
-                    raise ModelLoadError(f"Failed to load {full_name}: {e2}") from e2
+                    cleanup_error = await asyncio.to_thread(
+                        run_with_adapter_runtime_lock,
+                        _unload_adapter_blocking,
+                        full_name,
+                        adapter,
+                        "failed load cleanup",
+                    )
+                    detail = f"; cleanup failed: {cleanup_error}" if cleanup_error else ""
+                    raise ModelLoadError(f"Failed to load {full_name}: {e2}{detail}") from e2
             else:
-                raise ModelLoadError(f"Failed to load {full_name}: {e}") from e
+                cleanup_error = await asyncio.to_thread(
+                    run_with_adapter_runtime_lock,
+                    _unload_adapter_blocking,
+                    full_name,
+                    adapter,
+                    "failed load cleanup",
+                )
+                detail = f"; cleanup failed: {cleanup_error}" if cleanup_error else ""
+                raise ModelLoadError(f"Failed to load {full_name}: {e}{detail}") from e
 
         actual_device = self._infer_loaded_device(adapter, info, device)
         loaded = _LoadedModel(
@@ -385,31 +573,73 @@ class Scheduler:
             device=actual_device,
             vram_bytes=estimated_vram_bytes if actual_device != "cpu" else 0,
         )
-        self._models[full_name] = loaded
+        async with self._lock:
+            self._models[full_name] = loaded
         return loaded
 
-    def _evict_lru(self) -> None:
-        """Evict the least-recently-used model with ref_count == 0."""
-        candidates = [
-            (name, m) for name, m in self._models.items() if m.ref_count == 0
-        ]
-        if not candidates:
-            logger.warning("Cannot evict: all loaded models are in use")
-            return
-
-        candidates.sort(key=lambda x: x[1].last_used)
-        lru_name, lru_model = candidates[0]
+    async def _evict_lru(self) -> None:
+        """Evict the least-recently-used model with no logical or physical work."""
+        async with self._lock:
+            candidates = [(name, m) for name, m in self._models.items() if not m.is_busy]
+            if not candidates:
+                logger.warning("Cannot evict: all loaded models are in use")
+                return
+            candidates.sort(key=lambda x: x[1].last_used)
+            lru_name, lru_model = candidates[0]
+            self._begin_maintenance(lru_model, "eviction")
         logger.info(f"Evicting {lru_name} (idle since {time.time() - lru_model.last_used:.0f}s ago)")
-        self._unload_adapter(lru_name, lru_model, reason="eviction")
-        del self._models[lru_name]
-        _clear_gpu_cache()
+        task = self._start_maintenance_task(self._complete_unloads([(lru_name, lru_model, "eviction")]))
+        results = await self._await_owned_task(task)
+        error = results.get(lru_name)
+        if error is not None:
+            raise ModelLoadError(f"Failed to evict {lru_name}: {error}")
+
+    async def _load_model_owned(self, full_name: str) -> _LoadedModel:
+        task = asyncio.current_task()
+        assert task is not None
+        try:
+            async with self._lifecycle_lock:
+                async with self._lock:
+                    loaded = self._models.get(full_name)
+                if loaded is not None:
+                    return loaded
+                return await self._load_model(full_name)
+        finally:
+            async with self._lock:
+                if self._load_tasks.get(full_name) is task:
+                    del self._load_tasks[full_name]
+
+    async def _ensure_loaded(self, full_name: str) -> _LoadedModel:
+        async with self._lock:
+            loaded = self._models.get(full_name)
+            if loaded is not None:
+                return loaded
+            task = self._load_tasks.get(full_name)
+            if task is None:
+                task = asyncio.create_task(self._load_model_owned(full_name))
+                self._load_tasks[full_name] = task
+
+                def completed(done: asyncio.Task[_LoadedModel]) -> None:
+                    if not done.cancelled():
+                        done.exception()
+
+                task.add_done_callback(completed)
+        return await asyncio.shield(task)
 
     async def _acquire_loaded(self, full_name: str) -> _LoadedModel:
         while True:
+            maintenance_done: asyncio.Event | None = None
             async with self._lock:
                 loaded = self._models.get(full_name)
+                if loaded is not None and loaded.maintenance is not None:
+                    maintenance_done = loaded.maintenance_done
+                    loaded = None
+                if loaded is not None and loaded.lifecycle_error is not None:
+                    raise ModelLoadError(
+                        f"Model {full_name} has an unresolved lifecycle failure: {loaded.lifecycle_error}"
+                    )
                 if loaded is not None and not loaded.adapter.is_loaded:
-                    if loaded.ref_count == 0:
+                    if not loaded.is_busy:
                         logger.warning("Evicting %s from cache: adapter reports unloaded", full_name)
                     else:
                         logger.warning(
@@ -424,11 +654,10 @@ class Scheduler:
                     loaded.last_used = time.time()
                     loaded.trimmed = False
                     return loaded
-            async with self._load_lock:
-                async with self._lock:
-                    needs_load = full_name not in self._models
-                if needs_load:
-                    await self._load_model(full_name)
+            if maintenance_done is not None:
+                await maintenance_done.wait()
+                continue
+            await self._ensure_loaded(full_name)
 
     @asynccontextmanager
     async def acquire(self, model_name: str):
@@ -448,16 +677,15 @@ class Scheduler:
     async def preload(self, model_name: str) -> None:
         """Pre-load a model into memory."""
         full_name = self._normalize_model_ref(model_name)
-        async with self._load_lock:
-            async with self._lock:
-                needs_load = full_name not in self._models
-            if needs_load:
-                await self._load_model(full_name)
+        await self._ensure_loaded(full_name)
 
-    async def _teardown_off_loop(self, items: list[tuple[str, _LoadedModel, str]]) -> None:
+    async def _teardown_off_loop(
+        self,
+        items: list[tuple[str, _LoadedModel, str]],
+    ) -> dict[str, str | None]:
         if not items:
-            return
-        await asyncio.to_thread(
+            return {}
+        return await asyncio.to_thread(
             run_with_adapter_runtime_lock,
             _teardown_adapters_blocking,
             [(name, loaded.adapter, reason) for name, loaded, reason in items],
@@ -466,59 +694,75 @@ class Scheduler:
     async def unload(self, model_name: str) -> bool:
         """Unload a specific model. Returns True if unloaded, False if skipped."""
         full_name = self._normalize_model_ref(model_name)
-        async with self._lock:
-            loaded = self._models.get(full_name)
-            if loaded is None:
-                return True
-            if loaded.ref_count > 0:
-                logger.warning(f"Cannot unload {full_name}: {loaded.ref_count} active references")
-                return False
-            del self._models[full_name]
-        await self._teardown_off_loop([(full_name, loaded, "explicit unload")])
-        return True
+        async with self._lifecycle_lock:
+            async with self._lock:
+                loaded = self._models.get(full_name)
+                if loaded is None:
+                    return True
+                if loaded.is_busy:
+                    logger.warning(
+                        "Cannot unload %s: %d active references or physical jobs",
+                        full_name,
+                        loaded.active_count,
+                    )
+                    return False
+                self._begin_maintenance(loaded, "explicit unload")
+            task = self._start_maintenance_task(self._complete_unloads([(full_name, loaded, "explicit unload")]))
+            results = await self._await_owned_task(task)
+            error = results.get(full_name)
+            return error is None
 
     async def trim(self, model_name: str) -> bool:
         """Trim a loaded model without unloading weights. Returns False when active."""
         full_name = self._normalize_model_ref(model_name)
-        async with self._lock:
-            loaded = self._models.get(full_name)
-            if loaded is None:
-                return True
-            if loaded.ref_count > 0:
-                logger.warning("Cannot trim %s: %d active references", full_name, loaded.ref_count)
-                return False
-            eligible = [(full_name, loaded)]
-        trimmed = await self._trim_off_loop(eligible)
-        return full_name in trimmed
+        async with self._lifecycle_lock:
+            async with self._lock:
+                loaded = self._models.get(full_name)
+                if loaded is None:
+                    return True
+                if not loaded.adapter.supports_trim:
+                    raise ModelTrimUnsupportedError(full_name)
+                if loaded.is_busy:
+                    logger.warning(
+                        "Cannot trim %s: %d active references or physical jobs",
+                        full_name,
+                        loaded.active_count,
+                    )
+                    return False
+                self._begin_maintenance(loaded, "trim")
+            task = self._start_maintenance_task(self._complete_trims([(full_name, loaded)]))
+            trimmed = await self._await_owned_task(task)
+            return full_name in trimmed
 
     async def trim_idle(self, *, min_idle_seconds: int = 0) -> list[str]:
         """Trim all idle models and return the canonical model refs that were trimmed."""
-        async with self._lock:
-            eligible = self._select_trimmable_locked(min_idle_seconds=min_idle_seconds)
-        trimmed = await self._trim_off_loop(eligible)
-        if trimmed:
-            candidates = {full_name: loaded for full_name, loaded in eligible}
+        async with self._lifecycle_lock:
             async with self._lock:
-                for full_name in trimmed:
-                    loaded = candidates.get(full_name)
-                    if loaded is not None and self._models.get(full_name) is loaded and loaded.ref_count == 0:
-                        loaded.trimmed = True
-        return trimmed
+                eligible = self._select_trimmable_locked(min_idle_seconds=min_idle_seconds)
+                for _full_name, loaded in eligible:
+                    self._begin_maintenance(loaded, "idle trim")
+            task = self._start_maintenance_task(self._complete_trims(eligible))
+            trimmed = await self._await_owned_task(task)
+            return trimmed
 
     async def unload_all(self) -> None:
         """Unload all idle models. Models with active references are left in place."""
-        async with self._lock:
-            removable = [(name, m) for name, m in self._models.items() if m.ref_count == 0]
-            busy = [name for name, m in self._models.items() if m.ref_count > 0]
-            for name, _loaded in removable:
-                del self._models[name]
-        if busy:
-            logger.warning(
-                "unload_all skipped %d model(s) with active references: %s",
-                len(busy),
-                ", ".join(busy),
+        async with self._lifecycle_lock:
+            async with self._lock:
+                removable = [(name, m) for name, m in self._models.items() if not m.is_busy]
+                busy = [name for name, m in self._models.items() if m.is_busy]
+                for _name, loaded in removable:
+                    self._begin_maintenance(loaded, "unload_all")
+            if busy:
+                logger.warning(
+                    "unload_all skipped %d model(s) with active references: %s",
+                    len(busy),
+                    ", ".join(busy),
+                )
+            task = self._start_maintenance_task(
+                self._complete_unloads([(name, loaded, "unload_all") for name, loaded in removable])
             )
-        await self._teardown_off_loop([(name, loaded, "unload_all") for name, loaded in removable])
+            await self._await_owned_task(task)
 
     def list_loaded(self) -> list[LoadedModelInfo]:
         """List currently loaded models."""
@@ -532,8 +776,8 @@ class Scheduler:
                 loaded_at=m.loaded_at,
                 last_used=m.last_used,
                 ref_count=m.ref_count,
-                is_evictable=m.ref_count == 0,
-                is_trimmable=m.ref_count == 0,
+                is_evictable=not m.is_busy,
+                is_trimmable=not m.is_busy and m.adapter.supports_trim,
                 backend_memory=self._adapter_memory_status(m),
             )
             for m in self._models.values()
@@ -546,7 +790,7 @@ class Scheduler:
             idle_trim_seconds=self._idle_trim_seconds,
             loaded_models=loaded,
             estimated_loaded_vram_bytes=sum(max(int(m.vram_bytes), 0) for m in loaded if m.device == "cuda"),
-            active_model_count=sum(1 for m in loaded if m.ref_count > 0),
+            active_model_count=sum(1 for m in self._models.values() if m.is_busy),
         )
 
     async def _ttl_cleanup_loop(self) -> None:
@@ -558,13 +802,14 @@ class Scheduler:
             async with self._lock:
                 if self._ttl_seconds > 0:
                     to_evict = [
-                        name for name, m in self._models.items()
-                        if m.ref_count == 0 and (now - m.last_used) > self._ttl_seconds
+                        name
+                        for name, m in self._models.items()
+                        if not m.is_busy and (now - m.last_used) > self._ttl_seconds
                     ]
                     for name in to_evict:
                         logger.info(f"TTL expired for {name}, unloading")
                         to_unload.append((name, self._models[name], "TTL cleanup"))
-                        del self._models[name]
-            await self._teardown_off_loop(to_unload)
+            for name, _loaded, _reason in to_unload:
+                await self.unload(name)
             if self._idle_trim_seconds > 0:
                 await self.trim_idle(min_idle_seconds=self._idle_trim_seconds)

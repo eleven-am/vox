@@ -20,6 +20,7 @@ from vox.server.websocket import (
     receive_ws_frame,
     receive_ws_json_message,
     reset_websocket_request_id,
+    run_websocket_session_operation,
     safe_close_websocket,
     safe_send_ws_error,
     send_ws_error,
@@ -97,9 +98,7 @@ class RecordingLogger:
 def test_bind_websocket_request_id_uses_header_and_resets_previous_value():
     outer = request_id_var.set("outer")
     try:
-        token = bind_websocket_request_id(
-            RecordingWebSocket(headers={"x-request-id": "  websocket-rid  "})
-        )
+        token = bind_websocket_request_id(RecordingWebSocket(headers={"x-request-id": "  websocket-rid  "}))
         assert request_id_var.get() == "websocket-rid"
 
         reset_websocket_request_id(token)
@@ -140,10 +139,12 @@ async def test_send_ws_operation_error_uses_shared_error_envelope():
 
     await send_ws_operation_error(websocket, UnknownMessageTypeError("bad.type"))
 
-    assert websocket.sent == [{
-        "type": "error",
-        "message": "Unknown message type: bad.type",
-    }]
+    assert websocket.sent == [
+        {
+            "type": "error",
+            "message": "Unknown message type: bad.type",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -152,10 +153,12 @@ async def test_send_ws_unknown_message_type_uses_shared_operation_error_envelope
 
     await send_ws_unknown_message_type(websocket, "not.supported")
 
-    assert websocket.sent == [{
-        "type": "error",
-        "message": "Unknown message type: not.supported",
-    }]
+    assert websocket.sent == [
+        {
+            "type": "error",
+            "message": "Unknown message type: not.supported",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -178,10 +181,12 @@ async def test_ws_operation_result_or_error_reports_operation_error():
     result = await ws_operation_result_or_error(websocket, build_config)
 
     assert result is None
-    assert websocket.sent == [{
-        "type": "error",
-        "message": "No input text provided",
-    }]
+    assert websocket.sent == [
+        {
+            "type": "error",
+            "message": "No input text provided",
+        }
+    ]
 
 
 @pytest.mark.asyncio
@@ -305,6 +310,29 @@ async def test_websocket_session_event_scope_does_not_hang_on_never_ending_emit(
             await started.wait()
 
     await asyncio.wait_for(run(), timeout=2.0)
+    assert session.closed is True
+
+
+@pytest.mark.asyncio
+async def test_websocket_delivery_failure_cancels_owned_operation():
+    session = RecordingSession()
+    operation_cancelled = asyncio.Event()
+
+    async def emit_events() -> None:
+        await asyncio.sleep(0)
+        raise RuntimeError("client disconnected")
+
+    async def operation() -> None:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            operation_cancelled.set()
+
+    with pytest.raises(RuntimeError, match="client disconnected"):
+        async with websocket_session_event_scope(session, emit_events) as emit_task:
+            await run_websocket_session_operation(operation(), emit_task)
+
+    assert operation_cancelled.is_set()
     assert session.closed is True
 
 

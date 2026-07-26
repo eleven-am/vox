@@ -177,7 +177,7 @@ class StreamingTranscriptionSession(StreamingOperationErrorReporter):
         self._pcm_resampler = StreamResampler(TARGET_SAMPLE_RATE)
         self._opus_resampler = StreamResampler(TARGET_SAMPLE_RATE)
         self._session = SpeechSession()
-        self._events: asyncio.Queue[SessionEvent] = asyncio.Queue()
+        self._events: asyncio.Queue[SessionEvent] = asyncio.Queue(maxsize=64)
         self._closed = False
 
     async def configure(self, config: StreamingTranscriptionConfig) -> None:
@@ -239,9 +239,7 @@ class StreamingTranscriptionSession(StreamingOperationErrorReporter):
         pcm16: bytes,
         sample_rate: int | None = None,
     ) -> bool:
-        return await self.run_or_report_operation_error(
-            lambda: self.submit_pcm16(pcm16, sample_rate=sample_rate)
-        )
+        return await self.run_or_report_operation_error(lambda: self.submit_pcm16(pcm16, sample_rate=sample_rate))
 
     async def submit_opus(
         self,
@@ -287,9 +285,7 @@ class StreamingTranscriptionSession(StreamingOperationErrorReporter):
         data: bytes,
         format_hint: str | None = None,
     ) -> bool:
-        return await self.run_or_report_operation_error(
-            lambda: self.submit_encoded(data, format_hint=format_hint)
-        )
+        return await self.run_or_report_operation_error(lambda: self.submit_encoded(data, format_hint=format_hint))
 
     async def end_of_stream(self) -> None:
         if self._pipeline is None or self._session_config is None:
@@ -353,7 +349,7 @@ class StreamingTranscriptionSession(StreamingOperationErrorReporter):
             return
         try:
             async for stream_event in self._pipeline.process_audio(audio):
-                self._dispatch_stream_event(stream_event)
+                await self._dispatch_stream_event(stream_event)
         except Exception as exc:
             await self.report_error(str(exc))
             return
@@ -369,14 +365,14 @@ class StreamingTranscriptionSession(StreamingOperationErrorReporter):
             except Exception as exc:
                 await self.report_error(str(exc))
 
-    def _dispatch_stream_event(self, event) -> None:
+    async def _dispatch_stream_event(self, event) -> None:
         if isinstance(event, SpeechStarted):
             self._session.start_speech()
-            self._events.put_nowait(SpeechStartedEvent(timestamp_ms=event.timestamp_ms))
+            await self._events.put(SpeechStartedEvent(timestamp_ms=event.timestamp_ms))
         elif isinstance(event, SpeechStopped):
             self._session.stop_speech()
-            self._events.put_nowait(SpeechStoppedEvent(timestamp_ms=event.timestamp_ms))
+            await self._events.put(SpeechStoppedEvent(timestamp_ms=event.timestamp_ms))
         elif isinstance(event, StreamTranscript):
             language = self._session_config.language if self._session_config else "en"
             enrich_transcript(event, language)
-            self._events.put_nowait(TranscriptEvent(transcript=event))
+            await self._events.put(TranscriptEvent(transcript=event))

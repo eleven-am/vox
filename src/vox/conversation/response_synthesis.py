@@ -8,7 +8,6 @@ from typing import Any
 from vox.conversation.response_stream import ResponseStream
 from vox.conversation.text_buffer import StreamingTextBuffer, split_for_tts
 from vox.core.adapter import TTSAdapter
-from vox.core.async_iterators import iterate_off_event_loop
 from vox.core.synthesis_validation import (
     call_accepts_keyword,
     validate_adapter_synthesis_params,
@@ -118,7 +117,7 @@ async def _synthesize_text(
         if call_accepts_keyword(adapter.synthesize, "params"):
             synthesis_kwargs["params"] = params
         chunks = adapter.synthesize(chunk_text, **synthesis_kwargs)
-        async for chunk in iterate_off_event_loop(chunks):
+        async for chunk in adapter.iterate_synthesis(chunks):
             if chunk.is_final and not chunk.audio:
                 continue
             if not audio_started:

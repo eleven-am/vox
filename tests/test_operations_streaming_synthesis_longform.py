@@ -49,8 +49,10 @@ class FakeStreamingTTSAdapter(TTSAdapter):
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
-            name="fake-tts", type=ModelType.TTS,
-            architectures=("fake",), default_sample_rate=24_000,
+            name="fake-tts",
+            type=ModelType.TTS,
+            architectures=("fake",),
+            default_sample_rate=24_000,
             supported_formats=(ModelFormat.ONNX,),
             supports_streaming=True,
             supports_voice_cloning=self.supports_voice_cloning,
@@ -122,12 +124,14 @@ def _make_voice_store(tmp_path: Path, *, tts: str = "t:1", voice_id: str = "clon
     voice_dir = tmp_path / voice_id
     voice_dir.mkdir(parents=True)
     (voice_dir / "metadata.json").write_text(
-        json.dumps({
-            "id": voice_id,
-            "name": "Clone",
-            "language": "en",
-            "created_at": 1,
-        }),
+        json.dumps(
+            {
+                "id": voice_id,
+                "name": "Clone",
+                "language": "en",
+                "created_at": 1,
+            }
+        ),
         encoding="utf-8",
     )
     return store
@@ -147,46 +151,71 @@ async def _drain_events(session: LongformSynthesisSession, *, timeout: float = 3
 def test_normalize_rejects_unsupported_response_format():
     with pytest.raises(UnsupportedFormatError):
         normalize_longform_tts_config(
-            model="t:1", voice=None, speed=1.0, language=None,
-            response_format="wav", chunk_chars=None,
-            registry=_make_registry(), store=_make_store(),
+            model="t:1",
+            voice=None,
+            speed=1.0,
+            language=None,
+            response_format="wav",
+            chunk_chars=None,
+            registry=_make_registry(),
+            store=_make_store(),
         )
 
 
 def test_normalize_requires_model_or_default():
     with pytest.raises(NoDefaultModelError):
         normalize_longform_tts_config(
-            model="", voice=None, speed=1.0, language=None,
-            response_format="pcm16", chunk_chars=None,
-            registry=_make_registry(), store=_make_store(),
+            model="",
+            voice=None,
+            speed=1.0,
+            language=None,
+            response_format="pcm16",
+            chunk_chars=None,
+            registry=_make_registry(),
+            store=_make_store(),
         )
 
 
 def test_normalize_rejects_invalid_chunk_chars():
     with pytest.raises(InvalidConfigError):
         normalize_longform_tts_config(
-            model="t:1", voice=None, speed=1.0, language=None,
-            response_format="pcm16", chunk_chars="not-an-int",
-            registry=_make_registry(), store=_make_store(),
+            model="t:1",
+            voice=None,
+            speed=1.0,
+            language=None,
+            response_format="pcm16",
+            chunk_chars="not-an-int",
+            registry=_make_registry(),
+            store=_make_store(),
         )
 
 
 def test_normalize_clamps_non_positive_speed():
     for bad_speed in (-2.0, 0.0):
         config = normalize_longform_tts_config(
-            model="t:1", voice=None, speed=bad_speed, language=None,
-            response_format="pcm16", chunk_chars=None,
-            registry=_make_registry(), store=_make_store(),
+            model="t:1",
+            voice=None,
+            speed=bad_speed,
+            language=None,
+            response_format="pcm16",
+            chunk_chars=None,
+            registry=_make_registry(),
+            store=_make_store(),
         )
         assert config.speed == 1.0
 
 
 def test_normalize_preserves_params():
     config = normalize_longform_tts_config(
-        model="t:1", voice=None, speed=1.0, language=None,
-        response_format="pcm16", chunk_chars=None,
+        model="t:1",
+        voice=None,
+        speed=1.0,
+        language=None,
+        response_format="pcm16",
+        chunk_chars=None,
         params={"temperature": 0.4},
-        registry=_make_registry(), store=_make_store(),
+        registry=_make_registry(),
+        store=_make_store(),
     )
 
     assert config.params == {"temperature": 0.4}
@@ -195,10 +224,15 @@ def test_normalize_preserves_params():
 def test_normalize_rejects_non_object_params():
     with pytest.raises(InvalidConfigError, match="params must be a JSON object"):
         normalize_longform_tts_config(
-            model="t:1", voice=None, speed=1.0, language=None,
-            response_format="pcm16", chunk_chars=None,
+            model="t:1",
+            voice=None,
+            speed=1.0,
+            language=None,
+            response_format="pcm16",
+            chunk_chars=None,
             params=["temperature"],
-            registry=_make_registry(), store=_make_store(),
+            registry=_make_registry(),
+            store=_make_store(),
         )
 
 
@@ -217,9 +251,7 @@ def test_longform_tts_event_payloads_preserve_wire_contract():
         "response_format": "pcm16",
         "chunk_chars": 500,
     }
-    assert longform_tts_event_payload(
-        TtsAudioStartEvent(sample_rate=24_000, response_format="pcm16")
-    ) == {
+    assert longform_tts_event_payload(TtsAudioStartEvent(sample_rate=24_000, response_format="pcm16")) == {
         "type": "audio_start",
         "sample_rate": 24_000,
         "response_format": "pcm16",
@@ -263,12 +295,18 @@ def test_longform_tts_event_payloads_preserve_wire_contract():
 async def test_text_synthesis_emits_ready_audio_done():
     session = LongformSynthesisSession(
         scheduler=FakeScheduler(FakeStreamingTTSAdapter()),
-        registry=_make_registry(), store=_make_store(tts="t:1"),
+        registry=_make_registry(),
+        store=_make_store(tts="t:1"),
     )
     config = normalize_longform_tts_config(
-        model="t:1", voice="default", speed=1.0, language=None,
-        response_format="pcm16", chunk_chars=None,
-        registry=_make_registry(), store=_make_store(tts="t:1"),
+        model="t:1",
+        voice="default",
+        speed=1.0,
+        language=None,
+        response_format="pcm16",
+        chunk_chars=None,
+        registry=_make_registry(),
+        store=_make_store(tts="t:1"),
     )
     await session.configure(config)
     session.append_text("Hello world. " * 4)
@@ -284,16 +322,67 @@ async def test_text_synthesis_emits_ready_audio_done():
 
 
 @pytest.mark.asyncio
+async def test_longform_synthesis_applies_backpressure_when_client_does_not_drain():
+    class BurstAdapter(FakeStreamingTTSAdapter):
+        async def synthesize(self, text, **kwargs):
+            for _ in range(100):
+                yield SynthesizeChunk(
+                    audio=np.full(240, 0.1, dtype=np.float32).tobytes(),
+                    sample_rate=24_000,
+                    is_final=False,
+                )
+
+    adapter = BurstAdapter()
+    session = LongformSynthesisSession(
+        scheduler=FakeScheduler(adapter),
+        registry=_make_registry(),
+        store=_make_store(tts="t:1"),
+    )
+    config = normalize_longform_tts_config(
+        model="t:1",
+        voice="default",
+        speed=1.0,
+        language=None,
+        response_format="pcm16",
+        chunk_chars=None,
+        registry=_make_registry(),
+        store=_make_store(tts="t:1"),
+    )
+    await session.configure(config)
+    session.append_text("Backpressure must stop an abandoned producer.")
+    synthesis_task = asyncio.create_task(session.end_of_stream())
+
+    async with asyncio.timeout(1.0):
+        while session._events.qsize() < session._events.maxsize:
+            await asyncio.sleep(0)
+
+    assert session._events.maxsize == 8
+    assert synthesis_task.done() is False
+
+    synthesis_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await synthesis_task
+    await adapter.wait_execution_idle(timeout=5.0)
+    await session.close()
+
+
+@pytest.mark.asyncio
 async def test_text_synthesis_passes_params_to_adapter():
     adapter = ParamStreamingTTSAdapter()
     session = LongformSynthesisSession(
         scheduler=FakeScheduler(adapter),
-        registry=_make_registry(), store=_make_store(tts="t:1"),
+        registry=_make_registry(),
+        store=_make_store(tts="t:1"),
     )
     config = normalize_longform_tts_config(
-        model="t:1", voice="default", speed=1.0, language=None,
-        response_format="pcm16", chunk_chars=None,
-        registry=_make_registry(), store=_make_store(tts="t:1"),
+        model="t:1",
+        voice="default",
+        speed=1.0,
+        language=None,
+        response_format="pcm16",
+        chunk_chars=None,
+        registry=_make_registry(),
+        store=_make_store(tts="t:1"),
         params={"temperature": 0.4},
     )
     await session.configure(config)
@@ -310,12 +399,18 @@ async def test_text_synthesis_passes_params_to_adapter():
 async def test_empty_text_emits_error_event():
     session = LongformSynthesisSession(
         scheduler=FakeScheduler(FakeStreamingTTSAdapter()),
-        registry=_make_registry(), store=_make_store(tts="t:1"),
+        registry=_make_registry(),
+        store=_make_store(tts="t:1"),
     )
     config = normalize_longform_tts_config(
-        model="t:1", voice="default", speed=1.0, language=None,
-        response_format="pcm16", chunk_chars=None,
-        registry=_make_registry(), store=_make_store(tts="t:1"),
+        model="t:1",
+        voice="default",
+        speed=1.0,
+        language=None,
+        response_format="pcm16",
+        chunk_chars=None,
+        registry=_make_registry(),
+        store=_make_store(tts="t:1"),
     )
     await session.configure(config)
     await session.end_of_stream()
@@ -334,12 +429,18 @@ async def test_configure_rejects_non_tts_model():
 
     session = LongformSynthesisSession(
         scheduler=NotTTS(),
-        registry=_make_registry(), store=_make_store(tts="t:1"),
+        registry=_make_registry(),
+        store=_make_store(tts="t:1"),
     )
     config = normalize_longform_tts_config(
-        model="t:1", voice="default", speed=1.0, language=None,
-        response_format="pcm16", chunk_chars=None,
-        registry=_make_registry(), store=_make_store(tts="t:1"),
+        model="t:1",
+        voice="default",
+        speed=1.0,
+        language=None,
+        response_format="pcm16",
+        chunk_chars=None,
+        registry=_make_registry(),
+        store=_make_store(tts="t:1"),
     )
     with pytest.raises(WrongModelTypeError):
         await session.configure(config)
@@ -350,12 +451,18 @@ async def test_configure_rejects_non_tts_model():
 async def test_configure_maps_missing_stored_model_to_operation_error():
     session = LongformSynthesisSession(
         scheduler=MissingScheduler(),
-        registry=_make_registry(), store=_make_store(tts="missing:latest"),
+        registry=_make_registry(),
+        store=_make_store(tts="missing:latest"),
     )
     config = normalize_longform_tts_config(
-        model="missing:latest", voice="default", speed=1.0, language=None,
-        response_format="pcm16", chunk_chars=None,
-        registry=_make_registry(), store=_make_store(tts="missing:latest"),
+        model="missing:latest",
+        voice="default",
+        speed=1.0,
+        language=None,
+        response_format="pcm16",
+        chunk_chars=None,
+        registry=_make_registry(),
+        store=_make_store(tts="missing:latest"),
     )
 
     with pytest.raises(StoredModelNotFoundError, match="missing:latest"):
@@ -368,12 +475,18 @@ async def test_configure_maps_cloned_voice_unsupported_to_operation_error(tmp_pa
     store = _make_voice_store(tmp_path)
     session = LongformSynthesisSession(
         scheduler=FakeScheduler(FakeStreamingTTSAdapter()),
-        registry=_make_registry(), store=store,
+        registry=_make_registry(),
+        store=store,
     )
     config = normalize_longform_tts_config(
-        model="t:1", voice="clone", speed=1.0, language=None,
-        response_format="pcm16", chunk_chars=None,
-        registry=_make_registry(), store=store,
+        model="t:1",
+        voice="clone",
+        speed=1.0,
+        language=None,
+        response_format="pcm16",
+        chunk_chars=None,
+        registry=_make_registry(),
+        store=store,
     )
 
     with pytest.raises(VoiceCloningUnsupportedOperationError):
@@ -386,12 +499,18 @@ async def test_configure_maps_missing_reference_audio_to_operation_error(tmp_pat
     store = _make_voice_store(tmp_path)
     session = LongformSynthesisSession(
         scheduler=FakeScheduler(FakeStreamingTTSAdapter(supports_voice_cloning=True)),
-        registry=_make_registry(), store=store,
+        registry=_make_registry(),
+        store=store,
     )
     config = normalize_longform_tts_config(
-        model="t:1", voice="clone", speed=1.0, language=None,
-        response_format="pcm16", chunk_chars=None,
-        registry=_make_registry(), store=store,
+        model="t:1",
+        voice="clone",
+        speed=1.0,
+        language=None,
+        response_format="pcm16",
+        chunk_chars=None,
+        registry=_make_registry(),
+        store=store,
     )
 
     with pytest.raises(VoiceReferenceNotFoundError):
@@ -403,12 +522,18 @@ async def test_configure_maps_missing_reference_audio_to_operation_error(tmp_pat
 async def test_configure_or_report_emits_terminal_error_event():
     session = LongformSynthesisSession(
         scheduler=MissingScheduler(),
-        registry=_make_registry(), store=_make_store(tts="missing:latest"),
+        registry=_make_registry(),
+        store=_make_store(tts="missing:latest"),
     )
     config = normalize_longform_tts_config(
-        model="missing:latest", voice="default", speed=1.0, language=None,
-        response_format="pcm16", chunk_chars=None,
-        registry=_make_registry(), store=_make_store(tts="missing:latest"),
+        model="missing:latest",
+        voice="default",
+        speed=1.0,
+        language=None,
+        response_format="pcm16",
+        chunk_chars=None,
+        registry=_make_registry(),
+        store=_make_store(tts="missing:latest"),
     )
 
     ok = await session.configure_or_report(config)
@@ -425,7 +550,8 @@ async def test_configure_or_report_emits_terminal_error_event():
 async def test_end_of_stream_or_report_emits_not_configured_error():
     session = LongformSynthesisSession(
         scheduler=FakeScheduler(FakeStreamingTTSAdapter()),
-        registry=_make_registry(), store=_make_store(tts="t:1"),
+        registry=_make_registry(),
+        store=_make_store(tts="t:1"),
     )
 
     ok = await session.end_of_stream_or_report()
