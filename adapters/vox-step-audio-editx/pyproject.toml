@@ -1,0 +1,27 @@
+[project]
+name = "vox-step-audio-editx"
+version = "0.1.0"
+description = "Step-Audio-EditX voice-cloning TTS adapter for Vox"
+readme = { file = "README.md", content-type = "text/markdown" }
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "vox-runtime>=0.2.124,<0.3",
+    "numpy>=1.26.0,<3",
+    "soundfile>=0.13.1",
+]
+
+[tool.vox.adapter]
+import-package = "vox_step_audio_editx"
+runtime-policy = "target-runtime"
+runtime-names = ["step-audio-editx"]
+adapter-types = ["tts"]
+
+[project.entry-points."vox.adapters"]
+step-audio-editx-tts-vllm = "vox_step_audio_editx.adapter:StepAudioEditXAdapter"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vox_step_audio_editx"]

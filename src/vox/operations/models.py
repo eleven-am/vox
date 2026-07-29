@@ -7,6 +7,7 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import asdict, dataclass
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
 from vox.core.adapter_resolution import (
@@ -56,6 +57,13 @@ class PullEvent:
     completed: int = 0
     total: int = 0
     error: str = ""
+
+
+@dataclass(frozen=True)
+class ArtifactSource:
+    source: str
+    prefix: str = ""
+    files: tuple[str, ...] | None = None
 
 
 _PULL_EVENT_LIMIT = 64
@@ -384,6 +392,64 @@ def pull_model(
     return tasks.start(execute)
 
 
+def _artifact_sources(catalog_entry: dict[str, Any]) -> tuple[ArtifactSource, ...]:
+    primary_source = str(catalog_entry.get("source") or "").strip()
+    if not primary_source:
+        raise ValueError("catalog entry requires a non-empty source")
+    sources = [
+        ArtifactSource(
+            source=primary_source,
+            files=_artifact_files(catalog_entry.get("files"), label="catalog files"),
+        )
+    ]
+    raw_artifacts = catalog_entry.get("artifacts")
+    if raw_artifacts is not None and not isinstance(raw_artifacts, (list, tuple)):
+        raise ValueError("catalog artifacts must be a list")
+    for raw in raw_artifacts or ():
+        if not isinstance(raw, dict):
+            raise ValueError("catalog artifacts entries must be objects")
+        artifact_source = str(raw.get("source") or "").strip()
+        if not artifact_source:
+            raise ValueError("catalog artifacts entries require a non-empty source")
+        prefix = str(raw.get("prefix") or "").strip("/")
+        raw_files = raw.get("files")
+        sources.append(
+            ArtifactSource(
+                source=artifact_source,
+                prefix=prefix,
+                files=_artifact_files(raw_files, label=f"artifact files for {artifact_source}"),
+            )
+        )
+    return tuple(sources)
+
+
+def _artifact_files(value: Any, *, label: str) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)) or not value:
+        raise ValueError(f"{label} must be a non-empty list")
+    files: list[str] = []
+    for raw in value:
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError(f"{label} must contain non-empty strings")
+        files.append(raw)
+    return tuple(files)
+
+
+def _artifact_target_filename(prefix: str, filename: str) -> str:
+    normalized = filename.replace("\\", "/")
+    if not normalized or normalized in (".", ".."):
+        raise ValueError(f"unsafe model artifact filename: {filename!r}")
+    source_path = PurePosixPath(normalized)
+    if source_path.is_absolute() or PureWindowsPath(filename).is_absolute() or ".." in source_path.parts:
+        raise ValueError(f"unsafe model artifact filename: {filename!r}")
+
+    prefix_path = PurePosixPath(prefix.replace("\\", "/")) if prefix else PurePosixPath()
+    if prefix_path.is_absolute() or PureWindowsPath(prefix).is_absolute() or ".." in prefix_path.parts:
+        raise ValueError(f"unsafe model artifact prefix: {prefix!r}")
+    return str(prefix_path / source_path)
+
+
 async def _execute_pull(
     *,
     store: Any,
@@ -397,7 +463,6 @@ async def _execute_pull(
     adapter_name = catalog_entry.get("adapter", "")
     adapter_package = catalog_entry.get("adapter_package", "")
     source = catalog_entry["source"]
-    specific_files = catalog_entry.get("files")
     blob_lease = store.acquire_blob_lease()
     previous_manifest = store.resolve_model(
         resolved.resolved_name,
@@ -413,22 +478,32 @@ async def _execute_pull(
         from huggingface_hub import HfApi, hf_hub_download
 
         api = HfApi()
-
-        if specific_files:
-            files_to_download = list(specific_files)
-        else:
-            repo_info = await asyncio.to_thread(api.repo_info, source)
-            files_to_download = [
-                sibling.rfilename for sibling in repo_info.siblings or () if not sibling.rfilename.startswith(".")
-            ]
+        artifact_sources = _artifact_sources(catalog_entry)
+        downloads: list[tuple[ArtifactSource, str, str]] = []
+        target_filenames: set[str] = set()
+        for artifact_source in artifact_sources:
+            source_files = artifact_source.files
+            if source_files is None:
+                repo_info = await asyncio.to_thread(api.repo_info, artifact_source.source)
+                source_files = tuple(
+                    sibling.rfilename
+                    for sibling in repo_info.siblings or ()
+                    if not sibling.rfilename.startswith(".")
+                )
+            for filename in source_files:
+                target_filename = _artifact_target_filename(artifact_source.prefix, filename)
+                if target_filename in target_filenames:
+                    raise ValueError(f"duplicate model artifact target filename: {target_filename}")
+                target_filenames.add(target_filename)
+                downloads.append((artifact_source, filename, target_filename))
 
         layers: list[ManifestLayer] = []
-        total_files = len(files_to_download)
+        total_files = len(downloads)
 
-        for i, filename in enumerate(files_to_download):
+        for i, (artifact_source, filename, target_filename) in enumerate(downloads):
             emit(
                 PullEvent(
-                    status=f"downloading {filename}",
+                    status=f"downloading {artifact_source.source}/{filename}",
                     completed=i,
                     total=total_files,
                 )
@@ -436,7 +511,7 @@ async def _execute_pull(
 
             local_path = await asyncio.to_thread(
                 hf_hub_download,
-                repo_id=source,
+                repo_id=artifact_source.source,
                 filename=filename,
                 cache_dir=None,
             )
@@ -456,7 +531,7 @@ async def _execute_pull(
                     media_type=media_type,
                     digest=digest,
                     size=file_size,
-                    filename=filename,
+                    filename=target_filename,
                 )
             )
 

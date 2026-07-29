@@ -4,6 +4,7 @@ import asyncio
 import threading
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -24,6 +25,8 @@ from vox.operations.models import (
     PullEvent,
     PullTaskRegistry,
     ShowResult,
+    _artifact_sources,
+    _artifact_target_filename,
     _PullPublication,
     _stage_adapter_mutation_owned,
     _stage_runtime_mutation_owned,
@@ -158,6 +161,70 @@ def test_model_reference_request_from_fields_preserves_transport_name():
     request = model_reference_request_from_fields(name="parakeet:tdt-0.6b-v3")
 
     assert request.name == "parakeet:tdt-0.6b-v3"
+
+
+def test_artifact_sources_preserve_primary_source_and_prefix_additional_sources():
+    sources = _artifact_sources(
+        {
+            "source": "owner/model",
+            "files": ["model.safetensors"],
+            "artifacts": [
+                {
+                    "source": "owner/tokenizer",
+                    "prefix": "audio_tokenizer",
+                    "files": ["encoder.onnx"],
+                }
+            ],
+        }
+    )
+
+    assert [(source.source, source.prefix, source.files) for source in sources] == [
+        ("owner/model", "", ("model.safetensors",)),
+        ("owner/tokenizer", "audio_tokenizer", ("encoder.onnx",)),
+    ]
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        {"source": ""},
+        {"source": "org/model", "files": "weights.bin"},
+        {"source": "org/model", "files": []},
+        {"source": "org/model", "files": [""]},
+        {"source": "org/model", "artifacts": {"source": "org/tokenizer"}},
+        {"source": "org/model", "artifacts": ["org/tokenizer"]},
+        {"source": "org/model", "artifacts": [{"source": ""}]},
+        {"source": "org/model", "artifacts": [{"source": "org/tokenizer", "files": []}]},
+    ],
+)
+def test_artifact_sources_reject_malformed_catalog_values(entry: dict[str, Any]):
+    with pytest.raises(ValueError):
+        _artifact_sources(entry)
+
+
+@pytest.mark.parametrize(
+    ("prefix", "filename"),
+    [
+        ("../runtime", "model.bin"),
+        ("/absolute", "model.bin"),
+        ("audio_tokenizer", "../model.bin"),
+        ("audio_tokenizer", "/model.bin"),
+        ("audio_tokenizer", "C:\\model.bin"),
+    ],
+)
+def test_artifact_target_filename_rejects_paths_outside_model_directory(prefix: str, filename: str):
+    with pytest.raises(ValueError, match="unsafe model artifact"):
+        _artifact_target_filename(prefix, filename)
+
+
+def test_artifact_target_filename_places_additional_source_under_prefix():
+    assert (
+        _artifact_target_filename(
+            "audio_tokenizer",
+            "dengcunqin/model.pt",
+        )
+        == "audio_tokenizer/dengcunqin/model.pt"
+    )
 
 
 def test_resolve_model_reference_preserves_explicit_tag_policy():
@@ -533,6 +600,89 @@ async def test_pull_model_yields_progress_and_success(tmp_path: Path):
     assert manifest is not None
     assert manifest.config["runtime"]["checked_at_pull"] is True
     assert manifest.config["runtime"]["resolved_variant"] == ""
+
+
+@pytest.mark.asyncio
+async def test_pull_model_downloads_additional_artifact_sources_into_prefixed_model_paths(tmp_path: Path):
+    store = BlobStore(root=tmp_path)
+    registry = _registry_mock()
+    registry.lookup.return_value = {
+        "architecture": "step-audio-editx",
+        "type": "tts",
+        "adapter": "step-audio-editx-tts-vllm",
+        "format": "pytorch",
+        "source": "stepfun-ai/Step-Audio-EditX-AWQ-4bit",
+        "files": ["model.safetensors"],
+        "artifacts": [
+            {
+                "source": "stepfun-ai/Step-Audio-Tokenizer",
+                "prefix": "audio_tokenizer",
+                "files": ["speech_tokenizer_v1.onnx"],
+            }
+        ],
+        "parameters": {},
+        "adapter_package": "",
+    }
+    model_file = tmp_path / "model.safetensors"
+    tokenizer_file = tmp_path / "speech_tokenizer_v1.onnx"
+    model_file.write_bytes(b"model")
+    tokenizer_file.write_bytes(b"tokenizer")
+
+    def download(*, repo_id: str, filename: str, cache_dir):
+        assert cache_dir is None
+        if repo_id == "stepfun-ai/Step-Audio-EditX-AWQ-4bit" and filename == "model.safetensors":
+            return str(model_file)
+        if repo_id == "stepfun-ai/Step-Audio-Tokenizer" and filename == "speech_tokenizer_v1.onnx":
+            return str(tokenizer_file)
+        raise AssertionError((repo_id, filename))
+
+    with (
+        patch("huggingface_hub.hf_hub_download", side_effect=download),
+        patch("vox.core.model_resolution.detect_runtime_capabilities", return_value=_runtime_caps()),
+    ):
+        events = pull_model(
+            store=store,
+            registry=registry,
+            request=model_reference_request_from_fields(name="step-audio-editx:3b-awq"),
+            tasks=PullTaskRegistry(),
+        )
+        collected = [event async for event in events]
+
+    assert collected[-1].status == "success"
+    manifest = store.resolve_model("step-audio-editx", "3b-awq")
+    assert manifest is not None
+    assert [layer.filename for layer in manifest.layers] == [
+        "model.safetensors",
+        "audio_tokenizer/speech_tokenizer_v1.onnx",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_pull_model_rejects_duplicate_artifact_target_filenames(tmp_path: Path):
+    store = BlobStore(root=tmp_path)
+    registry = _registry_mock()
+    registry.lookup.return_value = {
+        "architecture": "test",
+        "type": "tts",
+        "adapter": "",
+        "format": "pytorch",
+        "source": "org/model",
+        "files": ["shared.bin"],
+        "artifacts": [{"source": "org/other-model", "files": ["shared.bin"]}],
+    }
+
+    with patch("vox.core.model_resolution.detect_runtime_capabilities", return_value=_runtime_caps()):
+        events = pull_model(
+            store=store,
+            registry=registry,
+            request=model_reference_request_from_fields(name="test-model:latest"),
+            tasks=PullTaskRegistry(),
+        )
+        collected = [event async for event in events]
+
+    assert collected[-1].status == "error"
+    assert "duplicate model artifact target filename" in collected[-1].error
+    assert store.resolve_model("test-model", "latest") is None
 
 
 @pytest.mark.asyncio

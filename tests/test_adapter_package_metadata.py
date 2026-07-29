@@ -146,6 +146,7 @@ def test_externalized_adapter_runtime_dependencies_are_not_package_dependencies(
         "vox-piper": ("piper-tts",),
         "vox-sesame": ("transformers", "sentencepiece"),
         "vox-spark": ("transformers", "torch", "einops"),
+        "vox-step-audio-editx": ("vllm", "torch", "torchaudio", "torchvision", "onnxruntime-gpu"),
         "vox-xtts": ("coqui-tts", "torchaudio"),
     }
 
