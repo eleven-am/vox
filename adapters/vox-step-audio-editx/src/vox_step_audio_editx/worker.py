@@ -23,29 +23,40 @@ logger = logging.getLogger(__name__)
 
 
 def _load_engine(model_path: str) -> Any:
+    import model_loader
     from model_loader import ModelSource
     from tokenizer import StepAudioTokenizer
     from tts import StepAudioTTS
+
+    original_load_model = model_loader.load_model
+
+    def load_model(*args: Any, **kwargs: Any) -> Any:
+        kwargs["attention_config"] = {"backend": "TRITON_ATTN"}
+        return original_load_model(*args, **kwargs)
 
     tokenizer = StepAudioTokenizer(
         str(Path(model_path) / "audio_tokenizer"),
         model_source=ModelSource.LOCAL,
     )
-    return StepAudioTTS(
-        model_path,
-        tokenizer,
-        model_source=ModelSource.LOCAL,
-        quantization=None,
-        tensor_parallel_size=1,
-        gpu_memory_utilization=0.5,
-        max_model_len=3072,
-        enforce_eager=True,
-        dtype="bfloat16",
-        max_num_seqs=1,
-        max_num_batched_tokens=3072,
-        cosyvoice_dtype="bfloat16",
-        cosyvoice_cuda_graph=False,
-    )
+    model_loader.load_model = load_model
+    try:
+        return StepAudioTTS(
+            model_path,
+            tokenizer,
+            model_source=ModelSource.LOCAL,
+            quantization=None,
+            tensor_parallel_size=1,
+            gpu_memory_utilization=0.5,
+            max_model_len=3072,
+            enforce_eager=True,
+            dtype="bfloat16",
+            max_num_seqs=1,
+            max_num_batched_tokens=3072,
+            cosyvoice_dtype="bfloat16",
+            cosyvoice_cuda_graph=False,
+        )
+    finally:
+        model_loader.load_model = original_load_model
 
 
 def _generate(engine: Any, token_ids: list[int], temperature: float, seed: int | None) -> Any:

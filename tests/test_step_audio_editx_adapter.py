@@ -383,9 +383,13 @@ def test_worker_load_uses_checkpoint_quantization_metadata(monkeypatch: pytest.M
     class StepAudioTTS:
         def __init__(self, model_path: str, tokenizer: Any, **kwargs: Any) -> None:
             captured["tts"] = (model_path, tokenizer, kwargs)
+            model_loader.load_model(model_path)
 
     model_loader = ModuleType("model_loader")
     model_loader.ModelSource = ModelSource
+    model_loader.load_model = lambda *args, **kwargs: captured.update(
+        {"load_model": (args, kwargs)}
+    )
     tokenizer = ModuleType("tokenizer")
     tokenizer.StepAudioTokenizer = StepAudioTokenizer
     tts = ModuleType("tts")
@@ -402,6 +406,7 @@ def test_worker_load_uses_checkpoint_quantization_metadata(monkeypatch: pytest.M
     assert captured["tts"][2]["max_model_len"] == 3072
     assert captured["tts"][2]["max_num_seqs"] == 1
     assert captured["tts"][2]["cosyvoice_cuda_graph"] is False
+    assert captured["load_model"][1]["attention_config"] == {"backend": "TRITON_ATTN"}
 
 
 def test_worker_generation_rejects_prompt_that_exhausts_context():
