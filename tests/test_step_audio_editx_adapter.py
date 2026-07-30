@@ -457,6 +457,7 @@ def test_worker_load_uses_checkpoint_quantization_metadata(monkeypatch: pytest.M
     assert isinstance(engine, StepAudioTTS)
     assert captured["tokenizer"] == ("/models/step/audio_tokenizer", "local")
     assert captured["tts"][2]["quantization"] is None
+    assert captured["tts"][2]["gpu_memory_utilization"] == 0.1
     assert captured["tts"][2]["max_model_len"] == 3072
     assert captured["tts"][2]["max_num_seqs"] == 1
     assert captured["tts"][2]["cosyvoice_cuda_graph"] is False

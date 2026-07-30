@@ -46,7 +46,7 @@ def _load_engine(model_path: str) -> Any:
             model_source=ModelSource.LOCAL,
             quantization=None,
             tensor_parallel_size=1,
-            gpu_memory_utilization=0.5,
+            gpu_memory_utilization=0.1,
             max_model_len=3072,
             enforce_eager=True,
             dtype="bfloat16",
