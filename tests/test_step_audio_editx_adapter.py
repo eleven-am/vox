@@ -385,17 +385,17 @@ def test_worker_load_uses_checkpoint_quantization_metadata(monkeypatch: pytest.M
     class StepAudioTTS:
         def __init__(self, model_path: str, tokenizer: Any, **kwargs: Any) -> None:
             captured["tts"] = (model_path, tokenizer, kwargs)
-            model_loader.load_model(model_path)
+            tts.model_loader.load_model(model_path)
 
     model_loader = ModuleType("model_loader")
     model_loader.ModelSource = ModelSource
-    model_loader.load_model = lambda *args, **kwargs: captured.update(
-        {"load_model": (args, kwargs)}
-    )
     tokenizer = ModuleType("tokenizer")
     tokenizer.StepAudioTokenizer = StepAudioTokenizer
     tts = ModuleType("tts")
     tts.StepAudioTTS = StepAudioTTS
+    tts.model_loader = SimpleNamespace(
+        load_model=lambda *args, **kwargs: captured.update({"load_model": (args, kwargs)})
+    )
     monkeypatch.setitem(sys.modules, "model_loader", model_loader)
     monkeypatch.setitem(sys.modules, "tokenizer", tokenizer)
     monkeypatch.setitem(sys.modules, "tts", tts)
