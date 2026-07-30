@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from packaging.requirements import Requirement
 
 from vox.core.adapter_resolution import (
     ADAPTERS_DIR,
@@ -30,12 +31,21 @@ class _FakeRunner:
         self.calls.append(cmd)
         if self.returncode == 0 and "--target" in cmd:
             target = Path(cmd[cmd.index("--target") + 1])
-            package_name = cmd[-1]
+            requirement = Requirement(cmd[-1])
+            package_name = requirement.name
+            version = next(
+                (
+                    specifier.version
+                    for specifier in requirement.specifier
+                    if specifier.operator in {"==", "==="}
+                ),
+                "1.0.0",
+            )
             normalized = package_name.replace("-", "_")
-            dist_info = target / f"{normalized}-1.0.0.dist-info"
+            dist_info = target / f"{normalized}-{version}.dist-info"
             dist_info.mkdir(parents=True, exist_ok=True)
             (dist_info / "METADATA").write_text(
-                f"Metadata-Version: 2.1\nName: {package_name}\nVersion: 1.0.0\n",
+                f"Metadata-Version: 2.1\nName: {package_name}\nVersion: {version}\n",
                 encoding="utf-8",
             )
             (dist_info / "entry_points.txt").write_text(
@@ -299,10 +309,74 @@ class TestEnsure:
         runner = _FakeRunner()
         resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
 
+        package_spec = "vox-step-audio-editx==0.1.3"
         with patch.object(AdapterResolver, "_scan_install_specs", return_value={}):
-            assert resolver.ensure("step-audio-editx-tts-vllm", "vox-step-audio-editx") is False
+            assert resolver.ensure("step-audio-editx-tts-vllm", package_spec) is False
 
-        assert runner.calls[0][-2:] == ["--no-deps", "vox-step-audio-editx"]
+        install_target = Path(runner.calls[0][runner.calls[0].index("--target") + 1])
+        assert install_target.parent == tmp_path / ADAPTERS_DIR
+        assert install_target.name.startswith(".vox-step-audio-editx.installing-")
+        assert runner.calls[0][
+            runner.calls[0].index("--refresh-package") + 1
+        ] == "vox-step-audio-editx"
+        assert runner.calls[0][-2:] == ["--no-deps", package_spec]
+
+    def test_reinstalls_adapter_when_installed_version_does_not_satisfy_requirement(
+        self, tmp_path: Path
+    ):
+        package_dir = tmp_path / ADAPTERS_DIR / "vox-step-audio-editx"
+        dist_info = package_dir / "vox_step_audio_editx-0.1.2.dist-info"
+        dist_info.mkdir(parents=True)
+        (dist_info / "METADATA").write_text(
+            "Metadata-Version: 2.1\nName: vox-step-audio-editx\nVersion: 0.1.2\n",
+            encoding="utf-8",
+        )
+        entry_point = MagicMock()
+        entry_point.load.return_value = type("StepAdapter", (), {})
+        runner = _FakeRunner()
+        resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
+        resolver._installed_specs = {
+            "step-audio-editx-tts-vllm": AdapterInstallSpec(
+                entry_point=entry_point,
+                path=package_dir,
+            )
+        }
+
+        with patch.object(AdapterResolver, "_scan_install_specs", return_value={}):
+            assert resolver.ensure(
+                "step-audio-editx-tts-vllm",
+                "vox-step-audio-editx==0.1.3",
+            ) is False
+
+        assert runner.calls
+        assert runner.calls[0][-1] == "vox-step-audio-editx==0.1.3"
+
+    def test_reuses_adapter_when_installed_version_satisfies_requirement(
+        self, tmp_path: Path
+    ):
+        package_dir = tmp_path / ADAPTERS_DIR / "vox-step-audio-editx"
+        dist_info = package_dir / "vox_step_audio_editx-0.1.3.dist-info"
+        dist_info.mkdir(parents=True)
+        (dist_info / "METADATA").write_text(
+            "Metadata-Version: 2.1\nName: vox-step-audio-editx\nVersion: 0.1.3\n",
+            encoding="utf-8",
+        )
+        entry_point = MagicMock()
+        entry_point.load.return_value = type("StepAdapter", (), {})
+        runner = _FakeRunner()
+        resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
+        resolver._installed_specs = {
+            "step-audio-editx-tts-vllm": AdapterInstallSpec(
+                entry_point=entry_point,
+                path=package_dir,
+            )
+        }
+
+        assert resolver.ensure(
+            "step-audio-editx-tts-vllm",
+            "vox-step-audio-editx==0.1.3",
+        )
+        assert runner.calls == []
 
     def test_ensure_applies_parakeet_nemo_entry_install_policy(self, tmp_path: Path):
         runner = _FakeRunner()

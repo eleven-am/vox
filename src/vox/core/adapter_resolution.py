@@ -15,6 +15,9 @@ from dataclasses import dataclass
 from importlib.metadata import EntryPoint, distributions, entry_points
 from pathlib import Path
 
+from packaging.requirements import InvalidRequirement, Requirement
+from packaging.utils import canonicalize_name
+
 from vox.core.atomic_install import (
     DirectorySwap,
     publish_staged_directory,
@@ -100,8 +103,32 @@ def _path_is_relative_to(path: Path, parent: Path) -> bool:
     return True
 
 
-def _adapter_package_allowed(package_name: str) -> bool:
-    if package_name in KNOWN_ADAPTER_PACKAGES:
+def _adapter_requirement(package_spec: str) -> Requirement | None:
+    try:
+        requirement = Requirement(package_spec)
+    except InvalidRequirement:
+        return None
+    if requirement.url or requirement.extras or requirement.marker:
+        return None
+    return requirement
+
+
+def _adapter_package_name(package_spec: str) -> str:
+    requirement = _adapter_requirement(package_spec)
+    return canonicalize_name(requirement.name) if requirement is not None else package_spec
+
+
+def _adapter_version_satisfies(package_spec: str, version: str | None) -> bool:
+    requirement = _adapter_requirement(package_spec)
+    if requirement is None:
+        return False
+    if not requirement.specifier:
+        return True
+    return version is not None and requirement.specifier.contains(version, prereleases=True)
+
+
+def _adapter_package_allowed(package_spec: str) -> bool:
+    if _adapter_package_name(package_spec) in KNOWN_ADAPTER_PACKAGES:
         return True
     return os.environ.get(ADAPTERS_ALLOW_UNVERIFIED_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
 
@@ -302,7 +329,10 @@ class AdapterResolver:
             package_dir = self._adapter_install_dir(package_name)
             if not package_dir.is_dir():
                 return None
-            return self._installed_version_at(package_dir, package_name=package_name)
+            return self._installed_version_at(
+                package_dir,
+                package_name=_adapter_package_name(package_name),
+            )
 
     def ensure(self, adapter_name: str, package_name: str) -> bool:
         mutation = self.stage(adapter_name, package_name)
@@ -313,7 +343,7 @@ class AdapterResolver:
             return self._cached_adapter_loads(
                 adapter_name,
                 package_name,
-            ) or self._installed_spec_loads(adapter_name)
+            ) or self._installed_spec_satisfies(adapter_name, package_name)
 
     def stage(
         self,
@@ -329,7 +359,7 @@ class AdapterResolver:
                 if self._cached_adapter_loads(
                     adapter_name,
                     package_name,
-                ) or self._installed_spec_loads(adapter_name):
+                ) or self._installed_spec_satisfies(adapter_name, package_name):
                     _ADAPTER_STAGED_LOCK.release()
                     return AdapterMutation(
                         self,
@@ -343,7 +373,7 @@ class AdapterResolver:
                 if self._cached_adapter_loads(
                     adapter_name,
                     package_name,
-                ) or self._installed_spec_loads(adapter_name):
+                ) or self._installed_spec_satisfies(adapter_name, package_name):
                     _ADAPTER_STAGED_LOCK.release()
                     return AdapterMutation(
                         self,
@@ -388,7 +418,7 @@ class AdapterResolver:
 
                 self._sanitize_sys_path()
                 self._refresh_installed_specs()
-                if self._valid_installed_spec(adapter_name) is None:
+                if not self._installed_spec_satisfies(adapter_name, package_name):
                     swap.rollback()
                     _ADAPTER_STAGED_LOCK.release()
                     return AdapterMutation(
@@ -467,6 +497,13 @@ class AdapterResolver:
             return False
 
         if _path_is_relative_to(module_path, package_dir):
+            installed_version = self._installed_version_at(
+                package_dir,
+                package_name=_adapter_package_name(package_name),
+            )
+            if not _adapter_version_satisfies(package_name, installed_version):
+                self._adapters.pop(adapter_name, None)
+                return False
             if package_dir.is_dir():
                 return True
             logger.warning(
@@ -510,7 +547,7 @@ class AdapterResolver:
         return adapters_root
 
     def _adapter_install_dir(self, package_name: str) -> Path:
-        return self._vox_home / ADAPTERS_DIR / package_name
+        return self._vox_home / ADAPTERS_DIR / _adapter_package_name(package_name)
 
     def _installed_version_at(
         self,
@@ -522,7 +559,7 @@ class AdapterResolver:
         try:
             for dist in distributions(path=[str(package_dir)]):
                 name = (dist.metadata.get("Name") or "").replace("-", "_")
-                if normalized is None or name == normalized:
+                if normalized is None or name.lower() == normalized.lower():
                     return dist.version
         except Exception as exc:
             logger.warning("Failed to inspect adapter version at '%s': %s", package_dir, exc)
@@ -548,8 +585,10 @@ class AdapterResolver:
         target_dir = self._adapter_install_dir(package_name)
 
         install_timeout = int(os.environ.get(ADAPTER_INSTALL_TIMEOUT_ENV, "900"))
+        distribution_name = _adapter_package_name(package_name)
         install_no_deps = (
-            package_name in DEFAULT_NO_DEPS_ADAPTER_PACKAGES or adapter_name in DEFAULT_NO_DEPS_ADAPTER_NAMES
+            distribution_name in DEFAULT_NO_DEPS_ADAPTER_PACKAGES
+            or adapter_name in DEFAULT_NO_DEPS_ADAPTER_NAMES
         )
         install_no_deps = install_no_deps or os.environ.get(ADAPTERS_NO_DEPS_ENV, "").lower() in {
             "1",
@@ -567,7 +606,7 @@ class AdapterResolver:
                 try:
                     cmd = [*installer, "--target", str(stage), "--upgrade"]
                     if installer[:2] == ["uv", "pip"]:
-                        cmd.extend(["--refresh-package", package_name])
+                        cmd.extend(["--refresh-package", distribution_name])
                     if install_no_deps:
                         cmd.append("--no-deps")
                     cmd.append(package_name)
@@ -606,7 +645,8 @@ class AdapterResolver:
         *,
         adapter_name: str | None,
     ) -> bool:
-        normalized_package = package_name.replace("-", "_").lower()
+        distribution_name = _adapter_package_name(package_name)
+        normalized_package = distribution_name.replace("-", "_").lower()
         try:
             matching = [
                 dist
@@ -625,7 +665,7 @@ class AdapterResolver:
                 "-c",
                 _ADAPTER_VERIFY_PROGRAM,
                 str(install_dir),
-                package_name,
+                distribution_name,
                 adapter_name,
             ],
             capture_output=True,
@@ -699,3 +739,15 @@ class AdapterResolver:
                 sys.modules.pop(module_name, None)
         self._sanitize_sys_path()
         self._refresh_installed_specs()
+
+    def _installed_spec_satisfies(self, adapter_name: str, package_name: str) -> bool:
+        spec = self._valid_installed_spec(adapter_name)
+        if spec is None:
+            return False
+        version = self._installed_version_at(
+            spec.path,
+            package_name=_adapter_package_name(package_name),
+        )
+        return _adapter_version_satisfies(package_name, version) and self._installed_spec_loads(
+            adapter_name
+        )
