@@ -283,12 +283,23 @@ def test_prepare_runtime_uses_locked_no_deps_install_and_pinned_source(
     assert calls[0]["installer_order"] == ("uv", "pip")
     names = {requirement.split("==", 1)[0].lower() for requirement in runtime_module.RUNTIME_REQUIREMENTS}
     assert "vllm" in names
+    assert "conch-triton-kernels" in names
     assert "torchvision" in names
     assert not names & {"torch", "torchaudio", "triton"}
     assert not any(name.startswith("nvidia-cuda-") for name in names)
     assert runtime_module.SOURCE_REF in runtime_module.SOURCE_URL
     assert (runtime / runtime_module.RUNTIME_SENTINEL).is_file()
     assert runtime_module._source_matches(runtime / "source")
+
+
+def test_worker_env_disables_precompiled_marlin_kernel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("VLLM_DISABLED_KERNELS", "ExistingKernel")
+
+    env = runtime_module.worker_env(tmp_path, "cuda")
+
+    assert env["VLLM_DISABLED_KERNELS"] == "ExistingKernel,MarlinLinearKernel"
 
 
 def test_ready_runtime_is_verified_without_reinstall(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

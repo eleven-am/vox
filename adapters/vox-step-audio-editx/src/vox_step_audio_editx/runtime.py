@@ -23,6 +23,7 @@ SOURCE_REF = "a652e87052c109e26f616d60971376ff47a829d4"
 SOURCE_URL = f"https://github.com/stepfun-ai/Step-Audio-EditX/archive/{SOURCE_REF}.tar.gz"
 RUNTIME_REQUIREMENTS = (
     "vllm==0.18.0",
+    "conch-triton-kernels==1.3",
     "compressed-tensors==0.13.0",
     "depyf==0.20.0",
     "diskcache==5.6.3",
@@ -151,6 +152,7 @@ SHARED_RUNTIME_GLOBS = (
     "triton-*.dist-info",
 )
 EXPECTED_RUNTIME_PATHS = (
+    Path("conch") / "__init__.py",
     Path("vllm") / "__init__.py",
     Path("vllm") / "_C.abi3.so",
     Path("torchvision") / "__init__.py",
@@ -258,13 +260,21 @@ def worker_env(path: Path, device: str) -> dict[str, str]:
     }
     env["PYTHONPATH"] = os.pathsep.join(_worker_paths(path))
     env["VOX_STEP_AUDIO_EDITX_DEVICE"] = device
+    disabled_kernels = {
+        name
+        for name in env.get("VLLM_DISABLED_KERNELS", "").split(",")
+        if name
+    }
+    disabled_kernels.add("MarlinLinearKernel")
+    env["VLLM_DISABLED_KERNELS"] = ",".join(sorted(disabled_kernels))
     return env
 
 
 def _probe_runtime(path: Path) -> bool:
     script = (
         "from pathlib import Path; "
-        "import hyperpyyaml, model_loader, onnxruntime, tokenizer, torch, torchaudio, torchvision, transformers, vllm, "
+        "import conch, hyperpyyaml, model_loader, onnxruntime, tokenizer, torch, torchaudio, "
+        "torchvision, transformers, vllm, "
         "vllm._C, whisper; "
         f"root=Path({str(path)!r}).resolve(); "
         "assert torch.__version__.startswith('2.10.'); "
