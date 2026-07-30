@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 import vox_step_audio_editx.runtime as runtime_module
+import vox_step_audio_editx.worker as worker_module
 from vox_step_audio_editx.adapter import StepAudioEditXAdapter
 
 from vox.core.atomic_install import bind_install_transaction
@@ -310,6 +311,26 @@ def test_worker_env_disables_precompiled_marlin_kernel(
     env = runtime_module.worker_env(tmp_path, "cuda")
 
     assert env["VLLM_DISABLED_KERNELS"] == "ExistingKernel,MarlinLinearKernel"
+
+
+def test_reference_audio_loader_returns_channel_first_float_tensor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    audio_path = tmp_path / "reference.wav"
+    values = np.column_stack(
+        (
+            np.linspace(-0.5, 0.5, 24, dtype=np.float32),
+            np.linspace(0.5, -0.5, 24, dtype=np.float32),
+        )
+    )
+    sf.write(audio_path, values, 24_000, subtype="FLOAT")
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(from_numpy=lambda array: array))
+
+    loaded, sample_rate = worker_module._load_reference_audio(str(audio_path))
+
+    assert sample_rate == 24_000
+    assert tuple(loaded.shape) == (2, 24)
+    np.testing.assert_allclose(loaded, values.T)
 
 
 def test_runtime_pull_transaction_records_only_durable_target(
