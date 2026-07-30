@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tarfile
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -17,6 +18,7 @@ import soundfile as sf
 import vox_step_audio_editx.runtime as runtime_module
 from vox_step_audio_editx.adapter import StepAudioEditXAdapter
 
+from vox.core.atomic_install import bind_install_transaction
 from vox.core.errors import ModelLoadError
 from vox.operations.errors import InvalidConfigError
 
@@ -254,6 +256,12 @@ def test_prepare_runtime_uses_locked_no_deps_install_and_pinned_source(
 ):
     runtime = tmp_path / "step-audio-editx"
     calls: list[dict[str, Any]] = []
+    transaction_bindings: list[object] = []
+
+    @contextmanager
+    def bind(transaction):
+        transaction_bindings.append(transaction)
+        yield
 
     def install(target, requirements, **kwargs):
         calls.append({"target": target, "requirements": requirements, **kwargs})
@@ -268,6 +276,7 @@ def test_prepare_runtime_uses_locked_no_deps_install_and_pinned_source(
         _land_source(path)
 
     monkeypatch.setattr(runtime_module, "runtime_dir", lambda: runtime)
+    monkeypatch.setattr(runtime_module, "bind_install_transaction", bind)
     monkeypatch.setattr(runtime_module, "install_target_runtime_requirements", install)
     monkeypatch.setattr(runtime_module, "_extract_source", extract)
     monkeypatch.setattr(runtime_module, "_probe_runtime", lambda path: True)
@@ -281,6 +290,7 @@ def test_prepare_runtime_uses_locked_no_deps_install_and_pinned_source(
     assert calls[0]["no_deps"] is True
     assert calls[0]["upgrade"] is False
     assert calls[0]["installer_order"] == ("uv", "pip")
+    assert transaction_bindings == [None]
     names = {requirement.split("==", 1)[0].lower() for requirement in runtime_module.RUNTIME_REQUIREMENTS}
     assert "vllm" in names
     assert "conch-triton-kernels" in names
@@ -300,6 +310,36 @@ def test_worker_env_disables_precompiled_marlin_kernel(
     env = runtime_module.worker_env(tmp_path, "cuda")
 
     assert env["VLLM_DISABLED_KERNELS"] == "ExistingKernel,MarlinLinearKernel"
+
+
+def test_runtime_pull_transaction_records_only_durable_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    runtime = tmp_path / "step-audio-editx"
+    swaps: list[dict[str, Path | None]] = []
+
+    class Transaction:
+        def record_swap(self, *, stage: Path, target: Path, backup: Path | None) -> None:
+            swaps.append({"stage": stage, "target": target, "backup": backup})
+
+    def install(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        stage = Path(cmd[cmd.index("--target") + 1])
+        for relative in runtime_module.EXPECTED_RUNTIME_PATHS:
+            path = stage / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(runtime_module, "runtime_dir", lambda: runtime)
+    monkeypatch.setattr(runtime_module, "_run_install_command", install)
+    monkeypatch.setattr(runtime_module, "_extract_source", _land_source)
+    monkeypatch.setattr(runtime_module, "_probe_runtime", lambda path: True)
+
+    with bind_install_transaction(Transaction()):
+        assert runtime_module.ensure_runtime() == runtime
+
+    assert [swap["target"] for swap in swaps] == [runtime]
+    assert runtime.is_dir()
 
 
 def test_ready_runtime_is_verified_without_reinstall(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

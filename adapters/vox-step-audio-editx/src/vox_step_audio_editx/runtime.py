@@ -16,6 +16,7 @@ from vox.core.adapter_runtime import (
     runtime_root,
     staged_target_runtime,
 )
+from vox.core.atomic_install import bind_install_transaction
 
 logger = logging.getLogger(__name__)
 
@@ -304,17 +305,18 @@ def ensure_runtime() -> Path:
         return target
 
     with staged_target_runtime(target, preserve_existing=False) as stage:
-        installed = install_target_runtime_requirements(
-            stage,
-            RUNTIME_REQUIREMENTS,
-            no_deps=True,
-            upgrade=False,
-            timeout=1800,
-            expected_paths=tuple(stage / relative for relative in EXPECTED_RUNTIME_PATHS),
-            installer_order=("uv", "pip"),
-            install_runner=_run_install_command,
-            context="Step-Audio-EditX runtime install",
-        )
+        with bind_install_transaction(None):
+            installed = install_target_runtime_requirements(
+                stage,
+                RUNTIME_REQUIREMENTS,
+                no_deps=True,
+                upgrade=False,
+                timeout=1800,
+                expected_paths=tuple(stage / relative for relative in EXPECTED_RUNTIME_PATHS),
+                installer_order=("uv", "pip"),
+                install_runner=_run_install_command,
+                context="Step-Audio-EditX runtime install",
+            )
         if not installed:
             raise RuntimeError("Failed to install Step-Audio-EditX runtime dependencies")
         _remove_shared_runtime_stack(stage)
