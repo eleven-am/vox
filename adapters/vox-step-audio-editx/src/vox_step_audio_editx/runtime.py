@@ -105,6 +105,7 @@ RUNTIME_REQUIREMENTS = (
     "rignore==0.8.0",
     "sentry-sdk==2.66.1",
     "torchvision==0.25.0",
+    "torchcodec==0.10.0",
     "nvidia-cudnn-frontend==1.18.0",
     "nvidia-cutlass-dsl==4.6.1",
     "nvidia-cutlass-dsl-libs-base==4.6.1",
@@ -157,6 +158,7 @@ EXPECTED_RUNTIME_PATHS = (
     Path("vllm") / "__init__.py",
     Path("vllm") / "_C.abi3.so",
     Path("torchvision") / "__init__.py",
+    Path("torchcodec") / "__init__.py",
     Path("whisper") / "__init__.py",
     Path("hyperpyyaml") / "__init__.py",
 )
@@ -274,7 +276,7 @@ def worker_env(path: Path, device: str) -> dict[str, str]:
 def _probe_runtime(path: Path) -> bool:
     script = (
         "from pathlib import Path; "
-        "import conch, hyperpyyaml, model_loader, onnxruntime, tokenizer, torch, torchaudio, "
+        "import conch, hyperpyyaml, model_loader, onnxruntime, tokenizer, torch, torchaudio, torchcodec, "
         "torchvision, transformers, vllm, "
         "vllm._C, whisper; "
         f"root=Path({str(path)!r}).resolve(); "

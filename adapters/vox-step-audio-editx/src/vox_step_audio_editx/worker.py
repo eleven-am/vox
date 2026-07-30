@@ -86,17 +86,8 @@ def _generate(engine: Any, token_ids: list[int], temperature: float, seed: int |
     return torch.tensor(output_ids, dtype=torch.long)
 
 
-def _load_reference_audio(path: str) -> tuple[Any, int]:
-    import torch
-
-    values, sample_rate = sf.read(path, dtype="float32", always_2d=True)
-    channels = np.ascontiguousarray(values.T)
-    return torch.from_numpy(channels), int(sample_rate)
-
-
 def _clone(engine: Any, request: dict[str, Any]) -> dict[str, Any]:
     import torch
-    import torchaudio
 
     reference_path = str(request["reference_path"])
     reference_text = str(request["reference_text"])
@@ -105,12 +96,7 @@ def _clone(engine: Any, request: dict[str, Any]) -> dict[str, Any]:
     temperature = float(request["temperature"])
     seed = request.get("seed")
 
-    original_load = torchaudio.load
-    torchaudio.load = _load_reference_audio
-    try:
-        tokens, vq02, vq06, speech_feat, _, embedding = engine.preprocess_prompt_wav(reference_path)
-    finally:
-        torchaudio.load = original_load
+    tokens, vq02, vq06, speech_feat, _, embedding = engine.preprocess_prompt_wav(reference_path)
     prompt_tokens = engine._encode_audio_edit_clone_prompt(
         text,
         reference_text,
