@@ -37,6 +37,7 @@ DEFAULT_NO_DEPS_ADAPTER_PACKAGES = {
     "vox-openvoice",
     "vox-qwen",
     "vox-sesame",
+    "vox-step-audio-editx",
     "vox-voxtral",
     "vox-whisper",
 }
@@ -81,6 +82,7 @@ KNOWN_ADAPTER_PACKAGES = frozenset(
         "vox-qwen",
         "vox-sesame",
         "vox-spark",
+        "vox-step-audio-editx",
         "vox-voxtral",
         "vox-whisper",
         "vox-xtts",

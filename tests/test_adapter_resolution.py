@@ -292,6 +292,18 @@ class TestEnsure:
         resolver.ensure("parakeet", "vox-parakeet")
         assert runner.calls != []
 
+    def test_step_audio_editx_is_trusted_and_installed_without_dependencies(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.delenv("VOX_ALLOW_UNVERIFIED_ADAPTERS", raising=False)
+        runner = _FakeRunner()
+        resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
+
+        with patch.object(AdapterResolver, "_scan_install_specs", return_value={}):
+            assert resolver.ensure("step-audio-editx-tts-vllm", "vox-step-audio-editx") is False
+
+        assert runner.calls[0][-2:] == ["--no-deps", "vox-step-audio-editx"]
+
     def test_ensure_applies_parakeet_nemo_entry_install_policy(self, tmp_path: Path):
         runner = _FakeRunner()
         resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
