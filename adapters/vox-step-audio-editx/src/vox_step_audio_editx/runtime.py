@@ -293,29 +293,25 @@ def ensure_runtime() -> Path:
     if sentinel.is_file() and _source_matches(source_dir(target)) and _probe_runtime(target):
         return target
 
-    target.mkdir(parents=True, exist_ok=True)
-    installed = install_target_runtime_requirements(
-        target,
-        RUNTIME_REQUIREMENTS,
-        no_deps=True,
-        upgrade=False,
-        timeout=1800,
-        expected_paths=tuple(target / relative for relative in EXPECTED_RUNTIME_PATHS),
-        installer_order=("uv", "pip"),
-        install_runner=_run_install_command,
-        context="Step-Audio-EditX runtime install",
-    )
-    if not installed:
-        raise RuntimeError("Failed to install Step-Audio-EditX runtime dependencies")
-    _remove_shared_runtime_stack(target)
-
-    if not _source_matches(source_dir(target)):
-        with staged_target_runtime(target, preserve_existing=True) as stage:
-            stage_source = source_dir(stage)
-            stage_source.mkdir(parents=True, exist_ok=True)
-            _extract_source(stage_source)
-
-    if not _probe_runtime(target):
-        raise RuntimeError("Step-Audio-EditX runtime verification failed")
-    sentinel.touch()
+    with staged_target_runtime(target, preserve_existing=False) as stage:
+        installed = install_target_runtime_requirements(
+            stage,
+            RUNTIME_REQUIREMENTS,
+            no_deps=True,
+            upgrade=False,
+            timeout=1800,
+            expected_paths=tuple(stage / relative for relative in EXPECTED_RUNTIME_PATHS),
+            installer_order=("uv", "pip"),
+            install_runner=_run_install_command,
+            context="Step-Audio-EditX runtime install",
+        )
+        if not installed:
+            raise RuntimeError("Failed to install Step-Audio-EditX runtime dependencies")
+        _remove_shared_runtime_stack(stage)
+        stage_source = source_dir(stage)
+        stage_source.mkdir(parents=True, exist_ok=True)
+        _extract_source(stage_source)
+        if not _probe_runtime(stage):
+            raise RuntimeError("Step-Audio-EditX runtime verification failed")
+        (stage / RUNTIME_SENTINEL).touch()
     return target

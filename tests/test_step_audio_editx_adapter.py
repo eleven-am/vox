@@ -275,6 +275,8 @@ def test_prepare_runtime_uses_locked_no_deps_install_and_pinned_source(
     result = runtime_module.ensure_runtime()
 
     assert result == runtime
+    assert calls[0]["target"] != runtime
+    assert calls[0]["target"].parent == runtime.parent
     assert calls[0]["requirements"] == runtime_module.RUNTIME_REQUIREMENTS
     assert calls[0]["no_deps"] is True
     assert calls[0]["upgrade"] is False
