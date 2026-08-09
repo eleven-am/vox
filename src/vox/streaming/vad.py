@@ -79,23 +79,24 @@ def _frames_to_timestamps(
     pad_samples = int(speech_pad_ms * MS_PER_SAMPLE)
     min_speech_samples = int(min_speech_duration_ms * MS_PER_SAMPLE)
 
-    timestamps: list[dict[str, int]] = []
+    raw_timestamps: list[tuple[int, int]] = []
     current_start, current_end = speech_frames[0]
     for start, end in speech_frames[1:]:
         if start - current_end <= min_silence_samples:
             current_end = end
             continue
-        timestamps.append({
-            "start": max(0, current_start - pad_samples),
-            "end": min(total_samples, current_end + pad_samples),
-        })
+        raw_timestamps.append((current_start, current_end))
         current_start, current_end = start, end
 
-    timestamps.append({
-        "start": max(0, current_start - pad_samples),
-        "end": min(total_samples, current_end + pad_samples),
-    })
-    return [ts for ts in timestamps if ts["end"] - ts["start"] >= min_speech_samples]
+    raw_timestamps.append((current_start, current_end))
+    return [
+        {
+            "start": max(0, start - pad_samples),
+            "end": min(total_samples, end + pad_samples),
+        }
+        for start, end in raw_timestamps
+        if end - start >= min_speech_samples
+    ]
 
 
 # Silero v5 at 16 kHz: 512-sample windows, each fed to the model with the

@@ -42,16 +42,15 @@ transcribes as text that closely matches the active assistant response, Vox emit
 safety net, not a replacement for AEC. True AEC needs the far-end playback
 reference before the speaker audio leaks into the microphone.
 
-Before transcript evidence is available, the RTC path also compares recent mic
-audio with paced assistant playout. That comparison searches the bounded playout
-delay window at sample precision so resampling and non-frame-aligned Opus codec
-delay do not turn leaked assistant audio into an acoustic-only interruption.
+For non-empty final transcripts, the RTC path may also compare recent mic audio
+with paced assistant playout. That comparison supports echo rejection, but raw
+audio correlation or speech-like acoustics can never cancel a response alone.
 
 While assistant audio is active, Vox uses stricter interruption evidence by
 default:
 
-- `speaking_interrupt_min_duration_ms`: minimum confirm window during assistant
-  playback.
+- `speaking_interrupt_min_duration_ms`: minimum transcript-backed speech
+  duration during assistant playback.
 - `speaking_interrupt_min_words`: minimum non-keyword user words needed before a
   mid-playback interruption can cancel TTS.
 - `self_echo_min_words` and `self_echo_min_overlap`: how much partial transcript
@@ -554,7 +553,6 @@ Client rules:
 - A browser may immediately duck playback volume for feedback, but ducking is
   temporary and must not discard queued audio.
 - Do not drop queued audio on `input_audio_buffer.speech_stopped` alone.
-- Do not treat `turn.state_changed: paused` as a playback-clear command.
 - Keep playing until Vox either rejects the candidate or sends
   `response.audio.clear`.
 
@@ -564,11 +562,13 @@ confirmation timer must match that identity; delayed events from an older
 candidate cannot confirm a newer one. This identity is deliberately internal,
 so existing wire payloads do not change.
 
-The default detector returns one of three outcomes:
+The default detector returns one of four outcomes:
 
-- `DEFER`: evidence is incomplete; keep the candidate and held server output.
+- `DEFER`: evidence is incomplete; keep the candidate while output continues.
+- `PROVISIONAL_REJECT`: the evidence deadline elapsed, but a matching late STT
+  result may still make the decision authoritative.
 - `CONFIRM`: cancel TTS and clear queued RTC audio.
-- `REJECT`: resume held output without creating a replacement response.
+- `REJECT`: discard the candidate without changing the active response.
 
 Confirmation combines content-independent evidence: VAD duration, cumulative
 stable partials, final transcript duration and word count, EOU probability,
@@ -578,21 +578,23 @@ and the default policy does not give special meaning to words such as "stop"
 or "wait". Natural single-word interruptions remain valid when acoustic,
 partial-stability, or EOU evidence supports them.
 
-Output correlation and AEC warm-up are uncertainty signals, not immediate
-vetoes. Each candidate arms exactly one confirmation timer, and its expiry is
-terminal. The timer duration is chosen up front so distrusted evidence never
-forces an early terminal decision: normally it is the EOU-modulated confirm
-window; while a TTS-start warm-up or a short fixed resume-stability window
-(150 ms) still distrusts acoustic evidence, the timer lands just past that
-window's expiry; and when recent mic audio already correlates with active
-assistant playout, the timer arms at `false_interruption_timeout_ms`, because
-echo cannot be acoustically cleared earlier. All durations are bounded by
-`false_interruption_timeout_ms`. Speech starting mid-playback still pauses
-output immediately, and a genuine partial or final transcript can confirm at
-any time before the timer fires. If no supporting evidence arrives by expiry,
-the detector rejects the candidate and resumes held output. Starting or
-replacing an assistant response clears any older candidate, so a delayed final
-cannot cancel the new response.
+Each candidate arms exactly one onset-based evidence deadline at
+`false_interruption_timeout_ms`; repeated VAD events for the same candidate do
+not slide it. Assistant output continues while evidence is pending. A supported
+partial or final transcript can confirm before the deadline. If no supporting
+transcript has arrived by expiry, the detector provisionally rejects the
+candidate and ends its timer, while preserving identity for a matching final
+already being decoded. An empty final or a speech stop that expects no
+transcript is terminal. Acoustic evidence may support a non-empty final
+transcript, but it cannot cancel a response by itself. Starting or replacing an
+assistant response clears any older candidate, so a delayed final cannot cancel
+the new response.
+
+`min_interrupt_duration_ms` remains accepted for wire compatibility but is a
+deprecated no-op in the default detector. The custom classifier
+`confirm_window_ms` hook is likewise no longer called. Transcript-backed
+interruption timing is governed by `speaking_interrupt_min_duration_ms`,
+partial/final STT arrival, and the single false-interruption deadline.
 
 Acoustic analysis is bounded to the most recent 1200 ms. The detector still
 uses the complete VAD and transcript durations, but long utterances do not make
@@ -605,7 +607,7 @@ uv run python scripts/benchmark_interruptions.py
 ```
 
 The command exits non-zero if false-positive reduction, true-interruption
-recall, confirmation latency, category coverage, duck latency, or ordinary STT
+recall, confirmation latency, category coverage, or ordinary STT
 cadence violates the checked acceptance thresholds.
 
 ### 2. Rejected candidate / false positive
@@ -736,14 +738,16 @@ States:
 - `listening`: user is speaking or Vox is waiting for possible continuation.
 - `thinking`: user turn ended; client/agent should produce assistant text.
 - `speaking`: TTS audio is being emitted.
-- `paused`: user speech started during assistant speech; Vox is checking whether this is a real interruption.
+- `paused`: legacy state retained for wire compatibility; the default detector
+  no longer enters it for an unconfirmed interruption candidate.
 - `interrupted`: barge-in confirmed; assistant speech was cancelled.
 
 Client behavior:
 
 - On `thinking`: start or continue LLM generation and send response text to Vox.
 - On `speaking`: show assistant-speaking UI.
-- On `paused`: do not clear playback locally; Vox may resume or clear soon.
+- On legacy `paused`: do not clear playback locally; wait for authoritative
+  clear/cancel events.
 - On `interrupted`: treat the assistant response as interrupted and prepare for a new user turn.
 
 ### `response.created`
@@ -813,7 +817,7 @@ Payload includes:
 - optional `partial_transcript`
 - `reason`: the evidence path that confirmed the candidate, such as
   `stable_partial`, `supported_final_transcript`,
-  `supported_single_word_final`, or `acoustic_speech`
+  or `supported_single_word_final`
 
 Client behavior:
 
@@ -831,11 +835,11 @@ Payload includes:
 - `response_id`
 - `vad_active_ms`
 - optional `partial_transcript`
-- `reason`: why the candidate was rejected, such as `output_echo_timeout`,
+- `reason`: why the candidate was rejected, such as `no_transcript_timeout`,
   `self_echo_transcript`, `no_transcript`, `empty_final`,
   `isolated_low_eou_final`, `isolated_final_without_support`,
-  `final_transcript_without_support`, `insufficient_final_evidence`,
-  `insufficient_acoustic_evidence`, or `classifier_error`
+  `final_transcript_without_support`, `insufficient_final_evidence`, or
+  `classifier_error`
 
 Client behavior:
 
@@ -933,7 +937,7 @@ Use these client-side states:
 - `user_speaking`
 - `agent_thinking`
 - `agent_speaking`
-- `agent_paused_for_possible_barge_in`
+- `agent_paused_for_possible_barge_in` (legacy Vox servers)
 - `interrupted`
 - `error`
 
@@ -942,14 +946,14 @@ Recommended transitions:
 | Incoming event | Client action |
 | --- | --- |
 | `session.created` | Move to `ready`; begin sending audio. |
-| `input_audio_buffer.speech_started` | Move to `user_speaking` unless assistant is speaking; if assistant is speaking, wait for `paused`, `audio.clear`, or resume. |
+| `input_audio_buffer.speech_started` | Move to `user_speaking` unless assistant is speaking; if assistant is speaking, keep playback running until `audio.clear`. |
 | `turn.state_changed: listening` | Show user/listening state. |
 | `turn.eou.predicted` | Record semantic EOU decision for observability. |
 | `turn.state_changed: thinking` | Start LLM generation; send `response.start`, `response.delta`, `response.commit`. |
 | `response.created` | Create local response record. |
 | `response.audio.delta` | Enqueue assistant audio. |
 | `turn.state_changed: speaking` | Move to `agent_speaking`. |
-| `turn.state_changed: paused` | Move to `agent_paused_for_possible_barge_in`; keep current audio handling until further instruction. |
+| `turn.state_changed: paused` | Legacy server only: move to `agent_paused_for_possible_barge_in`; keep current audio handling until further instruction. |
 | `interruption.detected` | Stop upstream generation for the active response and wait for clear/cancel lifecycle events. |
 | `interruption.false_positive` | Resume normal assistant playback state. |
 | `response.audio.clear` | Stop playback and drop queued assistant audio immediately. |

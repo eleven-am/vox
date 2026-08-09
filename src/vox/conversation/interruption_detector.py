@@ -19,19 +19,10 @@ from vox.conversation.types import TurnPolicy
 from vox.streaming.types import StreamTranscript
 
 
-def candidate_timer_arming_ms(
-    *,
-    confirm_window_ms: int,
-    false_interruption_timeout_ms: int,
-    echo_exposed: bool,
-    evidence_distrust_remaining_ms: int,
-) -> int:
-    timeout_ms = max(1, int(false_interruption_timeout_ms))
-    if echo_exposed:
-        return timeout_ms
-    confirm_ms = max(1, int(confirm_window_ms))
-    distrust_ms = max(0, int(evidence_distrust_remaining_ms))
-    return min(max(confirm_ms, distrust_ms + confirm_ms), timeout_ms)
+def candidate_evidence_deadline_ms(*, false_interruption_timeout_ms: int) -> int:
+    # A candidate owns one onset-based evidence lease. Transcript evidence may
+    # confirm it early, but raw acoustics never shorten or slide the deadline.
+    return max(1, int(false_interruption_timeout_ms))
 
 
 class InterruptionDecisionAction(StrEnum):
@@ -68,6 +59,7 @@ class InterruptionCandidate:
     partial_revisions: int = 0
     latest_partial_duration_ms: int = 0
     final_transcript: str = ""
+    final_observation_in_flight: bool = False
     status: InterruptionCandidateStatus = InterruptionCandidateStatus.PENDING
     decision_reason: str | None = None
     provisional_rejection_reason: str | None = None
@@ -80,8 +72,6 @@ class InterruptionCandidate:
 @runtime_checkable
 class InterruptDetector(Protocol):
     """Owns one interruption candidate from VAD start through final STT."""
-
-    def confirm_window_ms(self, base_ms: int, last_eou_probability: float | None) -> int: ...
 
     def wants_partials(self) -> bool: ...
 
@@ -156,9 +146,6 @@ class EvidenceBasedInterruptDetector:
         self._classifier = classifier
         self._candidate: InterruptionCandidate | None = None
         self._candidate_sequence = 0
-
-    def confirm_window_ms(self, base_ms: int, last_eou_probability: float | None) -> int:
-        return self._classifier.confirm_window_ms(base_ms, last_eou_probability)
 
     def wants_partials(self) -> bool:
         return bool(self._policy.partial_interrupts)
@@ -283,13 +270,21 @@ class EvidenceBasedInterruptDetector:
         if output_echo and not strong_text:
             return self._decide(candidate, InterruptionDecisionAction.REJECT, "output_echo")
 
-        acoustic_speech = await self._classifier.is_real_interrupt(
-            audio,
-            text,
-            transcript.eou_probability,
-            duration_ms,
-            sample_rate,
-        )
+        candidate.final_observation_in_flight = True
+        try:
+            acoustic_speech = await self._classifier.is_real_interrupt(
+                audio,
+                text,
+                transcript.eou_probability,
+                duration_ms,
+                sample_rate,
+            )
+        except Exception:
+            if not self._candidate_is_current_and_pending(candidate):
+                return self._defer("stale_final_decision", candidate)
+            return self._decide(candidate, InterruptionDecisionAction.REJECT, "classifier_error")
+        finally:
+            candidate.final_observation_in_flight = False
         if not self._candidate_is_current_and_pending(candidate):
             return self._defer("stale_final_decision", candidate)
         supported, reason = self._final_is_supported(
@@ -347,33 +342,20 @@ class EvidenceBasedInterruptDetector:
 
         candidate.assistant_text = assistant_text
         candidate.last_observed_at = now
+        if candidate.final_observation_in_flight:
+            return self._defer("final_in_flight", candidate)
         vad_active_ms = max(candidate.vad_active_ms(now), candidate.latest_partial_duration_ms)
         text = candidate.cumulative_transcript.strip()
         if self.is_self_echo(text, assistant_text):
             return self._decide(candidate, InterruptionDecisionAction.REJECT, "self_echo_transcript")
         if self._strong_transcript(text, vad_active_ms):
             return self._decide(candidate, InterruptionDecisionAction.CONFIRM, "stable_partial")
-        if output_echo:
-            return self._decide(candidate, InterruptionDecisionAction.REJECT, "output_echo_timeout")
-
-        try:
-            acoustic_speech = await self._classifier.is_real_interrupt(
-                audio,
-                text or None,
-                last_eou_probability,
-                vad_active_ms,
-                sample_rate,
-            )
-        except Exception:
-            if not self._candidate_is_current_and_pending(candidate):
-                return self._defer("stale_timeout_decision", candidate)
-            return self._decide(candidate, InterruptionDecisionAction.REJECT, "classifier_error")
-
-        if not self._candidate_is_current_and_pending(candidate):
-            return self._defer("stale_timeout_decision", candidate)
-        if acoustic_speech:
-            return self._decide(candidate, InterruptionDecisionAction.CONFIRM, "acoustic_speech")
-        return self._decide(candidate, InterruptionDecisionAction.REJECT, "insufficient_acoustic_evidence")
+        # Timeout is an evidence deadline, not an acoustic classifier path.
+        # VAD and speech-like audio are not identity-aware, so allowing them to
+        # hard-cancel here turns residual playback and room noise into barge-in.
+        del output_echo, audio, sample_rate, last_eou_probability
+        reason = "no_transcript_timeout" if not text else "insufficient_transcript_evidence"
+        return self._provisionally_reject(candidate, reason)
 
     def current(self) -> InterruptionCandidate | None:
         if self._candidate is None:

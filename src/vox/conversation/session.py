@@ -48,7 +48,7 @@ from vox.conversation.interruption_detector import (
     InterruptionCandidateStatus,
     InterruptionDecision,
     InterruptionDecisionAction,
-    candidate_timer_arming_ms,
+    candidate_evidence_deadline_ms,
 )
 from vox.conversation.profiles import DEFAULT_TURN_PROFILE, resolve_turn_profile
 from vox.conversation.response_lifecycle import (
@@ -831,23 +831,27 @@ class ConversationSession:
                 return
 
             if self._sm.state in interruption_states:
-                self._interrupt_detector.begin(
+                candidate = self._interrupt_detector.begin(
                     utterance_id=stream_event.utterance_id,
                     started_at=time.monotonic(),
                     assistant_text=self._active_assistant_text(),
                 )
+            else:
+                candidate = None
 
-            confirm_ms = self._interrupt_detector.confirm_window_ms(
-                self._config.policy.min_interrupt_duration_ms,
-                self._last_eou_probability,
-            )
+            candidate_deadline_ms = self._interrupt_candidate_deadline_ms()
             await self._event_queue.put(
                 TurnEvent(
                     type=TurnEventType.SPEECH_STARTED,
                     timestamp_ms=stream_event.timestamp_ms,
                     payload={
-                        "confirm_window_ms": self._interrupt_timer_arming_ms(confirm_ms),
-                        "defer_output_clear": self._sm.state == TurnState.SPEAKING,
+                        "candidate_deadline_ms": candidate_deadline_ms,
+                        "candidate_id": candidate.candidate_id if candidate is not None else None,
+                        "candidate_deadline_at": (
+                            candidate.started_at + candidate_deadline_ms / 1000
+                            if candidate is not None
+                            else None
+                        ),
                     },
                 )
             )
@@ -922,6 +926,15 @@ class ConversationSession:
             self._awaiting_final_transcript_started_at = 0.0
 
             candidate = self._interrupt_detector.current()
+            if candidate is None and not stream_event.text.strip():
+                self._transcript_finalizer.discard_turn_audio(stream_event.utterance_id)
+                await self._event_queue.put(
+                    TurnEvent(
+                        type=TurnEventType.RECOVER,
+                        payload={"empty_final": True},
+                    )
+                )
+                return
             if (
                 candidate is None
                 and self._sm.state in {TurnState.SPEAKING, TurnState.PAUSED}
@@ -1280,18 +1293,9 @@ class ConversationSession:
     def _looks_like_current_output_echo(self) -> bool:
         return self._audio_history.looks_like_current_output_echo()
 
-    def _interrupt_timer_arming_ms(self, confirm_ms: int) -> int:
-        now = time.monotonic()
-        distrust_ms = (
-            self._speech_guard.interrupt_evidence_distrust_remaining_ms(now)
-            if self._speech_guard.suppresses_interrupt_evidence(now)
-            else 0
-        )
-        return candidate_timer_arming_ms(
-            confirm_window_ms=confirm_ms,
+    def _interrupt_candidate_deadline_ms(self) -> int:
+        return candidate_evidence_deadline_ms(
             false_interruption_timeout_ms=self._config.policy.false_interruption_timeout_ms,
-            echo_exposed=self._output_playout_started and self._looks_like_current_output_echo(),
-            evidence_distrust_remaining_ms=distrust_ms,
         )
 
     async def _execute(
@@ -1343,7 +1347,12 @@ class ConversationSession:
         elif action.type == TurnActionType.START_TIMER:
             key = action.payload["key"]
             duration_ms = int(action.payload["duration_ms"])
-            await self._start_timer(key, duration_ms)
+            await self._start_timer(
+                key,
+                duration_ms,
+                candidate_id=action.payload.get("candidate_id"),
+                deadline_at=action.payload.get("deadline_at"),
+            )
 
         elif action.type == TurnActionType.CANCEL_TIMER:
             await self._cancel_timer(action.payload["key"])
@@ -1405,8 +1414,43 @@ class ConversationSession:
     def _has_active_timer(self, key: str) -> bool:
         return self._timer_registry.has_active(key)
 
-    async def _start_timer(self, key: str, duration_ms: int) -> None:
-        await self._timer_registry.start(key, duration_ms)
+    async def _start_timer(
+        self,
+        key: str,
+        duration_ms: int,
+        *,
+        candidate_id: int | None = None,
+        deadline_at: float | None = None,
+    ) -> None:
+        if key == TimerKey.CONFIRM_INTERRUPT.value:
+            candidate = self._interrupt_detector.current()
+            current_candidate_id = candidate.candidate_id if candidate is not None else None
+            if candidate_id is not None and candidate_id != current_candidate_id:
+                return
+            if (
+                current_candidate_id is not None
+                and current_candidate_id == self._interrupt_timer_candidate_id
+                and self._timer_registry.has_active(key)
+            ):
+                return
+            if isinstance(deadline_at, (int, float)):
+                duration_ms = max(1, int((float(deadline_at) - time.monotonic()) * 1000))
+        try:
+            await self._timer_registry.start(key, duration_ms)
+        except Exception:
+            if key == TimerKey.CONFIRM_INTERRUPT.value:
+                candidate = self._interrupt_detector.current()
+                if candidate is not None and (
+                    candidate_id is None or candidate.candidate_id == candidate_id
+                ):
+                    self._interrupt_detector.reset()
+                    self._interrupt_timer_candidate_id = None
+                    await self._emit_interruption_false_positive(
+                        vad_active_ms=candidate.vad_active_ms(time.monotonic()),
+                        partial_transcript=candidate.cumulative_transcript or None,
+                        reason="candidate_timer_error",
+                    )
+            raise
         if key == TimerKey.CONFIRM_INTERRUPT.value:
             candidate = self._interrupt_detector.current()
             self._interrupt_timer_candidate_id = candidate.candidate_id if candidate is not None else None
@@ -1584,13 +1628,6 @@ class ConversationSession:
         if decision.action is InterruptionDecisionAction.DEFER:
             return
         if decision.action is InterruptionDecisionAction.PROVISIONAL_REJECT:
-            if resume_on_reject:
-                await self._event_queue.put(
-                    TurnEvent(
-                        type=TurnEventType.SPEECH_STOPPED,
-                        payload={"reason": decision.reason},
-                    )
-                )
             return
 
         await self._cancel_timer(TimerKey.CONFIRM_INTERRUPT.value)

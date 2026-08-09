@@ -373,6 +373,8 @@ class StreamingTranscriptionSession(StreamingOperationErrorReporter):
             self._session.stop_speech()
             await self._events.put(SpeechStoppedEvent(timestamp_ms=event.timestamp_ms))
         elif isinstance(event, StreamTranscript):
+            if not event.text or not event.text.strip():
+                return
             language = self._session_config.language if self._session_config else "en"
             enrich_transcript(event, language)
             await self._events.put(TranscriptEvent(transcript=event))

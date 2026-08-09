@@ -14,7 +14,7 @@ from vox.core.adapter import STTAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, TranscribeResult, TranscriptSegment
 from vox.speech_context.types import SpeechContext
 from vox.streaming.pipeline import StreamPipeline
-from vox.streaming.types import TARGET_SAMPLE_RATE, SpeechStopped, StreamSessionConfig
+from vox.streaming.types import TARGET_SAMPLE_RATE, SpeechStopped, StreamSessionConfig, StreamTranscript
 from vox.streaming.vad import SpeechSegment
 
 
@@ -165,10 +165,15 @@ async def test_transcribe_segment_keeps_wrong_adapter_type_as_empty_transcript_a
             audio=np.full(int(0.8 * TARGET_SAMPLE_RATE), 0.25, dtype=np.float32),
             start_ms=0,
             end_ms=800,
+            utterance_id=7,
         )
     )
 
     assert transcript.text == ""
+    assert transcript.start_ms == 0
+    assert transcript.end_ms == 800
+    assert transcript.audio_duration_ms == 800
+    assert transcript.utterance_id == 7
     assert scheduler.closed
 
     await pipeline.shutdown()
@@ -318,13 +323,21 @@ async def test_realtime_pipeline_preserves_vad_audio_when_stt_is_empty():
 
     events = await anext(_collect_pipeline_events(pipeline, audio))
 
-    assert len(events) == 1
+    assert len(events) == 2
     stopped = events[0]
     assert isinstance(stopped, SpeechStopped)
     assert stopped.start_ms == 100
     assert stopped.end_ms == 300
     assert stopped.utterance_id == 4
     assert np.array_equal(stopped.audio, audio)
+    final = events[1]
+    assert isinstance(final, StreamTranscript)
+    assert final.text == ""
+    assert final.is_partial is False
+    assert final.start_ms == 100
+    assert final.end_ms == 300
+    assert final.utterance_id == 4
+    assert final._speech_context_task is None
     await pipeline.shutdown()
 
 

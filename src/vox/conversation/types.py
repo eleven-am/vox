@@ -128,8 +128,8 @@ def act(type_: TurnActionType, **payload: Any) -> TurnAction:
     return TurnAction(type=type_, payload=payload)
 
 
-def start_timer(key: TimerKey, duration_ms: int) -> TurnAction:
-    return act(TurnActionType.START_TIMER, key=key.value, duration_ms=duration_ms)
+def start_timer(key: TimerKey, duration_ms: int, **payload: Any) -> TurnAction:
+    return act(TurnActionType.START_TIMER, key=key.value, duration_ms=duration_ms, **payload)
 
 
 def cancel_timer(key: TimerKey) -> TurnAction:

@@ -610,7 +610,7 @@ class TestStartRejectedDuringUserSpeech:
             "response.done",
         ]
 
-    def test_retry_succeeds_after_acoustic_false_positive_before_vad_stops(self, transport_factory):
+    def test_retry_waits_for_terminal_no_transcript_rejection(self, transport_factory):
         transport = transport_factory(FakeScheduler(ScriptedTTSAdapter(chunks=3, inter_chunk_delay=0.005)))
         transport.send("session.update", _session_payload(min_interrupt_duration_ms=5_000))
         transport.expect(_is("session.created"))
@@ -630,9 +630,30 @@ class TestStartRejectedDuringUserSpeech:
         )
 
         transport.run_on_session_loop(transport.session._evaluate_interrupt_candidate())
-        false_positive = transport.expect(_is("interruption.false_positive"))
-        assert false_positive.get("reason") == "insufficient_acoustic_evidence"
+        candidate = transport.session._interrupt_detector.current()
+        assert candidate is not None
+        assert candidate.provisional_rejection_reason == "no_transcript_timeout"
         assert transport.session._input_speech_active is True
+
+        transport.send("response.start", {"generation_id": "gen-still-speaking"})
+        transport.expect(
+            _is(
+                "error",
+                code="response_rejected_user_speech",
+                generation_id="gen-still-speaking",
+            )
+        )
+
+        transport.run_on_session_loop(
+            _end_user_speech_without_transcript(
+                transport.session,
+                utterance_id=8,
+                timestamp_ms=3_300,
+            )
+        )
+        false_positive = transport.expect(_is("interruption.false_positive"))
+        assert false_positive.get("reason") == "no_transcript"
+        assert transport.session._input_speech_active is False
 
         transport.send("response.start", {"generation_id": "gen-retry"})
         transport.expect(_is("response.created", generation_id="gen-retry"))

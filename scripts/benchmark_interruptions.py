@@ -15,7 +15,7 @@ from vox.conversation.interrupt import HeuristicInterruptClassifier, looks_like_
 from vox.conversation.interruption_detector import (
     EvidenceBasedInterruptDetector,
     InterruptionDecisionAction,
-    candidate_timer_arming_ms,
+    candidate_evidence_deadline_ms,
 )
 from vox.conversation.types import TurnPolicy
 from vox.streaming.partials import PARTIAL_OVERLAP_MS
@@ -30,7 +30,6 @@ BENCHMARK_POLICY = TurnPolicy(
     aec_warmup_ms=900,
 )
 _WINDOW_CLASSIFIER = HeuristicInterruptClassifier()
-BASELINE_DUCK_SIGNAL_OFFSET_MS = 0
 BASELINE_PARTIAL_WINDOW_MS = 1500
 BASELINE_PARTIAL_STRIDE_MS = 700
 BASELINE_PARTIAL_OVERLAP_MS = 300
@@ -152,17 +151,17 @@ def benchmark_cases() -> tuple[BenchmarkCase, ...]:
             audio_profile="hesitant_voice",
         ),
         BenchmarkCase(
-            "sustained_voice_without_partial",
-            ("natural_multiword", "tts_playback"),
-            True,
+            "sustained_voice_without_transcript",
+            ("tts_playback",),
+            False,
             "timeout",
             duration_ms=420,
             eou_probability=0.8,
         ),
         BenchmarkCase(
-            "warmup_acoustic_barge_in",
+            "warmup_acoustic_without_transcript",
             ("aec_warmup", "tts_playback"),
-            True,
+            False,
             "timeout",
             duration_ms=1200,
             eou_probability=0.9,
@@ -424,11 +423,8 @@ def _confirm_window_ms(case: BenchmarkCase) -> int:
 
 
 def _new_timer_arming_ms(case: BenchmarkCase) -> int:
-    return candidate_timer_arming_ms(
-        confirm_window_ms=_confirm_window_ms(case),
+    return candidate_evidence_deadline_ms(
         false_interruption_timeout_ms=BENCHMARK_POLICY.false_interruption_timeout_ms,
-        echo_exposed=case.output_echo,
-        evidence_distrust_remaining_ms=BENCHMARK_POLICY.aec_warmup_ms if case.aec_warmup else 0,
     )
 
 
@@ -658,24 +654,22 @@ async def run_benchmark() -> dict[str, object]:
         BASELINE_PARTIAL_STRIDE_MS,
         BASELINE_PARTIAL_OVERLAP_MS,
     )
-    current_duck_signal_offset_ms = 0
-    new_latency_by_name = {case.name: latency for case, latency in zip(cases, new_latencies, strict=True)}
     new_confirmed_by_name = {case.name: predicted for case, predicted in zip(cases, new_predictions, strict=True)}
-    warmup_case = next(case for case in cases if case.name == "warmup_acoustic_barge_in")
-    warmup_bound_ms = float(_new_timer_arming_ms(warmup_case))
-    evidence_timeout_ms = float(BENCHMARK_POLICY.false_interruption_timeout_ms)
+    new_reason_by_name = {
+        case.name: result["current_reason"] for case, result in zip(cases, case_results, strict=True)
+    }
     acceptance = {
         "required_categories_present": not missing_categories,
         "false_positive_reduction_at_least_50_percent": false_positive_reduction >= 0.5,
         "recall_regression_at_most_1_point": recall_regression <= 0.01,
         "median_latency_regression_at_most_50_ms": median_delta <= 50,
         "p95_latency_regression_at_most_100_ms": p95_delta <= 100,
-        "duck_latency_unchanged": (current_duck_signal_offset_ms <= BASELINE_DUCK_SIGNAL_OFFSET_MS),
         "ordinary_stt_cadence_unchanged": current_stt_cadence == baseline_stt_cadence,
-        "warmup_barge_in_confirms_at_arming_bound_not_timeout": (
-            new_confirmed_by_name["warmup_acoustic_barge_in"]
-            and new_latency_by_name["warmup_acoustic_barge_in"] == warmup_bound_ms
-            and warmup_bound_ms < evidence_timeout_ms
+        "acoustic_only_never_confirms_without_transcript": (
+            not new_confirmed_by_name["sustained_voice_without_transcript"]
+            and not new_confirmed_by_name["warmup_acoustic_without_transcript"]
+            and new_reason_by_name["sustained_voice_without_transcript"] == "no_transcript_timeout"
+            and new_reason_by_name["warmup_acoustic_without_transcript"] == "no_transcript_timeout"
         ),
         "correlated_echo_late_transcript_confirms": (
             new_confirmed_by_name["correlated_echo_with_late_transcript"]
@@ -706,8 +700,6 @@ async def run_benchmark() -> dict[str, object]:
             "paired_current_median_ms": paired_current_median,
             "paired_baseline_p95_ms": paired_baseline_p95,
             "paired_current_p95_ms": paired_current_p95,
-            "baseline_duck_signal_offset_ms": BASELINE_DUCK_SIGNAL_OFFSET_MS,
-            "current_duck_signal_offset_ms": current_duck_signal_offset_ms,
             "baseline_stt_cadence_ms": baseline_stt_cadence,
             "current_stt_cadence_ms": current_stt_cadence,
         },

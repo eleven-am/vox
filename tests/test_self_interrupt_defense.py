@@ -156,7 +156,7 @@ class TestAECWarmupCapture:
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_resume_arms_resume_stability_without_rearming_start_warmup(self):
+    async def test_candidate_does_not_arm_resume_stability_or_restart_warmup(self):
         session, _, _ = _build(aec_warmup_ms=200, speaking_interrupt_min_duration_ms=80)
         await session.start()
 
@@ -172,13 +172,14 @@ class TestAECWarmupCapture:
 
         await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
         await asyncio.sleep(0.01)
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
         await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STOPPED))
         await asyncio.sleep(0.01)
 
         assert session.state == TurnState.SPEAKING
         assert session._speech_guard.contribution_until(TTS_START_WARMUP) == warmup_until
-        assert session._speech_guard.suppresses_interrupt_evidence(time.monotonic())
+        assert session._speech_guard.contribution_until(RESUME_STABILITY) == 0.0
+        assert not session._speech_guard.suppresses_interrupt_evidence(time.monotonic())
 
         await session.close()
 
@@ -312,7 +313,7 @@ class TestWarmupArmingAlignedToPlayout:
 
 class TestWarmupBargeInArming:
     @pytest.mark.asyncio
-    async def test_warmup_barge_in_pauses_and_arms_timer_just_past_distrust_window(self):
+    async def test_warmup_candidate_keeps_playing_and_arms_one_evidence_deadline(self):
         session, _, _ = _build(aec_warmup_ms=250)
         await session.start()
 
@@ -335,17 +336,16 @@ class TestWarmupBargeInArming:
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
         await asyncio.sleep(0.03)
 
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
         durations = [duration for key, duration in armed if key == TimerKey.CONFIRM_INTERRUPT.value]
         assert len(durations) == 1
-        expected = int((warmup_until - before) * 1000) + 180
-        assert 180 < durations[0] < session._config.policy.false_interruption_timeout_ms
-        assert abs(durations[0] - expected) <= 75
+        assert warmup_until > before
+        assert abs(durations[0] - session._config.policy.false_interruption_timeout_ms) <= 2
 
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_resume_stability_window_keeps_production_magnitude(self):
+    async def test_candidate_does_not_create_resume_stability_window(self):
         assert RESUME_STABILITY_MS == 150
 
         session, _, _ = _build(aec_warmup_ms=750)
@@ -359,21 +359,20 @@ class TestWarmupBargeInArming:
 
         await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
         await asyncio.sleep(0.01)
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
         await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STOPPED))
         await asyncio.sleep(0.02)
         assert session.state == TurnState.SPEAKING
 
-        remaining_s = session._speech_guard.contribution_until(RESUME_STABILITY) - time.monotonic()
-        assert 0.05 < remaining_s <= RESUME_STABILITY_MS / 1000
+        assert session._speech_guard.contribution_until(RESUME_STABILITY) == 0.0
 
         await session.close()
 
 
-class TestTerminalTimeoutResolution:
+class TestProvisionalTimeoutResolution:
     @pytest.mark.asyncio
-    async def test_candidate_with_no_events_after_timer_reaches_terminal_decision(self):
-        session, coll, _ = _build(aec_warmup_ms=0)
+    async def test_candidate_with_no_events_after_timer_remains_open_for_late_stt(self):
+        session, coll, _ = _build(aec_warmup_ms=0, false_interruption_timeout_ms=150)
         await session.start()
 
         await session.submit_response_text("hello")
@@ -385,15 +384,16 @@ class TestTerminalTimeoutResolution:
 
         candidate = session._interrupt_detector.current()
         assert candidate is not None
-        assert candidate.status is not InterruptionCandidateStatus.PENDING
+        assert candidate.status is InterruptionCandidateStatus.PENDING
+        assert candidate.provisional_rejection_reason == "no_transcript_timeout"
         assert not session._timer_registry.has_active(TimerKey.CONFIRM_INTERRUPT.value)
         decided = coll.by_type("interruption.detected") + coll.by_type("interruption.false_positive")
-        assert decided
+        assert decided == []
 
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_suppressed_candidate_timer_still_resolves_terminally(self):
+    async def test_suppressed_candidate_timeout_remains_open_for_late_stt(self):
         session, _, _ = _build(aec_warmup_ms=500, false_interruption_timeout_ms=150)
         await session.start()
 
@@ -403,14 +403,15 @@ class TestTerminalTimeoutResolution:
 
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
         await asyncio.sleep(0.05)
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
         assert session._timer_registry.has_active(TimerKey.CONFIRM_INTERRUPT.value)
 
         await asyncio.sleep(0.3)
 
         candidate = session._interrupt_detector.current()
         assert candidate is not None
-        assert candidate.status is not InterruptionCandidateStatus.PENDING
+        assert candidate.status is InterruptionCandidateStatus.PENDING
+        assert candidate.provisional_rejection_reason == "no_transcript_timeout"
         assert not session._timer_registry.has_active(TimerKey.CONFIRM_INTERRUPT.value)
 
         await session.close()
@@ -639,7 +640,7 @@ class TestUninterruptibleResponse:
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
         await asyncio.sleep(0.05)
 
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
         assert not coll.by_type("response.audio.clear")
 
         await session._forward_stream_event(StreamTranscript(

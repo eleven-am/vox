@@ -317,7 +317,7 @@ class TestActionFailureRecovery:
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_pause_failure_during_barge_in_recovers_to_idle(self):
+    async def test_candidate_timer_failure_does_not_kill_active_response(self):
         tts = ScriptedTTSAdapter(chunks=40, inter_chunk_delay=0.01)
         session, collector, _ = _build_session(adapter=tts)
         await session.start()
@@ -327,25 +327,25 @@ class TestActionFailureRecovery:
         await session.submit_response_text("long reply.")
         assert await _wait_for(lambda: session.state == TurnState.SPEAKING)
 
-        original_pause = session._audio_output.pause
+        original_start = session._timer_registry.start
 
-        def broken_pause() -> None:
-            raise RuntimeError("pause exploded")
+        async def broken_start(_key: str, _duration_ms: int) -> None:
+            raise RuntimeError("timer exploded")
 
-        session._audio_output.pause = broken_pause  # type: ignore[method-assign]
-        await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
-        assert await _wait_for(lambda: session.state == TurnState.IDLE)
+        session._timer_registry.start = broken_start  # type: ignore[method-assign]
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
+        await asyncio.sleep(0.02)
 
-        assert not session.response_active
-        errors = collector.by_type(WIRE_ERROR)
-        assert any("pause_output" in event["message"] for event in errors)
-        assert collector.by_type(WIRE_AUDIO_CLEAR)
-        assert collector.by_type(WIRE_RESPONSE_CANCELLED)
+        assert session.state == TurnState.SPEAKING
+        assert session.response_active
+        assert not collector.by_type(WIRE_ERROR)
+        assert not collector.by_type(WIRE_AUDIO_CLEAR)
+        assert not collector.by_type(WIRE_RESPONSE_CANCELLED)
+        rejected = collector.by_type("interruption.false_positive")
+        assert rejected and rejected[-1]["reason"] == "candidate_timer_error"
+        assert session._interrupt_detector.current() is None
 
-        session._audio_output.pause = original_pause  # type: ignore[method-assign]
-        await session._event_queue.put(TurnEvent(type=TurnEventType.USER_TRANSCRIPT_FINAL))
-        await _drain_events(session)
-        await session.submit_response_text("next turn works.")
+        session._timer_registry.start = original_start  # type: ignore[method-assign]
         assert await _wait_for(lambda: bool(collector.by_type(WIRE_RESPONSE_DONE)))
         assert session.state == TurnState.IDLE
 

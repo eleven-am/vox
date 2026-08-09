@@ -1,4 +1,4 @@
-"""Integration tests for v1 extras: resume-stability suppression + EOU-modulated confirm window."""
+"""Integration tests for pending-candidate playback and transcript-authoritative barge-in."""
 
 from __future__ import annotations
 
@@ -113,9 +113,9 @@ def _build(**policy_kwargs):
     return session, coll, tts
 
 
-class TestResumeStabilitySuppression:
+class TestPendingCandidatePlayback:
     @pytest.mark.asyncio
-    async def test_second_speech_during_resume_window_pauses_with_deferred_timer(self):
+    async def test_repeated_speech_keeps_playing_until_transcript_confirms(self):
         session, coll, tts = _build(min_interrupt_duration_ms=80)
         await session.start()
 
@@ -128,7 +128,7 @@ class TestResumeStabilitySuppression:
 
         await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
         await asyncio.sleep(0.01)
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
 
 
         await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STOPPED))
@@ -141,14 +141,21 @@ class TestResumeStabilitySuppression:
         await session._forward_stream_event(SpeechStarted(timestamp_ms=50, utterance_id=1))
         await asyncio.sleep(0.01)
 
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
         assert tts.cancelled is False
 
         await asyncio.sleep(0.09)
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
         assert tts.cancelled is False
 
-        await asyncio.sleep(0.25)
+        from vox.streaming.types import StreamTranscript
+        await session._forward_stream_event(StreamTranscript(
+            text="please stop",
+            is_partial=True,
+            audio_duration_ms=500,
+            utterance_id=1,
+        ))
+        await asyncio.sleep(0.05)
         assert session.state == TurnState.INTERRUPTED
         assert tts.cancelled is True
 
@@ -178,7 +185,7 @@ class TestResumeStabilitySuppression:
         from vox.streaming.types import SpeechStarted
         await session._forward_stream_event(SpeechStarted(timestamp_ms=100, utterance_id=1))
         await asyncio.sleep(0.01)
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
 
         await session.close()
 
@@ -213,10 +220,9 @@ class TestResumeStabilitySuppression:
         await session.close()
 
 
-class TestEouModulatedConfirmWindow:
+class TestTranscriptAuthoritativeDeadline:
     @pytest.mark.asyncio
-    async def test_high_eou_shortens_confirm_window(self):
-        """When last turn had high EOU, barge-in should confirm faster."""
+    async def test_high_prior_eou_cannot_confirm_without_transcript(self):
         session, coll, tts = _build(min_interrupt_duration_ms=300)
         await session.start()
 
@@ -239,18 +245,18 @@ class TestEouModulatedConfirmWindow:
         from vox.streaming.types import SpeechStarted
         await session._forward_stream_event(SpeechStarted(timestamp_ms=100, utterance_id=1))
         await asyncio.sleep(0.01)
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
 
 
 
         await asyncio.sleep(0.2)
-        assert session.state == TurnState.INTERRUPTED
+        assert session.state == TurnState.SPEAKING
+        assert "response.cancelled" not in coll.types()
 
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_low_eou_lengthens_confirm_window(self):
-        """When last turn had low EOU, skepticism wins — longer confirm window."""
+    async def test_low_prior_eou_cannot_confirm_without_transcript(self):
         session, coll, tts = _build(min_interrupt_duration_ms=100)
         await session.start()
 
@@ -268,21 +274,21 @@ class TestEouModulatedConfirmWindow:
         from vox.streaming.types import SpeechStarted
         await session._forward_stream_event(SpeechStarted(timestamp_ms=100, utterance_id=1))
         await asyncio.sleep(0.01)
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
 
 
         await asyncio.sleep(0.1)
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
 
 
         await asyncio.sleep(0.1)
-        assert session.state == TurnState.INTERRUPTED
+        assert session.state == TurnState.SPEAKING
+        assert "response.cancelled" not in coll.types()
 
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_no_prior_turn_falls_back_to_policy_default(self):
-        """If no user turn has been committed yet, use policy.min_interrupt_duration_ms."""
+    async def test_no_prior_turn_cannot_confirm_without_transcript(self):
         session, coll, tts = _build(min_interrupt_duration_ms=120)
         await session.start()
 
@@ -294,17 +300,17 @@ class TestEouModulatedConfirmWindow:
         from vox.streaming.types import SpeechStarted
         await session._forward_stream_event(SpeechStarted(timestamp_ms=100, utterance_id=1))
         await asyncio.sleep(0.01)
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
 
 
         await asyncio.sleep(0.15)
-        assert session.state == TurnState.INTERRUPTED
+        assert session.state == TurnState.SPEAKING
+        assert "response.cancelled" not in coll.types()
 
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_custom_classifier_controls_window(self):
-        """A user-supplied classifier overrides the default heuristic."""
+    async def test_custom_acoustic_classifier_cannot_bypass_transcript_requirement(self):
 
         class StrictClassifier:
             def confirm_window_ms(self, base_ms, last_eou_probability):
@@ -332,10 +338,11 @@ class TestEouModulatedConfirmWindow:
         from vox.streaming.types import SpeechStarted
         await session._forward_stream_event(SpeechStarted(timestamp_ms=100, utterance_id=1))
         await asyncio.sleep(0.01)
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
 
 
         await asyncio.sleep(0.1)
-        assert session.state == TurnState.PAUSED
+        assert session.state == TurnState.SPEAKING
+        assert "response.cancelled" not in coll.types()
 
         await session.close()

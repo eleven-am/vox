@@ -24,6 +24,16 @@ _TransitionFn = Callable[
 logger = logging.getLogger(__name__)
 
 
+def _candidate_deadline_timer(m: TurnStateMachine, e: TurnEvent) -> TurnAction:
+    deadline_ms = int(e.payload.get("candidate_deadline_ms", m.policy.false_interruption_timeout_ms))
+    timer_payload = {}
+    if e.payload.get("candidate_id") is not None:
+        timer_payload["candidate_id"] = e.payload["candidate_id"]
+    if e.payload.get("candidate_deadline_at") is not None:
+        timer_payload["deadline_at"] = e.payload["candidate_deadline_at"]
+    return start_timer(TimerKey.CONFIRM_INTERRUPT, deadline_ms, **timer_payload)
+
+
 class TurnStateMachine:
     """Pure turn-taking state machine. No IO, no asyncio.
 
@@ -83,29 +93,18 @@ def _on_speech_started_listening(m: TurnStateMachine, e: TurnEvent) -> tuple[Tur
 def _on_speech_started_thinking(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
     if not m.policy.allow_interrupt_while_speaking:
         return None, []
-    confirm_ms = int(e.payload.get("confirm_window_ms", m.policy.min_interrupt_duration_ms))
-    return None, [start_timer(TimerKey.CONFIRM_INTERRUPT, confirm_ms)]
+    return None, [_candidate_deadline_timer(m, e)]
 
 
 def _on_speech_started_speaking(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
     if not m.policy.allow_interrupt_while_speaking:
         return None, []
 
-    confirm_ms = int(e.payload.get("confirm_window_ms", m.policy.min_interrupt_duration_ms))
-    if bool(e.payload.get("defer_output_clear")):
-        return TurnState.PAUSED, [
-            act(TurnActionType.PAUSE_OUTPUT, clear=False),
-            start_timer(TimerKey.CONFIRM_INTERRUPT, confirm_ms),
-        ]
-    return TurnState.PAUSED, [
-        act(TurnActionType.PAUSE_OUTPUT),
-        start_timer(TimerKey.CONFIRM_INTERRUPT, confirm_ms),
-    ]
+    return None, [_candidate_deadline_timer(m, e)]
 
 
 def _on_speech_started_paused(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
-    confirm_ms = int(e.payload.get("confirm_window_ms", m.policy.min_interrupt_duration_ms))
-    return None, [start_timer(TimerKey.CONFIRM_INTERRUPT, confirm_ms)]
+    return None, [_candidate_deadline_timer(m, e)]
 
 
 def _on_speech_started_interrupted(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
@@ -119,6 +118,8 @@ def _on_speech_stopped_listening(m: TurnStateMachine, e: TurnEvent) -> tuple[Tur
 
 
 def _on_speech_stopped_speaking(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
+    if bool(e.payload.get("await_final_transcript")):
+        return None, []
     return None, [cancel_timer(TimerKey.CONFIRM_INTERRUPT)]
 
 
@@ -271,7 +272,15 @@ def _on_client_cancel_interrupted(m: TurnStateMachine, e: TurnEvent) -> tuple[Tu
 
 
 def _on_recover(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
-    return TurnState.IDLE, []
+    if bool(e.payload.get("empty_final")) and m.state not in {
+        TurnState.IDLE,
+        TurnState.LISTENING,
+    }:
+        return None, []
+    return TurnState.IDLE, [
+        cancel_timer(TimerKey.ENDPOINTING),
+        cancel_timer(TimerKey.CONFIRM_INTERRUPT),
+    ]
 
 
 _TRANSITIONS: dict[tuple[TurnState, TurnEventType], _TransitionFn] = {

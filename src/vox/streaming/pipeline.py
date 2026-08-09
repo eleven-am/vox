@@ -255,6 +255,7 @@ class StreamPipeline:
                 transcript = await self._transcribe_segment(segment)
                 if not transcript.text or not transcript.text.strip():
                     await cancel_speech_context_task(transcript._speech_context_task)
+                    yield replace(transcript, _speech_context_task=None)
                     return
                 self._append_pending_user_audio(segment.audio)
                 try:
@@ -273,12 +274,21 @@ class StreamPipeline:
                 yield transcript
 
     async def _transcribe_segment(self, segment: SpeechSegment) -> StreamTranscript:
+        def empty_transcript(model: str = "") -> StreamTranscript:
+            return StreamTranscript(
+                start_ms=segment.start_ms,
+                end_ms=segment.end_ms,
+                audio_duration_ms=max(0, segment.end_ms - segment.start_ms),
+                model=model,
+                utterance_id=segment.utterance_id,
+            )
+
         if not self._session_config:
-            return StreamTranscript()
+            return empty_transcript()
 
         model = self._session_config.model
         if not model:
-            return StreamTranscript()
+            return empty_transcript()
 
         language = self._session_config.language
         word_timestamps = self._session_config.include_word_timestamps
@@ -308,7 +318,7 @@ class StreamPipeline:
             raise
         except AdapterTypeMismatchError:
             await cancel_speech_context_task(context_task)
-            return StreamTranscript()
+            return empty_transcript(model)
         except Exception:
             await cancel_speech_context_task(context_task)
             raise

@@ -139,6 +139,24 @@ async def test_configure_with_explicit_model_emits_session_ready():
 
 
 @pytest.mark.asyncio
+async def test_public_streaming_session_suppresses_internal_empty_final() -> None:
+    session = StreamingTranscriptionSession(
+        scheduler=FakeScheduler(FakeSTTAdapter()),
+        registry=_make_registry(),
+        store=_make_store(),
+    )
+    await session.configure(StreamingTranscriptionConfig(model="whisper:large-v3"))
+    await session._dispatch_stream_event(
+        StreamTranscript(text="", utterance_id=7, start_ms=100, end_ms=300)
+    )
+    await session.end_of_stream()
+    events = await _collect_events(session)
+
+    assert not any(isinstance(event, TranscriptEvent) for event in events)
+    await session.close()
+
+
+@pytest.mark.asyncio
 async def test_configure_falls_back_to_default_model():
     session = StreamingTranscriptionSession(
         scheduler=FakeScheduler(FakeSTTAdapter()),

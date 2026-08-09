@@ -77,6 +77,25 @@ class TestVADBackends:
         )
         assert ts == []
 
+    def test_frames_to_timestamps_enforces_min_speech_before_padding(self):
+        short = _frames_to_timestamps(
+            [(4000, 4512), (4512, 5024)],
+            total_samples=16_000,
+            min_silence_duration_ms=100,
+            speech_pad_ms=100,
+            min_speech_duration_ms=250,
+        )
+        assert short == []
+
+        sustained = _frames_to_timestamps(
+            [(4000 + (512 * i), 4000 + (512 * (i + 1))) for i in range(8)],
+            total_samples=16_000,
+            min_silence_duration_ms=100,
+            speech_pad_ms=100,
+            min_speech_duration_ms=250,
+        )
+        assert sustained == [{"start": 2400, "end": 9696}]
+
     def test_ten_vad_requires_optional_dependency(self, monkeypatch):
         monkeypatch.setattr("builtins.__import__", _missing_ten_vad_import)
         with pytest.raises(RuntimeError, match="TEN VAD backend requires"):
