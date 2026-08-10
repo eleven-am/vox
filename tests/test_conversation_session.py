@@ -32,6 +32,8 @@ from vox.conversation.session import (
     ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH,
     WIRE_AUDIO_CLEAR,
     WIRE_AUDIO_DELTA,
+    WIRE_AUDIO_RESUME,
+    WIRE_AUDIO_SUSPEND,
     WIRE_ERROR,
     WIRE_INTERRUPTION_DETECTED,
     WIRE_INTERRUPTION_FALSE_POSITIVE,
@@ -1496,7 +1498,7 @@ class TestTTSHappyPath:
 
 class TestBargeIn:
     @pytest.mark.asyncio
-    async def test_empty_stt_from_real_pipeline_cannot_pause_or_cancel_response(self):
+    async def test_empty_stt_from_real_pipeline_suspends_then_resumes_without_cancelling(self):
         from vox.core.adapter import STTAdapter
         from vox.core.types import TranscribeResult
 
@@ -1577,7 +1579,8 @@ class TestBargeIn:
         await session.ingest_audio(pcm, sample_rate=16_000)
         await asyncio.sleep(0.01)
         assert session.state == TurnState.SPEAKING
-        assert session._audio_output.paused is False
+        assert session._audio_output.paused is True
+        assert collector.by_type(WIRE_AUDIO_SUSPEND)
 
         await session.ingest_audio(pcm, sample_rate=16_000)
         await asyncio.sleep(0.02)
@@ -1587,6 +1590,7 @@ class TestBargeIn:
         assert rejected and rejected[-1]["reason"] == "empty_final"
         assert session.state == TurnState.SPEAKING
         assert session._audio_output.paused is False
+        assert collector.by_type(WIRE_AUDIO_RESUME)
         assert not collector.by_type(WIRE_AUDIO_CLEAR)
         assert not collector.by_type(WIRE_RESPONSE_CANCELLED)
         assert tts.cancelled_at_chunk is None
@@ -1658,7 +1662,7 @@ class TestBargeIn:
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_speech_stop_waits_for_final_without_pausing_output(self):
+    async def test_speech_stop_keeps_playout_suspended_until_empty_final_resumes_it(self):
         tts = ScriptedTTSAdapter(chunks=40, inter_chunk_delay=0.02)
         session, collector, _ = _build_session(
             adapter=tts,
@@ -1674,7 +1678,8 @@ class TestBargeIn:
         await asyncio.sleep(0.01)
 
         assert session.state == TurnState.SPEAKING
-        assert session._audio_output.paused is False
+        assert session._audio_output.paused is True
+        assert collector.by_type(WIRE_AUDIO_SUSPEND)
         assert not collector.by_type(WIRE_AUDIO_CLEAR)
 
         await session._forward_stream_event(StreamTranscript(text="", start_ms=1000, end_ms=1250, utterance_id=1))
@@ -1682,7 +1687,9 @@ class TestBargeIn:
         await _drain_events(session)
 
         assert session.state == TurnState.SPEAKING
+        assert session._audio_output.paused is False
         assert collector.by_type(WIRE_INTERRUPTION_FALSE_POSITIVE)[-1]["reason"] == "empty_final"
+        assert collector.by_type(WIRE_AUDIO_RESUME)
         assert not collector.by_type(WIRE_AUDIO_CLEAR)
         await session.close()
 
@@ -1976,7 +1983,7 @@ class TestBargeIn:
         assert session._speech_session is None
 
     @pytest.mark.asyncio
-    async def test_audio_generated_during_candidate_continues_without_buffering(self):
+    async def test_audio_generated_during_candidate_is_buffered_and_resumed_in_order(self):
         tts = ScriptedTTSAdapter(chunks=20, inter_chunk_delay=0.01)
         session, collector, _ = _build_session(
             adapter=tts,
@@ -1992,25 +1999,30 @@ class TestBargeIn:
         chunks_before_candidate = len(collector.by_type(WIRE_AUDIO_DELTA))
         assert chunks_before_candidate >= 1
 
-        await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STARTED))
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
         await asyncio.sleep(0.05)
 
         assert session.state == TurnState.SPEAKING
-        assert session._audio_output.paused is False
+        assert session._audio_output.paused is True
+        assert collector.by_type(WIRE_AUDIO_SUSPEND)
 
         chunks_during_candidate_start = len(collector.by_type(WIRE_AUDIO_DELTA))
 
         await asyncio.sleep(0.05)
         chunks_during_candidate_end = len(collector.by_type(WIRE_AUDIO_DELTA))
-        assert chunks_during_candidate_end > chunks_during_candidate_start
-        assert session.pending_audio_count == 0
+        assert chunks_during_candidate_end == chunks_during_candidate_start
+        assert session.pending_audio_count > 0
 
-        await session._event_queue.put(TurnEvent(type=TurnEventType.SPEECH_STOPPED))
+        await session._forward_stream_event(
+            SpeechStopped(timestamp_ms=1150, expects_transcript=False, utterance_id=1)
+        )
         await asyncio.sleep(0.05)
 
         chunks_after_stop = len(collector.by_type(WIRE_AUDIO_DELTA))
         assert chunks_after_stop > chunks_during_candidate_end
         assert session.pending_audio_count == 0
+        assert session._audio_output.paused is False
+        assert collector.by_type(WIRE_AUDIO_RESUME)
 
         await session.close()
 

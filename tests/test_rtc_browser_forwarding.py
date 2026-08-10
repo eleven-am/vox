@@ -6,6 +6,8 @@ from unittest.mock import MagicMock
 from vox.conversation.session import (
     WIRE_AUDIO_CLEAR,
     WIRE_AUDIO_DELTA,
+    WIRE_AUDIO_RESUME,
+    WIRE_AUDIO_SUSPEND,
     WIRE_STATE_CHANGED,
     WIRE_TRANSCRIPT_DELTA,
 )
@@ -52,6 +54,23 @@ def test_forwards_transcript_delta_and_audio_clear():
     assert channel.send.call_count == 2
     events = [json.loads(call.args[0])["event"] for call in channel.send.call_args_list]
     assert events == [WIRE_TRANSCRIPT_DELTA, WIRE_AUDIO_CLEAR]
+
+
+def test_forwards_candidate_owned_audio_suspend_and_resume():
+    record, channel = _record_with_open_channel()
+
+    forward_wire_event_to_browser(
+        record,
+        {"type": WIRE_AUDIO_SUSPEND, "response_id": "resp_1", "candidate_id": 4},
+    )
+    forward_wire_event_to_browser(
+        record,
+        {"type": WIRE_AUDIO_RESUME, "response_id": "resp_1", "candidate_id": 4},
+    )
+
+    events = [json.loads(call.args[0]) for call in channel.send.call_args_list]
+    assert [event["event"] for event in events] == [WIRE_AUDIO_SUSPEND, WIRE_AUDIO_RESUME]
+    assert [event["payload"]["candidate_id"] for event in events] == [4, 4]
 
 
 def test_audio_delta_never_forwarded():

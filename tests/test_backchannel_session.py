@@ -563,7 +563,7 @@ class TestBackchannelRejection:
         assert len(starts) == 1
         assert 495 <= starts[0] <= 500
         assert session.state == TurnState.SPEAKING
-        assert session._audio_output.paused is False
+        assert session._audio_output.paused is True
         assert not coll.by_type("response.cancelled")
 
         await session.close()
@@ -600,7 +600,7 @@ class TestBackchannelRejection:
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_non_echo_speech_does_not_pause_without_transcript(self):
+    async def test_non_echo_speech_suspends_playout_without_cancelling_response(self):
         session, coll, _ = _build()
         await session.start()
 
@@ -615,7 +615,8 @@ class TestBackchannelRejection:
         await asyncio.sleep(0.02)
 
         assert session.state == TurnState.SPEAKING
-        assert session._audio_output.paused is False
+        assert session._audio_output.paused is True
+        assert coll.by_type("response.audio.suspend")
         assert not coll.by_type("response.audio.clear")
 
         await asyncio.sleep(0.30)
@@ -627,7 +628,7 @@ class TestBackchannelRejection:
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_speech_started_signal_never_pauses_server_output(self):
+    async def test_speech_started_signal_precedes_candidate_playout_suspension(self):
         session, coll, _ = _build()
         observed: list[tuple[TurnState, bool]] = []
         original_emit = session._on_event
@@ -649,7 +650,8 @@ class TestBackchannelRejection:
 
         assert observed == [(TurnState.SPEAKING, False)]
         assert session.state == TurnState.SPEAKING
-        assert session._audio_output.paused is False
+        assert session._audio_output.paused is True
+        assert coll.by_type("response.audio.suspend")
 
         await session.close()
 
@@ -672,6 +674,8 @@ class TestBackchannelRejection:
 
         assert session.state == TurnState.SPEAKING
         assert not coll.by_type("interruption.false_positive")
+        assert session._audio_output.paused is False
+        assert coll.by_type("response.audio.resume")
         assert not coll.by_type("response.audio.clear")
         assert not coll.by_type("response.cancelled")
 
@@ -937,6 +941,7 @@ class TestBackchannelRejection:
                 min_interrupt_duration_ms=300,
                 max_endpointing_delay_ms=500,
                 speaking_interrupt_min_duration_ms=300,
+                false_interruption_timeout_ms=80,
                 aec_warmup_ms=0,
             ),
         )
@@ -954,14 +959,63 @@ class TestBackchannelRejection:
         await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
         await asyncio.sleep(0.05)
         assert session.state == TurnState.SPEAKING
+        assert session._audio_output.paused
+        assert session._audio_output.pause_owner == 1
+        assert coll.by_type("response.audio.suspend")
         assert not coll.by_type("response.audio.clear")
         await asyncio.sleep(0.10)
         assert session.state == TurnState.IDLE
+        assert not session._audio_output.paused
+        assert session._audio_output.pause_owner is None
+        assert session._audio_output.pending_count == 0
+        assert coll.by_type("response.audio.resume")
         assert coll.by_type("response.done")
         assert not coll.by_type("interruption.detected")
         assert not coll.by_type("response.cancelled")
 
         await session.close()
+
+    @pytest.mark.asyncio
+    async def test_session_close_releases_suspended_playout_and_pending_audio(self):
+        tts = LongTTS()
+        coll = Collector()
+        cfg = ConversationConfig(
+            stt_model="x:1",
+            tts_model="y:1",
+            voice="default",
+            language="en",
+            policy=TurnPolicy(
+                min_interrupt_duration_ms=300,
+                speaking_interrupt_min_duration_ms=300,
+                false_interruption_timeout_ms=5_000,
+                aec_warmup_ms=0,
+            ),
+        )
+        session = ConversationSession(scheduler=Scheduler(tts), config=cfg, on_event=coll)
+        await session.start()
+
+        await session.submit_response_text("The assistant keeps speaking until close.")
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if session.state == TurnState.SPEAKING:
+                break
+        assert session.state == TurnState.SPEAKING
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=7))
+        for _ in range(50):
+            await asyncio.sleep(0.01)
+            if session._audio_output.paused and session._audio_output.pending_count:
+                break
+        assert session._audio_output.paused
+        assert session._audio_output.pause_owner is not None
+        assert session._audio_output.pending_count > 0
+
+        await asyncio.wait_for(session.close(), timeout=1.0)
+
+        assert not session._audio_output.paused
+        assert session._audio_output.pause_owner is None
+        assert session._audio_output.pending_count == 0
+        assert session._interrupt_detector.current() is None
 
 
 class TestMhmmAtRealisticWindow:
@@ -1001,6 +1055,8 @@ class TestMhmmAtRealisticWindow:
         assert session.state != TurnState.INTERRUPTED
         assert not coll.by_type("response.cancelled"), "'mhmm' should NOT cancel TTS"
         assert not coll.by_type("interruption.false_positive")
+        assert session._audio_output.paused is False
+        assert coll.by_type("response.audio.resume")
         await session._forward_stream_event(
             SpeechStopped(timestamp_ms=1400, expects_transcript=False, utterance_id=1)
         )

@@ -53,14 +53,15 @@ class SpeechSegment:
 
 
 class VADBackend(Protocol):
-    def get_speech_timestamps(
-        self,
-        audio: NDArray[np.float32],
-        threshold: float = 0.5,
-        min_silence_duration_ms: int = 500,
-        speech_pad_ms: int = 100,
-        min_speech_duration_ms: int = 250,
-    ) -> list[dict[str, int]]: ...
+    """Consumes streamed audio once and carries model state across calls.
+
+    ``process_frames`` returns ``(start_sample, end_sample, probability)`` in
+    absolute stream coordinates, so the same audio yields the same frames however
+    the caller chunks it. Grouping those frames into padded speech timestamps
+    belongs to the processor, not the backend.
+    """
+
+    def process_frames(self, audio: NDArray[np.float32]) -> list[tuple[int, int, float]]: ...
 
 
 def _frames_to_timestamps(
@@ -104,6 +105,11 @@ def _frames_to_timestamps(
 SILERO_ONNX_WINDOW_SAMPLES = 512
 SILERO_ONNX_CONTEXT_SAMPLES = 64
 
+# TEN's binding fixes its speech flag at construction time, so the streaming
+# instance is built once at a neutral threshold and callers threshold the
+# returned probability themselves.
+TEN_VAD_STREAM_THRESHOLD = 0.5
+
 
 class SileroOnnxVAD:
     """Default VAD backend: the Silero model run on onnxruntime (no torch).
@@ -112,12 +118,18 @@ class SileroOnnxVAD:
     preprocessing: 512-sample windows at 16 kHz, each prepended with the
     previous window's last 64 samples of context, carrying the recurrent
     state across windows. The onnxruntime session is a process-wide
-    singleton; each ``get_speech_timestamps`` call starts from fresh
-    context/state.
+    singleton. Batch timestamp calls use fresh state, while streaming frame
+    calls preserve instance-owned context and state.
     """
 
     _session = None
     _lock = threading.Lock()
+
+    def __init__(self) -> None:
+        self._stream_state = np.zeros((2, 1, 128), dtype=np.float32)
+        self._stream_context = np.zeros((1, SILERO_ONNX_CONTEXT_SAMPLES), dtype=np.float32)
+        self._stream_pending = np.empty(0, dtype=np.float32)
+        self._stream_processed_samples = 0
 
     @classmethod
     def _ensure_session(cls):
@@ -143,41 +155,28 @@ class SileroOnnxVAD:
                     )
         return cls._session
 
-    def get_speech_timestamps(
-        self,
-        audio: NDArray[np.float32],
-        threshold: float = 0.5,
-        min_silence_duration_ms: int = 500,
-        speech_pad_ms: int = 100,
-        min_speech_duration_ms: int = 250,
-    ) -> list[dict[str, int]]:
-        if audio.size == 0:
-            return []
+    def process_frames(self, audio: NDArray[np.float32]) -> list[tuple[int, int, float]]:
+        audio = np.ascontiguousarray(audio, dtype=np.float32)
+        if audio.size:
+            self._stream_pending = np.concatenate([self._stream_pending, audio])
 
         session = self._ensure_session()
-        window = SILERO_ONNX_WINDOW_SAMPLES
-        context_size = SILERO_ONNX_CONTEXT_SAMPLES
-        audio = np.ascontiguousarray(audio, dtype=np.float32)
-        state = np.zeros((2, 1, 128), dtype=np.float32)
-        context = np.zeros((1, context_size), dtype=np.float32)
         sr = np.array(TARGET_SAMPLE_RATE, dtype=np.int64)
-
-        speech_frames: list[tuple[int, int]] = []
-        for start in range(0, len(audio) - window + 1, window):
-            chunk = audio[start:start + window][None, :]
-            model_input = np.concatenate([context, chunk], axis=1).astype(np.float32)
-            output, state = session.run(None, {"input": model_input, "state": state, "sr": sr})
-            context = model_input[:, -context_size:]
-            if float(output.reshape(-1)[0]) >= threshold:
-                speech_frames.append((start, start + window))
-
-        return _frames_to_timestamps(
-            speech_frames,
-            total_samples=len(audio),
-            min_silence_duration_ms=min_silence_duration_ms,
-            speech_pad_ms=speech_pad_ms,
-            min_speech_duration_ms=min_speech_duration_ms,
-        )
+        frames: list[tuple[int, int, float]] = []
+        window = SILERO_ONNX_WINDOW_SAMPLES
+        while len(self._stream_pending) >= window:
+            chunk = self._stream_pending[:window][None, :]
+            self._stream_pending = self._stream_pending[window:]
+            model_input = np.concatenate([self._stream_context, chunk], axis=1).astype(np.float32)
+            output, self._stream_state = session.run(
+                None,
+                {"input": model_input, "state": self._stream_state, "sr": sr},
+            )
+            self._stream_context = model_input[:, -SILERO_ONNX_CONTEXT_SAMPLES:]
+            start = self._stream_processed_samples
+            self._stream_processed_samples += window
+            frames.append((start, self._stream_processed_samples, float(output.reshape(-1)[0])))
+        return frames
 
 
 class TenVAD:
@@ -193,6 +192,26 @@ class TenVAD:
     def __init__(self, hop_size: int = 160) -> None:
         self._hop_size = hop_size
         self._instances: dict[float, object] = {}
+        self._stream_pending = np.empty(0, dtype=np.float32)
+        self._stream_processed_samples = 0
+
+    def process_frames(self, audio: NDArray[np.float32]) -> list[tuple[int, int, float]]:
+        if audio.size:
+            self._stream_pending = np.concatenate(
+                [self._stream_pending, np.ascontiguousarray(audio, dtype=np.float32)]
+            )
+
+        vad = self._instance_for(TEN_VAD_STREAM_THRESHOLD)
+        frames: list[tuple[int, int, float]] = []
+        while len(self._stream_pending) >= self._hop_size:
+            chunk = self._stream_pending[: self._hop_size]
+            self._stream_pending = self._stream_pending[self._hop_size :]
+            pcm16 = (np.clip(chunk, -1.0, 1.0) * 32767).astype(np.int16)
+            probability, flag = vad.process(pcm16)
+            start = self._stream_processed_samples
+            self._stream_processed_samples += self._hop_size
+            frames.append((start, self._stream_processed_samples, 1.0 if int(flag) == 1 else float(probability)))
+        return frames
 
     def _instance_for(self, threshold: float) -> object:
         threshold = float(threshold)
@@ -206,40 +225,6 @@ class TenVAD:
                 ) from exc
             self._instances[threshold] = TenVadBinding(self._hop_size, threshold)
         return self._instances[threshold]
-
-    def get_speech_timestamps(
-        self,
-        audio: NDArray[np.float32],
-        threshold: float = 0.5,
-        min_silence_duration_ms: int = 500,
-        speech_pad_ms: int = 100,
-        min_speech_duration_ms: int = 250,
-    ) -> list[dict[str, int]]:
-        if audio.size == 0:
-            return []
-
-        vad = self._instance_for(threshold)
-        pcm16 = (np.clip(audio, -1.0, 1.0) * 32767).astype(np.int16)
-        speech_frames: list[tuple[int, int]] = []
-
-        for start in range(0, len(pcm16), self._hop_size):
-            end = min(start + self._hop_size, len(pcm16))
-            frame = pcm16[start:end]
-            if len(frame) < self._hop_size:
-                frame = np.pad(frame, (0, self._hop_size - len(frame)))
-
-            probability, flag = vad.process(frame)
-            is_speech = int(flag) == 1 or float(probability) >= threshold
-            if is_speech:
-                speech_frames.append((start, end))
-
-        return _frames_to_timestamps(
-            speech_frames,
-            total_samples=len(pcm16),
-            min_silence_duration_ms=min_silence_duration_ms,
-            speech_pad_ms=speech_pad_ms,
-            min_speech_duration_ms=min_speech_duration_ms,
-        )
 
 
 def create_vad_backend(name: str) -> VADBackend:
@@ -259,6 +244,7 @@ class VADProcessor:
     _vad_model: VADBackend | None = None
     _utterance_sequence: int = 0
     _stream_samples: int = 0
+    _vad_probability_frames: list[tuple[int, int, float]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         if self._vad_model is None:
@@ -282,7 +268,6 @@ class VADProcessor:
         self.buffer.append(audio)
 
         audio_window = self.buffer.get_last_n(VAD_WINDOW_SIZE_SAMPLES)
-        window_duration_ms = len(audio_window) // MS_PER_SAMPLE
 
         threshold = (
             self.config.continue_threshold
@@ -290,9 +275,19 @@ class VADProcessor:
             else self.config.start_threshold
         )
 
-        raw_timestamps = self._vad_model.get_speech_timestamps(
-            audio_window,
-            threshold=threshold,
+        window_start_sample = max(0, self._stream_samples - len(audio_window))
+        self._vad_probability_frames.extend(self._vad_model.process_frames(audio))
+        self._vad_probability_frames = [
+            frame for frame in self._vad_probability_frames if frame[1] > window_start_sample
+        ]
+        speech_frames = [
+            (max(start, window_start_sample), end)
+            for start, end, probability in self._vad_probability_frames
+            if probability >= threshold
+        ]
+        raw_timestamps = _frames_to_timestamps(
+            speech_frames,
+            total_samples=self._stream_samples,
             min_silence_duration_ms=self.config.min_silence_duration_ms,
             speech_pad_ms=self.config.speech_pad_ms,
             min_speech_duration_ms=self.config.min_speech_duration_ms,
@@ -301,7 +296,7 @@ class VADProcessor:
         speech_ts = None
         if raw_timestamps:
             latest_end = max(ts["end"] for ts in raw_timestamps)
-            silence_after_end_ms = window_duration_ms - (latest_end // MS_PER_SAMPLE)
+            silence_after_end_ms = (self._stream_samples - latest_end) // MS_PER_SAMPLE
             if silence_after_end_ms < self.config.min_silence_duration_ms:
                 speech_ts = {
                     "start": min(ts["start"] for ts in raw_timestamps),
@@ -313,16 +308,12 @@ class VADProcessor:
                 self.state.carryover = False
                 return None, None
 
+            detected_start_ms = None
             if self.state.carryover:
                 self.state.audio_start_ms = self._buffer_start_ms()
                 self.state.carryover = False
             else:
-                detected_start_ms = (
-                    self._buffer_start_ms()
-                    + self._duration_ms()
-                    - window_duration_ms
-                    + (speech_ts["start"] // MS_PER_SAMPLE)
-                )
+                detected_start_ms = speech_ts["start"] // MS_PER_SAMPLE
                 self.state.audio_start_ms = max(
                     self._buffer_start_ms(),
                     detected_start_ms - max(0, int(self.config.speech_pre_roll_ms)),
@@ -330,9 +321,15 @@ class VADProcessor:
             self.state.active = True
             self._utterance_sequence += 1
             self.state.utterance_id = self._utterance_sequence
+            seed_start = max(0, self._buffer_sample_for_timestamp(self.state.audio_start_ms))
+            seed_end = max(seed_start, len(self.buffer) - len(audio))
+            initial_audio = self.buffer.get_slice(seed_start, seed_end)
             return SpeechStarted(
                 timestamp_ms=self.state.audio_start_ms,
                 utterance_id=self.state.utterance_id,
+                audio=initial_audio,
+                vad_segment_start_ms=detected_start_ms,
+                observed_at_ms=self._stream_duration_ms(),
             ), None
 
         if speech_ts is None:

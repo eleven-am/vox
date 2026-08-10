@@ -195,12 +195,14 @@ class StreamPipeline:
         self._eou_failure_streak = 0
         self._eou_disabled = False
         self._session_config: StreamSessionConfig | None = None
+        self._early_context_tasks: dict[int, asyncio.Task[SpeechContext]] = {}
         self._executor: ThreadPoolExecutor | None = ThreadPoolExecutor(
             max_workers=self._config.stt_workers,
             thread_name_prefix="stt",
         )
 
     def configure(self, config: StreamSessionConfig) -> None:
+        self._cancel_early_context_tasks()
         self._session_config = config
         self._vad.reset()
         with self._history_lock:
@@ -221,6 +223,7 @@ class StreamPipeline:
                     self._conversation_history = self._conversation_history[-history_limit:]
 
     def reset(self) -> None:
+        self._cancel_early_context_tasks()
         self._vad.reset()
         self._pending_user_text = ""
         self._pending_user_audio = np.array([], dtype=np.float32)
@@ -234,10 +237,15 @@ class StreamPipeline:
         event, segment = await loop.run_in_executor(executor, self._vad.append, audio)
 
         if isinstance(event, SpeechStarted):
+            self._start_early_context(event)
             yield event
 
         if isinstance(event, SpeechStopped):
             has_segment = segment is not None and len(segment.audio) > 0
+            if not has_segment:
+                await cancel_speech_context_task(
+                    self._early_context_tasks.pop(event.utterance_id, None)
+                )
             yield SpeechStopped(
                 timestamp_ms=event.timestamp_ms,
                 expects_transcript=has_segment,
@@ -292,11 +300,13 @@ class StreamPipeline:
 
         language = self._session_config.language
         word_timestamps = self._session_config.include_word_timestamps
-        context_task = self._start_context_analysis(
-            segment.audio,
-            timeline_offset_ms=segment.start_ms,
-            enabled=self._session_config.speech_context,
-        )
+        context_task = self._early_context_tasks.pop(segment.utterance_id, None)
+        if context_task is None:
+            context_task = self._start_context_analysis(
+                segment.audio,
+                timeline_offset_ms=segment.start_ms,
+                enabled=self._session_config.speech_context,
+            )
 
         start = time.perf_counter()
         try:
@@ -419,6 +429,27 @@ class StreamPipeline:
                 timeline_offset_ms=timeline_offset_ms,
             )
         )
+
+    def _start_early_context(self, event: SpeechStarted) -> None:
+        config = self._session_config
+        if config is None or not config.speech_context or event.audio is None or not event.audio.size:
+            return
+        previous = self._early_context_tasks.pop(event.utterance_id, None)
+        if previous is not None:
+            previous.cancel()
+        task = self._start_context_analysis(
+            event.audio,
+            timeline_offset_ms=event.timestamp_ms,
+            enabled=True,
+        )
+        if task is not None:
+            self._early_context_tasks[event.utterance_id] = task
+
+    def _cancel_early_context_tasks(self) -> None:
+        tasks = tuple(self._early_context_tasks.values())
+        self._early_context_tasks = {}
+        for task in tasks:
+            task.cancel()
 
     @staticmethod
     async def _unavailable_context() -> SpeechContext:
@@ -614,6 +645,12 @@ class StreamPipeline:
         self._low_eou_streak = 0
 
     async def shutdown(self) -> None:
+        context_tasks = tuple(self._early_context_tasks.values())
+        self._early_context_tasks = {}
+        for task in context_tasks:
+            task.cancel()
+        if context_tasks:
+            await asyncio.gather(*context_tasks, return_exceptions=True)
         executor = self._executor
         if executor is None:
             return

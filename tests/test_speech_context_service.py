@@ -128,6 +128,25 @@ async def test_service_runs_tracks_concurrently_reuses_workers_and_preserves_tim
     assert all(not host.alive for host in hosts.values())
 
 
+@pytest.mark.asyncio
+async def test_service_preload_starts_both_workers_without_running_analysis():
+    hosts: dict[str, _Host] = {}
+
+    def factory(spec: RuntimeSpec) -> _Host:
+        host = _Host(spec)
+        hosts[spec.key] = host
+        return host
+
+    service = SpeechContextService(host_factory=factory)
+
+    await service.preload()
+    await service.preload()
+
+    assert set(hosts) == {"speaker", "sounds"}
+    assert all(host.calls == 0 for host in hosts.values())
+    await service.close()
+
+
 class _FailingHost(_Host):
     def request(self, payload: dict, *, timeout: float) -> dict:
         if self.spec.key == "sounds":

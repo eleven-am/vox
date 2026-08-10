@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import fractions
 import functools
+import logging
 import math
 import os
 import time
@@ -15,6 +16,8 @@ import numpy as np
 from aiortc import MediaStreamTrack
 from aiortc.mediastreams import MediaStreamError
 from av.audio.resampler import AudioResampler
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -86,6 +89,10 @@ class RtcAudioOutputTrack(MediaStreamTrack):
         self._clear_count = 0
         self._playout_callback_errors = 0
         self._epoch = 0
+        self._playout_revision = 0
+        self._suspend_owner: int | None = None
+        self._suspend_requested_at: float | None = None
+        self._last_suspend_to_silence_ms: float | None = None
         self._recv_lock = asyncio.Lock()
 
     def set_playout_observer(self, on_playout: Callable[[bytes, int], None] | None) -> None:
@@ -123,6 +130,9 @@ class RtcAudioOutputTrack(MediaStreamTrack):
 
     def clear(self) -> None:
         self._epoch += 1
+        self._playout_revision += 1
+        self._suspend_owner = None
+        self._suspend_requested_at = None
         self._pending = np.empty(0, dtype=np.int16)
         self._queued_audio_ms = 0.0
         self._clear_count += 1
@@ -137,9 +147,29 @@ class RtcAudioOutputTrack(MediaStreamTrack):
                 item.future.set_result(None)
         self._queue.put_nowait(RtcAudioClear(self._epoch))
 
+    def suspend(self, owner: int) -> bool:
+        if self._suspend_owner == owner:
+            return False
+        self._suspend_owner = owner
+        self._suspend_requested_at = time.monotonic()
+        self._playout_revision += 1
+        self._sync_clock()
+        return True
+
+    def resume(self, owner: int) -> bool:
+        if self._suspend_owner != owner:
+            return False
+        self._suspend_owner = None
+        self._suspend_requested_at = None
+        self._playout_revision += 1
+        self._sync_clock()
+        return True
+
     async def recv(self) -> av.AudioFrame:
         async with self._recv_lock:
             while True:
+                if self._suspend_owner is not None:
+                    return await self._suspended_silence_frame()
                 while self._pending.size == 0:
                     if self._start is None and not self._silenced:
                         item = await self._queue.get()
@@ -181,13 +211,16 @@ class RtcAudioOutputTrack(MediaStreamTrack):
                     self._pending = np.frombuffer(pcm16, dtype=np.int16)
                     self._update_max_buffered_audio_ms()
 
+                if self._suspend_owner is not None:
+                    return await self._suspended_silence_frame()
                 samples_per_frame = max(1, self._sample_rate // 50)
                 samples = self._pending[:samples_per_frame]
                 if samples.size == 0:
                     samples = np.zeros(1, dtype=np.int16)
                 epoch = self._epoch
+                revision = self._playout_revision
                 await self._pace(samples.size)
-                if epoch != self._epoch:
+                if epoch != self._epoch or revision != self._playout_revision:
                     continue
                 self._pending = self._pending[samples_per_frame:]
                 frame = self._build_frame(samples)
@@ -202,6 +235,22 @@ class RtcAudioOutputTrack(MediaStreamTrack):
         self._silence_frames += 1
         samples_per_frame = max(1, self._sample_rate // 50)
         return await self._frame(np.zeros(samples_per_frame, dtype=np.int16))
+
+    async def _suspended_silence_frame(self) -> av.AudioFrame:
+        requested_at = self._suspend_requested_at
+        owner = self._suspend_owner
+        frame = await self._silence_frame()
+        if requested_at is not None:
+            latency_ms = max(0.0, (time.monotonic() - requested_at) * 1000.0)
+            self._last_suspend_to_silence_ms = latency_ms
+            if self._suspend_requested_at == requested_at:
+                self._suspend_requested_at = None
+            logger.info(
+                "rtc output suspension reached silence owner=%s suspend_to_silence_ms=%.2f",
+                owner,
+                latency_ms,
+            )
+        return frame
 
     async def _frame(self, samples: np.ndarray) -> av.AudioFrame:
         await self._pace(samples.size)
@@ -250,8 +299,19 @@ class RtcAudioOutputTrack(MediaStreamTrack):
             "enqueued_chunks": self._enqueued_chunks,
             "silence_frames": self._silence_frames,
             "clear_count": self._clear_count,
+            "suspended": self._suspend_owner is not None,
+            "suspend_owner": self._suspend_owner,
+            "last_suspend_to_silence_ms": (
+                round(self._last_suspend_to_silence_ms, 2)
+                if self._last_suspend_to_silence_ms is not None
+                else None
+            ),
             "playout_callback_errors": self._playout_callback_errors,
         }
+
+    def stop(self) -> None:
+        self.clear()
+        super().stop()
 
     def _update_max_buffered_audio_ms(self) -> None:
         self._max_buffered_audio_ms = max(self._max_buffered_audio_ms, self.buffered_audio_ms)

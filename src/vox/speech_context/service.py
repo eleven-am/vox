@@ -102,6 +102,18 @@ class SpeechContextService:
         self._close_lock = asyncio.Lock()
         self._closed = False
 
+    async def preload(self) -> None:
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeError("speech context service is closed")
+        loop = asyncio.get_running_loop()
+        await asyncio.gather(
+            *(
+                loop.run_in_executor(self._track_executor, self._host_for, spec)
+                for spec in RUNTIME_SPECS.values()
+            )
+        )
+
     async def analyze_chunks(
         self,
         chunks: Iterable[AudioChunk],

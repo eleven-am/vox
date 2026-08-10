@@ -58,6 +58,12 @@ async def lifespan(app: FastAPI):
         preload_core_native_modules()
         await preload_ner()
 
+        if services.speech_context is not None:
+            try:
+                await services.speech_context.preload()
+            except Exception:
+                logger.exception("Failed to preload speech-context workers")
+
         merged = merged_preload_models(
             list(getattr(app.state, "preload_models", [])),
             os.environ.get("VOX_PRELOAD"),

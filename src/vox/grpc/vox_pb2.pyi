@@ -645,7 +645,7 @@ class RtcControlAttach(_message.Message):
     def __init__(self, session_id: _Optional[str] = ...) -> None: ...
 
 class ConverseServerMessage(_message.Message):
-    __slots__ = ("session_created", "speech_started", "speech_stopped", "transcript_done", "response_created", "audio_delta", "response_done", "response_cancelled", "state_changed", "error", "response_committed", "audio_clear", "interruption_detected", "interruption_false_positive", "turn_eou_predicted", "transcript_delta")
+    __slots__ = ("session_created", "speech_started", "speech_stopped", "transcript_done", "response_created", "audio_delta", "response_done", "response_cancelled", "state_changed", "error", "response_committed", "audio_clear", "interruption_detected", "interruption_false_positive", "turn_eou_predicted", "transcript_delta", "audio_suspend", "audio_resume")
     SESSION_CREATED_FIELD_NUMBER: _ClassVar[int]
     SPEECH_STARTED_FIELD_NUMBER: _ClassVar[int]
     SPEECH_STOPPED_FIELD_NUMBER: _ClassVar[int]
@@ -662,6 +662,8 @@ class ConverseServerMessage(_message.Message):
     INTERRUPTION_FALSE_POSITIVE_FIELD_NUMBER: _ClassVar[int]
     TURN_EOU_PREDICTED_FIELD_NUMBER: _ClassVar[int]
     TRANSCRIPT_DELTA_FIELD_NUMBER: _ClassVar[int]
+    AUDIO_SUSPEND_FIELD_NUMBER: _ClassVar[int]
+    AUDIO_RESUME_FIELD_NUMBER: _ClassVar[int]
     session_created: ConversationSessionCreated
     speech_started: ConversationSpeechStarted
     speech_stopped: ConversationSpeechStopped
@@ -678,7 +680,9 @@ class ConverseServerMessage(_message.Message):
     interruption_false_positive: ConversationInterruptionFalsePositive
     turn_eou_predicted: ConversationTurnEouPredicted
     transcript_delta: ConversationTranscriptDelta
-    def __init__(self, session_created: _Optional[_Union[ConversationSessionCreated, _Mapping]] = ..., speech_started: _Optional[_Union[ConversationSpeechStarted, _Mapping]] = ..., speech_stopped: _Optional[_Union[ConversationSpeechStopped, _Mapping]] = ..., transcript_done: _Optional[_Union[ConversationTranscriptDone, _Mapping]] = ..., response_created: _Optional[_Union[ConversationResponseCreated, _Mapping]] = ..., audio_delta: _Optional[_Union[ConversationAudioDelta, _Mapping]] = ..., response_done: _Optional[_Union[ConversationResponseDone, _Mapping]] = ..., response_cancelled: _Optional[_Union[ConversationResponseCancelled, _Mapping]] = ..., state_changed: _Optional[_Union[ConversationStateChanged, _Mapping]] = ..., error: _Optional[_Union[ConversationError, _Mapping]] = ..., response_committed: _Optional[_Union[ConversationResponseCommitted, _Mapping]] = ..., audio_clear: _Optional[_Union[ConversationAudioClear, _Mapping]] = ..., interruption_detected: _Optional[_Union[ConversationInterruptionDetected, _Mapping]] = ..., interruption_false_positive: _Optional[_Union[ConversationInterruptionFalsePositive, _Mapping]] = ..., turn_eou_predicted: _Optional[_Union[ConversationTurnEouPredicted, _Mapping]] = ..., transcript_delta: _Optional[_Union[ConversationTranscriptDelta, _Mapping]] = ...) -> None: ...
+    audio_suspend: ConversationAudioSuspend
+    audio_resume: ConversationAudioResume
+    def __init__(self, session_created: _Optional[_Union[ConversationSessionCreated, _Mapping]] = ..., speech_started: _Optional[_Union[ConversationSpeechStarted, _Mapping]] = ..., speech_stopped: _Optional[_Union[ConversationSpeechStopped, _Mapping]] = ..., transcript_done: _Optional[_Union[ConversationTranscriptDone, _Mapping]] = ..., response_created: _Optional[_Union[ConversationResponseCreated, _Mapping]] = ..., audio_delta: _Optional[_Union[ConversationAudioDelta, _Mapping]] = ..., response_done: _Optional[_Union[ConversationResponseDone, _Mapping]] = ..., response_cancelled: _Optional[_Union[ConversationResponseCancelled, _Mapping]] = ..., state_changed: _Optional[_Union[ConversationStateChanged, _Mapping]] = ..., error: _Optional[_Union[ConversationError, _Mapping]] = ..., response_committed: _Optional[_Union[ConversationResponseCommitted, _Mapping]] = ..., audio_clear: _Optional[_Union[ConversationAudioClear, _Mapping]] = ..., interruption_detected: _Optional[_Union[ConversationInterruptionDetected, _Mapping]] = ..., interruption_false_positive: _Optional[_Union[ConversationInterruptionFalsePositive, _Mapping]] = ..., turn_eou_predicted: _Optional[_Union[ConversationTurnEouPredicted, _Mapping]] = ..., transcript_delta: _Optional[_Union[ConversationTranscriptDelta, _Mapping]] = ..., audio_suspend: _Optional[_Union[ConversationAudioSuspend, _Mapping]] = ..., audio_resume: _Optional[_Union[ConversationAudioResume, _Mapping]] = ...) -> None: ...
 
 class RtcSessionAttached(_message.Message):
     __slots__ = ("session_id", "provider")
@@ -907,6 +911,26 @@ class ConversationAudioClear(_message.Message):
     response_id: str
     generation_id: str
     def __init__(self, response_id: _Optional[str] = ..., generation_id: _Optional[str] = ...) -> None: ...
+
+class ConversationAudioSuspend(_message.Message):
+    __slots__ = ("response_id", "candidate_id", "generation_id")
+    RESPONSE_ID_FIELD_NUMBER: _ClassVar[int]
+    CANDIDATE_ID_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_ID_FIELD_NUMBER: _ClassVar[int]
+    response_id: str
+    candidate_id: int
+    generation_id: str
+    def __init__(self, response_id: _Optional[str] = ..., candidate_id: _Optional[int] = ..., generation_id: _Optional[str] = ...) -> None: ...
+
+class ConversationAudioResume(_message.Message):
+    __slots__ = ("response_id", "candidate_id", "generation_id")
+    RESPONSE_ID_FIELD_NUMBER: _ClassVar[int]
+    CANDIDATE_ID_FIELD_NUMBER: _ClassVar[int]
+    GENERATION_ID_FIELD_NUMBER: _ClassVar[int]
+    response_id: str
+    candidate_id: int
+    generation_id: str
+    def __init__(self, response_id: _Optional[str] = ..., candidate_id: _Optional[int] = ..., generation_id: _Optional[str] = ...) -> None: ...
 
 class ConversationInterruptionDetected(_message.Message):
     __slots__ = ("response_id", "vad_active_ms", "partial_transcript", "generation_id")

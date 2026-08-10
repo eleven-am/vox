@@ -190,6 +190,89 @@ async def test_rtc_audio_output_clear_drains_queue_and_resets_pacing():
 
 
 @pytest.mark.asyncio
+async def test_rtc_audio_suspend_outputs_silence_without_consuming_buffered_audio():
+    queue = asyncio.Queue()
+    track = RtcAudioOutputTrack(queue)
+    await track.enqueue(np.arange(640, dtype=np.int16).tobytes(), 16_000)
+
+    assert track.suspend(7)
+    assert track.stats()["last_suspend_to_silence_ms"] is None
+    suspended = await track.recv()
+    assert np.all(suspended.to_ndarray() == 0)
+    assert track.stats()["last_suspend_to_silence_ms"] >= 0.0
+    assert track.buffered_audio_ms == 40.0
+    assert not track.resume(8)
+
+    still_suspended = await track.recv()
+    assert np.all(still_suspended.to_ndarray() == 0)
+    assert track.buffered_audio_ms == 40.0
+
+    assert track.resume(7)
+    resumed = await track.recv()
+    assert np.array_equal(resumed.to_ndarray().reshape(-1), np.arange(320, dtype=np.int16))
+    assert track.buffered_audio_ms == 20.0
+
+
+@pytest.mark.asyncio
+async def test_rtc_audio_suspend_invalidates_an_inflight_playout_frame_without_dropping_it():
+    queue = asyncio.Queue()
+    track = RtcAudioOutputTrack(queue)
+    await track.enqueue(np.full(320, 1700, dtype=np.int16).tobytes(), 16_000)
+    pace_started = asyncio.Event()
+    release_pace = asyncio.Event()
+
+    async def pace(_samples: int) -> None:
+        pace_started.set()
+        await release_pace.wait()
+
+    track._pace = pace
+    recv_task = asyncio.create_task(track.recv())
+    await pace_started.wait()
+    track.suspend(9)
+    release_pace.set()
+    suspended = await asyncio.wait_for(recv_task, timeout=0.1)
+
+    assert np.all(suspended.to_ndarray() == 0)
+    assert track.buffered_audio_ms == 20.0
+    assert track.resume(9)
+    resumed = await track.recv()
+    assert np.all(resumed.to_ndarray() == 1700)
+
+
+@pytest.mark.asyncio
+async def test_rtc_audio_suspend_wins_when_recv_is_waiting_for_its_first_chunk():
+    queue = asyncio.Queue()
+    track = RtcAudioOutputTrack(queue)
+    recv_task = asyncio.create_task(track.recv())
+    await asyncio.sleep(0)
+
+    track.suspend(21)
+    await track.enqueue(np.full(320, 2300, dtype=np.int16).tobytes(), 16_000)
+    suspended = await asyncio.wait_for(recv_task, timeout=0.1)
+
+    assert np.all(suspended.to_ndarray() == 0)
+    assert track.buffered_audio_ms == 20.0
+    assert track.resume(21)
+    resumed = await track.recv()
+    assert np.all(resumed.to_ndarray() == 2300)
+
+
+@pytest.mark.asyncio
+async def test_rtc_audio_output_stop_releases_suspension_and_buffered_audio():
+    queue = asyncio.Queue()
+    track = RtcAudioOutputTrack(queue)
+    await track.enqueue(np.full(640, 2300, dtype=np.int16).tobytes(), 16_000)
+    track.suspend(21)
+
+    track.stop()
+
+    stats = track.stats()
+    assert not stats["suspended"]
+    assert stats["suspend_owner"] is None
+    assert stats["buffered_audio_ms"] == 0.0
+
+
+@pytest.mark.asyncio
 async def test_rtc_audio_enqueue_started_before_clear_cannot_play_after_clear():
     queue = create_rtc_audio_queue(max_buffered_audio_ms=100, chunk_ms=50)
     track = RtcAudioOutputTrack(queue, enqueue_chunk_ms=50)

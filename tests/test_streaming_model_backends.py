@@ -41,8 +41,8 @@ class TestVADBackends:
     def test_silero_onnx_returns_no_speech_on_silence(self):
         vad = SileroOnnxVAD()
         silence = np.zeros(16_000, dtype=np.float32)
-        assert vad.get_speech_timestamps(silence) == []
-        assert vad.get_speech_timestamps(np.array([], dtype=np.float32)) == []
+        assert all(probability < 0.5 for _, _, probability in vad.process_frames(silence))
+        assert vad.process_frames(np.array([], dtype=np.float32)) == []
 
     def test_silero_onnx_runs_windowed_inference_without_error(self):
         vad = SileroOnnxVAD()
@@ -50,10 +50,34 @@ class TestVADBackends:
         # Multiple 512-sample windows so the context-prepend + state carry path
         # is exercised end to end; result must be well-formed timestamps.
         signal = rng.standard_normal(16_000).astype(np.float32) * 0.2
-        timestamps = vad.get_speech_timestamps(signal)
-        assert isinstance(timestamps, list)
-        for span in timestamps:
-            assert 0 <= span["start"] < span["end"] <= len(signal)
+        frames = vad.process_frames(signal)
+        assert frames
+        for start, end, probability in frames:
+            assert 0 <= start < end <= len(signal)
+            assert 0.0 <= probability <= 1.0
+
+    def test_silero_streaming_frames_consume_audio_once_and_preserve_recurrent_state(self, monkeypatch):
+        states: list[float] = []
+
+        class FakeSession:
+            def run(self, _outputs, inputs):
+                state = inputs["state"]
+                states.append(float(state.reshape(-1)[0]))
+                return np.array([[0.9]], dtype=np.float32), state + 1
+
+        monkeypatch.setattr(SileroOnnxVAD, "_session", FakeSession())
+        vad = SileroOnnxVAD()
+
+        assert vad.process_frames(np.ones(320, dtype=np.float32)) == []
+        first = vad.process_frames(np.ones(704, dtype=np.float32))
+        second = vad.process_frames(np.ones(512, dtype=np.float32))
+
+        assert [(start, end) for start, end, _ in first + second] == [
+            (0, 512),
+            (512, 1024),
+            (1024, 1536),
+        ]
+        assert states == [0.0, 1.0, 2.0]
 
     def test_frames_to_timestamps_merges_and_pads(self):
         # two speech spans separated by a gap larger than min_silence -> two segments
@@ -99,9 +123,9 @@ class TestVADBackends:
     def test_ten_vad_requires_optional_dependency(self, monkeypatch):
         monkeypatch.setattr("builtins.__import__", _missing_ten_vad_import)
         with pytest.raises(RuntimeError, match="TEN VAD backend requires"):
-            TenVAD().get_speech_timestamps(np.ones(160, dtype=np.float32))
+            TenVAD().process_frames(np.ones(160, dtype=np.float32))
 
-    def test_ten_vad_converts_frame_flags_to_timestamps(self, monkeypatch):
+    def test_ten_vad_streams_hop_frames_with_absolute_offsets(self, monkeypatch):
         class FakeTenVad:
             def __init__(self, hop_size, threshold):
                 self.hop_size = hop_size
@@ -118,20 +142,32 @@ class TestVADBackends:
         )
 
         vad = TenVAD(hop_size=160)
-        audio = np.concatenate([
-            np.ones(160, dtype=np.float32) * 0.25,
-            np.zeros(160, dtype=np.float32),
-        ])
+        loud = np.ones(160, dtype=np.float32) * 0.25
+        quiet = np.zeros(160, dtype=np.float32)
 
-        timestamps = vad.get_speech_timestamps(
-            audio,
-            threshold=0.5,
-            min_silence_duration_ms=1,
-            speech_pad_ms=0,
-            min_speech_duration_ms=1,
+        assert vad.process_frames(loud[:80]) == []
+        first = vad.process_frames(np.concatenate([loud[80:], quiet]))
+
+        assert [(start, end) for start, end, _ in first] == [(0, 160), (160, 320)]
+        assert first[0][2] == 1.0
+        assert first[1][2] == pytest.approx(0.1)
+
+    def test_silero_stream_frames_are_invariant_to_caller_chunking(self):
+        rng = np.random.default_rng(1234)
+        audio = rng.standard_normal(SILERO_ONNX_WINDOW_SAMPLES * 12).astype(np.float32) * 0.2
+
+        single = SileroOnnxVAD().process_frames(audio)
+
+        chunked_vad = SileroOnnxVAD()
+        chunked: list[tuple[int, int, float]] = []
+        for start in range(0, len(audio), 100):
+            chunked.extend(chunked_vad.process_frames(audio[start:start + 100]))
+
+        assert [(start, end) for start, end, _ in chunked] == [(start, end) for start, end, _ in single]
+        assert [probability for _, _, probability in chunked] == pytest.approx(
+            [probability for _, _, probability in single]
         )
-
-        assert timestamps == [{"start": 0, "end": 160}]
+        assert len(single) == 12
 
 
 class TestTurnDetectorBackends:

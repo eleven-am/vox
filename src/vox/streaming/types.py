@@ -33,6 +33,15 @@ class StreamSessionConfig:
 class SpeechStarted:
     timestamp_ms: int = 0
     utterance_id: int = 0
+    audio: NDArray[np.float32] | None = None
+    vad_segment_start_ms: int | None = None
+    observed_at_ms: int | None = None
+
+    @property
+    def vad_detection_latency_ms(self) -> int | None:
+        if self.vad_segment_start_ms is None or self.observed_at_ms is None:
+            return None
+        return max(0, self.observed_at_ms - self.vad_segment_start_ms)
 
 
 @dataclass

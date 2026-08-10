@@ -14,6 +14,8 @@ from vox.grpc.conversation_events import conversation_event_to_pb
 from vox.operations.conversation import (
     ConvAudioClearEvent,
     ConvAudioDeltaEvent,
+    ConvAudioResumeEvent,
+    ConvAudioSuspendEvent,
     ConvErrorEvent,
     ConvInterruptionDetectedEvent,
     ConvInterruptionFalsePositiveEvent,
@@ -257,6 +259,8 @@ def test_pondsocket_and_grpc_rtc_signaling_decode_identically(
             sequence=3,
         ),
         ConvAudioClearEvent(response_id="resp_1"),
+        ConvAudioSuspendEvent(response_id="resp_1", candidate_id=5),
+        ConvAudioResumeEvent(response_id="resp_1", candidate_id=5),
         ConvInterruptionDetectedEvent(
             response_id="resp_1",
             vad_active_ms=420,

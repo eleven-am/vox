@@ -9,6 +9,8 @@ from typing import Any
 
 from vox.conversation.session import (
     WIRE_AUDIO_CLEAR,
+    WIRE_AUDIO_RESUME,
+    WIRE_AUDIO_SUSPEND,
     WIRE_INTERRUPTION_DETECTED,
     WIRE_INTERRUPTION_FALSE_POSITIVE,
     WIRE_RESPONSE_CANCELLED,
@@ -23,6 +25,8 @@ from vox.conversation.session import (
 from vox.operations.conversation import (
     ConvAudioClearEvent,
     ConvAudioDeltaEvent,
+    ConvAudioResumeEvent,
+    ConvAudioSuspendEvent,
     ConvDoneEvent,
     ConversationOrchestrator,
     ConvEvent,
@@ -54,6 +58,8 @@ BROWSER_FORWARDED_EVENT_TYPES = frozenset(
         WIRE_RESPONSE_DONE,
         WIRE_RESPONSE_CANCELLED,
         WIRE_AUDIO_CLEAR,
+        WIRE_AUDIO_SUSPEND,
+        WIRE_AUDIO_RESUME,
     }
 )
 
@@ -221,7 +227,7 @@ def prepare_rtc_control_event(
     session_id: str,
     event: ConvEvent,
 ) -> RtcControlEvent:
-    clear_rtc_audio_if_needed(record, event)
+    apply_rtc_audio_control_if_needed(record, event)
     if (
         isinstance(event, ConvAudioDeltaEvent)
         and record is not None
@@ -284,3 +290,16 @@ def clear_rtc_audio_if_needed(record: Any, event: object) -> bool:
         return False
     record.audio_output_track.clear()
     return True
+
+
+def apply_rtc_audio_control_if_needed(record: Any, event: object) -> bool:
+    if record is None or record.audio_output_track is None:
+        return False
+    if isinstance(event, ConvAudioClearEvent):
+        record.audio_output_track.clear()
+        return True
+    if isinstance(event, ConvAudioSuspendEvent):
+        return bool(record.audio_output_track.suspend(event.candidate_id))
+    if isinstance(event, ConvAudioResumeEvent):
+        return bool(record.audio_output_track.resume(event.candidate_id))
+    return False

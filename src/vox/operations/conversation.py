@@ -26,6 +26,8 @@ from vox.conversation.session import (
     ERROR_CODE_RESPONSE_STALE_GENERATION,
     WIRE_AUDIO_CLEAR,
     WIRE_AUDIO_DELTA,
+    WIRE_AUDIO_RESUME,
+    WIRE_AUDIO_SUSPEND,
     WIRE_ERROR,
     WIRE_INTERRUPTION_DETECTED,
     WIRE_INTERRUPTION_FALSE_POSITIVE,
@@ -63,6 +65,8 @@ LIFECYCLE_CRITICAL_WIRE_TYPES = frozenset(
     {
         WIRE_RESPONSE_CANCELLED,
         WIRE_AUDIO_CLEAR,
+        WIRE_AUDIO_SUSPEND,
+        WIRE_AUDIO_RESUME,
         WIRE_RESPONSE_DONE,
         WIRE_INTERRUPTION_DETECTED,
         WIRE_INTERRUPTION_FALSE_POSITIVE,
@@ -189,6 +193,20 @@ class ConvAudioClearEvent:
 
 
 @dataclass(frozen=True)
+class ConvAudioSuspendEvent:
+    response_id: str = ""
+    candidate_id: int = 0
+    generation_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ConvAudioResumeEvent:
+    response_id: str = ""
+    candidate_id: int = 0
+    generation_id: str | None = None
+
+
+@dataclass(frozen=True)
 class ConvResponseDoneEvent:
     response_id: str = ""
     generation_id: str | None = None
@@ -299,6 +317,8 @@ ConvEvent = (
     | ConvResponseCreatedEvent
     | ConvAudioDeltaEvent
     | ConvAudioClearEvent
+    | ConvAudioSuspendEvent
+    | ConvAudioResumeEvent
     | ConvResponseDoneEvent
     | ConvResponseCancelledEvent
     | ConvResponseCommittedEvent
@@ -367,6 +387,24 @@ def serialize_conversation_event(event: ConvEvent) -> dict | None:
     if isinstance(event, ConvAudioClearEvent):
         return _with_generation_id(
             {"type": WIRE_AUDIO_CLEAR, "response_id": event.response_id},
+            event.generation_id,
+        )
+    if isinstance(event, ConvAudioSuspendEvent):
+        return _with_generation_id(
+            {
+                "type": WIRE_AUDIO_SUSPEND,
+                "response_id": event.response_id,
+                "candidate_id": event.candidate_id,
+            },
+            event.generation_id,
+        )
+    if isinstance(event, ConvAudioResumeEvent):
+        return _with_generation_id(
+            {
+                "type": WIRE_AUDIO_RESUME,
+                "response_id": event.response_id,
+                "candidate_id": event.candidate_id,
+            },
             event.generation_id,
         )
     if isinstance(event, ConvResponseDoneEvent):
@@ -784,6 +822,18 @@ def parse_conversation_wire_event(event: dict) -> ConvEvent | None:
     if t == WIRE_AUDIO_CLEAR:
         return ConvAudioClearEvent(
             response_id=str(event.get("response_id") or ""),
+            generation_id=_wire_generation_id(event),
+        )
+    if t == WIRE_AUDIO_SUSPEND:
+        return ConvAudioSuspendEvent(
+            response_id=str(event.get("response_id") or ""),
+            candidate_id=int(event.get("candidate_id") or 0),
+            generation_id=_wire_generation_id(event),
+        )
+    if t == WIRE_AUDIO_RESUME:
+        return ConvAudioResumeEvent(
+            response_id=str(event.get("response_id") or ""),
+            candidate_id=int(event.get("candidate_id") or 0),
             generation_id=_wire_generation_id(event),
         )
     if t == WIRE_RESPONSE_DONE:

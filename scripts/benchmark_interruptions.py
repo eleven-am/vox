@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Deterministic WebRTC interruption accuracy and latency benchmark."""
+"""Deterministic interruption-detector accuracy and evidence-timing benchmark."""
 
 from __future__ import annotations
 
@@ -714,7 +714,7 @@ def _print_human(report: dict[str, object]) -> None:
     baseline = report["baseline"]
     current = report["current"]
     comparison = report["comparison"]
-    print("WebRTC interruption benchmark")
+    print("Interruption detector benchmark")
     print(json.dumps({"baseline": baseline, "current": current, "comparison": comparison}, indent=2))
     print("Acceptance:")
     for name, passed in report["acceptance"].items():

@@ -22,10 +22,16 @@ class SpeechSession:
     last_partial_ms: int = 0
     utterance_id: int = 0
 
-    def start_speech(self, utterance_id: int = 0) -> None:
+    def start_speech(
+        self,
+        utterance_id: int = 0,
+        initial_audio: NDArray[np.float32] | None = None,
+    ) -> None:
         with self.lock:
             self.active = True
             self.buffer.clear()
+            if initial_audio is not None and initial_audio.size:
+                self.buffer.append(initial_audio)
             self.confirmed_words = []
             self.last_partial_ms = 0
             self.utterance_id = utterance_id

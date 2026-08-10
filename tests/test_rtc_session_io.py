@@ -10,11 +10,14 @@ import pytest
 from vox.operations.conversation import (
     ConvAudioClearEvent,
     ConvAudioDeltaEvent,
+    ConvAudioResumeEvent,
+    ConvAudioSuspendEvent,
     ConvDoneEvent,
     ConvStateChangedEvent,
 )
 from vox.server.rtc_registry import RtcSessionRecord
 from vox.server.rtc_session_io import (
+    apply_rtc_audio_control_if_needed,
     clear_rtc_audio_if_needed,
     create_rtc_orchestrator,
     enqueue_rtc_audio,
@@ -28,6 +31,8 @@ class FakeAudioTrack:
         self.enqueued: list[tuple[bytes, int]] = []
         self.clear_count = 0
         self.drain_count = 0
+        self.suspend_calls: list[int] = []
+        self.resume_calls: list[int] = []
 
     async def enqueue(self, pcm: bytes, sample_rate: int) -> None:
         self.enqueued.append((pcm, sample_rate))
@@ -37,6 +42,14 @@ class FakeAudioTrack:
 
     def clear(self) -> None:
         self.clear_count += 1
+
+    def suspend(self, candidate_id: int) -> bool:
+        self.suspend_calls.append(candidate_id)
+        return True
+
+    def resume(self, candidate_id: int) -> bool:
+        self.resume_calls.append(candidate_id)
+        return True
 
 
 @pytest.mark.asyncio
@@ -128,6 +141,48 @@ def test_prepare_rtc_control_event_applies_audio_clear_side_effect():
         "session_id": "rtc_1",
     }
     assert track.clear_count == 1
+
+
+def test_prepare_rtc_control_event_applies_candidate_owned_suspend_and_resume():
+    track = FakeAudioTrack()
+    record = SimpleNamespace(audio_output_track=track, data_channel=None)
+
+    suspended = prepare_rtc_control_event(
+        record=record,
+        session_id="rtc_1",
+        event=ConvAudioSuspendEvent(response_id="resp_1", candidate_id=12),
+    )
+    resumed = prepare_rtc_control_event(
+        record=record,
+        session_id="rtc_1",
+        event=ConvAudioResumeEvent(response_id="resp_1", candidate_id=12),
+    )
+
+    assert suspended.wire == {
+        "type": "response.audio.suspend",
+        "response_id": "resp_1",
+        "candidate_id": 12,
+        "session_id": "rtc_1",
+    }
+    assert resumed.wire == {
+        "type": "response.audio.resume",
+        "response_id": "resp_1",
+        "candidate_id": 12,
+        "session_id": "rtc_1",
+    }
+    assert track.suspend_calls == [12]
+    assert track.resume_calls == [12]
+
+
+def test_rtc_audio_control_rejects_stale_resume_owner():
+    track = FakeAudioTrack()
+    track.resume = lambda candidate_id: False
+    record = SimpleNamespace(audio_output_track=track)
+
+    assert not apply_rtc_audio_control_if_needed(
+        record,
+        ConvAudioResumeEvent(response_id="resp_1", candidate_id=99),
+    )
 
 
 def test_prepare_rtc_control_event_suppresses_audio_delta_when_media_track_exists():

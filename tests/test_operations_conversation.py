@@ -41,6 +41,8 @@ from vox.operations.conversation import (
     WIRE_RTC_CLIENT_DISCONNECTED,
     ConvAudioClearEvent,
     ConvAudioDeltaEvent,
+    ConvAudioResumeEvent,
+    ConvAudioSuspendEvent,
     ConvDoneEvent,
     ConvErrorEvent,
     ConversationOrchestrator,
@@ -600,6 +602,37 @@ def test_audio_clear_wire_event_maps_to_operation_event():
     event = parse_conversation_wire_event({"type": "response.audio.clear", "response_id": "resp_1"})
     assert isinstance(event, ConvAudioClearEvent)
     assert event.response_id == "resp_1"
+
+
+def test_audio_suspend_and_resume_wire_events_round_trip_candidate_identity():
+    suspended = ConvAudioSuspendEvent(
+        response_id="resp_1",
+        candidate_id=7,
+        generation_id="gen-1",
+    )
+    resumed = ConvAudioResumeEvent(
+        response_id="resp_1",
+        candidate_id=7,
+        generation_id="gen-1",
+    )
+
+    suspended_wire = serialize_conversation_event(suspended)
+    resumed_wire = serialize_conversation_event(resumed)
+
+    assert suspended_wire == {
+        "type": "response.audio.suspend",
+        "response_id": "resp_1",
+        "candidate_id": 7,
+        "generation_id": "gen-1",
+    }
+    assert resumed_wire == {
+        "type": "response.audio.resume",
+        "response_id": "resp_1",
+        "candidate_id": 7,
+        "generation_id": "gen-1",
+    }
+    assert parse_conversation_wire_event(suspended_wire) == suspended
+    assert parse_conversation_wire_event(resumed_wire) == resumed
 
 
 def test_interruption_detected_wire_event_maps_to_operation_event():

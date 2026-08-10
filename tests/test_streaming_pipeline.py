@@ -14,7 +14,7 @@ from vox.core.adapter import STTAdapter
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, TranscribeResult, TranscriptSegment
 from vox.speech_context.types import SpeechContext
 from vox.streaming.pipeline import StreamPipeline
-from vox.streaming.types import TARGET_SAMPLE_RATE, SpeechStopped, StreamSessionConfig, StreamTranscript
+from vox.streaming.types import TARGET_SAMPLE_RATE, SpeechStarted, SpeechStopped, StreamSessionConfig, StreamTranscript
 from vox.streaming.vad import SpeechSegment
 
 
@@ -305,6 +305,52 @@ class _EouGatedContextService:
         assert timeline_offset_ms == 100
         await self.eou_started.wait()
         return SpeechContext(status="failed", unavailable=("speaker", "sounds"))
+
+
+@pytest.mark.asyncio
+async def test_realtime_pipeline_starts_speech_context_at_vad_onset_and_reuses_it_for_final():
+    seed = np.full(8_000, 0.1, dtype=np.float32)
+    final_audio = np.full(24_000, 0.2, dtype=np.float32)
+    calls: list[tuple[tuple, int]] = []
+
+    class ContextService:
+        async def analyze_chunks(self, chunks, *, timeline_offset_ms: int = 0) -> SpeechContext:
+            frozen = tuple(chunks)
+            calls.append((frozen, timeline_offset_ms))
+            return SpeechContext(status="failed", unavailable=("speaker", "sounds"))
+
+    class StartStopVad:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def append(self, audio):
+            self.calls += 1
+            if self.calls == 1:
+                return SpeechStarted(timestamp_ms=100, utterance_id=4, audio=seed), None
+            return (
+                SpeechStopped(timestamp_ms=1600, utterance_id=4),
+                SpeechSegment(audio=final_audio, start_ms=100, end_ms=1600, utterance_id=4),
+            )
+
+    pipeline = StreamPipeline(
+        scheduler=FakeScheduler(WholeUtteranceSTTAdapter()),
+        speech_context_service=ContextService(),
+    )
+    pipeline.configure(StreamSessionConfig(model="m:1", language="en", speech_context=True))
+    pipeline._vad = StartStopVad()
+
+    started_events = await anext(_collect_pipeline_events(pipeline, seed))
+    await asyncio.sleep(0)
+    final_events = await anext(_collect_pipeline_events(pipeline, final_audio))
+
+    assert len(started_events) == 1
+    assert isinstance(started_events[0], SpeechStarted)
+    assert len(calls) == 1
+    assert calls[0][1] == 100
+    assert np.array_equal(calls[0][0][0].data, seed)
+    assert isinstance(final_events[-1], StreamTranscript)
+    assert final_events[-1].speech_context is not None
+    await pipeline.shutdown()
 
 
 @pytest.mark.asyncio

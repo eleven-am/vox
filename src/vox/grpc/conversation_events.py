@@ -8,6 +8,8 @@ from vox.grpc.transcript_messages import entity_messages, word_timestamp_message
 from vox.operations.conversation import (
     ConvAudioClearEvent,
     ConvAudioDeltaEvent,
+    ConvAudioResumeEvent,
+    ConvAudioSuspendEvent,
     ConvErrorEvent,
     ConvEvent,
     ConvInterruptionDetectedEvent,
@@ -125,6 +127,22 @@ def conversation_event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage 
         return vox_pb2.ConverseServerMessage(
             audio_clear=vox_pb2.ConversationAudioClear(
                 response_id=event.response_id,
+                generation_id=event.generation_id or "",
+            ),
+        )
+    if isinstance(event, ConvAudioSuspendEvent):
+        return vox_pb2.ConverseServerMessage(
+            audio_suspend=vox_pb2.ConversationAudioSuspend(
+                response_id=event.response_id,
+                candidate_id=event.candidate_id,
+                generation_id=event.generation_id or "",
+            ),
+        )
+    if isinstance(event, ConvAudioResumeEvent):
+        return vox_pb2.ConverseServerMessage(
+            audio_resume=vox_pb2.ConversationAudioResume(
+                response_id=event.response_id,
+                candidate_id=event.candidate_id,
                 generation_id=event.generation_id or "",
             ),
         )

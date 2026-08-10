@@ -107,6 +107,8 @@ WIRE_RESPONSE_DONE = "response.done"
 WIRE_RESPONSE_CANCELLED = "response.cancelled"
 WIRE_RESPONSE_COMMITTED = "response.committed"
 WIRE_AUDIO_CLEAR = "response.audio.clear"
+WIRE_AUDIO_SUSPEND = "response.audio.suspend"
+WIRE_AUDIO_RESUME = "response.audio.resume"
 WIRE_INTERRUPTION_DETECTED = "interruption.detected"
 WIRE_INTERRUPTION_FALSE_POSITIVE = "interruption.false_positive"
 WIRE_TURN_EOU_PREDICTED = transcript_finalization.WIRE_TURN_EOU_PREDICTED
@@ -365,6 +367,8 @@ class ConversationSession:
         stream = self._response_lifecycle.stream
         if stream is not None:
             self._response_lifecycle.terminalize(stream, "cancelled")
+        self._audio_output.release_all()
+        self._audio_history.clear()
 
     async def wait_until_settled(self, *, poll_interval_s: float = 0.01) -> None:
         """Drain timers, queued actions, and any in-flight TTS after client EOF.
@@ -812,7 +816,10 @@ class ConversationSession:
             self._last_speech_stopped_at = None
             self._input_speech_active = True
             if self._speech_session is not None:
-                self._speech_session.start_speech(stream_event.utterance_id)
+                self._speech_session.start_speech(
+                    stream_event.utterance_id,
+                    initial_audio=stream_event.audio,
+                )
             await self._emit(
                 {
                     "type": WIRE_SPEECH_STARTED,
@@ -835,6 +842,10 @@ class ConversationSession:
                     utterance_id=stream_event.utterance_id,
                     started_at=time.monotonic(),
                     assistant_text=self._active_assistant_text(),
+                )
+                await self._suspend_interruption_playout(
+                    candidate.candidate_id,
+                    vad_detection_latency_ms=stream_event.vad_detection_latency_ms,
                 )
             else:
                 candidate = None
@@ -1049,6 +1060,7 @@ class ConversationSession:
             )
             return ResponseStartResult(context=context, rejection=rejected)
 
+        self._audio_output.reset_for_response()
         stream = self._response_lifecycle.start_stream(
             output=output or self._default_response_output,
             allow_interruptions=allow_interruptions,
@@ -1057,7 +1069,6 @@ class ConversationSession:
         if not (context.input_speech_active and context.candidate_status is InterruptionCandidateStatus.REJECTED):
             self._interrupt_detector.reset()
         self._output_playout_started = False
-        self._audio_output.reset_for_response()
         await self._event_queue.put(TurnEvent(type=TurnEventType.RESPONSE_STARTED))
         await self._emit_response_created(stream)
         self._tts_task = asyncio.create_task(self._run_response_stream(stream))
@@ -1443,6 +1454,7 @@ class ConversationSession:
                 if candidate is not None and (
                     candidate_id is None or candidate.candidate_id == candidate_id
                 ):
+                    await self._resume_interruption_playout(candidate.candidate_id)
                     self._interrupt_detector.reset()
                     self._interrupt_timer_candidate_id = None
                     await self._emit_interruption_false_positive(
@@ -1552,6 +1564,48 @@ class ConversationSession:
     async def _emit_audio_clear(self, source: ResponseStream | TerminalRecord | None) -> None:
         await self._emit_response_event(WIRE_AUDIO_CLEAR, source)
 
+    async def _emit_audio_candidate_event(self, event_type: str, candidate_id: int) -> None:
+        stream = self._response_stream
+        payload: dict[str, Any] = {
+            "type": event_type,
+            "response_id": stream.response_id if stream is not None else None,
+            "candidate_id": candidate_id,
+        }
+        if stream is not None and stream.generation_id:
+            payload["generation_id"] = stream.generation_id
+        await self._emit(payload)
+
+    async def _suspend_interruption_playout(
+        self,
+        candidate_id: int,
+        *,
+        vad_detection_latency_ms: int | None = None,
+    ) -> None:
+        if self._response_stream is None:
+            return
+        if not self._audio_output.pause(candidate_id):
+            return
+        logger.info(
+            "interruption playout suspended candidate_id=%s vad_detection_latency_ms=%s",
+            candidate_id,
+            vad_detection_latency_ms,
+        )
+        await self._emit_audio_candidate_event(WIRE_AUDIO_SUSPEND, candidate_id)
+
+    async def _resume_interruption_playout(self, candidate_id: int) -> None:
+        if not self._audio_output.paused or self._audio_output.pause_owner != candidate_id:
+            return
+        await self._emit_audio_candidate_event(WIRE_AUDIO_RESUME, candidate_id)
+        stream = self._response_stream
+        for pending_batch in self._audio_output.pending_resume_batches():
+            for pending in pending_batch:
+                await self._emit_output_audio(pending.audio, pending.sample_rate, pending.sequence)
+        if not self._audio_output.finish_resume(candidate_id):
+            return
+        self._speech_guard.arm(speech_guards.RESUME_STABILITY, speech_guards.RESUME_STABILITY_MS)
+        if stream is not None and stream.pending_done:
+            await self._complete_response_stream(stream)
+
     async def _emit_interruption_detected(
         self,
         *,
@@ -1628,6 +1682,7 @@ class ConversationSession:
         if decision.action is InterruptionDecisionAction.DEFER:
             return
         if decision.action is InterruptionDecisionAction.PROVISIONAL_REJECT:
+            await self._resume_interruption_playout(decision.candidate_id)
             return
 
         await self._cancel_timer(TimerKey.CONFIRM_INTERRUPT.value)
@@ -1653,6 +1708,7 @@ class ConversationSession:
             partial_transcript=decision.transcript,
             reason=decision.reason,
         )
+        await self._resume_interruption_playout(decision.candidate_id)
         if resume_on_reject:
             await self._event_queue.put(
                 TurnEvent(
@@ -1684,6 +1740,7 @@ class ConversationSession:
         except Exception:
             logger.exception("interruption detector raised; rejecting candidate")
             self._transcript_finalizer.discard_turn_audio(candidate.utterance_id)
+            await self._resume_interruption_playout(candidate.candidate_id)
             await self._emit_interruption_false_positive(
                 vad_active_ms=vad_active_ms,
                 partial_transcript=candidate.cumulative_transcript or None,

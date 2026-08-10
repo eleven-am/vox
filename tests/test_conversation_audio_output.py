@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from vox.conversation.audio_output import PendingAudio, ResponseAudioOutput
 
 
@@ -12,6 +14,31 @@ def test_audio_output_sequences_reset_per_response():
     output.reset_for_response()
 
     assert output.next_sequence() == 1
+
+
+@pytest.mark.parametrize("with_pending", [False, True])
+def test_audio_output_rejects_response_reset_while_suspension_is_owned(with_pending):
+    output = ResponseAudioOutput()
+    output.pause(17)
+    if with_pending:
+        output.hold(b"held", 16_000, 1)
+
+    with pytest.raises(RuntimeError, match="suspension owner=17"):
+        output.reset_for_response()
+
+    assert output.paused
+    assert output.pause_owner == 17
+    assert output.pending_count == int(with_pending)
+
+
+def test_audio_output_rejects_response_reset_with_unowned_pending_audio():
+    output = ResponseAudioOutput()
+    output.hold(b"held", 16_000, 1)
+
+    with pytest.raises(RuntimeError, match="pending audio=1"):
+        output.reset_for_response()
+
+    assert output.pending_count == 1
 
 
 def test_audio_output_holds_and_pops_pending_batches_in_order():
@@ -109,3 +136,31 @@ def test_audio_output_flush_clears_pause_pending_and_playout():
     assert not output.paused
     assert output.pending_count == 0
     assert output.playout_delay_s() == 0
+
+
+def test_audio_output_terminal_release_does_not_depend_on_flush_action():
+    output = ResponseAudioOutput()
+    output.pause(7)
+    output.hold(b"held", 16_000, 1)
+    output.flush = lambda: (_ for _ in ()).throw(RuntimeError("broken flush"))
+
+    output.release_all()
+
+    assert not output.paused
+    assert output.pause_owner is None
+    assert output.pending_count == 0
+
+
+def test_audio_output_pause_is_owned_by_the_interruption_candidate():
+    output = ResponseAudioOutput()
+
+    assert output.pause(11)
+    assert output.paused
+    assert output.pause_owner == 11
+    assert not output.pause(11)
+    assert not output.finish_resume(12)
+    assert output.paused
+
+    assert output.finish_resume(11)
+    assert not output.paused
+    assert output.pause_owner is None

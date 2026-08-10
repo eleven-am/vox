@@ -208,6 +208,16 @@ class TestSpeechSession:
         session.start_speech()
         assert session.get_buffer_length() == 0
 
+    def test_start_speech_seeds_retained_pre_onset_audio(self):
+        session = SpeechSession()
+        initial_audio = np.arange(4800, dtype=np.float32)
+
+        session.start_speech(utterance_id=4, initial_audio=initial_audio)
+
+        assert session.is_active()
+        assert session.get_utterance_id() == 4
+        assert np.array_equal(session.get_buffer_audio(), initial_audio)
+
 
 class TestDeduplicateWords:
     def test_no_overlap(self):

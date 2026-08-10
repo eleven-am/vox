@@ -94,6 +94,22 @@ def _session_config():
 
 class TestControlPlaneVsInterruption:
     @pytest.mark.asyncio
+    async def test_response_start_rejects_unreleased_audio_lease_before_stream_creation(self):
+        session, collector, _ = _build_session()
+        await session.start()
+        session._audio_output.pause(31)
+        session._audio_output.hold(b"held", 16_000, 1)
+
+        with pytest.raises(RuntimeError, match="suspension owner=31"):
+            await session.start_response_stream()
+
+        assert not session.response_active
+        assert collector.by_type("response.created") == []
+        assert session._audio_output.pause_owner == 31
+        assert session._audio_output.pending_count == 1
+        await session.close()
+
+    @pytest.mark.asyncio
     async def test_cancelled_queued_response_start_never_executes(self):
         session, collector, _ = _build_session()
         await session.start()

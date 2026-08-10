@@ -455,6 +455,8 @@ message ConverseServerMessage {
     ConversationInterruptionFalsePositive interruption_false_positive = 14;
     ConversationTurnEouPredicted turn_eou_predicted = 15;
     ConversationTranscriptDelta transcript_delta = 18;
+    ConversationAudioSuspend audio_suspend = 19;
+    ConversationAudioResume audio_resume = 20;
   }
   reserved 16, 17;
   reserved "rtc_session_attached", "client_event";
@@ -594,6 +596,18 @@ message ConversationAudioDelta {
 message ConversationAudioClear {
   string response_id = 1;
   string generation_id = 2;
+}
+
+message ConversationAudioSuspend {
+  string response_id = 1;
+  uint64 candidate_id = 2;
+  string generation_id = 3;
+}
+
+message ConversationAudioResume {
+  string response_id = 1;
+  uint64 candidate_id = 2;
+  string generation_id = 3;
 }
 
 message ConversationInterruptionDetected {

@@ -511,3 +511,31 @@ def test_audio_clear_event_maps_to_proto_message():
     assert direct is not None
     assert direct.WhichOneof("msg") == "audio_clear"
     assert direct.audio_clear.response_id == "resp_2"
+
+
+def test_audio_suspend_and_resume_events_map_to_proto_messages():
+    suspended = _engine_wire_event_to_pb(
+        {
+            "type": "response.audio.suspend",
+            "response_id": "resp_1",
+            "candidate_id": 8,
+            "generation_id": "gen-1",
+        }
+    )
+    resumed = _engine_wire_event_to_pb(
+        {
+            "type": "response.audio.resume",
+            "response_id": "resp_1",
+            "candidate_id": 8,
+            "generation_id": "gen-1",
+        }
+    )
+
+    assert suspended is not None
+    assert suspended.WhichOneof("msg") == "audio_suspend"
+    assert suspended.audio_suspend.candidate_id == 8
+    assert suspended.audio_suspend.generation_id == "gen-1"
+    assert resumed is not None
+    assert resumed.WhichOneof("msg") == "audio_resume"
+    assert resumed.audio_resume.candidate_id == 8
+    assert resumed.audio_resume.generation_id == "gen-1"

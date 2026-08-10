@@ -281,20 +281,28 @@ class TestVADConfigDefaults:
         class DelayedStartVAD:
             def __init__(self) -> None:
                 self.calls = 0
+                self.consumed = 0
 
-            def get_speech_timestamps(self, audio, **kwargs):
+            def process_frames(self, audio):
                 self.calls += 1
+                base = self.consumed
+                self.consumed += len(audio)
                 if self.calls in {1, 3}:
-                    return [{"start": 8_000, "end": 15_000}]
+                    return [(base + 9_600, base + 13_400, 0.9)]
                 return []
 
-        processor = VADProcessor(config=VADConfig(speech_pre_roll_ms=300))
+        processor = VADProcessor(
+            config=VADConfig(speech_pre_roll_ms=300, min_speech_duration_ms=1)
+        )
         processor._vad_model = DelayedStartVAD()
 
         speech = np.ones(16_000, dtype=np.float32)
         started, segment = processor.append(speech)
         assert isinstance(started, SpeechStarted)
         assert started.timestamp_ms == 200
+        assert started.vad_segment_start_ms == 500
+        assert started.observed_at_ms == 1_000
+        assert started.vad_detection_latency_ms == 500
         assert started.utterance_id == 1
         assert segment is None
 
@@ -320,18 +328,83 @@ class TestVADConfigDefaults:
         assert stopped.utterance_id == 2
         assert segment.utterance_id == 2
 
+    def test_speech_started_carries_retained_audio_before_the_current_chunk(self):
+        class StartOnTwentiethChunkVAD:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def process_frames(self, audio):
+                self.calls += 1
+                if self.calls == 20:
+                    return [(4_800, 6_400, 0.9)]
+                return []
+
+        processor = VADProcessor(
+            config=VADConfig(speech_pre_roll_ms=300, min_speech_duration_ms=1)
+        )
+        processor._vad_model = StartOnTwentiethChunkVAD()
+        chunk = np.ones(320, dtype=np.float32)
+
+        started = None
+        for _ in range(20):
+            started, _ = processor.append(chunk)
+
+        assert isinstance(started, SpeechStarted)
+        assert started.timestamp_ms == 0
+        assert started.audio is not None
+        assert len(started.audio) == 6_080
+
+    def test_streaming_vad_backend_consumes_each_input_frame_once(self):
+        class StreamingVAD:
+            def __init__(self) -> None:
+                self.offset = 0
+                self.chunk_sizes: list[int] = []
+
+            def process_frames(self, audio):
+                self.chunk_sizes.append(len(audio))
+                start = self.offset
+                self.offset += len(audio)
+                return [(start, self.offset, 0.9)]
+
+            def get_speech_timestamps(self, audio, **kwargs):
+                raise AssertionError("batch VAD path must not run")
+
+        backend = StreamingVAD()
+        processor = VADProcessor(
+            config=VADConfig(
+                speech_pre_roll_ms=0,
+                speech_pad_ms=0,
+                min_speech_duration_ms=250,
+            ),
+            _vad_model=backend,
+        )
+
+        started = None
+        for _ in range(8):
+            started, _ = processor.append(np.ones(512, dtype=np.float32))
+
+        assert isinstance(started, SpeechStarted)
+        assert backend.chunk_sizes == [512] * 8
+        assert started.vad_segment_start_ms == 0
+        assert started.observed_at_ms == 256
+
     def test_timestamps_and_audio_survive_ring_buffer_rollover_before_speech(self):
         class LateSpeechVAD:
             def __init__(self) -> None:
                 self.calls = 0
+                self.consumed = 0
 
-            def get_speech_timestamps(self, audio, **kwargs):
+            def process_frames(self, audio):
                 self.calls += 1
+                base = self.consumed
+                self.consumed += len(audio)
                 if self.calls == 21:
-                    return [{"start": 8_000, "end": 15_000}]
+                    return [(base + 9_600, base + 13_400, 0.9)]
                 return []
 
-        processor = VADProcessor(config=VADConfig(speech_pre_roll_ms=300))
+        processor = VADProcessor(
+            config=VADConfig(speech_pre_roll_ms=300, min_speech_duration_ms=1)
+        )
         processor._vad_model = LateSpeechVAD()
 
         silence = np.zeros(16_000, dtype=np.float32)

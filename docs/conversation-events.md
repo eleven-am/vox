@@ -140,6 +140,8 @@ where `<wire type>` and payload match the control-stream event minus `type`:
 - `conversation.item.input_audio_transcription.delta` and `.completed`
 - `interruption.detected` / `interruption.false_positive`
 - `response.created` / `response.done` / `response.cancelled`
+- `response.audio.suspend` / `response.audio.resume` — reversibly silence and
+  restore candidate-owned playback without consuming buffered media
 - `response.audio.clear` — mute or duck local playback immediately; in-flight
   RTP plus the jitter buffer can otherwise play 100-300 ms of stale assistant
   audio after a barge-in
@@ -493,7 +495,8 @@ field on the matching command messages). When supplied:
 - A rejected start emits a typed `error` event carrying the same
   `generation_id`.
 - Response lifecycle events (`response.committed`, `response.done`,
-  `response.cancelled`, `response.audio.clear`, `interruption.detected`,
+  `response.cancelled`, `response.audio.suspend`, `response.audio.resume`,
+  `response.audio.clear`, `interruption.detected`,
   `interruption.false_positive`) carry `generation_id` alongside `response_id`
   when it is known.
 - `response.delta`/`response.commit` for a generation that is no longer active
@@ -529,6 +532,15 @@ When `response.audio.clear` / `audio_clear` arrives:
 2. Drop all queued assistant audio.
 3. Do not replay previously received audio for the cancelled response.
 
+When `response.audio.suspend` / `audio_suspend` arrives:
+
+1. Output silence immediately without consuming the current frame or queue.
+2. Preserve the media stream and all buffered audio.
+3. Store `candidate_id` as the suspension owner.
+
+When `response.audio.resume` / `audio_resume` arrives, resume only if its
+`candidate_id` matches the suspension owner. Ignore stale resumes.
+
 When `response.cancelled` / `response_cancelled` arrives:
 
 1. Mark the current assistant response as cancelled.
@@ -549,24 +561,28 @@ means "possible interruption", not "confirmed interruption".
 
 Client rules:
 
-- Do not stop playback on `input_audio_buffer.speech_started` alone.
+- Do not clear or discard playback on `input_audio_buffer.speech_started` alone.
 - A browser may immediately duck playback volume for feedback, but ducking is
   temporary and must not discard queued audio.
 - Do not drop queued audio on `input_audio_buffer.speech_stopped` alone.
-- Keep playing until Vox either rejects the candidate or sends
-  `response.audio.clear`.
+- Apply `response.audio.suspend` immediately when Vox acquires a candidate
+  playout lease. Output silence but retain the queue.
+- Apply only a matching `response.audio.resume`; `response.audio.clear` remains
+  the destructive confirmed-interruption command.
 
 Vox internally gives each VAD utterance an interruption-candidate identity.
 Partials, the final transcript, speech-stop state, acoustic evidence, and the
 confirmation timer must match that identity; delayed events from an older
-candidate cannot confirm a newer one. This identity is deliberately internal,
-so existing wire payloads do not change.
+candidate cannot confirm a newer one. The same `candidate_id` is carried by
+`response.audio.suspend` and `response.audio.resume`, so an older candidate
+cannot release a newer suspension.
 
 The default detector returns one of four outcomes:
 
-- `DEFER`: evidence is incomplete; keep the candidate while output continues.
+- `DEFER`: evidence is incomplete; keep the candidate and its reversible
+  playout suspension.
 - `PROVISIONAL_REJECT`: the evidence deadline elapsed, but a matching late STT
-  result may still make the decision authoritative.
+  result may still make the decision authoritative; release the suspension.
 - `CONFIRM`: cancel TTS and clear queued RTC audio.
 - `REJECT`: discard the candidate without changing the active response.
 
@@ -580,7 +596,8 @@ partial-stability, or EOU evidence supports them.
 
 Each candidate arms exactly one onset-based evidence deadline at
 `false_interruption_timeout_ms`; repeated VAD events for the same candidate do
-not slide it. Assistant output continues while evidence is pending. A supported
+not slide it. Future TTS audio is held, RTC emits silence without draining its
+queue, and browser playback is muted while evidence is pending. A supported
 partial or final transcript can confirm before the deadline. If no supporting
 transcript has arrived by expiry, the detector provisionally rejects the
 candidate and ends its timer, while preserving identity for a matching final
@@ -606,9 +623,11 @@ Run the deterministic regression corpus with:
 uv run python scripts/benchmark_interruptions.py
 ```
 
-The command exits non-zero if false-positive reduction, true-interruption
-recall, confirmation latency, category coverage, or ordinary STT
-cadence violates the checked acceptance thresholds.
+The command exits non-zero if detector false-positive reduction, recall,
+evidence timing, category coverage, or configured STT cadence violates its
+acceptance thresholds. It does not simulate RTC or browser buffers and must not
+be reported as physical time-to-quietness; the candidate playout regressions
+cover those ownership and queue-preservation contracts directly.
 
 ### 2. Rejected candidate / false positive
 
@@ -619,7 +638,8 @@ backchannel, or other non-interrupting audio, it emits
 Client rules:
 
 - Do not cancel the active response.
-- Keep or resume normal playback.
+- Resume only through the matching `response.audio.resume`, or release local
+  suspension when a terminal clear/cancel/done event invalidates the response.
 - Do not start a new assistant turn from this event.
 
 ### 3. Confirmed interruption
@@ -659,7 +679,8 @@ Client behavior:
 
 - Show listening/user-speaking UI.
 - If assistant audio is playing, treat this as a candidate interruption only.
-- Keep playing until Vox either resumes or sends `response.audio.clear`.
+- Wait for `response.audio.suspend` before changing authoritative playback
+  state.
 - Do not locally cancel assistant audio on this event alone. Vox may classify it as a cough or backchannel.
 
 ### `input_audio_buffer.speech_stopped`
@@ -806,6 +827,32 @@ Client behavior:
 - Treat any already-buffered audio for the current response as invalid.
 - Apply this to the matching `response_id` when present.
 
+### `response.audio.suspend`
+
+Reversible candidate playout suspension.
+
+Payload:
+
+- `response_id`
+- `candidate_id`
+- optional `generation_id`
+
+Client behavior:
+
+- Output silence immediately without pausing or replacing the media stream.
+- Preserve current and queued assistant audio.
+- Replace the suspension owner only when a newer suspend arrives.
+
+### `response.audio.resume`
+
+Releases a reversible candidate suspension.
+
+Client behavior:
+
+- Resume only when `candidate_id` matches the active suspension owner.
+- Continue the original response and its preserved queue.
+- Ignore stale resumes.
+
 ### `interruption.detected`
 
 Vox confirmed that user speech during assistant speech is a real barge-in.
@@ -946,7 +993,7 @@ Recommended transitions:
 | Incoming event | Client action |
 | --- | --- |
 | `session.created` | Move to `ready`; begin sending audio. |
-| `input_audio_buffer.speech_started` | Move to `user_speaking` unless assistant is speaking; if assistant is speaking, keep playback running until `audio.clear`. |
+| `input_audio_buffer.speech_started` | Move to `user_speaking` unless assistant is speaking; treat it as a non-destructive candidate signal. |
 | `turn.state_changed: listening` | Show user/listening state. |
 | `turn.eou.predicted` | Record semantic EOU decision for observability. |
 | `turn.state_changed: thinking` | Start LLM generation; send `response.start`, `response.delta`, `response.commit`. |
@@ -954,6 +1001,8 @@ Recommended transitions:
 | `response.audio.delta` | Enqueue assistant audio. |
 | `turn.state_changed: speaking` | Move to `agent_speaking`. |
 | `turn.state_changed: paused` | Legacy server only: move to `agent_paused_for_possible_barge_in`; keep current audio handling until further instruction. |
+| `response.audio.suspend` | Output silence immediately, retain queued audio, and store `candidate_id` as owner. |
+| `response.audio.resume` | Resume preserved audio only when `candidate_id` matches the owner. |
 | `interruption.detected` | Stop upstream generation for the active response and wait for clear/cancel lifecycle events. |
 | `interruption.false_positive` | Resume normal assistant playback state. |
 | `response.audio.clear` | Stop playback and drop queued assistant audio immediately. |
@@ -966,8 +1015,8 @@ Recommended transitions:
 ## Important Rules
 
 - Do not treat every `speech_started` during TTS as a confirmed interruption. Vox may reject it as a backchannel and resume TTS.
-- Only `response.audio.clear` tells the client to stop playback. `speech_started`,
-  `speech_stopped`, and `turn.state_changed: paused` do not.
+- `response.audio.suspend` tells the client to become quiet without discarding
+  playback; only `response.audio.clear` destroys current and queued audio.
 - Run client-side AEC when using loudspeaker playback; Vox should receive the post-AEC mic stream.
 - Do stop playback immediately on `response.audio.clear`.
 - Do stop sending response text on `response.cancelled`.
