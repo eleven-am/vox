@@ -192,6 +192,7 @@ def decode_pondsocket_command(event_name: str, payload: Any) -> ConversationComm
         return ResponseStartCommand(
             allow_interruptions=parse_allow_interruptions(message),
             generation_id=parse_response_generation_id(message),
+            supersedes_generation_id=_optional_string(message.get("supersedes_generation_id")),
             output=parse_response_output(message),
         )
     if event_name == "response.delta":

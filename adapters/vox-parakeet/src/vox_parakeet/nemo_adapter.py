@@ -23,6 +23,7 @@ from vox.core.adapter_runtime import (
     runtime_root as vox_runtime_root,
 )
 from vox.core.errors import ModelLoadError
+from vox.core.process_memory import process_memory_status
 from vox.core.types import (
     AdapterInfo,
     ModelFormat,
@@ -41,6 +42,7 @@ DEFAULT_MODEL_ID = "nvidia/parakeet-tdt-0.6b-v3"
 DEFAULT_VRAM_BYTES = 2_500_000_000
 DEFAULT_STARTUP_TIMEOUT_SECONDS = 1800.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 600.0
+DEFAULT_MAINTENANCE_TIMEOUT_SECONDS = 60.0
 STARTUP_TIMEOUT_ENV = "VOX_PARAKEET_STARTUP_TIMEOUT_S"
 REQUEST_TIMEOUT_ENV = "VOX_PARAKEET_REQUEST_TIMEOUT_S"
 WORKER_DEVICE_ENV = "VOX_PARAKEET_DEVICE"
@@ -226,6 +228,8 @@ class ParakeetNemoAdapter(STTAdapter):
         self._model_id: str = DEFAULT_MODEL_ID
         self._device: str = "cuda"
         self._lock = threading.RLock()
+        self._worker_memory: dict[str, Any] = {}
+        self._last_trim: dict[str, Any] | None = None
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
@@ -276,6 +280,7 @@ class ParakeetNemoAdapter(STTAdapter):
                     (runtime_dir / _RUNTIME_SENTINEL).unlink(missing_ok=True)
                 raise
             elapsed = time.perf_counter() - start
+            self._worker_memory = process_memory_status(pid=self._host.pid)
             logger.info("Parakeet NeMo model loaded in %.2fs", elapsed)
 
     def unload(self) -> None:
@@ -284,6 +289,8 @@ class ParakeetNemoAdapter(STTAdapter):
             self._host = None
             self._model_id = DEFAULT_MODEL_ID
             self._device = "cuda"
+            self._worker_memory = {}
+            self._last_trim = None
             if host is not None:
                 host.close()
         logger.info("Parakeet NeMo adapter unloaded")
@@ -334,6 +341,10 @@ class ParakeetNemoAdapter(STTAdapter):
             request_ms = int((time.perf_counter() - request_start) * 1000)
         finally:
             temp_path.unlink(missing_ok=True)
+
+        worker_memory = response.get("memory")
+        if isinstance(worker_memory, dict):
+            self._worker_memory = dict(worker_memory)
 
         text = str(response["text"])
         detected_language = language or response.get("language")
@@ -388,6 +399,33 @@ class ParakeetNemoAdapter(STTAdapter):
             duration_ms=duration_ms,
             model=self._model_id,
         )
+
+    def trim(self) -> None:
+        host = self._host
+        if host is None or not host.alive:
+            return
+        response = host.request({"op": "trim"}, timeout=DEFAULT_MAINTENANCE_TIMEOUT_SECONDS)
+        trim_status = response.get("memory_trim")
+        if isinstance(trim_status, dict):
+            self._last_trim = dict(trim_status)
+            if isinstance(trim_status.get("after"), dict):
+                self._worker_memory = dict(trim_status["after"])
+
+    def memory_status(self) -> dict[str, Any]:
+        host = self._host
+        if host is None or not host.alive:
+            return {"worker_alive": False}
+        current = process_memory_status(pid=host.pid)
+        status = {
+            "worker_alive": True,
+            **self._worker_memory,
+            "pid": current["pid"],
+            "rss_bytes": current["rss_bytes"],
+            "peak_rss_bytes": current["peak_rss_bytes"],
+        }
+        if self._last_trim is not None:
+            status["last_trim"] = self._last_trim
+        return status
 
     def estimate_vram_bytes(self, **kwargs: Any) -> int:
         return DEFAULT_VRAM_BYTES

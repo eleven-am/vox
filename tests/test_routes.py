@@ -23,6 +23,7 @@ from vox.core.types import (
     ModelFormat,
     ModelInfo,
     ModelType,
+    ProcessMemoryInfo,
     SynthesizeChunk,
     TranscribeResult,
     TranscriptSegment,
@@ -160,6 +161,7 @@ class MockScheduler(FakeScheduler):
     def memory_snapshot(self):
         return VramSnapshot(
             device=DeviceMemoryInfo(device="cuda", free_bytes=5_000, total_bytes=20_000),
+            process=ProcessMemoryInfo(rss_bytes=1_000, peak_rss_bytes=2_000),
             idle_trim_seconds=60,
             loaded_models=tuple(self._loaded),
             estimated_loaded_vram_bytes=4_000,
@@ -267,12 +269,15 @@ class TestSystemMemory:
         assert "policy" not in body
         assert set(body) == {
             "device",
+            "process",
             "idle_trim_seconds",
             "estimated_loaded_vram_bytes",
             "active_model_count",
             "models",
         }
         assert body["idle_trim_seconds"] == 60
+        assert body["process"]["rss_bytes"] == 1_000
+        assert body["process"]["peak_rss_bytes"] == 2_000
         assert body["device"]["device"] == "cuda"
         assert body["estimated_loaded_vram_bytes"] == 4_000
 

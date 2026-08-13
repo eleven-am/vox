@@ -244,6 +244,39 @@ def test_chatterbox_load_uses_target_runtime_and_synthesizes(tmp_path):
     assert model.generate_calls[0][1]["speed"] == 1.1
 
 
+def test_chatterbox_trim_keeps_model_loaded_and_records_memory(tmp_path):
+    _install_fake_chatterbox_modules()
+
+    with patch.dict(os.environ, {"VOX_HOME": str(tmp_path / "vox-home")}):
+        from vox_chatterbox.adapter import ChatterboxTurboAdapter
+
+        adapter = ChatterboxTurboAdapter()
+        adapter.load(str(tmp_path), "cuda")
+        trim_result = {
+            "before": {"rss_bytes": 2_000},
+            "after": {"rss_bytes": 1_000},
+            "gc_collected": 4,
+            "malloc_trimmed": True,
+        }
+        with (
+            patch("vox_chatterbox.adapter.trim_process_memory", return_value=trim_result) as trim,
+            patch(
+                "vox_chatterbox.adapter.runtime_memory_status",
+                return_value={"rss_bytes": 1_000, "torch_reserved_bytes": 3_000},
+            ),
+        ):
+            adapter.trim()
+            status = adapter.memory_status()
+
+    assert adapter.is_loaded is True
+    assert status == {
+        "rss_bytes": 1_000,
+        "torch_reserved_bytes": 3_000,
+        "last_trim": trim_result,
+    }
+    trim.assert_called_once_with(device="cuda")
+
+
 def test_chatterbox_forwards_supported_synthesis_params(tmp_path):
     model = _install_fake_chatterbox_modules(model=_FakeChatterboxModel())
 

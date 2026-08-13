@@ -18,9 +18,17 @@ from vox.core.device_placement import (
     detect_capabilities,
 )
 from vox.core.errors import ModelLoadError, ModelTrimUnsupportedError
+from vox.core.process_memory import cgroup_memory_status, process_memory_status
 from vox.core.runtime import detect_runtime_capabilities
 from vox.core.tasks import reap_task
-from vox.core.types import DeviceMemoryInfo, LoadedModelInfo, ModelInfo, VramSnapshot, parse_model_name
+from vox.core.types import (
+    DeviceMemoryInfo,
+    LoadedModelInfo,
+    ModelInfo,
+    ProcessMemoryInfo,
+    VramSnapshot,
+    parse_model_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -487,6 +495,7 @@ class Scheduler:
         if not loaded.adapter.supports_trim:
             return False
         logger.info("Trimming non-essential memory for %s", full_name)
+        before = self._adapter_memory_status(loaded)
 
         def trim_and_clear() -> None:
             loaded.adapter.trim()
@@ -497,6 +506,15 @@ class Scheduler:
         except Exception as error:
             logger.error("Error trimming %s: %s", full_name, error)
             return False
+        after = self._adapter_memory_status(loaded)
+        logger.info(
+            "Trimmed non-essential memory for %s rss_bytes=%s->%s torch_reserved_bytes=%s->%s",
+            full_name,
+            before.get("rss_bytes"),
+            after.get("rss_bytes"),
+            before.get("torch_reserved_bytes"),
+            after.get("torch_reserved_bytes"),
+        )
         return True
 
     def _select_trimmable_locked(self, *, min_idle_seconds: int = 0) -> list[tuple[str, _LoadedModel]]:
@@ -912,8 +930,17 @@ class Scheduler:
 
     def memory_snapshot(self) -> VramSnapshot:
         loaded = tuple(self.list_loaded())
+        process = process_memory_status()
+        cgroup = cgroup_memory_status()
         return VramSnapshot(
             device=_device_memory_snapshot("cuda"),
+            process=ProcessMemoryInfo(
+                rss_bytes=process["rss_bytes"],
+                peak_rss_bytes=process["peak_rss_bytes"],
+                cgroup_current_bytes=cgroup["current_bytes"],
+                cgroup_peak_bytes=cgroup["peak_bytes"],
+                cgroup_limit_bytes=cgroup["limit_bytes"],
+            ),
             idle_trim_seconds=self._idle_trim_seconds,
             loaded_models=loaded,
             estimated_loaded_vram_bytes=sum(max(int(m.vram_bytes), 0) for m in loaded if m.device == "cuda"),

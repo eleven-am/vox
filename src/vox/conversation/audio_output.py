@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
+
+DEFAULT_MAX_PENDING_AUDIO_BYTES = 512 * 1024
 
 
 @dataclass(frozen=True)
@@ -12,17 +15,30 @@ class PendingAudio:
 
 
 class ResponseAudioOutput:
-    def __init__(self, *, pace_to_playout: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        pace_to_playout: bool = False,
+        max_pending_bytes: int = DEFAULT_MAX_PENDING_AUDIO_BYTES,
+    ) -> None:
         self._pace_to_playout = pace_to_playout
         self._pending: list[PendingAudio] = []
+        self._pending_bytes = 0
+        self._max_pending_bytes = max(1, int(max_pending_bytes))
         self._sequence = 0
         self._playout_end_at = 0.0
         self._paused = False
         self._pause_owner: int | None = None
+        self._resumed = asyncio.Event()
+        self._resumed.set()
 
     @property
     def pending_count(self) -> int:
         return len(self._pending)
+
+    @property
+    def pending_bytes(self) -> int:
+        return self._pending_bytes
 
     @property
     def paused(self) -> bool:
@@ -45,6 +61,7 @@ class ResponseAudioOutput:
 
     def clear_pending(self) -> None:
         self._pending = []
+        self._pending_bytes = 0
 
     def clear_all(self) -> None:
         self.clear_pending()
@@ -55,6 +72,7 @@ class ResponseAudioOutput:
             return False
         self._paused = True
         self._pause_owner = owner
+        self._resumed.clear()
         self.reset_playout()
         return True
 
@@ -65,6 +83,7 @@ class ResponseAudioOutput:
             return False
         self._paused = False
         self._pause_owner = None
+        self._resumed.set()
         return True
 
     def flush(self) -> None:
@@ -74,6 +93,7 @@ class ResponseAudioOutput:
         self.clear_pending()
         self._paused = False
         self._pause_owner = None
+        self._resumed.set()
         self.reset_playout()
 
     def next_sequence(self) -> int:
@@ -81,9 +101,20 @@ class ResponseAudioOutput:
         return self._sequence
 
     def hold(self, audio: bytes, sample_rate: int, sequence: int) -> None:
+        if self._pending_bytes + len(audio) > self._max_pending_bytes:
+            raise BufferError("pending response audio limit exceeded")
         self._pending.append(PendingAudio(audio=audio, sample_rate=sample_rate, sequence=sequence))
+        self._pending_bytes += len(audio)
 
     def hold_if_paused(self, audio: bytes, sample_rate: int, sequence: int) -> bool:
+        if not self._paused:
+            return False
+        self.hold(audio, sample_rate, sequence)
+        return True
+
+    async def hold_or_wait_if_paused(self, audio: bytes, sample_rate: int, sequence: int) -> bool:
+        while self._paused and self._pending_bytes + len(audio) > self._max_pending_bytes:
+            await self._resumed.wait()
         if not self._paused:
             return False
         self.hold(audio, sample_rate, sequence)
@@ -92,6 +123,7 @@ class ResponseAudioOutput:
     def pop_pending_batch(self) -> list[PendingAudio]:
         pending = self._pending
         self._pending = []
+        self._pending_bytes = 0
         return pending
 
     def pending_resume_batches(self):

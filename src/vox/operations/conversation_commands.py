@@ -24,6 +24,7 @@ class AudioAppendCommand:
 class ResponseStartCommand:
     allow_interruptions: bool = True
     generation_id: str | None = None
+    supersedes_generation_id: str | None = None
     output: ResponseOutputOptions | None = None
 
 

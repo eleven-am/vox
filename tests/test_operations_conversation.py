@@ -52,6 +52,7 @@ from vox.operations.conversation import (
     ConvResponseCommittedEvent,
     ConvResponseCreatedEvent,
     ConvResponseDoneEvent,
+    ConvResponseSpokenTextEvent,
     ConvSessionCreatedEvent,
     ConvTranscriptDeltaEvent,
     ConvTranscriptDoneEvent,
@@ -487,6 +488,28 @@ def test_serialize_conversation_event_preserves_response_audio_contract():
         "response_id": "resp_1",
         "sequence": 3,
     }
+
+
+def test_spoken_text_event_round_trips_without_changing_its_accuracy_status():
+    event = ConvResponseSpokenTextEvent(
+        response_id="resp_1",
+        generation_id="gen-1",
+        spoken_text="The words actually spoken",
+        partial_status="matched",
+        played_audio_ms=640,
+    )
+
+    wire = serialize_conversation_event(event)
+
+    assert wire == {
+        "type": "response.spoken_text.resolved",
+        "response_id": "resp_1",
+        "generation_id": "gen-1",
+        "spoken_text": "The words actually spoken",
+        "partial_status": "matched",
+        "played_audio_ms": 640,
+    }
+    assert parse_conversation_wire_event(wire) == event
 
 
 def test_serialize_conversation_event_uses_operation_wire_error_constant():

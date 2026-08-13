@@ -7,7 +7,7 @@ import sys
 import threading
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -157,7 +157,8 @@ def test_handler_transcribe_with_word_timestamps_returns_response_shape(tmp_path
     wav_path = _write_wav(tmp_path)
     handle = worker.build_handler(fake_model)
 
-    response = handle({"op": "transcribe", "path": str(wav_path), "word_timestamps": True})
+    with patch.object(worker, "runtime_memory_status", return_value={"rss_bytes": 123}):
+        response = handle({"op": "transcribe", "path": str(wav_path), "word_timestamps": True})
 
     assert response == {
         "text": "hello world",
@@ -166,6 +167,7 @@ def test_handler_transcribe_with_word_timestamps_returns_response_shape(tmp_path
             {"word": "hello", "start_ms": 0, "end_ms": 640},
             {"word": "world", "start_ms": 800, "end_ms": 1600},
         ],
+        "memory": {"rss_bytes": 123},
     }
     assert fake_model.transcribe_calls == [
         {"paths": [str(wav_path)], "batch_size": 1, "timestamps": True, "return_hypotheses": True}
@@ -177,13 +179,30 @@ def test_handler_transcribe_without_word_timestamps_returns_text_only(tmp_path: 
     wav_path = _write_wav(tmp_path)
     handle = worker.build_handler(fake_model)
 
-    response = handle({"op": "transcribe", "path": str(wav_path), "word_timestamps": False})
+    with patch.object(worker, "runtime_memory_status", return_value={"rss_bytes": 123}):
+        response = handle({"op": "transcribe", "path": str(wav_path), "word_timestamps": False})
 
-    assert response == {"text": "plain text", "language": None, "words": []}
+    assert response == {"text": "plain text", "language": None, "words": [], "memory": {"rss_bytes": 123}}
     assert fake_model.transcribe_calls == [{"paths": [str(wav_path)], "batch_size": 1}]
 
 
-@pytest.mark.parametrize("op", ["trim", "synthesize"])
+def test_handler_trim_returns_before_and_after_memory():
+    handle = worker.build_handler(_FakeNemoModel())
+    result = {
+        "before": {"rss_bytes": 2_000},
+        "after": {"rss_bytes": 1_000},
+        "gc_collected": 3,
+        "malloc_trimmed": True,
+    }
+
+    with patch.object(worker, "trim_process_memory", return_value=result) as trim:
+        response = handle({"op": "trim"})
+
+    assert response == {"memory_trim": result}
+    trim.assert_called_once_with(device="cuda")
+
+
+@pytest.mark.parametrize("op", ["synthesize", "status"])
 def test_handler_rejects_unknown_op(op: str):
     handle = worker.build_handler(_FakeNemoModel())
 
@@ -193,9 +212,7 @@ def test_handler_rejects_unknown_op(op: str):
 
 def test_transcribe_retries_once_after_cuda_graph_failure(tmp_path: Path):
     fake_model = _FakeNemoModel(text="after retry")
-    fake_model.transcribe_errors.append(
-        RuntimeError("Called CUDAGraph::replay without a preceding successful capture")
-    )
+    fake_model.transcribe_errors.append(RuntimeError("Called CUDAGraph::replay without a preceding successful capture"))
     wav_path = _write_wav(tmp_path)
 
     response = worker.transcribe(fake_model, str(wav_path), word_timestamps=False)
@@ -321,9 +338,7 @@ def test_main_proceeds_when_parent_pid_env_absent(monkeypatch: pytest.MonkeyPatc
     assert order == ["armed", "loaded"]
 
 
-def test_main_loads_model_before_ready_and_serves_transcribe(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-):
+def test_main_loads_model_before_ready_and_serves_transcribe(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     fake_model = _FakeNemoModel(text="ready path")
     fake_model_cls = _install_fake_nemo(model=fake_model)
     wav_path = _write_wav(tmp_path)
@@ -348,7 +363,10 @@ def test_main_loads_model_before_ready_and_serves_transcribe(
             )
             stream.flush()
             response = json.loads(stream.readline())
-            assert response == {"text": "ready path", "language": None, "words": []}
+            assert response["text"] == "ready path"
+            assert response["language"] is None
+            assert response["words"] == []
+            assert response["memory"]["pid"] == os.getpid()
     finally:
         parent_sock.close()
         child_sock.close()

@@ -49,14 +49,14 @@ async def _run_synthesis(adapter: RecordingTTSAdapter, *texts: str):
         output=ResponseOutputConfig(model="recording:1", voice="voice-a", language="fr"),
     )
     audio_started = 0
-    chunks: list[tuple[bytes, int]] = []
+    chunks: list[tuple[bytes, int, int]] = []
 
     async def on_audio_started() -> None:
         nonlocal audio_started
         audio_started += 1
 
-    async def on_audio_chunk(audio: bytes, sample_rate: int) -> None:
-        chunks.append((audio, sample_rate))
+    async def on_audio_chunk(audio: bytes, sample_rate: int, span_id: int) -> None:
+        chunks.append((audio, sample_rate, span_id))
 
     for text in texts:
         await stream.append_text(text)
@@ -90,7 +90,7 @@ async def test_streaming_deltas_are_buffered_until_sentence_boundary() -> None:
         ("Hello world.", "voice-a", "fr"),
         ("Next sentence.", "voice-a", "fr"),
     ]
-    assert chunks == [(b"\x01\x02", 24_000), (b"\x01\x02", 24_000)]
+    assert chunks == [(b"\x01\x02", 24_000, 1), (b"\x01\x02", 24_000, 2)]
     assert stream.assistant_context_text(separator=" ") == "Hello world. Next sentence."
 
 
@@ -106,7 +106,7 @@ async def test_adapter_input_cap_splits_long_text_without_losing_heard_context()
     assert result is True
     assert audio_started == 1
     assert [call[0] for call in adapter.calls] == ["Alpha beta", "gamma delta."]
-    assert chunks == [(b"\x01\x02", 24_000), (b"\x01\x02", 24_000)]
+    assert chunks == [(b"\x01\x02", 24_000, 1), (b"\x01\x02", 24_000, 2)]
     assert stream.assistant_context_text(separator=" ") == "Alpha beta gamma delta."
 
 
@@ -120,4 +120,4 @@ async def test_final_empty_chunks_do_not_mark_audio_started_or_heard() -> None:
     assert audio_started == 0
     assert chunks == []
     assert stream.assistant_context_text(separator=" ") == "silent response."
-    assert stream.heard_parts == []
+    assert stream.spoken_context_text() == ""

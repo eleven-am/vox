@@ -98,13 +98,13 @@ async def test_open_response_stream_reports_successful_append_and_end():
     assert not AppendResult.STREAM_ENDED.is_accepted
 
 
-def test_response_stream_assistant_context_prefers_heard_text():
-    stream = ResponseStream.create(response_id="resp_1", output=OUTPUT)
-    stream.text_parts.extend(["unheard ", "text"])
+def test_response_stream_tracks_generated_context_separately_from_spoken_text():
+    stream = ResponseStream.create(response_id="resp_1", output=OUTPUT, playout_observed=True)
+    stream.text_parts.extend(["generated ", "text"])
+    span_id = stream.spoken_history.begin_span("spoken text")
+    stream.spoken_history.register_audio(span_id, b"\x00\x00" * 160)
+    stream.spoken_history.finish_span(span_id)
+    stream.spoken_history.observe_playout(b"\x00\x00" * 160, 16_000)
 
-    assert stream.assistant_context_text() == "unheard text"
-
-    stream.add_heard_text("heard ")
-    stream.add_heard_text("text")
-
-    assert stream.assistant_context_text() == "heard text"
+    assert stream.assistant_context_text() == "generated text"
+    assert stream.spoken_context_text() == "spoken text"

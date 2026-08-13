@@ -26,6 +26,7 @@ from vox.core.adapter_runtime import (
 from vox.core.adapter_runtime import (
     runtime_root as vox_runtime_root,
 )
+from vox.core.process_memory import runtime_memory_status, trim_process_memory
 from vox.core.types import AdapterInfo, ModelFormat, ModelType, SynthesisParameterInfo, SynthesizeChunk, VoiceInfo
 from vox.operations.errors import InvalidConfigError
 
@@ -391,6 +392,7 @@ class _BaseChatterboxAdapter(TTSAdapter):
         self._model: Any | None = None
         self._device = "cpu"
         self._sample_rate = CHATTERBOX_SAMPLE_RATE
+        self._last_trim: dict[str, Any] | None = None
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
@@ -420,6 +422,7 @@ class _BaseChatterboxAdapter(TTSAdapter):
         self._model = None
         self._device = "cpu"
         self._sample_rate = CHATTERBOX_SAMPLE_RATE
+        self._last_trim = None
 
     @property
     def is_loaded(self) -> bool:
@@ -427,6 +430,17 @@ class _BaseChatterboxAdapter(TTSAdapter):
 
     def prepare_runtime(self) -> None:
         _load_chatterbox_class(self.runtime_module, self.runtime_class)
+
+    def trim(self) -> None:
+        if self._model is None:
+            return
+        self._last_trim = trim_process_memory(device=self._device)
+
+    def memory_status(self) -> dict[str, Any]:
+        status = runtime_memory_status(device=self._device)
+        if self._last_trim is not None:
+            status["last_trim"] = self._last_trim
+        return status
 
     def synthesis_parameters(self) -> tuple[SynthesisParameterInfo, ...]:
         return (

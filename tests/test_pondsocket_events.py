@@ -54,6 +54,7 @@ def test_decode_rtc_candidate_and_completion_carry_generation():
             "generation": 7,
         },
     )
+
     complete = decode_pondsocket_command(
         "rtc.ice_candidate",
         {"candidate": None, "generation": 7},
@@ -89,6 +90,21 @@ def test_decode_response_start_preserves_typed_output_override():
             speed=0.9,
             params={"temperature": 0.7},
         ),
+    )
+
+
+def test_decode_response_start_preserves_supersession_identity():
+    command = decode_pondsocket_command(
+        "response.start",
+        {
+            "generation_id": "gen-new",
+            "supersedes_generation_id": "gen-old",
+        },
+    )
+
+    assert command == ResponseStartCommand(
+        generation_id="gen-new",
+        supersedes_generation_id="gen-old",
     )
 
 

@@ -102,6 +102,7 @@ class ConversationRuntime:
             await self.orchestrator.start_response(
                 allow_interruptions=command.allow_interruptions,
                 generation_id=command.generation_id,
+                supersedes_generation_id=command.supersedes_generation_id,
                 output=command.output,
             )
             return

@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 import numpy as np
 import pytest
 
-from tests.fakes import FakeScheduler
+from tests.fakes import FakeScheduler, FakeSTTAdapter
 from vox.conversation import (
     HeuristicInterruptClassifier,
     TimerKey,
@@ -41,6 +41,7 @@ from vox.conversation.session import (
     WIRE_RESPONSE_COMMITTED,
     WIRE_RESPONSE_CREATED,
     WIRE_RESPONSE_DONE,
+    WIRE_RESPONSE_SPOKEN_TEXT,
     WIRE_STATE_CHANGED,
     WIRE_TRANSCRIPT_DELTA,
     WIRE_TRANSCRIPT_DONE,
@@ -423,7 +424,12 @@ class TestInterruptionEventContracts:
             },
             {"type": WIRE_RESPONSE_COMMITTED, "response_id": "resp_1", "generation_id": "gen-1"},
             {"type": WIRE_RESPONSE_DONE, "response_id": "resp_1", "generation_id": "gen-1"},
-            {"type": WIRE_RESPONSE_CANCELLED, "response_id": "resp_1", "generation_id": "gen-1"},
+            {
+                "type": WIRE_RESPONSE_CANCELLED,
+                "response_id": "resp_1",
+                "generation_id": "gen-1",
+                "reason": "client_cancelled",
+            },
             {
                 "type": WIRE_ERROR,
                 "message": "boom",
@@ -452,6 +458,100 @@ class TestInterruptionEventContracts:
             },
             {"type": WIRE_RESPONSE_DONE, "response_id": "resp_1"},
         ]
+
+
+class TestResponseSupersessionAndEventContracts:
+    @pytest.mark.asyncio
+    async def test_supersede_atomically_clears_old_generation_before_replacement(self):
+        session, collector, _ = _build_session(
+            adapter=ScriptedTTSAdapter(chunks=30, inter_chunk_delay=0.01)
+        )
+        await session.start()
+        old = await session.start_response_stream(generation_id="gen-old")
+        assert old.accepted
+        await session.append_response_text("The original answer", expected_response_id=old.response_id)
+        await session.commit_response_stream(expected_response_id=old.response_id)
+        await asyncio.sleep(0.03)
+
+        replacement = await session.start_response_stream(
+            generation_id="gen-new",
+            supersedes_generation_id="gen-old",
+        )
+
+        assert replacement.accepted
+        event_types = [event["type"] for event in collector.events]
+        created_indexes = [i for i, value in enumerate(event_types) if value == WIRE_RESPONSE_CREATED]
+        clear_index = event_types.index(WIRE_AUDIO_CLEAR)
+        cancelled_index = event_types.index(WIRE_RESPONSE_CANCELLED)
+        assert clear_index < cancelled_index < created_indexes[-1]
+        cancelled = collector.by_type(WIRE_RESPONSE_CANCELLED)[0]
+        assert cancelled["reason"] == "superseded"
+        assert cancelled["generation_id"] == "gen-old"
+        assert cancelled["superseded_by_generation_id"] == "gen-new"
+        created = collector.by_type(WIRE_RESPONSE_CREATED)[-1]
+        assert created["generation_id"] == "gen-new"
+        assert created["supersedes_generation_id"] == "gen-old"
+        assert session.active_generation_id == "gen-new"
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_stale_supersede_cannot_clear_active_response(self):
+        session, collector, _ = _build_session()
+        await session.start()
+        active = await session.start_response_stream(generation_id="gen-active")
+
+        result = await session.start_response_stream(
+            generation_id="gen-new",
+            supersedes_generation_id="gen-stale",
+        )
+
+        assert not result.accepted
+        assert result.rejection is not None
+        assert result.rejection.code == "response_stale_generation"
+        assert session.active_generation_id == "gen-active"
+        assert not collector.by_type(WIRE_AUDIO_CLEAR)
+        assert active.response_id == collector.by_type(WIRE_RESPONSE_CREATED)[0]["response_id"]
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_user_speech_wins_supersede_race_without_clearing_response(self):
+        session, collector, _ = _build_session()
+        await session.start()
+        await session.start_response_stream(generation_id="gen-active")
+        session._input_speech_active = True
+
+        result = await session.start_response_stream(
+            generation_id="gen-new",
+            supersedes_generation_id="gen-active",
+        )
+
+        assert not result.accepted
+        assert result.rejection is not None
+        assert result.rejection.code == ERROR_CODE_RESPONSE_REJECTED_USER_SPEECH
+        assert session.active_generation_id == "gen-active"
+        assert not collector.by_type(WIRE_AUDIO_CLEAR)
+
+        await session.close()
+
+    @pytest.mark.asyncio
+    async def test_supersede_releases_candidate_owned_suspension(self):
+        session, _, _ = _build_session()
+        await session.start()
+        await session.start_response_stream(generation_id="gen-old")
+        session._audio_output.pause(41)
+
+        result = await session.start_response_stream(
+            generation_id="gen-new",
+            supersedes_generation_id="gen-old",
+        )
+
+        assert result.accepted
+        assert not session._audio_output.paused
+        assert session._audio_output.pause_owner is None
+
+        await session.close()
 
     @pytest.mark.asyncio
     async def test_detected_interrupt_event_shape_is_owned_by_session_helper(self, caplog):
@@ -1498,6 +1598,81 @@ class TestTTSHappyPath:
 
 class TestBargeIn:
     @pytest.mark.asyncio
+    async def test_spoken_text_resolution_uses_playout_and_runs_before_user_transcript(self):
+        class ModelScheduler:
+            def __init__(self, stt, tts) -> None:
+                self.stt = stt
+                self.tts = tts
+
+            @asynccontextmanager
+            async def acquire(self, name: str):
+                yield self.stt if name == "fake-stt:latest" else self.tts
+
+        tts = ScriptedTTSAdapter(chunks=20, inter_chunk_delay=0.01)
+        stt = FakeSTTAdapter(text="The browser retains the audio queue")
+        collector = EventCollector()
+        session = ConversationSession(
+            scheduler=ModelScheduler(stt, tts),
+            config=ConversationConfig(
+                stt_model="fake-stt:latest",
+                tts_model="fake-tts:latest",
+                voice="default",
+                language="en",
+                policy=TurnPolicy(aec_warmup_ms=0),
+                interrupt_classifier=_AcceptAllClassifier(),
+                output_playout_observed=True,
+            ),
+            on_event=collector,
+        )
+        await session.start()
+        await session.submit_response_text(
+            "The browser retains the audio queue so that it can resume later."
+        )
+        for _ in range(100):
+            await asyncio.sleep(0.005)
+            audio_events = collector.by_type(WIRE_AUDIO_DELTA)
+            if audio_events:
+                event = audio_events[0]
+                session.observe_output_playout(event["audio_pcm16"], event["sample_rate"])
+                break
+
+        await session._forward_stream_event(SpeechStarted(timestamp_ms=1000, utterance_id=1))
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="Please stop",
+                is_partial=True,
+                start_ms=1000,
+                end_ms=1600,
+                audio_duration_ms=600,
+                utterance_id=1,
+            )
+        )
+
+        assert collector.by_type(WIRE_RESPONSE_CANCELLED)
+        assert collector.by_type(WIRE_RESPONSE_SPOKEN_TEXT) == []
+
+        await session._forward_stream_event(
+            StreamTranscript(
+                text="Please stop",
+                start_ms=1000,
+                end_ms=1800,
+                audio_duration_ms=800,
+                utterance_id=1,
+            )
+        )
+        await _drain_events(session)
+
+        spoken = collector.by_type(WIRE_RESPONSE_SPOKEN_TEXT)
+        assert len(spoken) == 1
+        assert spoken[0]["spoken_text"] == "The browser retains the audio queue"
+        assert spoken[0]["partial_status"] == "matched"
+        event_types = [event["type"] for event in collector.events]
+        assert event_types.index(WIRE_RESPONSE_CANCELLED) < event_types.index(WIRE_RESPONSE_SPOKEN_TEXT)
+        assert event_types.index(WIRE_RESPONSE_SPOKEN_TEXT) < event_types.index(WIRE_TRANSCRIPT_DONE)
+
+        await session.close()
+
+    @pytest.mark.asyncio
     async def test_empty_stt_from_real_pipeline_suspends_then_resumes_without_cancelling(self):
         from vox.core.adapter import STTAdapter
         from vox.core.types import TranscribeResult
@@ -1880,19 +2055,23 @@ class TestBargeIn:
         await session.close()
 
     @pytest.mark.asyncio
-    async def test_interrupted_response_only_adds_heard_text_to_eou_history(self):
+    async def test_interrupted_response_only_adds_played_text_to_eou_history(self):
         tts = ScriptedTTSAdapter(chunks=1, inter_chunk_delay=0.01)
         session, _, _ = _build_session(
             adapter=tts,
             policy=TurnPolicy(min_interrupt_duration_ms=50, max_endpointing_delay_ms=200, aec_warmup_ms=0),
         )
+        session._config.output_playout_observed = True
         await session.start()
 
         await session.append_response_text("Hello world. Second sentence is not heard yet")
         for _ in range(50):
             await asyncio.sleep(0.01)
             stream = session._response_stream
-            if tts.texts == ["Hello world."] and stream is not None and stream.heard_parts:
+            audio_events = session._on_event.by_type(WIRE_AUDIO_DELTA)
+            if tts.texts == ["Hello world."] and stream is not None and audio_events:
+                for event in audio_events:
+                    session.observe_output_playout(event["audio_pcm16"], event["sample_rate"])
                 break
         assert tts.texts == ["Hello world."]
 
@@ -1912,7 +2091,7 @@ class TestBargeIn:
 
         history = session._pipeline._conversation_history
         assistant_turns = [turn.content for turn in history if turn.role == "assistant"]
-        assert assistant_turns == ["Hello world."]
+        assert assistant_turns == []
 
         await session.close()
 

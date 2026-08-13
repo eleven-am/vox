@@ -211,18 +211,29 @@ def _on_timer_endpointing(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState 
     return TurnState.THINKING, []
 
 
-def _invalidate_response_actions() -> list[TurnAction]:
+def _invalidate_response_actions(**payload) -> list[TurnAction]:
     return [
-        act(TurnActionType.FLUSH_OUTPUT),
-        act(TurnActionType.CANCEL_RESPONSE),
-        act(TurnActionType.STOP_TTS),
+        act(TurnActionType.FLUSH_OUTPUT, **payload),
+        act(TurnActionType.CANCEL_RESPONSE, **payload),
+        act(TurnActionType.STOP_TTS, **payload),
     ]
 
 
 def _on_timer_confirm_interrupt(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
     if e.payload.get("key") != TimerKey.CONFIRM_INTERRUPT.value:
         return None, []
-    return TurnState.INTERRUPTED, _invalidate_response_actions()
+    return TurnState.INTERRUPTED, _invalidate_response_actions(cancellation_reason="interrupted")
+
+
+def _on_response_supersede(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
+    payload = {
+        "cancellation_reason": "superseded",
+        "superseded_by_generation_id": e.payload.get("superseded_by_generation_id"),
+    }
+    return TurnState.THINKING, [
+        cancel_timer(TimerKey.CONFIRM_INTERRUPT),
+        *_invalidate_response_actions(**payload),
+    ]
 
 
 def _on_timer_elapsed_listening(m: TurnStateMachine, e: TurnEvent) -> tuple[TurnState | None, list[TurnAction]]:
@@ -317,6 +328,10 @@ _TRANSITIONS: dict[tuple[TurnState, TurnEventType], _TransitionFn] = {
     (TurnState.SPEAKING, TurnEventType.CLIENT_CANCEL): _on_client_cancel_speaking,
     (TurnState.PAUSED, TurnEventType.CLIENT_CANCEL): _on_client_cancel_paused,
     (TurnState.INTERRUPTED, TurnEventType.CLIENT_CANCEL): _on_client_cancel_interrupted,
+    (TurnState.IDLE, TurnEventType.RESPONSE_SUPERSEDE): _on_response_supersede,
+    (TurnState.THINKING, TurnEventType.RESPONSE_SUPERSEDE): _on_response_supersede,
+    (TurnState.SPEAKING, TurnEventType.RESPONSE_SUPERSEDE): _on_response_supersede,
+    (TurnState.PAUSED, TurnEventType.RESPONSE_SUPERSEDE): _on_response_supersede,
     (TurnState.IDLE, TurnEventType.RECOVER): _on_recover,
     (TurnState.LISTENING, TurnEventType.RECOVER): _on_recover,
     (TurnState.THINKING, TurnEventType.RECOVER): _on_recover,

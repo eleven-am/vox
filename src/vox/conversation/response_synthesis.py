@@ -14,7 +14,7 @@ from vox.core.synthesis_validation import (
 )
 
 AudioStartedCallback = Callable[[], Awaitable[None]]
-AudioChunkCallback = Callable[[bytes, int], Awaitable[None]]
+AudioChunkCallback = Callable[[bytes, int, int], Awaitable[None]]
 
 
 async def synthesize_response_stream(
@@ -106,6 +106,7 @@ async def _synthesize_text(
     on_audio_chunk: AudioChunkCallback,
 ) -> bool:
     for chunk_text in split_for_tts(text, max_chars=max_input_chars):
+        span_id = stream.spoken_history.begin_span(chunk_text)
         chunk_started = False
         synthesis_kwargs: dict[str, Any] = {
             "voice": voice,
@@ -124,8 +125,10 @@ async def _synthesize_text(
                 audio_started = True
                 await on_audio_started()
             chunk_started = True
-            await on_audio_chunk(chunk.audio, chunk.sample_rate)
+            await on_audio_chunk(chunk.audio, chunk.sample_rate, span_id)
         if chunk_started:
-            stream.add_heard_text(chunk_text)
+            stream.spoken_history.finish_span(span_id)
+        else:
+            stream.spoken_history.discard_span(span_id)
 
     return audio_started

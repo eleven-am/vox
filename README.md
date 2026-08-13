@@ -187,6 +187,19 @@ vox rm kokoro-tts:v1.0
 vox voices kokoro-tts:v1.0
 ```
 
+### Memory lifecycle
+
+`vox serve --ttl SECONDS` unloads idle model weights after the configured
+deadline. `--ttl 0` keeps weights resident for the lowest next-request latency.
+`--idle-trim-ttl SECONDS` is different: supported adapters release transient
+request caches after becoming idle while keeping model weights loaded.
+
+`GET /v1/system/memory` reports process RSS and high-water RSS, container cgroup
+current/peak/limit bytes when available, accelerator memory, and per-model
+backend memory. `POST /v1/system/trim` trims every idle adapter that supports
+that contract. `POST /v1/models/unload_idle` unloads idle weights and therefore
+may add model-load latency to the next request.
+
 ## Streaming APIs
 
 Use the unary HTTP endpoints for short bounded requests.

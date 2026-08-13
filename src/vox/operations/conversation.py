@@ -35,6 +35,7 @@ from vox.conversation.session import (
     WIRE_RESPONSE_COMMITTED,
     WIRE_RESPONSE_CREATED,
     WIRE_RESPONSE_DONE,
+    WIRE_RESPONSE_SPOKEN_TEXT,
     WIRE_SPEECH_STARTED,
     WIRE_SPEECH_STOPPED,
     WIRE_STATE_CHANGED,
@@ -64,6 +65,7 @@ WIRE_RTC_CLIENT_DISCONNECTED = "rtc.client.disconnected"
 LIFECYCLE_CRITICAL_WIRE_TYPES = frozenset(
     {
         WIRE_RESPONSE_CANCELLED,
+        WIRE_RESPONSE_SPOKEN_TEXT,
         WIRE_AUDIO_CLEAR,
         WIRE_AUDIO_SUSPEND,
         WIRE_AUDIO_RESUME,
@@ -174,6 +176,7 @@ class ConvTranscriptDoneEvent:
 class ConvResponseCreatedEvent:
     response_id: str = ""
     generation_id: str | None = None
+    supersedes_generation_id: str | None = None
     output: ResponseOutputConfig | None = None
 
 
@@ -190,6 +193,8 @@ class ConvAudioDeltaEvent:
 class ConvAudioClearEvent:
     response_id: str = ""
     generation_id: str | None = None
+    reason: str | None = None
+    superseded_by_generation_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -215,6 +220,17 @@ class ConvResponseDoneEvent:
 @dataclass(frozen=True)
 class ConvResponseCancelledEvent:
     response_id: str = ""
+    generation_id: str | None = None
+    reason: str = "client_cancelled"
+    superseded_by_generation_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ConvResponseSpokenTextEvent:
+    response_id: str
+    spoken_text: str
+    partial_status: str
+    played_audio_ms: int
     generation_id: str | None = None
 
 
@@ -321,6 +337,7 @@ ConvEvent = (
     | ConvAudioResumeEvent
     | ConvResponseDoneEvent
     | ConvResponseCancelledEvent
+    | ConvResponseSpokenTextEvent
     | ConvResponseCommittedEvent
     | ConvInterruptionDetectedEvent
     | ConvInterruptionFalsePositiveEvent
@@ -374,6 +391,8 @@ def serialize_conversation_event(event: ConvEvent) -> dict | None:
         )
         if event.output is not None:
             payload["output"] = event.output.to_payload()
+        if event.supersedes_generation_id:
+            payload["supersedes_generation_id"] = event.supersedes_generation_id
         return payload
     if isinstance(event, ConvAudioDeltaEvent):
         return {
@@ -385,10 +404,15 @@ def serialize_conversation_event(event: ConvEvent) -> dict | None:
             "sequence": event.sequence,
         }
     if isinstance(event, ConvAudioClearEvent):
-        return _with_generation_id(
+        payload = _with_generation_id(
             {"type": WIRE_AUDIO_CLEAR, "response_id": event.response_id},
             event.generation_id,
         )
+        if event.reason:
+            payload["reason"] = event.reason
+        if event.superseded_by_generation_id:
+            payload["superseded_by_generation_id"] = event.superseded_by_generation_id
+        return payload
     if isinstance(event, ConvAudioSuspendEvent):
         return _with_generation_id(
             {
@@ -413,8 +437,26 @@ def serialize_conversation_event(event: ConvEvent) -> dict | None:
             event.generation_id,
         )
     if isinstance(event, ConvResponseCancelledEvent):
+        payload = _with_generation_id(
+            {
+                "type": WIRE_RESPONSE_CANCELLED,
+                "response_id": event.response_id,
+                "reason": event.reason,
+            },
+            event.generation_id,
+        )
+        if event.superseded_by_generation_id:
+            payload["superseded_by_generation_id"] = event.superseded_by_generation_id
+        return payload
+    if isinstance(event, ConvResponseSpokenTextEvent):
         return _with_generation_id(
-            {"type": WIRE_RESPONSE_CANCELLED, "response_id": event.response_id},
+            {
+                "type": WIRE_RESPONSE_SPOKEN_TEXT,
+                "response_id": event.response_id,
+                "spoken_text": event.spoken_text,
+                "partial_status": event.partial_status,
+                "played_audio_ms": event.played_audio_ms,
+            },
             event.generation_id,
         )
     if isinstance(event, ConvResponseCommittedEvent):
@@ -800,6 +842,11 @@ def parse_conversation_wire_event(event: dict) -> ConvEvent | None:
         return ConvResponseCreatedEvent(
             response_id=str(event.get("response_id") or ""),
             generation_id=_wire_generation_id(event),
+            supersedes_generation_id=(
+                str(event["supersedes_generation_id"])
+                if event.get("supersedes_generation_id")
+                else None
+            ),
             output=output,
         )
     if t == WIRE_AUDIO_DELTA:
@@ -823,6 +870,12 @@ def parse_conversation_wire_event(event: dict) -> ConvEvent | None:
         return ConvAudioClearEvent(
             response_id=str(event.get("response_id") or ""),
             generation_id=_wire_generation_id(event),
+            reason=str(event["reason"]) if event.get("reason") else None,
+            superseded_by_generation_id=(
+                str(event["superseded_by_generation_id"])
+                if event.get("superseded_by_generation_id")
+                else None
+            ),
         )
     if t == WIRE_AUDIO_SUSPEND:
         return ConvAudioSuspendEvent(
@@ -844,6 +897,20 @@ def parse_conversation_wire_event(event: dict) -> ConvEvent | None:
     if t == WIRE_RESPONSE_CANCELLED:
         return ConvResponseCancelledEvent(
             response_id=str(event.get("response_id") or ""),
+            generation_id=_wire_generation_id(event),
+            reason=str(event.get("reason") or "client_cancelled"),
+            superseded_by_generation_id=(
+                str(event["superseded_by_generation_id"])
+                if event.get("superseded_by_generation_id")
+                else None
+            ),
+        )
+    if t == WIRE_RESPONSE_SPOKEN_TEXT:
+        return ConvResponseSpokenTextEvent(
+            response_id=str(event.get("response_id") or ""),
+            spoken_text=str(event.get("spoken_text") or ""),
+            partial_status=str(event.get("partial_status") or "partial_omitted"),
+            played_audio_ms=max(0, int(event.get("played_audio_ms") or 0)),
             generation_id=_wire_generation_id(event),
         )
     if t == WIRE_RESPONSE_COMMITTED:
@@ -982,11 +1049,12 @@ class ConversationOrchestrator:
         *,
         allow_interruptions: bool = True,
         generation_id: str | None = None,
+        supersedes_generation_id: str | None = None,
         output: ResponseOutputOptions | None = None,
     ) -> None:
         if self._session is None:
             raise SessionNotConfiguredError()
-        if self._session.response_active:
+        if self._session.response_active and supersedes_generation_id is None:
             raise ConversationCommandError(
                 "response already active",
                 code=ERROR_CODE_RESPONSE_ALREADY_ACTIVE,
@@ -995,6 +1063,7 @@ class ConversationOrchestrator:
         result = await self._session.start_response_stream(
             allow_interruptions=allow_interruptions,
             generation_id=generation_id,
+            supersedes_generation_id=supersedes_generation_id,
             output=resolve_response_output(
                 output,
                 model=self._config.tts_model,
@@ -1004,9 +1073,10 @@ class ConversationOrchestrator:
         )
         context = result.context
         logger.info(
-            "response start generation_id=%s accepted=%s response_id=%s state=%s "
+            "response start generation_id=%s supersedes_generation_id=%s accepted=%s response_id=%s state=%s "
             "input_speech_active=%s candidate_id=%s candidate_status=%s candidate_reason=%s",
             generation_id,
+            supersedes_generation_id,
             result.accepted,
             result.response_id,
             context.turn_state.value,

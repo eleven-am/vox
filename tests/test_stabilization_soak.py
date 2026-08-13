@@ -585,3 +585,58 @@ async def test_model_lifecycle_soak_50_cycles() -> None:
     assert final.rss_bytes - baseline.rss_bytes < 16 * 1024 * 1024
     assert max(sample.rss_bytes for sample in samples) - baseline.rss_bytes < 24 * 1024 * 1024
     print(json.dumps({"model_cycles": 50, "baseline": asdict(baseline), "final": asdict(final)}, sort_keys=True))
+
+
+@pytest.mark.asyncio
+async def test_resident_model_memory_plateaus_over_100_requests() -> None:
+    tracemalloc.start()
+    scheduler = Scheduler(
+        _WorkerRegistry(),
+        default_device="cpu",
+        max_loaded=1,
+        ttl_seconds=0,
+    )
+    await scheduler.preload("soak-stt:1")
+    for _ in range(10):
+        async with scheduler.acquire("soak-stt:1") as adapter:
+            result = await adapter.execute_sync(lambda: adapter.transcribe(np.zeros(160, dtype=np.float32)))
+            assert result.text == "ok"
+    assert await scheduler.trim("soak-stt:1") is True
+    baseline = _snapshot()
+    samples = [baseline]
+
+    for cycle in range(100):
+        async with scheduler.acquire("soak-stt:1") as adapter:
+            result = await adapter.execute_sync(lambda: adapter.transcribe(np.zeros(160, dtype=np.float32)))
+            assert result.text == "ok"
+        if (cycle + 1) % 10 == 0:
+            assert await scheduler.trim("soak-stt:1") is True
+            samples.append(_snapshot())
+
+    final_resident = _snapshot()
+    loaded = scheduler.list_loaded()
+    assert len(loaded) == 1
+    assert loaded[0].is_trimmable is True
+    assert final_resident.child_processes == baseline.child_processes
+    assert final_resident.owned_threads == baseline.owned_threads
+    assert final_resident.python_bytes - baseline.python_bytes < 2 * 1024 * 1024
+    assert final_resident.rss_bytes - baseline.rss_bytes < 16 * 1024 * 1024
+    assert max(sample.rss_bytes for sample in samples) - baseline.rss_bytes < 24 * 1024 * 1024
+
+    await scheduler.stop()
+    final = _snapshot()
+    tracemalloc.stop()
+    assert scheduler.list_loaded() == []
+    assert _WorkerAdapter.live_pids == set()
+    assert final.child_processes < baseline.child_processes
+    print(
+        json.dumps(
+            {
+                "resident_requests": 100,
+                "baseline": asdict(baseline),
+                "final_resident": asdict(final_resident),
+                "final": asdict(final),
+            },
+            sort_keys=True,
+        )
+    )

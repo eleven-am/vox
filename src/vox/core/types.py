@@ -8,6 +8,7 @@ from typing import Any
 @dataclass(frozen=True)
 class ModelRef:
     """A parsed model reference (name:tag)."""
+
     name: str
     tag: str = "latest"
 
@@ -33,11 +34,13 @@ class ModelType(str, Enum):  # noqa: UP042
     TTS = "tts"
     TURN = "turn"
 
+
 class ModelFormat(str, Enum):  # noqa: UP042
     ONNX = "onnx"
     CT2 = "ct2"
     PYTORCH = "pytorch"
     GGUF = "gguf"
+
 
 @dataclass(frozen=True)
 class WordTimestamp:
@@ -45,6 +48,7 @@ class WordTimestamp:
     start_ms: int
     end_ms: int
     confidence: float | None = None
+
 
 @dataclass(frozen=True)
 class TranscriptSegment:
@@ -55,6 +59,7 @@ class TranscriptSegment:
     language: str | None = None
     confidence: float | None = None
 
+
 @dataclass(frozen=True)
 class TranscribeResult:
     text: str
@@ -63,9 +68,11 @@ class TranscribeResult:
     duration_ms: int = 0
     model: str = ""
 
+
 @dataclass(frozen=True)
 class SynthesizeChunk:
     """A chunk of synthesized audio."""
+
     audio: bytes
     sample_rate: int
     is_final: bool = False
@@ -73,6 +80,7 @@ class SynthesizeChunk:
     def __post_init__(self):
         if self.sample_rate <= 0:
             raise ValueError(f"sample_rate must be positive, got {self.sample_rate}")
+
 
 @dataclass(frozen=True)
 class SynthesisParameterInfo:
@@ -83,6 +91,7 @@ class SynthesisParameterInfo:
     max_value: float | None = None
     description: str = ""
 
+
 @dataclass(frozen=True)
 class VoiceInfo:
     id: str
@@ -92,9 +101,11 @@ class VoiceInfo:
     description: str | None = None
     is_cloned: bool = False
 
+
 @dataclass(frozen=True)
 class AdapterInfo:
     """Metadata an adapter provides about itself."""
+
     name: str
     type: ModelType
     architectures: tuple[str, ...]
@@ -106,13 +117,13 @@ class AdapterInfo:
     supports_voice_cloning: bool = False
     supported_languages: tuple[str, ...] = ()
 
-
-
     max_input_chars: int = 0
+
 
 @dataclass(frozen=True)
 class ModelInfo:
     """Info about a locally stored model."""
+
     name: str
     tag: str
     type: ModelType
@@ -154,9 +165,11 @@ class ModelInfo:
             parameters=config.get("parameters", {}),
         )
 
+
 @dataclass(frozen=True)
 class Speechfile:
     """Parsed Speechfile — declarative model specification."""
+
     source: str
     architecture: str
     type: ModelType
@@ -168,17 +181,21 @@ class Speechfile:
     description: str = ""
     files: tuple[str, ...] = ()
 
+
 @dataclass(frozen=True)
 class PullProgress:
     """Progress update during model download."""
+
     status: str
     digest: str | None = None
     total_bytes: int = 0
     completed_bytes: int = 0
 
+
 @dataclass(frozen=True)
 class LoadedModelInfo:
     """Info about a currently loaded model."""
+
     name: str
     tag: str
     type: ModelType
@@ -191,20 +208,34 @@ class LoadedModelInfo:
     is_trimmable: bool = False
     backend_memory: dict[str, Any] = field(default_factory=dict)
 
+
 @dataclass(frozen=True)
 class DeviceMemoryInfo:
     """Best-effort runtime memory snapshot for an accelerator device."""
+
     device: str
     free_bytes: int | None = None
     total_bytes: int | None = None
     torch_allocated_bytes: int | None = None
     torch_reserved_bytes: int | None = None
 
+
+@dataclass(frozen=True)
+class ProcessMemoryInfo:
+    rss_bytes: int | None = None
+    peak_rss_bytes: int | None = None
+    cgroup_current_bytes: int | None = None
+    cgroup_peak_bytes: int | None = None
+    cgroup_limit_bytes: int | None = None
+
+
 @dataclass(frozen=True)
 class VramSnapshot:
     """Current scheduler and device memory state."""
+
     device: DeviceMemoryInfo
     idle_trim_seconds: int
     loaded_models: tuple[LoadedModelInfo, ...]
     estimated_loaded_vram_bytes: int
     active_model_count: int
+    process: ProcessMemoryInfo = field(default_factory=ProcessMemoryInfo)

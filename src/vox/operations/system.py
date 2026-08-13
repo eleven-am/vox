@@ -141,6 +141,13 @@ def memory_snapshot_payload(snapshot: VramSnapshot) -> dict[str, Any]:
             "torch_allocated_bytes": snapshot.device.torch_allocated_bytes,
             "torch_reserved_bytes": snapshot.device.torch_reserved_bytes,
         },
+        "process": {
+            "rss_bytes": snapshot.process.rss_bytes,
+            "peak_rss_bytes": snapshot.process.peak_rss_bytes,
+            "cgroup_current_bytes": snapshot.process.cgroup_current_bytes,
+            "cgroup_peak_bytes": snapshot.process.cgroup_peak_bytes,
+            "cgroup_limit_bytes": snapshot.process.cgroup_limit_bytes,
+        },
         "idle_trim_seconds": snapshot.idle_trim_seconds,
         "estimated_loaded_vram_bytes": snapshot.estimated_loaded_vram_bytes,
         "active_model_count": snapshot.active_model_count,

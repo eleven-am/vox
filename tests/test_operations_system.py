@@ -6,6 +6,7 @@ from vox.core.types import (
     DeviceMemoryInfo,
     LoadedModelInfo,
     ModelType,
+    ProcessMemoryInfo,
     VramSnapshot,
 )
 from vox.operations.errors import ModelInUseError
@@ -83,6 +84,13 @@ class FakeSystemScheduler:
                 torch_allocated_bytes=3_000,
                 torch_reserved_bytes=4_000,
             ),
+            process=ProcessMemoryInfo(
+                rss_bytes=6_000,
+                peak_rss_bytes=7_000,
+                cgroup_current_bytes=8_000,
+                cgroup_peak_bytes=9_000,
+                cgroup_limit_bytes=10_000,
+            ),
             idle_trim_seconds=30,
             loaded_models=tuple(self.loaded),
             estimated_loaded_vram_bytes=3_072,
@@ -111,6 +119,7 @@ def test_memory_status_payload_preserves_http_contract_shape():
     assert "policy" not in payload
     assert set(payload) == {
         "device",
+        "process",
         "idle_trim_seconds",
         "estimated_loaded_vram_bytes",
         "active_model_count",
@@ -118,9 +127,28 @@ def test_memory_status_payload_preserves_http_contract_shape():
     }
     assert payload["idle_trim_seconds"] == 30
     assert payload["device"]["torch_reserved_bytes"] == 4_000
+    assert payload["process"] == {
+        "rss_bytes": 6_000,
+        "peak_rss_bytes": 7_000,
+        "cgroup_current_bytes": 8_000,
+        "cgroup_peak_bytes": 9_000,
+        "cgroup_limit_bytes": 10_000,
+    }
     assert payload["estimated_loaded_vram_bytes"] == 3_072
     assert payload["active_model_count"] == 1
     assert payload["models"][0]["backend_memory"] == {"workspace_bytes": 128}
+
+
+def test_memory_snapshot_process_metrics_are_backward_compatible_for_python_callers():
+    snapshot = VramSnapshot(
+        device=DeviceMemoryInfo(device="cpu"),
+        idle_trim_seconds=0,
+        loaded_models=(),
+        estimated_loaded_vram_bytes=0,
+        active_model_count=0,
+    )
+
+    assert snapshot.process == ProcessMemoryInfo()
 
 
 def test_health_status_payload_preserves_http_contract_shape():
@@ -169,9 +197,9 @@ def test_list_loaded_models_payload_preserves_existing_contract_shape():
 def test_memory_snapshot_loaded_model_payload_extends_loaded_model_summary_shape():
     scheduler = FakeSystemScheduler()
 
-    summary = list_loaded_models_payload(
-        list_loaded_models(scheduler=scheduler, request=ListLoadedModelsRequest())
-    )["models"][0]
+    summary = list_loaded_models_payload(list_loaded_models(scheduler=scheduler, request=ListLoadedModelsRequest()))[
+        "models"
+    ][0]
     detailed = memory_snapshot_payload(scheduler.memory_snapshot())["models"][0]
 
     assert {key: detailed[key] for key in summary} == summary
@@ -197,16 +225,12 @@ def test_system_action_payloads_preserve_http_contract_shapes():
     scheduler = FakeSystemScheduler()
     snapshot = scheduler.memory_snapshot()
 
-    assert trim_idle_payload(
-        TrimIdleResult(trimmed=["parakeet-stt-onnx:tdt-0.6b-v3"], snapshot=snapshot)
-    ) == {
+    assert trim_idle_payload(TrimIdleResult(trimmed=["parakeet-stt-onnx:tdt-0.6b-v3"], snapshot=snapshot)) == {
         "trimmed": ["parakeet-stt-onnx:tdt-0.6b-v3"],
         "memory": memory_snapshot_payload(snapshot),
     }
     assert trim_model_payload(TrimModelResult()) == {"status": "success"}
-    assert unload_idle_payload(
-        UnloadIdleResult(unloaded=["parakeet-stt-onnx:tdt-0.6b-v3"], snapshot=snapshot)
-    ) == {
+    assert unload_idle_payload(UnloadIdleResult(unloaded=["parakeet-stt-onnx:tdt-0.6b-v3"], snapshot=snapshot)) == {
         "unloaded": ["parakeet-stt-onnx:tdt-0.6b-v3"],
         "memory": memory_snapshot_payload(snapshot),
     }

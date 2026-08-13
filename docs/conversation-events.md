@@ -510,6 +510,49 @@ instead of fire-and-forget.
 Commands without `generation_id` behave exactly as before, and events then omit
 the field (gRPC: empty string).
 
+### Atomic assistant supersession
+
+An agent that discovers a material error in its current spoken response may
+replace it without fabricating microphone speech. Send `response.start` with a
+new `generation_id` and `supersedes_generation_id` equal to the exact active
+generation:
+
+```json
+{
+  "type": "response.start",
+  "generation_id": "gen-corrected",
+  "supersedes_generation_id": "gen-original"
+}
+```
+
+Vox serializes this as one ownership transition. It validates the old
+generation, clears its queued and playing audio, terminalizes it with
+`reason: "superseded"`, and creates the replacement before accepting replacement
+deltas. It bypasses VAD, EOU, and interruption classification. If user speech
+has already become active, the command is rejected with
+`response_rejected_user_speech`; the user wins the race and the active response
+is not cleared by the rejected supersede. A stale old generation is rejected
+with `response_stale_generation`.
+
+The old response emits `response.audio.clear` and `response.cancelled` with
+`superseded_by_generation_id`. The replacement `response.created` carries
+`supersedes_generation_id`. Consumers must treat this lineage as one user turn:
+do not abort the replacement or synthesize a new user message when the old
+generation reports `reason: "superseded"`.
+
+`response.spoken_text.resolved` for the old response runs outside the immediate
+clear path. Persist its conservative spoken prefix before the replacement
+attempt in history. The replacement may begin streaming before that resolver
+finishes. Vox permits at most two concurrent background spoken-prefix
+resolutions per session and falls back to the deterministic completed-span
+prefix when that bound is occupied.
+
+SDKs expose this through `supersedeResponseAndWait`,
+`supersede_response_and_wait`, or `SupersedeResponseAndWait`, depending on the
+language. The existing `response.replace_text` command remains a complete-text
+compatibility API; generation-aware streaming agents should use atomic
+supersession.
+
 ```json
 {"type":"response.start","generation_id":"gen-42"}
 {"type":"response.delta","delta":"Hello.","generation_id":"gen-42"}
@@ -531,6 +574,8 @@ When `response.audio.clear` / `audio_clear` arrives:
 1. Stop current assistant audio immediately.
 2. Drop all queued assistant audio.
 3. Do not replay previously received audio for the cancelled response.
+4. If `reason` is `superseded`, keep the same user turn alive and correlate the
+   replacement through `superseded_by_generation_id`.
 
 When `response.audio.suspend` / `audio_suspend` arrives:
 
@@ -546,6 +591,14 @@ When `response.cancelled` / `response_cancelled` arrives:
 1. Mark the current assistant response as cancelled.
 2. Stop any LLM text generation still feeding Vox.
 3. Expect no more useful audio for that response.
+
+For `reason: "superseded"`, stop only the old generation. Do not stop the model
+stream or replacement generation identified by `superseded_by_generation_id`.
+
+When `response.spoken_text.resolved` / `response_spoken_text` arrives, persist
+`spoken_text` as the canonical assistant history for the cancelled response.
+It is emitted after cancellation bookkeeping and before Vox releases the
+interrupting user's final transcript. It never delays `response.audio.clear`.
 
 `response.audio.clear` is the immediate playback instruction. `response.cancelled` is the response lifecycle instruction. Handle both.
 
@@ -904,6 +957,30 @@ Client behavior:
 - Stop feeding more response text.
 - Pair this with `response.audio.clear` for playback cleanup when present.
 
+### `response.spoken_text.resolved`
+
+The conservative prefix of generated assistant text that Vox can prove reached
+RTC playout before cancellation.
+
+Payload:
+
+- `response_id`: cancelled response identity
+- `generation_id`: generation identity when supplied by the client
+- `spoken_text`: source-text prefix safe to persist as assistant history
+- `partial_status`: `not_needed`, `matched`, `partial_omitted`,
+  `resolver_failed`, or `playout_unavailable`
+- `played_audio_ms`: captured duration of the partially played synthesis span
+
+Completed synthesis spans are accepted only after all their PCM was observed at
+RTC playout. Vox transcribes only the partially played final span and fuzzy
+matches that result against the known generated source. Raw ASR text is never
+inserted into `spoken_text`. If matching is uncertain or resolution fails, Vox
+omits the uncertain partial span and returns only earlier proven spans.
+
+`playout_unavailable` means the transport does not report actual playout. In
+that case `spoken_text` is empty rather than pretending that emitted or
+synthesized audio was heard.
+
 ### `response.done`
 
 TTS completed normally.
@@ -1007,6 +1084,7 @@ Recommended transitions:
 | `interruption.false_positive` | Resume normal assistant playback state. |
 | `response.audio.clear` | Stop playback and drop queued assistant audio immediately. |
 | `response.cancelled` | Mark response cancelled; stop sending deltas for it. |
+| `response.spoken_text.resolved` | Persist `spoken_text` as the cancelled assistant turn before handling the interrupting user transcript. |
 | `turn.state_changed: interrupted` | Move to `interrupted`; wait for the user's transcript or next listening/thinking state. |
 | `response.done` | Mark response complete. |
 | `error` with `recoverable: false` | Move to `error`; close and reconnect. |

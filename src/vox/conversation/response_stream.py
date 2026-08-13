@@ -6,6 +6,7 @@ from enum import StrEnum
 from typing import Final
 
 from vox.conversation.response_output import ResponseOutputConfig
+from vox.conversation.spoken_history import ResponseSpokenHistory, SpokenHistorySnapshot
 
 RESPONSE_STREAM_END: Final = object()
 RESPONSE_STREAM_QUEUE_MAX = 1024
@@ -30,13 +31,16 @@ class ResponseStream:
     response_id: str
     output: ResponseOutputConfig
     generation_id: str | None = None
+    supersedes_generation_id: str | None = None
     committed: bool = False
     pending_done: bool = False
     allow_interruptions: bool = True
     audio_started: bool = False
     closed: bool = False
     text_parts: list[str] = field(default_factory=list)
-    heard_parts: list[str] = field(default_factory=list)
+    spoken_history: ResponseSpokenHistory = field(
+        default_factory=lambda: ResponseSpokenHistory(playout_available=False)
+    )
     _closed_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
 
     @classmethod
@@ -47,13 +51,17 @@ class ResponseStream:
         output: ResponseOutputConfig,
         allow_interruptions: bool = True,
         generation_id: str | None = None,
+        supersedes_generation_id: str | None = None,
+        playout_observed: bool = False,
     ) -> ResponseStream:
         return cls(
             queue=asyncio.Queue(maxsize=RESPONSE_STREAM_QUEUE_MAX),
             response_id=response_id,
             output=output,
             generation_id=generation_id,
+            supersedes_generation_id=supersedes_generation_id,
             allow_interruptions=allow_interruptions,
+            spoken_history=ResponseSpokenHistory(playout_available=playout_observed),
         )
 
     def close(self) -> None:
@@ -124,17 +132,13 @@ class ResponseStream:
             except asyncio.QueueEmpty:
                 return
 
-    def add_heard_text(self, text: str) -> None:
-        self.heard_parts.append(text)
-
     def assistant_context_text(self, *, separator: str = "") -> str:
         if not separator:
-            heard_text = "".join(self.heard_parts).strip()
-            if heard_text:
-                return heard_text
             return "".join(self.text_parts).strip()
-
-        heard_text = separator.join(part.strip() for part in self.heard_parts if part.strip()).strip()
-        if heard_text:
-            return heard_text
         return separator.join(part.strip() for part in self.text_parts if part.strip()).strip()
+
+    def spoken_snapshot(self) -> SpokenHistorySnapshot:
+        return self.spoken_history.snapshot()
+
+    def spoken_context_text(self) -> str:
+        return self.spoken_history.completed_text()

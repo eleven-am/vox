@@ -46,6 +46,7 @@ class RuntimeOrchestratorSpy:
         *,
         allow_interruptions: bool = True,
         generation_id: str | None = None,
+        supersedes_generation_id: str | None = None,
         output: ResponseOutputOptions | None = None,
     ) -> None:
         self.calls.append(
@@ -55,6 +56,7 @@ class RuntimeOrchestratorSpy:
                 {
                     "allow_interruptions": allow_interruptions,
                     "generation_id": generation_id,
+                    "supersedes_generation_id": supersedes_generation_id,
                     "output": output,
                 },
             )
@@ -137,6 +139,7 @@ async def test_runtime_dispatches_typed_commands_and_preserves_pcm_identity():
             {
                 "allow_interruptions": False,
                 "generation_id": "generation-7",
+                "supersedes_generation_id": None,
                 "output": None,
             },
         ),

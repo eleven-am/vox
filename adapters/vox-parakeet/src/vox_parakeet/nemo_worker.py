@@ -10,6 +10,7 @@ import sys
 from collections.abc import Callable
 from typing import Any
 
+from vox.core.process_memory import runtime_memory_status, trim_process_memory
 from vox.core.worker_host import (
     WORKER_FD_ENV,
     install_parent_death_signal,
@@ -208,7 +209,11 @@ def build_handler(model: Any) -> Callable[[dict[str, Any]], dict[str, Any]]:
     def handle(request: dict[str, Any]) -> dict[str, Any]:
         op = request.get("op")
         if op == "transcribe":
-            return transcribe(model, request["path"], word_timestamps=bool(request.get("word_timestamps")))
+            response = transcribe(model, request["path"], word_timestamps=bool(request.get("word_timestamps")))
+            response["memory"] = runtime_memory_status(device="cuda")
+            return response
+        if op == "trim":
+            return {"memory_trim": trim_process_memory(device="cuda")}
         raise RuntimeError(f"unknown Parakeet NeMo worker op: {op}")
 
     return handle

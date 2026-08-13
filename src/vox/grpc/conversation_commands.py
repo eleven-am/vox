@@ -137,6 +137,7 @@ def _response_command(
                 else True
             ),
             generation_id=client_msg.response_start.generation_id or None,
+            supersedes_generation_id=client_msg.response_start.supersedes_generation_id or None,
             output=output,
         )
     if kind == "response_delta":

@@ -23,6 +23,7 @@ from vox.operations.conversation import (
     ConvResponseCommittedEvent,
     ConvResponseCreatedEvent,
     ConvResponseDoneEvent,
+    ConvResponseSpokenTextEvent,
     ConvSpeechStartedEvent,
     ConvSpeechStoppedEvent,
     ConvStateChangedEvent,
@@ -111,6 +112,19 @@ from vox.server.pondsocket_events import decode_pondsocket_command
             {"generation_id": "gen-1"},
             vox_pb2.ConverseClientMessage(
                 response_start=vox_pb2.ConversationResponseStart(generation_id="gen-1")
+            ),
+        ),
+        (
+            "response.start",
+            {
+                "generation_id": "gen-new",
+                "supersedes_generation_id": "gen-old",
+            },
+            vox_pb2.ConverseClientMessage(
+                response_start=vox_pb2.ConversationResponseStart(
+                    generation_id="gen-new",
+                    supersedes_generation_id="gen-old",
+                )
             ),
         ),
         (
@@ -274,6 +288,12 @@ def test_pondsocket_and_grpc_rtc_signaling_decode_identically(
             reason="insufficient_evidence",
         ),
         ConvResponseCancelledEvent(response_id="resp_1"),
+        ConvResponseSpokenTextEvent(
+            response_id="resp_1",
+            spoken_text="The spoken prefix",
+            partial_status="matched",
+            played_audio_ms=640,
+        ),
         ConvResponseDoneEvent(response_id="resp_1"),
         ConvStateChangedEvent(state="listening", previous_state="speaking"),
         ConvErrorEvent(message="boom"),
@@ -302,6 +322,13 @@ def test_pondsocket_and_grpc_rtc_signaling_decode_identically(
         ConvResponseCommittedEvent(response_id="resp_1", generation_id="gen-1"),
         ConvResponseDoneEvent(response_id="resp_1", generation_id="gen-1"),
         ConvResponseCancelledEvent(response_id="resp_1", generation_id="gen-1"),
+        ConvResponseSpokenTextEvent(
+            response_id="resp_1",
+            generation_id="gen-1",
+            spoken_text="The spoken prefix",
+            partial_status="matched",
+            played_audio_ms=640,
+        ),
         ConvAudioClearEvent(response_id="resp_1", generation_id="gen-1"),
         ConvInterruptionDetectedEvent(
             response_id="resp_1",

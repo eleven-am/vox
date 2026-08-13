@@ -18,6 +18,7 @@ from vox.operations.conversation import (
     ConvResponseCommittedEvent,
     ConvResponseCreatedEvent,
     ConvResponseDoneEvent,
+    ConvResponseSpokenTextEvent,
     ConvSessionCreatedEvent,
     ConvSpeechStartedEvent,
     ConvSpeechStoppedEvent,
@@ -110,6 +111,7 @@ def conversation_event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage 
         created = vox_pb2.ConversationResponseCreated(
             response_id=event.response_id,
             generation_id=event.generation_id or "",
+            supersedes_generation_id=event.supersedes_generation_id or "",
         )
         if event.output is not None:
             created.output.CopyFrom(_response_output_pb(event.output))
@@ -128,6 +130,8 @@ def conversation_event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage 
             audio_clear=vox_pb2.ConversationAudioClear(
                 response_id=event.response_id,
                 generation_id=event.generation_id or "",
+                reason=event.reason or "",
+                superseded_by_generation_id=event.superseded_by_generation_id or "",
             ),
         )
     if isinstance(event, ConvAudioSuspendEvent):
@@ -158,6 +162,18 @@ def conversation_event_to_pb(event: ConvEvent) -> vox_pb2.ConverseServerMessage 
             response_cancelled=vox_pb2.ConversationResponseCancelled(
                 response_id=event.response_id,
                 generation_id=event.generation_id or "",
+                reason=event.reason,
+                superseded_by_generation_id=event.superseded_by_generation_id or "",
+            ),
+        )
+    if isinstance(event, ConvResponseSpokenTextEvent):
+        return vox_pb2.ConverseServerMessage(
+            response_spoken_text=vox_pb2.ConversationResponseSpokenText(
+                response_id=event.response_id,
+                generation_id=event.generation_id or "",
+                spoken_text=event.spoken_text,
+                partial_status=event.partial_status,
+                played_audio_ms=event.played_audio_ms,
             ),
         )
     if isinstance(event, ConvResponseCommittedEvent):

@@ -135,6 +135,23 @@ def test_converse_response_start_preserves_allow_interruptions():
     assert command == ResponseStartCommand(allow_interruptions=False)
 
 
+def test_response_start_preserves_supersession_identity_for_both_transports():
+    start = vox_pb2.ConversationResponseStart(
+        generation_id="gen-new",
+        supersedes_generation_id="gen-old",
+    )
+
+    converse = converse_client_message_to_command(vox_pb2.ConverseClientMessage(response_start=start))
+    rtc = rtc_control_message_to_command(vox_pb2.RtcControlClientMessage(response_start=start))
+
+    expected = ResponseStartCommand(
+        generation_id="gen-new",
+        supersedes_generation_id="gen-old",
+    )
+    assert converse == expected
+    assert rtc == expected
+
+
 def test_grpc_response_start_preserves_typed_output_override_for_both_transports():
     start = vox_pb2.ConversationResponseStart(
         generation_id="gen-1",

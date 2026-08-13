@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from vox.conversation.audio_output import PendingAudio, ResponseAudioOutput
@@ -164,3 +166,38 @@ def test_audio_output_pause_is_owned_by_the_interruption_candidate():
     assert output.finish_resume(11)
     assert not output.paused
     assert output.pause_owner is None
+
+
+@pytest.mark.asyncio
+async def test_audio_output_backpressures_at_pending_byte_limit_until_resume():
+    output = ResponseAudioOutput(max_pending_bytes=4)
+    output.pause(11)
+    assert await output.hold_or_wait_if_paused(b"1234", 16_000, 1)
+
+    blocked = asyncio.create_task(output.hold_or_wait_if_paused(b"5", 16_000, 2))
+    await asyncio.sleep(0)
+
+    assert not blocked.done()
+    assert output.pending_bytes == 4
+    assert output.pop_pending_batch() == [PendingAudio(b"1234", 16_000, 1)]
+    assert not blocked.done()
+
+    output.finish_resume(11)
+
+    assert await blocked is False
+    assert output.pending_bytes == 0
+
+
+@pytest.mark.asyncio
+async def test_audio_output_terminal_release_unblocks_pending_producer():
+    output = ResponseAudioOutput(max_pending_bytes=1)
+    output.pause(12)
+    assert await output.hold_or_wait_if_paused(b"a", 16_000, 1)
+    blocked = asyncio.create_task(output.hold_or_wait_if_paused(b"b", 16_000, 2))
+    await asyncio.sleep(0)
+
+    output.release_all()
+
+    assert await blocked is False
+    assert not output.paused
+    assert output.pending_bytes == 0

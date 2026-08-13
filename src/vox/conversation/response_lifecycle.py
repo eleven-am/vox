@@ -14,6 +14,8 @@ class TerminalRecord:
     response_id: str
     generation_id: str | None
     reason: TerminalReason
+    cancellation_reason: str | None = None
+    superseded_by_generation_id: str | None = None
 
 
 @dataclass
@@ -50,6 +52,8 @@ class ConversationResponseLifecycle:
         output: ResponseOutputConfig,
         allow_interruptions: bool = True,
         generation_id: str | None = None,
+        supersedes_generation_id: str | None = None,
+        playout_observed: bool = False,
     ) -> ResponseStream:
         self.counter += 1
         stream = ResponseStream.create(
@@ -57,6 +61,8 @@ class ConversationResponseLifecycle:
             output=output,
             allow_interruptions=allow_interruptions,
             generation_id=generation_id,
+            supersedes_generation_id=supersedes_generation_id,
+            playout_observed=playout_observed,
         )
         self.stream = stream
         self.terminal = None
@@ -67,13 +73,22 @@ class ConversationResponseLifecycle:
             return False
         return stream.mark_committed()
 
-    def terminalize(self, stream: ResponseStream, reason: TerminalReason) -> TerminalRecord | None:
+    def terminalize(
+        self,
+        stream: ResponseStream,
+        reason: TerminalReason,
+        *,
+        cancellation_reason: str | None = None,
+        superseded_by_generation_id: str | None = None,
+    ) -> TerminalRecord | None:
         if stream is not self.stream:
             return None
         record = TerminalRecord(
             response_id=stream.response_id,
             generation_id=stream.generation_id,
             reason=reason,
+            cancellation_reason=cancellation_reason,
+            superseded_by_generation_id=superseded_by_generation_id,
         )
         self.terminal = record
         stream.close()

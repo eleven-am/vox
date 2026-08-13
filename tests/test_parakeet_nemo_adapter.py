@@ -117,6 +117,10 @@ def fake_host_cls(monkeypatch: pytest.MonkeyPatch):
         def alive(self) -> bool:
             return self._alive and not self.closed
 
+        @property
+        def pid(self) -> int:
+            return os.getpid()
+
         def request(self, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
             observation: dict[str, Any] = {"payload": payload, "timeout": timeout}
             path = payload.get("path")
@@ -576,13 +580,35 @@ def test_dead_worker_reads_as_unloaded_and_transcribe_raises(ready_runtime: Path
     assert host.requests == []
 
 
-def test_trim_does_not_touch_live_nemo_worker(ready_runtime: Path, fake_host_cls):
+def test_trim_releases_live_nemo_worker_caches(ready_runtime: Path, fake_host_cls):
     adapter, host = _loaded_adapter(fake_host_cls)
+    host.responses.append(
+        {
+            "memory_trim": {
+                "after": {
+                    "pid": 42,
+                    "rss_bytes": 1_000,
+                    "peak_rss_bytes": 2_000,
+                    "torch_allocated_bytes": 3_000,
+                    "torch_reserved_bytes": 4_000,
+                }
+            }
+        }
+    )
 
     adapter.trim()
 
     assert adapter.is_loaded is True
-    assert host.requests == []
+    assert host.requests == [
+        {
+            "payload": {"op": "trim"},
+            "timeout": module.DEFAULT_MAINTENANCE_TIMEOUT_SECONDS,
+        }
+    ]
+    status = adapter.memory_status()
+    assert status["worker_alive"] is True
+    assert status["torch_allocated_bytes"] == 3_000
+    assert status["torch_reserved_bytes"] == 4_000
 
 
 def test_trim_is_noop_when_not_loaded(fake_host_cls):

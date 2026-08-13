@@ -89,6 +89,10 @@ class WorkerHost:
     def alive(self) -> bool:
         return self._alive and self._proc.poll() is None
 
+    @property
+    def pid(self) -> int:
+        return self._proc.pid
+
     def request(self, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
         with self._request_lock:
             if not self.alive:

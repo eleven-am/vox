@@ -457,6 +457,7 @@ message ConverseServerMessage {
     ConversationTranscriptDelta transcript_delta = 18;
     ConversationAudioSuspend audio_suspend = 19;
     ConversationAudioResume audio_resume = 20;
+    ConversationResponseSpokenText response_spoken_text = 21;
   }
   reserved 16, 17;
   reserved "rtc_session_attached", "client_event";
@@ -528,6 +529,7 @@ message ConversationResponseStart {
   optional bool allow_interruptions = 1;
   string generation_id = 2;
   ConversationResponseOutput output = 3;
+  string supersedes_generation_id = 4;
 }
 
 message ConversationResponseDelta {
@@ -584,6 +586,7 @@ message ConversationResponseCreated {
   string response_id = 1;
   string generation_id = 2;
   ConversationResponseOutput output = 3;
+  string supersedes_generation_id = 4;
 }
 
 message ConversationAudioDelta {
@@ -596,6 +599,8 @@ message ConversationAudioDelta {
 message ConversationAudioClear {
   string response_id = 1;
   string generation_id = 2;
+  string reason = 3;
+  string superseded_by_generation_id = 4;
 }
 
 message ConversationAudioSuspend {
@@ -644,6 +649,16 @@ message ConversationResponseDone {
 message ConversationResponseCancelled {
   string response_id = 1;
   string generation_id = 2;
+  string reason = 3;
+  string superseded_by_generation_id = 4;
+}
+
+message ConversationResponseSpokenText {
+  string response_id = 1;
+  string generation_id = 2;
+  string spoken_text = 3;
+  string partial_status = 4;
+  uint32 played_audio_ms = 5;
 }
 
 message ConversationStateChanged {
