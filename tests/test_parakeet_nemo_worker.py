@@ -186,6 +186,166 @@ def test_handler_transcribe_without_word_timestamps_returns_text_only(tmp_path: 
     assert fake_model.transcribe_calls == [{"paths": [str(wav_path)], "batch_size": 1}]
 
 
+def test_output_health_detects_unknown_token_collapse():
+    result = worker._output_health("\u2047" * 1678, 4440)
+
+    assert result is not None
+    assert result["marker"] == worker.DEGRADED_OUTPUT_MARKER
+    assert result["character_count"] == 1678
+    assert result["characters_per_second"] == pytest.approx(377.928)
+    assert result["unknown_ratio"] == 1.0
+    assert result["dominant_codepoint"] == "U+2047"
+
+
+@pytest.mark.parametrize(
+    ("text", "duration_ms"),
+    [
+        ("\u2047" * 7, 1000),
+        ("This is ordinary transcription with varied characters and punctuation.", 1000),
+        ("ha " * 40, 1000),
+    ],
+)
+def test_output_health_does_not_reject_short_or_lexical_transcripts(text: str, duration_ms: int):
+    assert worker._output_health(text, duration_ms) is None
+
+
+def test_output_health_detects_high_rate_repetitive_punctuation_collapse():
+    result = worker._output_health("?" * 100, 1000)
+
+    assert result is not None
+    assert result["dominant_codepoint"] == "U+003F"
+    assert result["dominant_ratio"] == 1.0
+
+
+def test_handler_suppresses_degraded_output_and_attaches_forensics(tmp_path: Path):
+    fake_model = _FakeNemoModel(text="\u2047" * 400)
+    wav_path = _write_wav(tmp_path, samples=32_000)
+    handle = worker.build_handler(fake_model)
+    tensor_health = {"tensor_count": 100, "nonfinite_tensor_count": 1}
+    module_health = {"encoder": {"nonfinite_value_count": 4}, "hooked_modules": 3}
+
+    with (
+        patch.object(worker, "runtime_memory_status", return_value={"rss_bytes": 123}),
+        patch.object(worker, "_model_tensor_health", return_value=tensor_health) as health,
+        patch.object(worker, "_diagnostic_module_health", return_value=module_health) as module_probe,
+    ):
+        response = handle(
+            {
+                "op": "transcribe",
+                "path": str(wav_path),
+                "word_timestamps": False,
+                "duration_ms": 2000,
+            }
+        )
+
+    assert response["text"] == ""
+    assert response["words"] == []
+    assert response["degraded"]["marker"] == worker.DEGRADED_OUTPUT_MARKER
+    assert response["degraded"]["dominant_codepoint"] == "U+2047"
+    assert response["degraded"]["tensor_health"] == tensor_health
+    assert response["degraded"]["module_health"] == module_health
+    health.assert_called_once_with(fake_model)
+    module_probe.assert_called_once_with(fake_model, str(wav_path), word_timestamps=False)
+
+
+def test_model_tensor_health_reports_nonfinite_parameters_and_buffers():
+    torch = pytest.importorskip("torch")
+
+    class _TensorModel:
+        def named_parameters(self):
+            return (("encoder.weight", torch.tensor([1.0, float("nan")])),)
+
+        def named_buffers(self):
+            return (("decoder.state", torch.tensor([float("inf"), 2.0, 3.0])),)
+
+    result = worker._model_tensor_health(_TensorModel())
+
+    assert result["tensor_count"] == 2
+    assert result["value_count"] == 5
+    assert result["nonfinite_tensor_count"] == 2
+    assert result["nonfinite_value_count"] == 2
+    assert result["first_nonfinite"] == ["parameter:encoder.weight", "buffer:decoder.state"]
+
+
+def test_diagnostic_module_health_captures_first_forward_output(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    class _FakeTensor:
+        def __init__(self, values):
+            self.values = np.asarray(values, dtype=np.float32)
+
+        @property
+        def shape(self):
+            return self.values.shape
+
+        def detach(self):
+            return self
+
+        def numel(self):
+            return self.values.size
+
+        def amin(self):
+            return self.values.min()
+
+        def amax(self):
+            return self.values.max()
+
+    class _FakeTorch:
+        @staticmethod
+        def is_tensor(value):
+            return isinstance(value, _FakeTensor)
+
+        @staticmethod
+        def isfinite(value):
+            return np.isfinite(value.values)
+
+    class _Handle:
+        def __init__(self, hooks, hook):
+            self.hooks = hooks
+            self.hook = hook
+
+        def remove(self):
+            self.hooks.remove(self.hook)
+
+    class _Module:
+        def __init__(self):
+            self.hooks = []
+
+        def register_forward_hook(self, hook):
+            self.hooks.append(hook)
+            return _Handle(self.hooks, hook)
+
+        def emit(self, value):
+            for hook in tuple(self.hooks):
+                hook(self, (), value)
+
+    class _ProbeModel(_FakeNemoModel):
+        def __init__(self):
+            super().__init__(text="probe")
+            self.encoder = _Module()
+
+        def transcribe(self, paths, **kwargs):
+            self.encoder.emit(_FakeTensor([1.0, 1.0, float("nan")]))
+            self.encoder.emit(_FakeTensor([2.0, 3.0]))
+            return super().transcribe(paths, **kwargs)
+
+    original_import = worker.importlib.import_module
+    monkeypatch.setattr(
+        worker.importlib,
+        "import_module",
+        lambda name: _FakeTorch() if name == "torch" else original_import(name),
+    )
+    model = _ProbeModel()
+    wav_path = _write_wav(tmp_path)
+
+    result = worker._diagnostic_module_health(model, str(wav_path), word_timestamps=False)
+
+    assert result["hooked_modules"] == 1
+    assert result["encoder"]["tensor_count"] == 1
+    assert result["encoder"]["value_count"] == 3
+    assert result["encoder"]["nonfinite_value_count"] == 1
+    assert result["encoder"]["shapes"] == [[3]]
+    assert model.encoder.hooks == []
+
+
 def test_handler_trim_returns_before_and_after_memory():
     handle = worker.build_handler(_FakeNemoModel())
     result = {

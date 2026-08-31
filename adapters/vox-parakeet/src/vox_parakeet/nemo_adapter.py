@@ -33,7 +33,7 @@ from vox.core.types import (
     WordTimestamp,
 )
 from vox.core.worker_host import WorkerHost
-from vox_parakeet.nemo_worker import RUNTIME_IMPORT_ERROR_MARKER
+from vox_parakeet.nemo_worker import DEGRADED_OUTPUT_MARKER, RUNTIME_IMPORT_ERROR_MARKER
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +230,12 @@ class ParakeetNemoAdapter(STTAdapter):
         self._lock = threading.RLock()
         self._worker_memory: dict[str, Any] = {}
         self._last_trim: dict[str, Any] | None = None
+        self._worker_argv_value: list[str] | None = None
+        self._worker_env_value: dict[str, str] | None = None
+        self._worker_startup_timeout = DEFAULT_STARTUP_TIMEOUT_SECONDS
+        self._worker_started_at = 0.0
+        self._worker_request_count = 0
+        self._worker_recycle_count = 0
 
     def info(self) -> AdapterInfo:
         return AdapterInfo(
@@ -261,16 +267,11 @@ class ParakeetNemoAdapter(STTAdapter):
             source = kwargs.pop("_source", None)
             self._model_id, checkpoint_path = _resolve_model_ref(model_path, source)
             runtime_dir = _install_nemo_runtime()
-
-            logger.info("Loading Parakeet NeMo model: %s (device=%s)", self._model_id, self._device)
-            start = time.perf_counter()
+            self._worker_argv_value = _worker_argv(self._model_id, checkpoint_path)
+            self._worker_env_value = _worker_env(runtime_dir, self._device)
+            self._worker_startup_timeout = _env_timeout_seconds(STARTUP_TIMEOUT_ENV, DEFAULT_STARTUP_TIMEOUT_SECONDS)
             try:
-                self._host = WorkerHost(
-                    _worker_argv(self._model_id, checkpoint_path),
-                    env=_worker_env(runtime_dir, self._device),
-                    name="parakeet-nemo",
-                    startup_timeout=_env_timeout_seconds(STARTUP_TIMEOUT_ENV, DEFAULT_STARTUP_TIMEOUT_SECONDS),
-                )
+                self._start_worker_locked()
             except ModelLoadError as error:
                 if RUNTIME_IMPORT_ERROR_MARKER in str(error):
                     logger.warning(
@@ -279,9 +280,62 @@ class ParakeetNemoAdapter(STTAdapter):
                     )
                     (runtime_dir / _RUNTIME_SENTINEL).unlink(missing_ok=True)
                 raise
-            elapsed = time.perf_counter() - start
-            self._worker_memory = process_memory_status(pid=self._host.pid)
-            logger.info("Parakeet NeMo model loaded in %.2fs", elapsed)
+
+    def _start_worker_locked(self) -> None:
+        if self._worker_argv_value is None or self._worker_env_value is None:
+            raise RuntimeError("Parakeet NeMo worker configuration is unavailable")
+        logger.info("Loading Parakeet NeMo model: %s (device=%s)", self._model_id, self._device)
+        start = time.perf_counter()
+        host = WorkerHost(
+            self._worker_argv_value,
+            env=self._worker_env_value,
+            name="parakeet-nemo",
+            startup_timeout=self._worker_startup_timeout,
+        )
+        self._host = host
+        self._worker_started_at = time.monotonic()
+        self._worker_request_count = 0
+        self._worker_memory = process_memory_status(pid=host.pid)
+        logger.info("Parakeet NeMo model loaded in %.2fs", time.perf_counter() - start)
+
+    def _close_host_locked(self, host: WorkerHost) -> None:
+        if self._host is host:
+            self._host = None
+        try:
+            host.close()
+        except Exception:
+            logger.exception("Failed to close quarantined Parakeet NeMo worker")
+
+    def _request_with_recovery_locked(self, payload: dict[str, Any], timeout: float) -> tuple[dict[str, Any], str]:
+        with self._lock:
+            host = self._host
+            if host is None or not host.alive:
+                raise RuntimeError("Parakeet NeMo model is not loaded — call load() first")
+            response = host.request(payload, timeout=timeout)
+            self._worker_request_count += 1
+            degradation = response.get("degraded")
+            if not isinstance(degradation, dict) or degradation.get("marker") != DEGRADED_OUTPUT_MARKER:
+                return response, self._model_id
+
+            logger.error("Quarantining degraded Parakeet NeMo worker: %s", degradation)
+            self._worker_recycle_count += 1
+            self._close_host_locked(host)
+            try:
+                self._start_worker_locked()
+            except Exception as error:
+                raise RuntimeError("Parakeet NeMo degradation recovery could not start a replacement worker") from error
+
+            replacement = self._host
+            if replacement is None:
+                raise RuntimeError("Parakeet NeMo degradation recovery did not create a replacement worker")
+            retry_response = replacement.request(payload, timeout=timeout)
+            self._worker_request_count += 1
+            retry_degradation = retry_response.get("degraded")
+            if isinstance(retry_degradation, dict) and retry_degradation.get("marker") == DEGRADED_OUTPUT_MARKER:
+                logger.critical("Replacement Parakeet NeMo worker also produced degraded output: %s", retry_degradation)
+                self._close_host_locked(replacement)
+                raise RuntimeError("Parakeet NeMo remained degraded after one worker recycle")
+            return retry_response, self._model_id
 
     def unload(self) -> None:
         with self._lock:
@@ -291,6 +345,12 @@ class ParakeetNemoAdapter(STTAdapter):
             self._device = "cuda"
             self._worker_memory = {}
             self._last_trim = None
+            self._worker_argv_value = None
+            self._worker_env_value = None
+            self._worker_startup_timeout = DEFAULT_STARTUP_TIMEOUT_SECONDS
+            self._worker_started_at = 0.0
+            self._worker_request_count = 0
+            self._worker_recycle_count = 0
             if host is not None:
                 host.close()
         logger.info("Parakeet NeMo adapter unloaded")
@@ -309,9 +369,11 @@ class ParakeetNemoAdapter(STTAdapter):
         initial_prompt: str | None = None,
         temperature: float = 0.0,
     ) -> TranscribeResult:
-        host = self._host
-        if host is None or not host.alive:
-            raise RuntimeError("Parakeet NeMo model is not loaded — call load() first")
+        with self._lock:
+            host = self._host
+            if host is None or not host.alive:
+                raise RuntimeError("Parakeet NeMo model is not loaded — call load() first")
+            loaded_model_id = self._model_id
 
         if initial_prompt:
             logger.warning("Parakeet NeMo does not use initial_prompt; ignoring it")
@@ -322,7 +384,7 @@ class ParakeetNemoAdapter(STTAdapter):
 
         audio = _to_numpy_audio(audio)
         if audio.size == 0:
-            return TranscribeResult(text="", segments=(), language=language, duration_ms=0, model=self._model_id)
+            return TranscribeResult(text="", segments=(), language=language, duration_ms=0, model=loaded_model_id)
 
         duration_ms = int(len(audio) / PARAKEET_SAMPLE_RATE * 1000)
 
@@ -334,9 +396,14 @@ class ParakeetNemoAdapter(STTAdapter):
 
         try:
             request_start = time.perf_counter()
-            response = host.request(
-                {"op": "transcribe", "path": str(temp_path), "word_timestamps": word_timestamps},
-                timeout=_env_timeout_seconds(REQUEST_TIMEOUT_ENV, DEFAULT_REQUEST_TIMEOUT_SECONDS),
+            response, model_id = self._request_with_recovery_locked(
+                {
+                    "op": "transcribe",
+                    "path": str(temp_path),
+                    "word_timestamps": word_timestamps,
+                    "duration_ms": duration_ms,
+                },
+                _env_timeout_seconds(REQUEST_TIMEOUT_ENV, DEFAULT_REQUEST_TIMEOUT_SECONDS),
             )
             request_ms = int((time.perf_counter() - request_start) * 1000)
         finally:
@@ -397,24 +464,25 @@ class ParakeetNemoAdapter(STTAdapter):
             segments=segments,
             language=detected_language,
             duration_ms=duration_ms,
-            model=self._model_id,
+            model=model_id,
         )
 
     def trim(self) -> None:
-        host = self._host
-        if host is None or not host.alive:
-            return
-        response = host.request({"op": "trim"}, timeout=DEFAULT_MAINTENANCE_TIMEOUT_SECONDS)
-        trim_status = response.get("memory_trim")
-        if isinstance(trim_status, dict):
-            self._last_trim = dict(trim_status)
-            if isinstance(trim_status.get("after"), dict):
-                self._worker_memory = dict(trim_status["after"])
+        with self._lock:
+            host = self._host
+            if host is None or not host.alive:
+                return
+            response = host.request({"op": "trim"}, timeout=DEFAULT_MAINTENANCE_TIMEOUT_SECONDS)
+            trim_status = response.get("memory_trim")
+            if isinstance(trim_status, dict):
+                self._last_trim = dict(trim_status)
+                if isinstance(trim_status.get("after"), dict):
+                    self._worker_memory = dict(trim_status["after"])
 
     def memory_status(self) -> dict[str, Any]:
         host = self._host
         if host is None or not host.alive:
-            return {"worker_alive": False}
+            return {"worker_alive": False, "worker_recycle_count": self._worker_recycle_count}
         current = process_memory_status(pid=host.pid)
         status = {
             "worker_alive": True,
@@ -422,6 +490,9 @@ class ParakeetNemoAdapter(STTAdapter):
             "pid": current["pid"],
             "rss_bytes": current["rss_bytes"],
             "peak_rss_bytes": current["peak_rss_bytes"],
+            "worker_age_seconds": max(0.0, time.monotonic() - self._worker_started_at),
+            "worker_request_count": self._worker_request_count,
+            "worker_recycle_count": self._worker_recycle_count,
         }
         if self._last_trim is not None:
             status["last_trim"] = self._last_trim

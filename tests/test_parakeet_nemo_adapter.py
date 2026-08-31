@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -100,6 +101,7 @@ def ready_runtime(runtime_dir: Path) -> Path:
 def fake_host_cls(monkeypatch: pytest.MonkeyPatch):
     class _FakeWorkerHost:
         instances: list[_FakeWorkerHost] = []
+        response_batches: list[list[dict[str, Any]]] = []
 
         def __init__(self, argv: list[str], *, env: dict[str, str], name: str, startup_timeout: float) -> None:
             self.argv = argv
@@ -107,7 +109,7 @@ def fake_host_cls(monkeypatch: pytest.MonkeyPatch):
             self.name = name
             self.startup_timeout = startup_timeout
             self.requests: list[dict[str, Any]] = []
-            self.responses: list[dict[str, Any]] = []
+            self.responses = type(self).response_batches.pop(0) if type(self).response_batches else []
             self.request_error: Exception | None = None
             self.closed = False
             self._alive = True
@@ -511,6 +513,7 @@ def test_transcribe_round_trips_wav_and_rebuilds_word_timestamp_result(ready_run
     observation = host.requests[0]
     assert observation["payload"]["op"] == "transcribe"
     assert observation["payload"]["word_timestamps"] is True
+    assert observation["payload"]["duration_ms"] == 1000
     assert observation["timeout"] == module.DEFAULT_REQUEST_TIMEOUT_SECONDS
     assert observation["wav_existed"] is True
     assert observation["wav_samples"] == 16000
@@ -568,6 +571,86 @@ def test_transcribe_deletes_temp_wav_when_worker_request_fails(ready_runtime: Pa
     observation = host.requests[0]
     assert observation["wav_existed"] is True
     assert not os.path.exists(observation["payload"]["path"])
+
+
+def test_transcribe_recycles_degraded_worker_and_retries_once(ready_runtime: Path, fake_host_cls):
+    adapter, first = _loaded_adapter(fake_host_cls)
+    first.responses.append(
+        {
+            "text": "",
+            "language": None,
+            "words": [],
+            "degraded": {
+                "marker": module.DEGRADED_OUTPUT_MARKER,
+                "duration_ms": 4440,
+                "character_count": 1678,
+                "characters_per_second": 377.928,
+                "dominant_codepoint": "U+2047",
+            },
+        }
+    )
+    fake_host_cls.response_batches.append(
+        [{"text": "recovered speech", "language": "en", "words": [], "memory": {"rss_bytes": 321}}]
+    )
+
+    result = adapter.transcribe(np.zeros(71_040, dtype=np.float32))
+
+    assert result.text == "recovered speech"
+    assert first.closed is True
+    assert len(fake_host_cls.instances) == 2
+    replacement = fake_host_cls.instances[-1]
+    assert replacement.requests[0]["payload"]["path"] == first.requests[0]["payload"]["path"]
+    assert replacement.requests[0]["payload"]["duration_ms"] == 4440
+    assert adapter.is_loaded is True
+    status = adapter.memory_status()
+    assert status["worker_recycle_count"] == 1
+    assert status["worker_request_count"] == 1
+
+
+def test_transcribe_fails_closed_when_replacement_is_also_degraded(ready_runtime: Path, fake_host_cls):
+    adapter, first = _loaded_adapter(fake_host_cls)
+    degraded = {
+        "text": "",
+        "language": None,
+        "words": [],
+        "degraded": {"marker": module.DEGRADED_OUTPUT_MARKER, "dominant_codepoint": "U+2047"},
+    }
+    first.responses.append(degraded)
+    fake_host_cls.response_batches.append([degraded])
+
+    with pytest.raises(RuntimeError, match="remained degraded after one worker recycle"):
+        adapter.transcribe(np.zeros(16_000, dtype=np.float32))
+
+    assert first.closed is True
+    assert fake_host_cls.instances[-1].closed is True
+    assert adapter.is_loaded is False
+
+
+def test_concurrent_transcribes_share_one_degradation_recycle(ready_runtime: Path, fake_host_cls):
+    adapter, first = _loaded_adapter(fake_host_cls)
+    first.responses.append(
+        {
+            "text": "",
+            "language": None,
+            "words": [],
+            "degraded": {"marker": module.DEGRADED_OUTPUT_MARKER, "dominant_codepoint": "U+2047"},
+        }
+    )
+    fake_host_cls.response_batches.append(
+        [
+            {"text": "first recovered", "language": "en", "words": []},
+            {"text": "second healthy", "language": "en", "words": []},
+        ]
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(executor.map(adapter.transcribe, [np.zeros(16_000), np.zeros(16_000)]))
+
+    assert sorted(result.text for result in results) == ["first recovered", "second healthy"]
+    assert first.closed is True
+    assert len(fake_host_cls.instances) == 2
+    assert len(fake_host_cls.instances[-1].requests) == 2
+    assert adapter.memory_status()["worker_recycle_count"] == 1
 
 
 def test_dead_worker_reads_as_unloaded_and_transcribe_raises(ready_runtime: Path, fake_host_cls):

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib
 import json
 import logging
 import os
 import socket
 import sys
+from collections import Counter
 from collections.abc import Callable
 from typing import Any
 
@@ -21,6 +23,16 @@ from vox.core.worker_host import (
 logger = logging.getLogger(__name__)
 
 RUNTIME_IMPORT_ERROR_MARKER = "nemo runtime import failed:"
+DEGRADED_OUTPUT_MARKER = "parakeet_output_degraded"
+
+_UNKNOWN_OUTPUT_CHARACTERS = frozenset(("\u2047", "\ufffd"))
+_UNKNOWN_OUTPUT_MIN_CHARACTERS = 8
+_UNKNOWN_OUTPUT_MIN_RATIO = 0.8
+_COLLAPSE_MIN_CHARACTERS = 64
+_COLLAPSE_MIN_DURATION_MS = 1_000
+_COLLAPSE_MIN_CHARACTERS_PER_SECOND = 40.0
+_COLLAPSE_MIN_DOMINANT_RATIO = 0.8
+_COLLAPSE_MAX_ALPHANUMERIC_RATIO = 0.1
 
 _CUDA_GRAPH_ERROR_MARKERS = (
     "cudagraph",
@@ -77,6 +89,175 @@ def _extract_text(result: Any) -> str:
     if isinstance(text, (list, tuple)):
         text = text[0] if text else ""
     return str(text or "").strip()
+
+
+def _output_health(text: str, duration_ms: int) -> dict[str, Any] | None:
+    characters = [character for character in text if not character.isspace()]
+    character_count = len(characters)
+    if character_count == 0:
+        return None
+
+    counts = Counter(characters)
+    dominant_character, dominant_count = counts.most_common(1)[0]
+    unknown_count = sum(counts.get(character, 0) for character in _UNKNOWN_OUTPUT_CHARACTERS)
+    unknown_ratio = unknown_count / character_count
+    dominant_ratio = dominant_count / character_count
+    alphanumeric_ratio = sum(character.isalnum() for character in characters) / character_count
+    characters_per_second = character_count / max(duration_ms / 1000.0, 0.001)
+    unknown_collapse = unknown_count >= _UNKNOWN_OUTPUT_MIN_CHARACTERS and unknown_ratio >= _UNKNOWN_OUTPUT_MIN_RATIO
+    repetitive_collapse = (
+        duration_ms >= _COLLAPSE_MIN_DURATION_MS
+        and character_count >= _COLLAPSE_MIN_CHARACTERS
+        and characters_per_second >= _COLLAPSE_MIN_CHARACTERS_PER_SECOND
+        and dominant_ratio >= _COLLAPSE_MIN_DOMINANT_RATIO
+        and alphanumeric_ratio <= _COLLAPSE_MAX_ALPHANUMERIC_RATIO
+    )
+    if not unknown_collapse and not repetitive_collapse:
+        return None
+
+    return {
+        "marker": DEGRADED_OUTPUT_MARKER,
+        "duration_ms": duration_ms,
+        "character_count": character_count,
+        "characters_per_second": round(characters_per_second, 3),
+        "unique_codepoints": len(counts),
+        "unknown_count": unknown_count,
+        "unknown_ratio": round(unknown_ratio, 6),
+        "dominant_codepoint": f"U+{ord(dominant_character):04X}",
+        "dominant_ratio": round(dominant_ratio, 6),
+        "alphanumeric_ratio": round(alphanumeric_ratio, 6),
+    }
+
+
+def _model_tensor_health(model: Any) -> dict[str, Any]:
+    try:
+        torch = importlib.import_module("torch")
+    except Exception as error:
+        return {"scan_error": f"torch_import:{type(error).__name__}"}
+
+    tensor_count = 0
+    value_count = 0
+    nonfinite_tensor_count = 0
+    nonfinite_value_count = 0
+    first_nonfinite: list[str] = []
+    scan_errors: list[str] = []
+
+    for collection_name, accessor_name in (("parameter", "named_parameters"), ("buffer", "named_buffers")):
+        accessor = getattr(model, accessor_name, None)
+        if not callable(accessor):
+            continue
+        try:
+            entries = accessor()
+        except Exception as error:
+            scan_errors.append(f"{collection_name}_enumeration:{type(error).__name__}")
+            continue
+        for name, tensor in entries:
+            tensor_count += 1
+            try:
+                detached = tensor.detach()
+                value_count += int(detached.numel())
+                finite = torch.isfinite(detached)
+                invalid_values = int((~finite).sum().item())
+            except Exception as error:
+                scan_errors.append(f"{collection_name}:{name}:{type(error).__name__}")
+                continue
+            if invalid_values == 0:
+                continue
+            nonfinite_tensor_count += 1
+            nonfinite_value_count += invalid_values
+            if len(first_nonfinite) < 8:
+                first_nonfinite.append(f"{collection_name}:{name}")
+
+    result: dict[str, Any] = {
+        "tensor_count": tensor_count,
+        "value_count": value_count,
+        "nonfinite_tensor_count": nonfinite_tensor_count,
+        "nonfinite_value_count": nonfinite_value_count,
+        "first_nonfinite": first_nonfinite,
+    }
+    if scan_errors:
+        result["scan_errors"] = scan_errors[:8]
+        result["scan_error_count"] = len(scan_errors)
+    return result
+
+
+def _output_tensors(value: Any, torch: Any) -> list[Any]:
+    if torch.is_tensor(value):
+        return [value]
+    if isinstance(value, dict):
+        return [tensor for child in value.values() for tensor in _output_tensors(child, torch)]
+    if isinstance(value, (list, tuple)):
+        return [tensor for child in value for tensor in _output_tensors(child, torch)]
+    return []
+
+
+def _tensor_output_health(value: Any, torch: Any) -> dict[str, Any]:
+    tensors = _output_tensors(value, torch)
+    value_count = 0
+    nonfinite_value_count = 0
+    constant_tensor_count = 0
+    shapes: list[list[int]] = []
+    scan_errors: list[str] = []
+    for tensor in tensors[:8]:
+        try:
+            detached = tensor.detach()
+            values = int(detached.numel())
+            value_count += values
+            shapes.append(list(detached.shape))
+            finite = torch.isfinite(detached)
+            nonfinite_value_count += int((~finite).sum().item())
+            if values > 1 and bool(finite.all().item()):
+                constant_tensor_count += int(bool((detached.amin() == detached.amax()).item()))
+        except Exception as error:
+            scan_errors.append(type(error).__name__)
+    result: dict[str, Any] = {
+        "tensor_count": len(tensors),
+        "scanned_tensor_count": min(len(tensors), 8),
+        "value_count": value_count,
+        "nonfinite_value_count": nonfinite_value_count,
+        "constant_tensor_count": constant_tensor_count,
+        "shapes": shapes,
+    }
+    if scan_errors:
+        result["scan_errors"] = scan_errors
+    return result
+
+
+def _diagnostic_module_health(model: Any, path: str, *, word_timestamps: bool) -> dict[str, Any]:
+    try:
+        torch = importlib.import_module("torch")
+    except Exception as error:
+        return {"probe_error": f"torch_import:{type(error).__name__}"}
+
+    summaries: dict[str, Any] = {}
+    handles: list[Any] = []
+
+    def register(name: str, module: Any) -> None:
+        register_hook = getattr(module, "register_forward_hook", None)
+        if not callable(register_hook):
+            return
+
+        def capture(_module: Any, _inputs: Any, output: Any) -> None:
+            if name not in summaries:
+                summaries[name] = _tensor_output_health(output, torch)
+
+        handles.append(register_hook(capture))
+
+    for name in ("preprocessor", "encoder", "decoder", "joint"):
+        module = getattr(model, name, None)
+        if module is not None:
+            register(name, module)
+
+    try:
+        transcribe(model, path, word_timestamps=word_timestamps)
+    except Exception as error:
+        summaries["probe_error"] = type(error).__name__
+    finally:
+        for handle in handles:
+            with contextlib.suppress(Exception):
+                handle.remove()
+    summaries["hooked_modules"] = len(handles)
+    return summaries
 
 
 def _extract_timestamp_dict(result: Any) -> dict[str, Any]:
@@ -211,6 +392,18 @@ def build_handler(model: Any) -> Callable[[dict[str, Any]], dict[str, Any]]:
         if op == "transcribe":
             response = transcribe(model, request["path"], word_timestamps=bool(request.get("word_timestamps")))
             response["memory"] = runtime_memory_status(device="cuda")
+            degradation = _output_health(response["text"], int(request.get("duration_ms") or 0))
+            if degradation is not None:
+                degradation["tensor_health"] = _model_tensor_health(model)
+                degradation["module_health"] = _diagnostic_module_health(
+                    model,
+                    request["path"],
+                    word_timestamps=bool(request.get("word_timestamps")),
+                )
+                logger.error("Parakeet NeMo output degradation detected: %s", degradation)
+                response["text"] = ""
+                response["words"] = []
+                response["degraded"] = degradation
             return response
         if op == "trim":
             return {"memory_trim": trim_process_memory(device="cuda")}
