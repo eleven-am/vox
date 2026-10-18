@@ -7,7 +7,11 @@ import pytest
 
 import vox.operations.rtc_runtime as rtc_runtime_module
 from tests.fakes import FakeScheduler
-from vox.operations.conversation import ConversationSessionConfig
+from vox.operations.conversation import (
+    WIRE_RTC_CLIENT_DISCONNECTED,
+    ConversationSessionConfig,
+    client_disconnected_wire,
+)
 from vox.operations.conversation_commands import (
     ClientEventCommand,
     ResponseStartCommand,
@@ -425,6 +429,38 @@ async def test_runtime_closes_after_background_signaling_failure():
         "rtc.session.closed",
     ]
     assert emitted[-1]["reason"] == "signaling_error"
+    assert registry.get(record.session_id) is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_closes_after_client_disconnect():
+    registry = RtcSessionRegistry()
+    record = registry.create_session(control_transport="grpc")
+    emitted: list[dict] = []
+    runtime = RtcRuntime(
+        scheduler=FakeScheduler(),
+        registry=registry,
+        session_id=record.session_id,
+        transport="grpc",
+        emit=lambda event: _append(emitted, event),
+    )
+    await runtime.start()
+
+    record.control_events.put_terminal_nowait(
+        client_disconnected_wire(
+            record.session_id,
+            reason="data_channel_closed",
+        )
+    )
+    await asyncio.wait_for(runtime.wait_closed(), timeout=1)
+
+    assert [event["type"] for event in emitted] == [
+        "rtc.session.attached",
+        WIRE_RTC_CLIENT_DISCONNECTED,
+        "rtc.session.closed",
+    ]
+    assert emitted[-1]["reason"] == "data_channel_closed"
+    assert runtime.is_closed is True
     assert registry.get(record.session_id) is None
 
 

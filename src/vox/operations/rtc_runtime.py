@@ -9,7 +9,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from vox.core.scheduler import Scheduler
-from vox.operations.conversation import ConvEvent, deliver_wire_with_lifecycle_retry
+from vox.operations.conversation import (
+    WIRE_RTC_CLIENT_DISCONNECTED,
+    ConvEvent,
+    deliver_wire_with_lifecycle_retry,
+)
 from vox.operations.conversation_commands import (
     ClientEventCommand,
     ConversationCommand,
@@ -437,7 +441,7 @@ class RtcRuntime:
             if event is None:
                 return
             await self._emit(event)
-            if event.get("type") == "rtc.client_disconnected":
+            if event.get("type") == WIRE_RTC_CLIENT_DISCONNECTED:
                 self._schedule_terminal_close(str(event.get("reason") or "client_disconnected"))
                 return
 
