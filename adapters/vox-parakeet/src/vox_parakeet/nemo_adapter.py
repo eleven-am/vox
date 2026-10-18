@@ -43,8 +43,10 @@ DEFAULT_VRAM_BYTES = 2_500_000_000
 DEFAULT_STARTUP_TIMEOUT_SECONDS = 1800.0
 DEFAULT_REQUEST_TIMEOUT_SECONDS = 600.0
 DEFAULT_MAINTENANCE_TIMEOUT_SECONDS = 60.0
+DEFAULT_RUNTIME_INSTALL_TIMEOUT_SECONDS = 3600.0
 STARTUP_TIMEOUT_ENV = "VOX_PARAKEET_STARTUP_TIMEOUT_S"
 REQUEST_TIMEOUT_ENV = "VOX_PARAKEET_REQUEST_TIMEOUT_S"
+RUNTIME_INSTALL_TIMEOUT_ENV = "VOX_PARAKEET_RUNTIME_INSTALL_TIMEOUT_S"
 WORKER_DEVICE_ENV = "VOX_PARAKEET_DEVICE"
 _RUNTIME_SENTINEL = ".vox-parakeet-nemo-runtime-ready"
 _RUNTIME_EXPECTED_RELATIVE_PATHS = (
@@ -143,7 +145,10 @@ def _install_nemo_runtime() -> Path:
             runtime_dir,
             _RUNTIME_DEPENDENCIES,
             upgrade=False,
-            timeout=1800,
+            timeout=_env_timeout_seconds(
+                RUNTIME_INSTALL_TIMEOUT_ENV,
+                DEFAULT_RUNTIME_INSTALL_TIMEOUT_SECONDS,
+            ),
             expected_paths=tuple(runtime_dir / relative for relative in _RUNTIME_EXPECTED_RELATIVE_PATHS),
             installer_order=("uv",),
             extra_install_args=extra_install_args,

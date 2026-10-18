@@ -173,12 +173,25 @@ def test_prepare_runtime_installs_without_importing_nemo_or_touching_sys_path(
     install.assert_called_once()
     assert install.call_args.args[0] == runtime_dir
     assert install.call_args.args[1] == module._RUNTIME_DEPENDENCIES
+    assert install.call_args.kwargs["timeout"] == module.DEFAULT_RUNTIME_INSTALL_TIMEOUT_SECONDS
     assert tuple(install.call_args.kwargs["expected_paths"]) == (
         runtime_dir / "nemo" / "__init__.py",
         runtime_dir / "nemo" / "collections" / "asr" / "__init__.py",
     )
     assert install.call_args.kwargs["extra_install_args"][0] == "--excludes"
     assert (runtime_dir / module._RUNTIME_SENTINEL).is_file()
+
+
+def test_prepare_runtime_install_timeout_is_configurable(
+    runtime_dir: Path, monkeypatch: pytest.MonkeyPatch
+):
+    install = MagicMock(return_value=True)
+    monkeypatch.setattr(module, "install_target_runtime_requirements", install)
+    monkeypatch.setenv(module.RUNTIME_INSTALL_TIMEOUT_ENV, "4200")
+
+    ParakeetNemoAdapter().prepare_runtime()
+
+    assert install.call_args.kwargs["timeout"] == 4200.0
 
 
 def test_prepare_runtime_removes_worker_local_gpu_stack_after_install(
