@@ -10,7 +10,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any, NoReturn
 
 from vox.core.errors import ModelLoadError, VoxError
@@ -46,6 +46,7 @@ class WorkerHost:
         self._alive = False
         self._buffer = bytearray()
         self._request_lock = threading.Lock()
+        self._write_lock = threading.Lock()
         self._kill_timeout = DEFAULT_WORKER_KILL_TIMEOUT_SECONDS
         parent_sock, child_sock = socket.socketpair()
         stderr_read, stderr_write = os.pipe()
@@ -82,6 +83,7 @@ class WorkerHost:
             frame = self._read_frame(startup_timeout)
             if frame.get("ready") is not True:
                 self._anomaly(f"expected ready frame, got {frame}")
+            self._ready_frame = dict(frame)
         except WorkerError as error:
             raise ModelLoadError(f"{name} worker failed to start: {error}") from error
 
@@ -93,18 +95,41 @@ class WorkerHost:
     def pid(self) -> int:
         return self._proc.pid
 
+    @property
+    def ready_frame(self) -> dict[str, Any]:
+        return dict(self._ready_frame)
+
     def request(self, payload: dict[str, Any], timeout: float) -> dict[str, Any]:
         with self._request_lock:
             if not self.alive:
                 raise WorkerError(f"{self._name} worker is not alive")
-            try:
-                self._sock.sendall(json.dumps(payload).encode() + b"\n")
-            except OSError as error:
-                self._anomaly(f"protocol write failed: {error}")
+            self._send_frame(payload)
             frame = self._read_frame(timeout)
             if "error" in frame:
                 raise WorkerError(f"{self._name} worker request failed: {frame['error']}")
             return frame
+
+    def stream_request(
+        self,
+        payload: dict[str, Any],
+        timeout: float,
+    ) -> Iterator[dict[str, Any]]:
+        with self._request_lock:
+            if not self.alive:
+                raise WorkerError(f"{self._name} worker is not alive")
+            self._send_frame(payload)
+            while True:
+                frame = self._read_frame(timeout)
+                if "error" in frame:
+                    raise WorkerError(f"{self._name} worker request failed: {frame['error']}")
+                yield frame
+                if frame.get("done") is True:
+                    return
+
+    def send_control(self, payload: dict[str, Any]) -> None:
+        if not self.alive:
+            return
+        self._send_frame(payload)
 
     def close(self, grace: float = 5.0) -> None:
         self._alive = False
@@ -133,6 +158,14 @@ class WorkerHost:
         except subprocess.TimeoutExpired as error:
             raise WorkerError(f"{self._name} worker did not exit after SIGKILL: {reason}") from error
         raise WorkerError(f"{self._name} worker killed: {reason} (exit code {self._proc.returncode})")
+
+    def _send_frame(self, payload: dict[str, Any]) -> None:
+        encoded = json.dumps(payload, separators=(",", ":")).encode() + b"\n"
+        with self._write_lock:
+            try:
+                self._sock.sendall(encoded)
+            except OSError as error:
+                self._anomaly(f"protocol write failed: {error}")
 
     def _read_frame(self, timeout: float) -> dict[str, Any]:
         deadline = time.monotonic() + timeout

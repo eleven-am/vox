@@ -26,6 +26,40 @@ _QWEN_TTS_BACKENDS = {
 
 
 FIXTURE_CATALOG: dict[str, dict[str, dict[str, Any]]] = {
+    "magpie-tts": {
+        "v2607-f16": {
+            "source": "nvidia/magpie_tts_multilingual_357m",
+            "architecture": "magpie-tts-gguf",
+            "type": "tts",
+            "adapter": "magpie-tts-gguf",
+            "format": "gguf",
+            "description": "NVIDIA MagpieTTS Multilingual 357M v2607 F16 — streaming CPU TTS",
+            "license": "NVIDIA Open Model License",
+            "parameters": {"sample_rate": 22050, "default_voice": "john"},
+            "files": ["magpie_tts_multilingual_357m.v2607.f16.gguf"],
+            "artifacts": [
+                {
+                    "source": "nvidia/nemo-nano-codec-22khz-1.89kbps-21.5fps",
+                    "prefix": "codec",
+                    "files": ["nemo_nano_codec_22khz_1.89kbps_21.5fps.decoder.f16.gguf"],
+                }
+            ],
+            "adapter_package": "vox-magpie==0.1.0",
+            "runtime": {
+                "required": {
+                    "accelerators": ["cpu"],
+                    "systems": ["linux"],
+                    "machines": ["x86_64"],
+                    "min_ram_gb": 4,
+                    "notes": [
+                        "The initial Vox adapter uses the CPU-only NeMo-Speech.cpp runtime.",
+                        "The official v0.2.0 binary requires an x86-64-v3 capable CPU.",
+                        "Japanese and Mandarin require a custom native build and are not enabled.",
+                    ],
+                }
+            },
+        }
+    },
     "parakeet-stt": {
         "tdt-0.6b": {
             "type": "stt",

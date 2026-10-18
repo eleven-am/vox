@@ -303,6 +303,22 @@ class TestAvailableModels:
         assert "kokoro-tts-onnx" not in catalog
         assert "kokoro-tts-torch" not in catalog
 
+    def test_magpie_catalog_entry_uses_cpu_gguf_adapter_and_codec(self):
+        magpie = CATALOG["magpie-tts"]["v2607-f16"]
+
+        assert magpie["adapter_package"] == "vox-magpie==0.1.0"
+        assert magpie["adapter"] == "magpie-tts-gguf"
+        assert magpie["format"] == "gguf"
+        assert magpie["parameters"] == {"sample_rate": 22_050, "default_voice": "john"}
+        assert magpie["artifacts"] == [
+            {
+                "source": "nvidia/nemo-nano-codec-22khz-1.89kbps-21.5fps",
+                "prefix": "codec",
+                "files": ["nemo_nano_codec_22khz_1.89kbps_21.5fps.decoder.f16.gguf"],
+            }
+        ]
+        assert magpie["runtime"]["required"]["accelerators"] == ["cpu"]
+
     def test_whisper_catalog_uses_ct2_and_whisper_adapter_package(self):
         whisper = CATALOG["whisper-stt"]
 

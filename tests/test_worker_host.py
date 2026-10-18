@@ -69,6 +69,43 @@ else:
 """
 
 
+DUPLEX_WORKER_SOURCE = """
+import json, os, socket, sys, threading, time
+from vox.core.worker_host import WORKER_FD_ENV
+
+sock = socket.socket(fileno=int(os.environ[WORKER_FD_ENV]))
+stream = sock.makefile("rwb")
+write_lock = threading.Lock()
+cancelled = threading.Event()
+
+def send(frame):
+    with write_lock:
+        stream.write(json.dumps(frame).encode() + b"\\n")
+        stream.flush()
+
+send({"ready": True})
+
+def emit_values(values):
+    for value in values:
+        if cancelled.is_set():
+            break
+        send({"value": value})
+        time.sleep(0.01)
+    send({"done": True, "cancelled": cancelled.is_set()})
+
+for line in stream:
+    request = json.loads(line)
+    if request["op"] == "cancel":
+        cancelled.set()
+        continue
+    if request["op"] != "stream":
+        send({"error": "unknown op"})
+        continue
+    cancelled.clear()
+    threading.Thread(target=emit_values, args=(request["values"],), daemon=True).start()
+"""
+
+
 def spawn(mode: str = "harness", *, startup_timeout: float = 30.0) -> WorkerHost:
     return WorkerHost(
         [sys.executable, "-c", WORKER_SOURCE, mode],
@@ -76,6 +113,81 @@ def spawn(mode: str = "harness", *, startup_timeout: float = 30.0) -> WorkerHost
         name="synthetic",
         startup_timeout=startup_timeout,
     )
+
+
+def spawn_duplex() -> WorkerHost:
+    return WorkerHost(
+        [sys.executable, "-c", DUPLEX_WORKER_SOURCE],
+        env={"PYTHONPATH": SRC_DIR},
+        name="duplex-synthetic",
+    )
+
+
+def test_stream_request_yields_frames_through_terminal_frame():
+    host = spawn_duplex()
+    try:
+        frames = list(host.stream_request({"op": "stream", "values": [1, 2, 3]}, timeout=2))
+    finally:
+        host.close()
+
+    assert frames == [{"value": 1}, {"value": 2}, {"value": 3}, {"done": True, "cancelled": False}]
+
+
+def test_send_control_cancels_active_stream():
+    host = spawn_duplex()
+    frames = []
+
+    def consume() -> None:
+        frames.extend(host.stream_request({"op": "stream", "values": list(range(100))}, timeout=2))
+
+    thread = threading.Thread(target=consume)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 2
+        while not frames and time.monotonic() < deadline:
+            time.sleep(0.005)
+        host.send_control({"op": "cancel"})
+        thread.join(timeout=2)
+    finally:
+        host.close()
+
+    assert not thread.is_alive()
+    assert frames[-1] == {"done": True, "cancelled": True}
+    assert len(frames) < 101
+
+
+def test_cancelled_stream_releases_request_lane_for_next_stream():
+    host = spawn_duplex()
+    frames = []
+
+    def consume() -> None:
+        frames.extend(host.stream_request({"op": "stream", "values": list(range(100))}, timeout=2))
+
+    thread = threading.Thread(target=consume)
+    thread.start()
+    try:
+        assert wait_until(lambda: bool(frames), timeout=2)
+        host.send_control({"op": "cancel"})
+        thread.join(timeout=2)
+        next_frames = list(host.stream_request({"op": "stream", "values": ["next"]}, timeout=2))
+    finally:
+        host.close()
+
+    assert not thread.is_alive()
+    assert frames[-1] == {"done": True, "cancelled": True}
+    assert next_frames == [{"value": "next"}, {"done": True, "cancelled": False}]
+
+
+def test_stream_error_releases_request_lane_for_next_request():
+    host = spawn_duplex()
+    try:
+        with pytest.raises(WorkerError, match="unknown op"):
+            list(host.stream_request({"op": "invalid"}, timeout=2))
+        frames = list(host.stream_request({"op": "stream", "values": ["recovered"]}, timeout=2))
+    finally:
+        host.close()
+
+    assert frames == [{"value": "recovered"}, {"done": True, "cancelled": False}]
 
 
 def wait_until(predicate, timeout: float = 5.0) -> bool:

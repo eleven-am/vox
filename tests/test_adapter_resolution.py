@@ -321,6 +321,17 @@ class TestEnsure:
         ] == "vox-step-audio-editx"
         assert runner.calls[0][-2:] == ["--no-deps", package_spec]
 
+    def test_magpie_is_trusted_and_installed_without_dependencies(self, tmp_path: Path, monkeypatch):
+        monkeypatch.delenv("VOX_ALLOW_UNVERIFIED_ADAPTERS", raising=False)
+        runner = _FakeRunner()
+        resolver = _make_resolver(tmp_path, adapters={}, runner=runner)
+
+        package_spec = "vox-magpie==0.1.0"
+        with patch.object(AdapterResolver, "_scan_install_specs", return_value={}):
+            assert resolver.ensure("magpie-tts-gguf", package_spec) is False
+
+        assert runner.calls[0][-2:] == ["--no-deps", package_spec]
+
     def test_reinstalls_adapter_when_installed_version_does_not_satisfy_requirement(
         self, tmp_path: Path
     ):
