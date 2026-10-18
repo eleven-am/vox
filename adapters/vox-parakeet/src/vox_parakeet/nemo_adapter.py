@@ -80,6 +80,7 @@ _SHARED_APP_RUNTIME_EXCLUDES = (
 _RUNTIME_DEPENDENCIES = (
     "nemo-toolkit[asr]==2.7.3",
     "numpy>=1.26,<2",
+    "pyarrow<25",
     "numba>=0.61,<0.67",
     "llvmlite>=0.44,<0.49",
     "matplotlib>=3.9,<3.10",

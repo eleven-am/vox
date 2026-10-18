@@ -276,6 +276,7 @@ def test_prepare_runtime_uses_uv_target_install_with_python312_compatible_pins(
     assert "--target" in calls[0]
     assert "nemo-toolkit[asr]==2.7.3" in calls[0]
     assert "numpy>=1.26,<2" in calls[0]
+    assert "pyarrow<25" in calls[0]
     assert "numba>=0.61,<0.67" in calls[0]
     assert "llvmlite>=0.44,<0.49" in calls[0]
     assert "matplotlib>=3.9,<3.10" in calls[0]
