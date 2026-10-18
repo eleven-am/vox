@@ -40,6 +40,7 @@ def test_default_images_do_not_bundle_adapter_packages_or_backend_runtimes():
 def test_default_images_keep_runtime_install_primitives():
     for dockerfile in DOCKERFILES:
         content = dockerfile.read_text(encoding="utf-8")
+        assert "FROM ghcr.io/astral-sh/uv:0.10.0 AS uv" in content
         assert "COPY --from=uv /uv /bin/uv" in content
         assert "python3-venv" in content
         assert "$HOME/.vox/adapters" in content
